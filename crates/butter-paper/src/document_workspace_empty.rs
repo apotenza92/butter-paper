@@ -175,7 +175,7 @@ impl DocumentWorkspace {
             .children(
                 cx.try_global::<crate::application_settings::ApplicationUpdatePresentation>()
                     .and_then(|presentation| {
-                        crate::application_settings::update_button(presentation.state.status)
+                        crate::application_settings::update_button(presentation.state.status, cx)
                     }),
             );
         let inactive_session_tabs = session_tabs
@@ -240,17 +240,11 @@ impl DocumentWorkspace {
                     .group(tab_selector.clone())
                     .debug_selector(move || debug_selector.clone())
                     .child(session_tab_overlay_label(
-                        if *dirty {
-                            format!("* {visual_title}")
-                        } else {
-                            visual_title
-                        },
+                        visual_title,
                         tab_selector,
                         reveal_close,
-                        self.session_tab_label_offsets
-                            .entry(document_id)
-                            .or_default()
-                            .clone(),
+                        *dirty,
+                        cx,
                     ))
                     .aria_label(accessibility_label)
                     .aria_description(DOCUMENT_TAB_REORDER_DESCRIPTION)
@@ -420,6 +414,6 @@ impl DocumentWorkspace {
                                 }),
                         ),
                 ),
-        ).child(self.render_status_bar(window, cx))
+        )
     }
 }

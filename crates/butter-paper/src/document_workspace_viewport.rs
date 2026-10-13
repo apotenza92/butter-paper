@@ -43,6 +43,7 @@ pub(super) struct ViewportInputs {
     pub object_snap_tracking_result: Option<ObjectSnapTrackingResult>,
     pub pending_image_preview: Option<PendingImagePreview>,
     pub pending_text_box_presentation: Option<PendingTextBoxPresentation>,
+    pub page_text_overlays: Vec<PageTextOverlay>,
     pub relationship_snap_guides: Vec<RelationshipSnapGuide>,
     pub selection_color: Hsla,
     pub semantic_snap_decision: Option<SemanticSnapDecision>,
@@ -81,6 +82,7 @@ impl DocumentWorkspace {
             object_snap_tracking_result,
             pending_image_preview,
             pending_text_box_presentation,
+            page_text_overlays,
             relationship_snap_guides,
             selection_color,
             semantic_snap_decision,
@@ -91,11 +93,16 @@ impl DocumentWorkspace {
             viewport_cursor_style,
             viewport_observer,
         } = inputs;
+        let page_text_input = page_text_overlays
+            .iter()
+            .find_map(|overlay| overlay.input.clone())
+            .map(|(input, focus)| page_text::page_text_input_element(input, focus));
         gpui::div()
                                 .id(DOCUMENT_VIEWPORT_ID)
                                 .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
                                 .relative()
                                 .size_full()
+                                .children(page_text_input)
                                 .cursor(viewport_cursor_style)
                                 .overflow_scroll()
                                 .track_scroll(&viewer_scroll)
@@ -341,6 +348,20 @@ impl DocumentWorkspace {
                                                             Some(cx.entity().downgrade()),
                                                             painted_viewer,
                                                         ))
+                                                        .children(
+                                                            page_text_overlays
+                                                                .iter()
+                                                                .find(|overlay| overlay.page_index == page_index)
+                                                                .cloned()
+                                                                .map(|overlay| {
+                                                                    page_text::page_text_overlay_element(
+                                                                        overlay,
+                                                                        page_size,
+                                                                        coordinate_space,
+                                                                        selection_color,
+                                                                    )
+                                                                }),
+                                                        )
                                                         .children(render_error_surface)
                                                 },
                                             )),

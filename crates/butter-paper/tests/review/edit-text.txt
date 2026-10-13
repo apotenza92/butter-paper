@@ -1,0 +1,52 @@
+# Edit Text review: run by .github/workflows/review.yml on Linux and Windows
+# against a copy of tests/fixtures/text-edit/libreoffice.pdf. Coordinates are
+# window content points below the title bar for a 1300 x 900 window; the
+# captures are for a person to inspect, and review.log records each step.
+wait 1500
+place 0 120 120 1300 900
+wait 1500
+shot opened
+key 0 shift-t
+wait 600
+move 0 291 352
+wait 400
+shot hover
+# Double-click "contractor" and set it bold, 16 pt, red.
+click 0 291 352 2
+wait 1200
+shot selected
+click 0 1081 270
+wait 1500
+shot bold
+click 0 995 279
+wait 300
+key 0 secondary-a
+type 0 16
+key 0 enter
+wait 1500
+shot size
+click 0 945 349
+wait 800
+click 0 1049 485
+wait 800
+click 0 1077 349
+wait 1500
+shot coloured
+# Right-aligned paragraph at 1.5 line spacing.
+click 0 1079 490
+wait 1500
+click 0 1066 560
+wait 300
+key 0 secondary-a
+type 0 1.5
+key 0 enter
+wait 1500
+shot spacing
+log-text 0
+key 0 escape
+wait 1200
+shot committed
+key 0 secondary-s
+wait 6000
+shot saved
+quit

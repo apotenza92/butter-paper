@@ -6,6 +6,11 @@ PDF and the conventions Bluebeam Revu itself writes. No private `BP*` keys, no
 comes up, match what Revu writes. Untouched markups from other applications are
 saved byte-exact; only created or edited markups are rewritten.
 
+A PDF with only an owner password (it opens without one) is saved encrypted
+again under its own key and `/Encrypt` settings, so its passwords and
+permission restrictions survive. Files that need a password to open are not
+editable.
+
 Settings with no standard or Bluebeam field are not saved per markup: pen
 smooth-curves, image aspect lock, measurement show-caption.
 
@@ -105,6 +110,11 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
   dimension line. Length uses `LL 10` on screen as well as in the file.
 - [x] Text box, callout and Cloud+ appearances use the style's margin (`DS
   margin`) instead of a fixed inset.
+- [x] Text box appearances place each line as the canvas does: the text's
+  ascent and descent are centred in a 1.15 em line box, the first one margin
+  below the top, and a line holding larger rich text is as tall as its
+  largest size. The metrics are the written font's: the embedded bundled
+  font's, else Helvetica's standard ones.
 - [x] Area captions are centred on the area, as Revu centres them.
 - [x] A callout or Cloud+ without text writes no text object in its appearance.
 
@@ -124,6 +134,92 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
   writes a new appearance with Butter Paper's rotated-box placement that draws
   Revu's original Form fitted to the new box; untouched Snapshots stay
   byte-exact.
+
+## Edited page text
+
+Edit Text changes the page content stream, not an annotation
+(`pdf_text_edit.rs`). An edit names a line by its origin and original text
+and always applies to the unedited file.
+
+- Only the edited text operators change; every other byte of every content
+  stream is kept, and an edit that leaves a line as it was changes nothing. The line's first operator draws the whole edited line,
+  keeping unchanged glyphs' codes and positions (kerning and word gaps);
+  the line's other operators become text-matrix moves of their original
+  width, so following content stays where it was.
+- New characters use the line's font when its program has the glyph
+  (ToUnicode, Differences, or a code learned from `/ActualText`). Others use
+  a bundled Type0 font (Identity-H with ToUnicode) added to the page's
+  `/Resources /Font` as `BPEdit<n>`. Glyphs readable only through
+  `/ActualText` are redrawn inside their own `/ActualText` span.
+- Fonts using Adobe's Unicode CMaps (`UniGB`, `UniCNS`, `UniJIS`, `UniKS`;
+  UCS2 or UTF16, horizontal) read their codes as text and their widths by
+  CID through tables packed from Adobe's CMap resources (`assets/cmaps`).
+  Characters the page already draws in such a font are typed with it;
+  others use a bundled font.
+- When a font's name and descriptor do not say serif or sans, the outline
+  of a plain stem letter ("l", "I", "i", "H", "T") in its embedded program
+  decides the bundled family.
+- Text in a Form XObject is edited in the form's stream. The edited form,
+  and every form that draws it, becomes a copy private to the page (another
+  page using the form keeps the original), and fallback fonts join the
+  copy's own resources. Font keys name the form path (`Fm0/F1`), so a form's
+  fonts never clash with the page's. A form drawn more than once on a page
+  is read-only there.
+- Installed fonts (TrueType outlines; the platform's font folders, scanned
+  once) supply characters the bundled fonts lack, and an installed font
+  named like a non-standard page font supplies its missing characters
+  first. They are embedded as tagged subsets the same way. A font the viewer
+  supplies (not embedded) and without `/Widths` takes its widths from an
+  installed font of its name or the closest bundled family.
+- Bundled fonts (for edited text and Text Box appearances) are embedded once
+  per document as a compressed TrueType subset that keeps the bundled glyph
+  ids, so `CIDToGIDMap` addresses the bundled font; the name carries the
+  required subset tag (`ABCDEF+Arimo-Regular`). Later edits re-subset the
+  same font. A font counts as bundled only if its program is exactly that
+  subset (or, in older saves, the whole bundled program), so another
+  producer's subset of the same family is never reused.
+- A rewrapped paragraph is stored as line edits. A line's fit moves it
+  (centred or right-aligned text) or stretches it across its spaces to the
+  paragraph's right edge (justified text). Lines the paragraph grew by are
+  drawn by the last line's operator, each on its own baseline a line pitch
+  below, inside the same text object; the text and line matrices are then
+  restored, so following operators draw where they did. An added line's
+  operator starts a hundredth of a point along from the paragraph's (its
+  glyphs do not move) when another line already has that origin, so line
+  anchors stay unique. After a save, added lines are lines of the file;
+  undoing past them empties them.
+- Text properties are run styles. A colour is written as `r g b rg` before
+  its glyphs, and the line's own fill operators (whatever its colour space)
+  are written again after them. Runs of one line may differ in device
+  colour (`g`, `rg`, `k`, or `sc`/`scn` in a device space), so such a line
+  reads back as one line with coloured runs; a line in another colour space
+  only joins text of its own colour. A chosen font (a bundled family, or an
+  installed face by PostScript name, with the bundled family of its kind
+  for characters it lacks) is embedded as a tagged subset like a fallback
+  font; the run keeps its page font's text state. A size is the run's `Tf`
+  size on the line's baseline.
+- A chosen alignment refits every line of the paragraph. A chosen line
+  spacing, or text larger than the paragraph's own, keeps the first line and
+  draws the paragraph's other text as added lines (the original lines are
+  emptied), each placed by its own height and moved along to its column, so
+  they continue at the top of the next column. The settings are kept in the
+  first line's edit (`paragraph`) so the paragraph reopens with them; they
+  do not change how it is drawn.
+- A list line that changes between an item and an item's wrapped line is
+  drawn as an added line in its place (the base line is emptied), so it
+  does not take the base line's marker spacing. A line's fit `tab` starts an
+  item's text after its marker at the list's indent. A line or added line
+  ending in a hard break (an item's end) records `hard_break`, so the
+  paragraph reopens with its items apart.
+- Spacing follows the original: each kept glyph keeps the gap before it,
+  and the gaps on both sides of a space (which justification widens) go
+  with the space when it is deleted. A space the original drew as a gap is
+  drawn as a space glyph where a gap would not read back as one (at either
+  end of the line, or beside other whitespace).
+- A span's `/ActualText` takes precedence over the font's ToUnicode, which
+  some producers (LibreOffice) fill from a ligature's first use.
+- Saving checks every edited line in the reopened file. After a save the
+  undo history is rebased onto the saved text.
 
 ## Known differences (follow-ups)
 

@@ -17,6 +17,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::page_geometry::{PageCoordinateSpace, Rotation as CoordinateRotation};
+use crate::pdf_text_edit::{PageTextEdit, normalized_runs, rebase_text_edits};
 use crate::selection_geometry::{
     SelectionMarquee, SelectionPath, SelectionPoint, geometry_selected, selection_after,
 };
@@ -898,6 +899,150 @@ pub struct RectangleAnnotation {
     pub locked: bool,
 }
 
+/// Equal move / resize / move bands around a box's actual outline, turned
+/// to its rotation: the local point, its distance from the outline and
+/// whether it is inside. The middle band straddles the line; the inward
+/// bands shrink together on small boxes, leaving the central half of the
+/// short side empty.
+fn box_outline_distance(
+    rect: PdfRect,
+    rotation_degrees: f64,
+    point: PdfPoint,
+) -> (PdfPoint, f64, bool) {
+    let local = rotate_point_around_rect_center(point, rect, rotation_degrees);
+    let right = rect.x + rect.width;
+    let top = rect.y + rect.height;
+    let inside = rect.contains(local, 0.);
+    let distance = if inside {
+        (local.x - rect.x)
+            .min(right - local.x)
+            .min(local.y - rect.y)
+            .min(top - local.y)
+    } else {
+        let dx = (rect.x - local.x).max(local.x - right).max(0.);
+        let dy = (rect.y - local.y).max(local.y - top).max(0.);
+        dx.hypot(dy)
+    };
+    (local, distance, inside)
+}
+
+fn box_inward_resize_reach(rect: PdfRect, reach: f64) -> f64 {
+    reach.min(rect.width.min(rect.height) / 12.)
+}
+
+/// The Rectangle's resize zone on any box: `reach` either side of its
+/// outline (less inside small boxes), a corner where two edges meet, else
+/// the nearest edge. Every box shape resizes from anywhere along its edges.
+pub fn box_outline_resize_handle(
+    rect: PdfRect,
+    rotation_degrees: f64,
+    point: PdfPoint,
+    reach: f64,
+) -> Option<RectangleResizeHandle> {
+    let (local, distance, inside) = box_outline_distance(rect, rotation_degrees, point);
+    let reach = if inside {
+        box_inward_resize_reach(rect, reach)
+    } else {
+        reach
+    };
+    if distance > reach {
+        return None;
+    }
+    let left = (local.x - rect.x).abs();
+    let right = (local.x - rect.x - rect.width).abs();
+    let bottom = (local.y - rect.y).abs();
+    let top = (local.y - rect.y - rect.height).abs();
+    if left <= reach && top <= reach {
+        Some(RectangleResizeHandle::NorthWest)
+    } else if right <= reach && top <= reach {
+        Some(RectangleResizeHandle::NorthEast)
+    } else if right <= reach && bottom <= reach {
+        Some(RectangleResizeHandle::SouthEast)
+    } else if left <= reach && bottom <= reach {
+        Some(RectangleResizeHandle::SouthWest)
+    } else if right <= left && right <= top && right <= bottom {
+        Some(RectangleResizeHandle::East)
+    } else if left <= top && left <= bottom {
+        Some(RectangleResizeHandle::West)
+    } else if top <= bottom {
+        Some(RectangleResizeHandle::North)
+    } else {
+        Some(RectangleResizeHandle::South)
+    }
+}
+
+/// A point's first-order distance from an Ellipse's curve, whether it is
+/// inside, and its eighth of a turn around the centre (0 = east,
+/// anticlockwise). The centre is never on the curve.
+fn ellipse_outline_distance(
+    rect: PdfRect,
+    rotation_degrees: f64,
+    point: PdfPoint,
+) -> Option<(f64, bool, u8)> {
+    let local = rotate_point_around_rect_center(point, rect, rotation_degrees);
+    let radius_x = rect.width / 2.;
+    let radius_y = rect.height / 2.;
+    if radius_x <= 0. || radius_y <= 0. {
+        return None;
+    }
+    let dx = local.x - (rect.x + radius_x);
+    let dy = local.y - (rect.y + radius_y);
+    let level = (dx / radius_x).powi(2) + (dy / radius_y).powi(2) - 1.;
+    let slope = 2. * (dx / radius_x.powi(2)).hypot(dy / radius_y.powi(2));
+    if slope <= 0. {
+        return None;
+    }
+    let eighth = ((dy / radius_y).atan2(dx / radius_x) / std::f64::consts::FRAC_PI_4)
+        .round()
+        .rem_euclid(8.);
+    Some((level.abs() / slope, level < 0., eighth as u8))
+}
+
+/// The Ellipse's resize zone, as the Rectangle's: `reach` either side of
+/// its curve (less inside small Ellipses), taking the handle at the nearest
+/// eighth of a turn, so the curve resizes from anywhere along it.
+pub fn ellipse_outline_resize_handle(
+    rect: PdfRect,
+    rotation_degrees: f64,
+    point: PdfPoint,
+    reach: f64,
+) -> Option<RectangleResizeHandle> {
+    let (distance, inside, eighth) = ellipse_outline_distance(rect, rotation_degrees, point)?;
+    let reach = if inside {
+        box_inward_resize_reach(rect, reach)
+    } else {
+        reach
+    };
+    (distance <= reach).then_some(match eighth {
+        0 => RectangleResizeHandle::East,
+        1 => RectangleResizeHandle::NorthEast,
+        2 => RectangleResizeHandle::North,
+        3 => RectangleResizeHandle::NorthWest,
+        4 => RectangleResizeHandle::West,
+        5 => RectangleResizeHandle::SouthWest,
+        6 => RectangleResizeHandle::South,
+        _ => RectangleResizeHandle::SouthEast,
+    })
+}
+
+/// The Ellipse's move bands either side of its resize zone, as the
+/// Rectangle's.
+pub fn ellipse_move_zone_contains(
+    rect: PdfRect,
+    rotation_degrees: f64,
+    point: PdfPoint,
+    reach: f64,
+) -> bool {
+    ellipse_outline_distance(rect, rotation_degrees, point).is_some_and(|(distance, inside, _)| {
+        let reach = if inside {
+            box_inward_resize_reach(rect, reach)
+        } else {
+            reach
+        };
+        distance > reach && distance <= reach * 3.
+    })
+}
+
 impl RectangleAnnotation {
     pub fn same_persisted_state_as(&self, other: &Self) -> bool {
         self.id == other.id
@@ -913,35 +1058,10 @@ impl RectangleAnnotation {
         rotate_point_around_rect_center(point, self.rect, self.rotation_degrees)
     }
 
-    /// Equal move / resize / move bands around the actual outline.
-    /// The middle band straddles the line; the inward bands shrink together
-    /// on small Rectangles, leaving the central half of the short side empty.
-    fn outline_distance(&self, point: PdfPoint) -> (PdfPoint, f64, bool) {
-        let local = self.world_to_local(point);
-        let right = self.rect.x + self.rect.width;
-        let top = self.rect.y + self.rect.height;
-        let inside = self.rect.contains(local, 0.);
-        let distance = if inside {
-            (local.x - self.rect.x)
-                .min(right - local.x)
-                .min(local.y - self.rect.y)
-                .min(top - local.y)
-        } else {
-            let dx = (self.rect.x - local.x).max(local.x - right).max(0.);
-            let dy = (self.rect.y - local.y).max(local.y - top).max(0.);
-            dx.hypot(dy)
-        };
-        (local, distance, inside)
-    }
-
-    fn inward_resize_reach(&self, reach: f64) -> f64 {
-        reach.min(self.rect.width.min(self.rect.height) / 12.)
-    }
-
     pub fn move_zone_contains(&self, point: PdfPoint, resize_reach_pt: f64) -> bool {
-        let (_, distance, inside) = self.outline_distance(point);
+        let (_, distance, inside) = box_outline_distance(self.rect, self.rotation_degrees, point);
         let reach = if inside {
-            self.inward_resize_reach(resize_reach_pt)
+            box_inward_resize_reach(self.rect, resize_reach_pt)
         } else {
             resize_reach_pt
         };
@@ -957,36 +1077,7 @@ impl RectangleAnnotation {
         if self.locked {
             return None;
         }
-        let (local, distance, inside) = self.outline_distance(point);
-        let reach = if inside {
-            self.inward_resize_reach(resize_reach_pt)
-        } else {
-            resize_reach_pt
-        };
-        if distance > reach {
-            return None;
-        }
-        let left = (local.x - self.rect.x).abs();
-        let right = (local.x - self.rect.x - self.rect.width).abs();
-        let bottom = (local.y - self.rect.y).abs();
-        let top = (local.y - self.rect.y - self.rect.height).abs();
-        if left <= reach && top <= reach {
-            Some(RectangleResizeHandle::NorthWest)
-        } else if right <= reach && top <= reach {
-            Some(RectangleResizeHandle::NorthEast)
-        } else if right <= reach && bottom <= reach {
-            Some(RectangleResizeHandle::SouthEast)
-        } else if left <= reach && bottom <= reach {
-            Some(RectangleResizeHandle::SouthWest)
-        } else if right <= left && right <= top && right <= bottom {
-            Some(RectangleResizeHandle::East)
-        } else if left <= top && left <= bottom {
-            Some(RectangleResizeHandle::West)
-        } else if top <= bottom {
-            Some(RectangleResizeHandle::North)
-        } else {
-            Some(RectangleResizeHandle::South)
-        }
+        box_outline_resize_handle(self.rect, self.rotation_degrees, point, resize_reach_pt)
     }
 
     fn rotation_handle_world_point(&self, offset_pt: f64) -> PdfPoint {
@@ -5081,6 +5172,8 @@ pub struct AnnotationSnapshot {
     pub scale_presets: Vec<ScalePreset>,
     pub page_length_calibrations: Vec<(u32, LengthCalibration)>,
     pub page_rotations: Vec<(u32, PageRotation)>,
+    /// Edits to existing page text, keyed by page and line.
+    pub page_text_edits: Vec<PageTextEdit>,
     pub undo_depth: usize,
     pub redo_depth: usize,
 }
@@ -5635,6 +5728,7 @@ struct DocumentState {
     scale_presets: Vec<ScalePreset>,
     page_length_calibrations: BTreeMap<u32, LengthCalibration>,
     page_rotations: BTreeMap<u32, PageRotation>,
+    page_text_edits: Vec<PageTextEdit>,
     revision: u64,
 }
 
@@ -5713,6 +5807,8 @@ struct RecoveryDocumentState {
     scale_presets: Vec<ScalePreset>,
     page_length_calibrations: BTreeMap<u32, LengthCalibration>,
     page_rotations: BTreeMap<u32, PageRotation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    page_text_edits: Vec<PageTextEdit>,
     revision: u64,
 }
 
@@ -5807,6 +5903,7 @@ impl RecoveryDocumentState {
             scale_presets: state.scale_presets.clone(),
             page_length_calibrations: state.page_length_calibrations.clone(),
             page_rotations: state.page_rotations.clone(),
+            page_text_edits: state.page_text_edits.clone(),
             revision: state.revision,
         })
     }
@@ -5893,6 +5990,7 @@ impl RecoveryDocumentState {
             scale_presets: self.scale_presets,
             page_length_calibrations: self.page_length_calibrations,
             page_rotations: self.page_rotations,
+            page_text_edits: self.page_text_edits,
             revision: self.revision,
         };
         validate_recovery_state(&state)?;
@@ -6557,6 +6655,7 @@ impl AnnotationDocument {
                 scale_presets: Vec::new(),
                 page_length_calibrations: BTreeMap::new(),
                 page_rotations: BTreeMap::new(),
+                page_text_edits: Vec::new(),
                 revision: 0,
             },
             selected_ids: Vec::new(),
@@ -7006,6 +7105,7 @@ impl AnnotationDocument {
             scale_presets,
             page_length_calibrations,
             page_rotations,
+            page_text_edits: Vec::new(),
             revision: 0,
         };
         self.selected_ids.clear();
@@ -7111,6 +7211,7 @@ impl AnnotationDocument {
                 .iter()
                 .map(|(page_index, rotation)| (*page_index, *rotation))
                 .collect(),
+            page_text_edits: self.state.page_text_edits.clone(),
             undo_depth: self.past.len(),
             redo_depth: self.future.len(),
         }
@@ -7130,6 +7231,62 @@ impl AnnotationDocument {
 
     pub fn page_rotation(&self, page_index: u32) -> Option<PageRotation> {
         self.state.page_rotations.get(&page_index).copied()
+    }
+
+    pub fn page_text_edits(&self) -> &[PageTextEdit] {
+        &self.state.page_text_edits
+    }
+
+    /// Records one line's edited text as a single undoable change. An edit
+    /// that restores the line removes its record. Returns whether anything
+    /// changed.
+    pub fn set_page_text_edit(&mut self, edit: PageTextEdit) -> Result<bool, AnnotationError> {
+        let (page_index, anchor) = (edit.page_index, edit.anchor);
+        self.set_page_text_edits(page_index, &[anchor], vec![edit])
+    }
+
+    /// Records a paragraph's edited lines as a single undoable change: the
+    /// edits of the lines `anchors` names on `page_index` become `edits`
+    /// (lines an edit leaves as they were get none). Returns whether
+    /// anything changed.
+    pub fn set_page_text_edits(
+        &mut self,
+        page_index: u32,
+        anchors: &[crate::pdf_text_edit::TextLineAnchor],
+        edits: Vec<PageTextEdit>,
+    ) -> Result<bool, AnnotationError> {
+        self.require_no_gesture()?;
+        let ours =
+            |edit: &PageTextEdit| edit.page_index == page_index && anchors.contains(&edit.anchor);
+        let normalized = |edit: &PageTextEdit| PageTextEdit {
+            original: normalized_runs(&edit.original),
+            runs: normalized_runs(&edit.runs),
+            ..edit.clone()
+        };
+        let current = self
+            .state
+            .page_text_edits
+            .iter()
+            .filter(|edit| ours(edit))
+            .map(normalized)
+            .collect::<Vec<_>>();
+        let mut replacement = edits
+            .iter()
+            .filter(|edit| !edit.is_unchanged())
+            .map(normalized)
+            .collect::<Vec<_>>();
+        replacement.sort_by_key(|edit| (edit.page_index, edit.anchor));
+        if current == replacement {
+            return Ok(false);
+        }
+        self.commit_state_change(|state| {
+            state.page_text_edits.retain(|edit| !ours(edit));
+            state.page_text_edits.extend(replacement);
+            state
+                .page_text_edits
+                .sort_by_key(|edit| (edit.page_index, edit.anchor));
+        });
+        Ok(true)
     }
 
     pub fn rotate_page(
@@ -7953,6 +8110,19 @@ impl AnnotationDocument {
             }
             AnnotationCommand::MarkSaved => {
                 self.require_no_gesture()?;
+                // The saved file now holds the current page-text edits; every
+                // state's edits apply to it from now on.
+                let saved = self.state.page_text_edits.clone();
+                if !saved.is_empty() {
+                    for state in self
+                        .past
+                        .iter_mut()
+                        .chain(self.future.iter_mut())
+                        .chain(std::iter::once(&mut self.state))
+                    {
+                        state.page_text_edits = rebase_text_edits(&state.page_text_edits, &saved);
+                    }
+                }
                 self.saved_revision = self.state.revision;
                 Ok(CommandOutcome::Saved {
                     revision: self.state.revision,
@@ -9779,6 +9949,10 @@ impl AnnotationDocument {
                     })
                     .collect(),
             );
+        }
+        if !self.state.page_text_edits.is_empty() {
+            snapshot["page_text_edits"] = serde_json::to_value(&self.state.page_text_edits)
+                .expect("page text edits must serialize");
         }
         if !self.state.page_rotations.is_empty() {
             snapshot["page_rotations"] = Value::Array(
@@ -13450,6 +13624,63 @@ mod tests {
 
     fn id(value: &str) -> MarkupId {
         MarkupId::new(value).unwrap()
+    }
+
+    #[test]
+    fn page_text_edits_undo_redo_and_rebase_when_saved() {
+        use crate::pdf_text_edit::{TextEditRun, TextLineAnchor, TextRunStyle};
+        let run = |text: &str| TextEditRun {
+            style: TextRunStyle {
+                font: b"F1".to_vec(),
+                font_size: 12.,
+                char_spacing: 0.,
+                word_spacing: 0.,
+                fill: None,
+                face: None,
+            },
+            text: text.into(),
+        };
+        let edit = |original: &str, text: &str| PageTextEdit {
+            page_index: 0,
+            anchor: TextLineAnchor {
+                x_centipoints: 7200,
+                y_centipoints: 70000,
+                ordinal: 0,
+            },
+            original: vec![run(original)],
+            runs: vec![run(text)],
+            layout: Default::default(),
+        };
+        let mut document = AnnotationDocument::default();
+        assert!(!document.set_page_text_edit(edit("Draft", "Draft")).unwrap());
+        assert!(document.set_page_text_edit(edit("Draft", "Final")).unwrap());
+        assert!(!document.set_page_text_edit(edit("Draft", "Final")).unwrap());
+        assert_eq!(document.page_text_edits(), [edit("Draft", "Final")]);
+        assert!(document.snapshot().dirty);
+        document.undo().unwrap();
+        assert!(document.page_text_edits().is_empty());
+        document.redo().unwrap();
+        assert_eq!(document.page_text_edits(), [edit("Draft", "Final")]);
+
+        // Saving writes the edit into the file; undo then edits the saved
+        // text back.
+        document
+            .apply_command(AnnotationCommand::MarkSaved)
+            .unwrap();
+        assert!(document.page_text_edits().is_empty());
+        assert!(!document.snapshot().dirty);
+        document.undo().unwrap();
+        assert_eq!(document.page_text_edits(), [edit("Final", "Draft")]);
+        document.redo().unwrap();
+        assert!(document.page_text_edits().is_empty());
+
+        // Recovery keeps the edits.
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(
+            restored.past.back().unwrap().page_text_edits,
+            [edit("Final", "Draft")]
+        );
     }
 
     #[test]

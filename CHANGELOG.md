@@ -4,6 +4,40 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.7]
+
+### Edit Text
+
+- Add the Edit Text tool (`Shift+T`) for editing a PDF's own text a
+  paragraph at a time. Text reflows within the paragraph, keeps its
+  alignment and never moves other content; untouched lines keep their bytes.
+- Use the embedded font, then an installed font of the same name, then a
+  bundled family, so a missing font never blocks editing. The properties
+  panel names any substitute.
+- Change font, size, bold, italic, colour, alignment and line spacing from
+  the Edit Text properties.
+- Continue bullets and numbering when Enter adds a list item, and flow
+  paragraphs from one column into the next.
+- Support input methods, word and line selection, clipboard and undo while
+  editing; warn before editing a digitally signed PDF.
+
+### Markups and saving
+
+- Resize Ellipses, Text Boxes, Images, Snapshots and Redactions from anywhere
+  along their edges, selected or not, as Rectangles already do.
+- Place exported Text Box lines where the canvas shows them.
+- Keep owner-password protection and its permissions when saving such a PDF.
+- Explain quit and close recovery problems in plain language.
+
+### Window and tabs
+
+- Show an update button only when a downloaded update is ready, with Restart
+  to update and release notes in its popup.
+- Mark unsaved tabs with an asterisk in a small circle and keep filenames in
+  place when the close button appears.
+- Group the tool rail into General, Edit, Review, Draw and Measure, with a
+  cue when more tools are scrolled out of view.
+
 ## [0.1.6]
 
 ### Navigation and drawing

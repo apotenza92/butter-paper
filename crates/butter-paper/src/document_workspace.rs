@@ -2,6 +2,8 @@
 mod alerts;
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
+#[path = "document_workspace_page_text.rs"]
+mod page_text;
 #[path = "document_workspace_recovery_notifications.rs"]
 mod recovery_notifications;
 #[path = "space_pan.rs"]
@@ -10,6 +12,7 @@ mod space_pan;
 mod thumbnail_sidebar;
 #[path = "document_workspace_viewport.rs"]
 mod viewport;
+use page_text::{PageTextDocumentState, PageTextEditing, PageTextHover, PageTextOverlay};
 use thumbnail_sidebar::ThumbnailSidebarInputs;
 #[path = "document_workspace_empty.rs"]
 mod empty;
@@ -248,6 +251,7 @@ gpui::actions!(
         SelectHighlightTool,
         SelectImageTool,
         SelectSnapshotTool,
+        SelectEditTextTool,
         SelectLengthTool,
         FinishVertexPath
     ]
@@ -255,7 +259,7 @@ gpui::actions!(
 
 const DOCUMENT_WORKSPACE_CONTEXT: &str = "DocumentWorkspace";
 // Tool letters must reach focused text fields rather than matching their workspace ancestor.
-const DOCUMENT_TOOL_SHORTCUT_CONTEXT: &str = "DocumentWorkspace && !Input";
+const DOCUMENT_TOOL_SHORTCUT_CONTEXT: &str = "DocumentWorkspace && !Input && !PageTextEditor";
 
 pub fn init_document_workspace_actions(cx: &mut App) {
     // Tool shortcuts change the pointer's meaning even while it is stationary.
@@ -388,6 +392,11 @@ pub fn init_document_workspace_actions(cx: &mut App) {
             SelectLengthTool,
             Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
+        KeyBinding::new(
+            "shift-t",
+            SelectEditTextTool,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-a", SelectAll, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -417,6 +426,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         KeyBinding::new("enter", FinishVertexPath, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("escape", Escape, Some(DOCUMENT_WORKSPACE_CONTEXT)),
     ]);
+    crate::page_text_editor::init_page_text_editor_actions(cx);
 }
 
 pub fn register_document_workspace_global_actions(
@@ -511,6 +521,12 @@ pub const DOCUMENT_CALLOUT_TOOL_ID: &str = "tool-callout";
 pub const DOCUMENT_REDACT_TOOL_ID: &str = "tool-redact";
 pub const DOCUMENT_REDACT_PENDING_ALERT_ID: &str = "document-workspace-redact-pending-alert";
 pub const DOCUMENT_TOOLBAR_SCROLL_ID: &str = "document-workspace-toolbar-scroll";
+pub const DOCUMENT_SIGNED_TEXT_EDIT_DIALOG_ID: &str = "document-workspace-signed-text-edit";
+pub const DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID: &str =
+    "document-workspace-signed-text-edit-confirm";
+pub const DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID: &str = "document-workspace-signed-text-edit-cancel";
+/// The Open and New actions above the tool rail.
+pub const DOCUMENT_WORKSPACE_TAB_ACTIONS_ID: &str = "document-workspace-tab-actions";
 pub const DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID: &str =
     "document-workspace-right-rail-resize-handle";
 pub const DOCUMENT_TOOLBAR_CONTENT_ID: &str = "document-workspace-toolbar-content";
@@ -586,6 +602,7 @@ pub const DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID: &str =
     "document-workspace-text-box-commit-error-alert";
 pub const DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID: &str = "document-workspace-text-box-return-focus";
 pub const DOCUMENT_SELECT_TOOL_ID: &str = "document-workspace-select-tool";
+pub const DOCUMENT_EDIT_TEXT_TOOL_ID: &str = "document-workspace-edit-text-tool";
 pub const DOCUMENT_ANNOTATION_UNDO_ID: &str = "document-workspace-annotation-undo";
 pub const DOCUMENT_ANNOTATION_REDO_ID: &str = "document-workspace-annotation-redo";
 pub const DOCUMENT_ANNOTATION_DELETE_ID: &str = "document-workspace-annotation-delete";
@@ -676,7 +693,7 @@ pub fn document_viewport_cursor_style(
         }
     } else if tool.uses_crosshair() {
         CursorStyle::Crosshair
-    } else if tool == AnnotationTool::Select {
+    } else if matches!(tool, AnnotationTool::Select | AnnotationTool::EditText) {
         select_hover_cursor.unwrap_or(CursorStyle::Arrow)
     } else {
         CursorStyle::Arrow
@@ -1229,6 +1246,10 @@ impl PdfDocumentSaver {
             (None, None) => PdfPersistenceSession::open(&request.source_path),
         }
         .map_err(|error| error.to_string())?;
+        // Page text first: edits name lines of the unchanged source.
+        persistence
+            .apply_page_text_edits(&request.annotations.page_text_edits)
+            .map_err(|error| format!("could not save edited page text: {error}"))?;
         let deleted_snapshot_ids = persistence
             .snapshots()
             .iter()
@@ -1821,6 +1842,19 @@ impl PdfDocumentSaver {
                 .any(|actual| actual == expected)
         }) {
             return Err("saved PDF page rotations failed independent reopen validation".into());
+        }
+        for edit in &request.annotations.page_text_edits {
+            let text = edit.text();
+            let saved = reopened
+                .page_text(edit.page_index)
+                .map_err(|error| error.to_string())?
+                .line(&edit.anchor)
+                .map(|line| line.text.clone());
+            if saved.as_deref() != Some(text.as_str()) {
+                return Err(format!(
+                    "saved PDF page text failed independent reopen validation: expected {text:?}, reopened {saved:?}"
+                ));
+            }
         }
         if !request.annotations.annotation_order.is_empty()
             && reopened.annotation_order() != request.annotations.annotation_order
@@ -2466,6 +2500,7 @@ enum ActiveInspectorKind {
     TextBox,
     Measurement,
     Dimension,
+    EditText,
 }
 
 struct ActiveInspector {
@@ -2530,7 +2565,6 @@ pub struct DocumentWorkspace {
     session_tab_reveal: Option<DocumentId>,
     session_tab_last_active: Option<DocumentId>,
     session_tab_hovered: Option<DocumentId>,
-    session_tab_label_offsets: HashMap<DocumentId, Rc<Cell<Pixels>>>,
     hovered_annotation: Option<(DocumentId, u32, MarkupId)>,
     hot_annotation_handle: Option<(DocumentId, u32, MarkupId, usize)>,
     select_hover_hit: Option<(DocumentId, u32, HitTarget)>,
@@ -2555,6 +2589,8 @@ pub struct DocumentWorkspace {
     right_rail_columns: usize,
     right_rail_resizable: Entity<ResizableState>,
     right_rail_scroll: ScrollHandle,
+    /// The rail overflow cue under the pointer, which names what it does.
+    right_rail_overflow_hover: Option<RailOverflowEdge>,
     pan_tool_active: bool,
     pan_drag: Option<(DocumentId, Point<Pixels>, Point<Pixels>)>,
     space_pan_hold: space_pan::SpacePanHold,
@@ -2569,6 +2605,21 @@ pub struct DocumentWorkspace {
     text_box_return_focus: FocusHandle,
     pending_text_box_editor: Option<PendingTextBoxEditor>,
     pending_text_box_subscriptions: Vec<Subscription>,
+    /// Edit Text: each document's page text and rendered edits, the line
+    /// being edited, its input and the line under the pointer.
+    page_text: HashMap<DocumentId, PageTextDocumentState>,
+    page_text_input: Option<(Entity<crate::page_text_editor::PageTextInput>, Subscription)>,
+    page_text_editing: Option<PageTextEditing>,
+    page_text_hover: Option<PageTextHover>,
+    /// Signed documents whose text the user chose to edit anyway.
+    page_text_signed_confirmed: HashSet<DocumentId>,
+    /// Text properties of the paragraph being edited, and whether they show
+    /// (closing them hides them until another paragraph is edited).
+    edit_text_property_inspector: Option<(
+        Entity<crate::edit_text_property_inspector::EditTextPropertyInspector>,
+        Subscription,
+    )>,
+    edit_text_property_inspector_open: bool,
     text_box_commit_error: Option<String>,
     annotation_statuses: HashMap<DocumentId, String>,
     last_file_error: Option<String>,
@@ -3957,7 +4008,11 @@ impl DocumentWorkspace {
     }
 
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let template_control = cx.new(TemplateSplitControl::new);
+        let template_control = cx.new(|cx| {
+            let mut control = TemplateSplitControl::new(cx);
+            control.set_segment_width(tabs::template_segment_width(DEFAULT_RIGHT_RAIL_COLUMNS), cx);
+            control
+        });
         let template_subscription = cx.subscribe(
             &template_control,
             |workspace, _, event: &TemplateSplitEvent, cx| {
@@ -4049,7 +4104,6 @@ impl DocumentWorkspace {
             session_tab_reveal: None,
             session_tab_last_active: None,
             session_tab_hovered: None,
-            session_tab_label_offsets: HashMap::new(),
             hovered_annotation: None,
             hot_annotation_handle: None,
             select_hover_hit: None,
@@ -4071,9 +4125,10 @@ impl DocumentWorkspace {
             semantic_snap_input_subscriptions: Vec::new(),
             toolbar_scroll: ScrollHandle::new(),
             right_rail_actions_open: false,
-            right_rail_columns: 2,
+            right_rail_columns: DEFAULT_RIGHT_RAIL_COLUMNS,
             right_rail_resizable: cx.new(|_| ResizableState::default()),
             right_rail_scroll: ScrollHandle::new(),
+            right_rail_overflow_hover: None,
             pan_tool_active: false,
             pan_drag: None,
             space_pan_hold: space_pan::SpacePanHold::default(),
@@ -4083,6 +4138,13 @@ impl DocumentWorkspace {
             text_box_return_focus: cx.focus_handle(),
             pending_text_box_editor: None,
             pending_text_box_subscriptions: Vec::new(),
+            page_text: HashMap::new(),
+            page_text_input: None,
+            page_text_editing: None,
+            page_text_hover: None,
+            page_text_signed_confirmed: HashSet::new(),
+            edit_text_property_inspector: None,
+            edit_text_property_inspector_open: true,
             text_box_commit_error: None,
             annotation_statuses: HashMap::new(),
             last_file_error: None,
@@ -4495,7 +4557,8 @@ impl DocumentWorkspace {
                 return;
             };
             let open = background.spawn(async move {
-                let result = opener.open(&request);
+                let edits = recovered_page_text_edits(&recovered.timeline);
+                let result = opener.open_with_text_edits(&request, &edits);
                 (request, recovered, result)
             });
             let (request, recovered, result) = open.await;
@@ -4760,7 +4823,8 @@ impl DocumentWorkspace {
                 return;
             };
             let open = background.spawn(async move {
-                let result = opener.open(&request);
+                let edits = recovered_page_text_edits(&recovered.timeline);
+                let result = opener.open_with_text_edits(&request, &edits);
                 (request, recovered, result)
             });
             let (request, recovered, result) = open.await;
@@ -5711,7 +5775,6 @@ impl DocumentWorkspace {
         if self.session_tab_hovered == Some(document_id) {
             self.session_tab_hovered = None;
         }
-        self.session_tab_label_offsets.remove(&document_id);
         let session = self.sessions.remove(index);
         self.page_interactions
             .retain(|(owner, _), _| *owner != document_id);
@@ -12185,16 +12248,48 @@ impl DocumentWorkspace {
         retry: bool,
         cx: &mut Context<Self>,
     ) {
+        self.request_thumbnail_render(document_id, page_index, retry, false, cx);
+    }
+
+    /// Renders a page's thumbnail again after its content changed, keeping
+    /// the current one until the new one arrives.
+    pub(super) fn refresh_page_thumbnail(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        session.update(cx, |state, _| {
+            *state
+                .thumbnail_content_revisions
+                .entry(page_index)
+                .or_default() += 1;
+        });
+        self.request_thumbnail_render(document_id, page_index, false, true, cx);
+    }
+
+    fn request_thumbnail_render(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        retry: bool,
+        replace: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return;
         };
         let request = {
             let state = session.read(cx);
             if state.pending_rotation_generation.is_some()
-                || state
-                    .thumbnails
-                    .iter()
-                    .any(|thumbnail| thumbnail.page_index == page_index)
+                || (!replace
+                    && state
+                        .thumbnails
+                        .iter()
+                        .any(|thumbnail| thumbnail.page_index == page_index))
             {
                 return;
             }
@@ -12210,12 +12305,18 @@ impl DocumentWorkspace {
                 .document_page_rotation(document_id.value(), page_index)
                 .unwrap_or(source_rotation);
             let epoch = state.resource_epoch;
+            let content = state
+                .thumbnail_content_revisions
+                .get(&page_index)
+                .copied()
+                .unwrap_or_default();
             if state
                 .thumbnail_requests
                 .get(&page_index)
                 .is_some_and(|request| {
                     request.epoch == epoch
                         && request.rotation == rotation
+                        && request.content == content
                         && (request.error.is_none() || !retry)
                 })
             {
@@ -12224,15 +12325,16 @@ impl DocumentWorkspace {
             let Some(resource) = state.resource.clone() else {
                 return;
             };
-            (resource, epoch, source_rotation, rotation)
+            (resource, epoch, source_rotation, rotation, content)
         };
-        let (resource, epoch, source_rotation, rotation) = request;
+        let (resource, epoch, source_rotation, rotation, content) = request;
         session.update(cx, |state, cx| {
             state.thumbnail_requests.insert(
                 page_index,
                 crate::document_session::ThumbnailRequestState {
                     epoch,
                     rotation,
+                    content,
                     error: None,
                 },
             );
@@ -12265,7 +12367,9 @@ impl DocumentWorkspace {
                             .thumbnail_requests
                             .get(&page_index)
                             .is_some_and(|request| {
-                                request.epoch == epoch && request.rotation == rotation
+                                request.epoch == epoch
+                                    && request.rotation == rotation
+                                    && request.content == content
                             })
                 };
                 if !current {
@@ -12760,6 +12864,12 @@ impl DocumentWorkspace {
             .is_some_and(|editor| editor.document_id == document_id)
         {
             self.commit_pending_text_box(cx)?;
+        }
+        if self
+            .page_text_editing
+            .is_some_and(|editing| editing.document_id == document_id)
+        {
+            self.commit_page_text_editing(cx);
         }
         let Some(session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
@@ -16294,6 +16404,15 @@ impl DocumentWorkspace {
         self.select_available_annotation_tool(AnnotationTool::Snapshot, window, cx);
     }
 
+    fn select_edit_text_tool_from_action(
+        &mut self,
+        _: &SelectEditTextTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_available_annotation_tool(AnnotationTool::EditText, window, cx);
+    }
+
     fn select_all_annotations_from_action(
         &mut self,
         _: &SelectAll,
@@ -16735,6 +16854,16 @@ impl DocumentWorkspace {
             return false;
         }
         let tool = session.read(cx).annotations.tool();
+        if tool == AnnotationTool::EditText {
+            return self.begin_page_text_press(
+                interaction,
+                point,
+                click_count,
+                modifiers,
+                window,
+                cx,
+            );
+        }
         if matches!(tool, AnnotationTool::Polylength | AnnotationTool::Area)
             && click_count >= 2
             && session
@@ -17651,6 +17780,9 @@ impl DocumentWorkspace {
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
             return self.clear_hover_candidate(cx);
         };
+        if session.read(cx).annotations.tool() == AnnotationTool::EditText {
+            return self.update_page_text_hover(interaction, point, cx);
+        }
         let length_pending = session
             .read(cx)
             .annotations
@@ -17904,10 +18036,12 @@ impl DocumentWorkspace {
         let hot_handle = self.hot_annotation_handle.take();
         let select_hit = self.select_hover_hit.take();
         let image_hover = self.pending_image_hover.take();
+        let page_text_hover = self.page_text_hover.take();
         if hovered.is_some()
             || hot_handle.is_some()
             || select_hit.is_some()
             || image_hover.is_some()
+            || page_text_hover.is_some()
         {
             cx.notify();
             true
@@ -17935,6 +18069,9 @@ impl DocumentWorkspace {
             }
             self.pan_drag = None;
             return false;
+        }
+        if self.update_page_text_drag(position, cx) {
+            return true;
         }
         let Some(active) = self.active_annotation_pointer else {
             return false;
@@ -17988,6 +18125,9 @@ impl DocumentWorkspace {
         if self.pan_drag.is_some() {
             self.update_annotation_pointer(position, modifiers, cx);
             self.pan_drag = None;
+            return true;
+        }
+        if self.finish_page_text_drag(cx) {
             return true;
         }
         let Some(active) = self.active_annotation_pointer.take() else {
@@ -18224,6 +18364,12 @@ impl DocumentWorkspace {
             cx.notify();
             return CloseRequestDisposition::ConfirmationRequired;
         }
+        if self
+            .page_text_editing
+            .is_some_and(|editing| editing.document_id == document_id)
+        {
+            self.commit_page_text_editing(cx);
+        }
         let Some(session) = self.session(document_id, cx) else {
             return CloseRequestDisposition::NotFound;
         };
@@ -18259,6 +18405,7 @@ impl DocumentWorkspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.commit_page_text_editing(cx);
         if self.pending_text_box_editor.is_some()
             && let Err(error) = self.commit_pending_text_box(cx)
         {
@@ -22424,28 +22571,45 @@ enum RailOverflowEdge {
 
 pub const RAIL_OVERFLOW_TOOLTIP: &str = "Scroll to see other tools";
 
-/// Whether the rail can scroll up and down from its current offset.
+/// Whether the rail can scroll up and down from its current offset. A wheel
+/// event moves the offset before the next layout clamps it, so clamp here:
+/// a rail with nothing to scroll never shows a cue.
 fn rail_overflow(scroll: &ScrollHandle) -> (bool, bool) {
-    let offset = -f32::from(scroll.offset().y);
-    let max = f32::from(scroll.max_offset().y);
+    let max = f32::from(scroll.max_offset().y).max(0.);
+    let offset = (-f32::from(scroll.offset().y)).clamp(0., max);
     (offset > 0.5, max - offset > 0.5)
 }
 
 /// Electron-style overflow cue: a fade into the rail background with an
-/// ellipsis marker. Wheel over the marker scrolls the rail.
+/// ellipsis marker. The cue covers the tools faded under it, so they take no
+/// hover or clicks; hovering it names what it does beside the marker, and the
+/// wheel over it scrolls the rail.
 fn rail_overflow_hint(
     edge: RailOverflowEdge,
     scroll: ScrollHandle,
-    owner: WeakEntity<DocumentWorkspace>,
-    cx: &App,
+    hovered: bool,
+    window: &mut Window,
+    cx: &mut Context<DocumentWorkspace>,
 ) -> gpui::AnyElement {
     let background = cx.theme().background;
     let transparent = background.opacity(0.);
-    let (angle, id) = match edge {
-        RailOverflowEdge::Top => (180., "document-workspace-right-rail-overflow-top"),
-        RailOverflowEdge::Bottom => (0., "document-workspace-right-rail-overflow-bottom"),
+    let (angle, id, marker_id) = match edge {
+        RailOverflowEdge::Top => (
+            180.,
+            "document-workspace-right-rail-overflow-top-cue",
+            "document-workspace-right-rail-overflow-top",
+        ),
+        RailOverflowEdge::Bottom => (
+            0.,
+            "document-workspace-right-rail-overflow-bottom-cue",
+            "document-workspace-right-rail-overflow-bottom",
+        ),
     };
+    let label = hovered
+        .then(|| gpui_component::tooltip::Tooltip::new(RAIL_OVERFLOW_TOOLTIP).build(window, cx));
     gpui::div()
+        .id(id)
+        .debug_selector(move || id.into())
         .absolute()
         .left_0()
         .right_0()
@@ -22458,42 +22622,82 @@ fn rail_overflow_hint(
         .h(px(56.))
         .flex()
         .justify_center()
+        .occlude()
         .bg(gpui::linear_gradient(
             angle,
             gpui::linear_color_stop(background, 0.72),
             gpui::linear_color_stop(transparent, 1.),
         ))
+        .on_hover(cx.listener(move |workspace, hovered: &bool, _, cx| {
+            let hover = hovered.then_some(edge);
+            if *hovered || workspace.right_rail_overflow_hover == Some(edge) {
+                workspace.right_rail_overflow_hover = hover;
+                cx.notify();
+            }
+        }))
+        .on_scroll_wheel(cx.listener(move |_, event: &ScrollWheelEvent, _, cx| {
+            let delta = event.delta.pixel_delta(px(16.));
+            let offset = scroll.offset();
+            let max = scroll.max_offset();
+            scroll.set_offset(gpui::point(
+                offset.x,
+                (offset.y + delta.y).clamp(-max.y, px(0.)),
+            ));
+            cx.notify();
+            cx.stop_propagation();
+        }))
         .child(
             gpui::div()
-                .id(id)
-                .debug_selector(move || id.into())
+                .id(marker_id)
+                .debug_selector(move || marker_id.into())
+                .relative()
                 .size_8()
                 .flex()
                 .items_center()
                 .justify_center()
                 .text_color(cx.theme().muted_foreground)
-                .tooltip(|window, cx| {
-                    gpui_component::tooltip::Tooltip::new(RAIL_OVERFLOW_TOOLTIP).build(window, cx)
-                })
-                .on_scroll_wheel(move |event: &ScrollWheelEvent, _, cx| {
-                    let delta = event.delta.pixel_delta(px(16.));
-                    let offset = scroll.offset();
-                    let max = scroll.max_offset();
-                    scroll.set_offset(gpui::point(
-                        offset.x,
-                        (offset.y + delta.y).clamp(-max.y, px(0.)),
-                    ));
-                    let _ = owner.update(cx, |_, cx| cx.notify());
-                    cx.stop_propagation();
-                })
                 .child(
                     gpui_component::Icon::default()
                         .path("icons/rail/ellipsis.svg")
                         .size_5(),
-                ),
+                )
+                .when_some(label, |marker, label| {
+                    // Beside the marker, centred on it, rather than at the
+                    // pointer like a stock tooltip.
+                    marker.child(
+                        gpui::div()
+                            .absolute()
+                            .left_0()
+                            .top_1_2()
+                            .child(gpui::deferred(
+                                gpui::anchored()
+                                    .anchor(Anchor::RightCenter)
+                                    .offset(point(px(-4.), px(0.)))
+                                    .child(
+                                        gpui::div()
+                                            .id("document-workspace-right-rail-overflow-label")
+                                            .debug_selector(|| {
+                                                "document-workspace-right-rail-overflow-label"
+                                                    .into()
+                                            })
+                                            .child(label),
+                                    ),
+                            )),
+                    )
+                }),
         )
         .into_any_element()
 }
+
+/// The page-text edits of a recovered session's current state, so its
+/// document opens with them shown.
+fn recovered_page_text_edits(timeline: &[u8]) -> Vec<crate::pdf_text_edit::PageTextEdit> {
+    crate::annotation_model::AnnotationDocument::hydrate_recovery_timeline(timeline)
+        .map(|document| document.page_text_edits().to_vec())
+        .unwrap_or_default()
+}
+
+const DEFAULT_RIGHT_RAIL_COLUMNS: usize = 2;
 
 fn right_rail_width(columns: usize, rem: Pixels) -> Pixels {
     rem * (0.25 + 2.5 * columns.clamp(1, 8) as f32)
@@ -23218,6 +23422,29 @@ fn annotation_tool_group(
             cx,
         ))
         .child(rail_tool_section(
+            "Edit",
+            vec![
+                rail_tool_button(DOCUMENT_EDIT_TEXT_TOOL_ID, "Edit Text", "text-cursor-input")
+                    .disabled(save_busy)
+                    .tooltip(AnnotationTool::EditText.tooltip_label())
+                    .selected(annotation_tool == AnnotationTool::EditText && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::EditText && !pan_active)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.set_annotation_tool(
+                            document_id,
+                            AnnotationTool::EditText,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+            ],
+            columns,
+            cx,
+        ))
+        .child(rail_tool_section(
             "Review",
             vec![
                 rail_tool_button(DOCUMENT_TEXT_BOX_TOOL_ID, "Text Box", "type")
@@ -23561,61 +23788,57 @@ fn annotation_tool_group(
         .into_any_element()
 }
 
-// Measure the natural label once in layout; reveal-time truncation must not
-// change the tab width or move neighbouring controls.
-//
-// `text_offset` records where the centred label starts at rest. On reveal the
-// label keeps that start and truncates against the close lane, so the text
-// never re-centres into the narrower space beside the close button.
+// Keep a natural-width sizing row independent of the close-button reveal.
+// Both visible states share one leading anchor; only the trailing clip changes.
 fn session_tab_overlay_label(
     label: String,
     group: String,
     revealed: bool,
-    text_offset: Rc<Cell<Pixels>>,
+    dirty: bool,
+    cx: &App,
 ) -> impl IntoElement {
-    let measured_label = SharedString::from(label.clone());
-    let measured_offset = text_offset.clone();
-    // Shapes the label with the tab's inherited text style during prepaint and
-    // records the centred start for the next reveal.
-    let measure = canvas(
-        move |bounds, window, _| {
-            let style = window.text_style();
-            let font_size = style.font_size.to_pixels(window.rem_size());
-            let run = style.to_run(measured_label.len());
-            let width = window
-                .text_system()
-                .shape_line(measured_label.clone(), font_size, &[run], None)
-                .width;
-            measured_offset.set(((bounds.size.width - width) / 2.).max(px(0.)));
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .inset_0();
-    // Fill the tab (tabs have a minimum width) so revealing the close button
-    // narrows the label rather than collapsing a short title to an ellipsis.
+    let indicator = |id: String| {
+        h_flex()
+            .id(id.clone())
+            .debug_selector(move || id.clone())
+            .flex_none()
+            .size_4()
+            .justify_center()
+            .rounded_full()
+            .bg(cx.theme().muted)
+            .text_color(cx.theme().foreground)
+            .tooltip(|window, cx| {
+                gpui_component::tooltip::Tooltip::new("Unsaved changes").build(window, cx)
+            })
+            .child(gpui_component::Icon::new(IconName::Asterisk).size_3())
+    };
     gpui::div()
         .relative()
         .flex_1()
         .min_w_0()
         .child(
-            gpui::div()
-                .whitespace_nowrap()
-                .text_ellipsis()
+            h_flex()
+                .gap_1()
                 .opacity(0.)
-                .child(label.clone()),
-        )
-        .child(measure)
-        .child(
-            gpui::div()
-                .absolute()
-                .inset_0()
-                .when(revealed, |this| this.pl(text_offset.get()).pr_6())
+                .children(dirty.then(|| gpui::div().flex_none().size_4()))
                 .child(
                     gpui::div()
-                        .w_full()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(label.clone()),
+                ),
+        )
+        .child(
+            h_flex()
+                .absolute()
+                .inset_0()
+                .gap_1()
+                .when(revealed, |this| this.pr_6())
+                .children(dirty.then(|| indicator(format!("{group}-unsaved-indicator"))))
+                .child(
+                    gpui::div()
+                        .flex_1()
                         .min_w_0()
-                        .when(!revealed, |this| this.text_center())
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .debug_selector(move || format!("{group}-visible-label"))
@@ -23652,6 +23875,11 @@ impl Render for DocumentWorkspace {
             self.pending_image_hover = None;
             self.session_tab_last_active = self.active_document_id;
             self.session_tab_reveal = self.active_document_id;
+        }
+        self.reconcile_page_text_editing(cx);
+        if let Some(document_id) = self.active_document_id {
+            self.sync_page_text_edits(document_id, cx);
+            self.prefetch_page_text(document_id, cx);
         }
         // An existing Text Box editor follows its page's latest painted
         // geometry, recorded before this frame repaints the pages.
@@ -24236,6 +24464,20 @@ impl Render for DocumentWorkspace {
             .filter(|active| active.document_id == document_id)
             .and(self.gesture_cursor)
             .or(select_hover_cursor);
+        let select_hover_cursor = if annotation_tool == AnnotationTool::EditText {
+            self.page_text_cursor(document_id)
+        } else {
+            select_hover_cursor
+        };
+        let page_text_overlays = if annotation_tool == AnnotationTool::EditText
+            || self
+                .page_text_editing
+                .is_some_and(|editing| editing.document_id == document_id)
+        {
+            self.page_text_overlays(document_id, cx)
+        } else {
+            Vec::new()
+        };
         let viewport_cursor_style = document_viewport_cursor_style(
             annotation_tool,
             self.pan_tool_active || self.middle_pan_active(),
@@ -24907,8 +25149,18 @@ impl Render for DocumentWorkspace {
         let inspector_range = window.rem_size() * 13.75..window.rem_size() * 26.25;
         let inline_selection =
             self.right_rail_actions_open && annotation_tool == AnnotationTool::Select;
-        let active_inspector = if (inline_selection
-            || self.rectangular_shape_property_inspector_open)
+        let edit_text_properties =
+            annotation_tool == AnnotationTool::EditText && self.edit_text_properties_visible(cx);
+        if edit_text_properties {
+            self.sync_edit_text_property_inspector(window, cx);
+        }
+        let active_inspector = if edit_text_properties {
+            Some(ActiveInspector {
+                kind: ActiveInspectorKind::EditText,
+                initial_width: inspector_width,
+                width_range: inspector_range.clone(),
+            })
+        } else if (inline_selection || self.rectangular_shape_property_inspector_open)
             && (selected_rectangle.is_some() || selected_ellipse.is_some())
         {
             Some(ActiveInspector {
@@ -25051,6 +25303,10 @@ impl Render for DocumentWorkspace {
                     .expect("the ensured Dimension inspector must be retained")
                     .clone(),
             ),
+            Some(ActiveInspectorKind::EditText) => active_inspector_shell().child(
+                self.edit_text_property_inspector()
+                    .expect("the synced Edit Text inspector must be retained"),
+            ),
             None => active_inspector_shell(),
         }
         .when_some(inspector_kind, |shell, kind| {
@@ -25094,6 +25350,10 @@ impl Render for DocumentWorkspace {
                             }
                             ActiveInspectorKind::Dimension => {
                                 workspace.set_dimension_property_inspector_open(false, window, cx);
+                            }
+                            ActiveInspectorKind::EditText => {
+                                workspace.edit_text_property_inspector_open = false;
+                                cx.notify();
                             }
                         }
                     })),
@@ -25437,6 +25697,31 @@ impl Render for DocumentWorkspace {
             .min_h_0()
             .child(supporting_actions);
         let right_rail_overflow = rail_overflow(&self.right_rail_scroll);
+        if self
+            .right_rail_overflow_hover
+            .is_some_and(|edge| match edge {
+                RailOverflowEdge::Top => !right_rail_overflow.0,
+                RailOverflowEdge::Bottom => !right_rail_overflow.1,
+            })
+        {
+            self.right_rail_overflow_hover = None;
+        }
+        let right_rail_cues = [
+            (RailOverflowEdge::Top, right_rail_overflow.0),
+            (RailOverflowEdge::Bottom, right_rail_overflow.1),
+        ]
+        .into_iter()
+        .filter(|(_, shown)| *shown)
+        .map(|(edge, _)| {
+            rail_overflow_hint(
+                edge,
+                self.right_rail_scroll.clone(),
+                self.right_rail_overflow_hover == Some(edge),
+                window,
+                cx,
+            )
+        })
+        .collect::<Vec<_>>();
         let right_rail = v_flex()
             .id("document-workspace-right-rail")
             .debug_selector(|| "document-workspace-right-rail".into())
@@ -25517,22 +25802,7 @@ impl Render for DocumentWorkspace {
                             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
                             .child(tool_group),
                     )
-                    .when(right_rail_overflow.0, |rail| {
-                        rail.child(rail_overflow_hint(
-                            RailOverflowEdge::Top,
-                            self.right_rail_scroll.clone(),
-                            cx.entity().downgrade(),
-                            cx,
-                        ))
-                    })
-                    .when(right_rail_overflow.1, |rail| {
-                        rail.child(rail_overflow_hint(
-                            RailOverflowEdge::Bottom,
-                            self.right_rail_scroll.clone(),
-                            cx.entity().downgrade(),
-                            cx,
-                        ))
-                    }),
+                    .children(right_rail_cues),
             );
         let properties_resizable = window.use_keyed_state(
             (
@@ -25565,6 +25835,7 @@ impl Render for DocumentWorkspace {
                 object_snap_tracking_result,
                 pending_image_preview,
                 pending_text_box_presentation,
+                page_text_overlays,
                 relationship_snap_guides,
                 selection_color,
                 semantic_snap_decision,

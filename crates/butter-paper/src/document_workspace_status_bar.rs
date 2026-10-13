@@ -18,6 +18,9 @@ impl DocumentWorkspace {
         } else if let Some(tool) = tool {
             let help = match tool {
                 AnnotationTool::Select => "Click to select · Drag empty space to select several",
+                AnnotationTool::EditText => {
+                    "Click text to edit it · Drag to select · Esc or click away to finish"
+                }
                 AnnotationTool::Polyline
                 | AnnotationTool::Polygon
                 | AnnotationTool::Polylength
@@ -53,7 +56,7 @@ impl DocumentWorkspace {
         };
         let wide = window.viewport_size().width >= window.rem_size() * 65.;
         let navigation = if wide {
-            "Hold Space + drag: pan · Two fingers: scroll · Pinch / Ctrl + trackpad scroll: zoom"
+            "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Ctrl while scrolling to zoom"
         } else {
             "Space + drag: pan · Pinch: zoom"
         };

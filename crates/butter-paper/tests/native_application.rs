@@ -879,7 +879,7 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
                 "exit must restore full label"
             );
         }
-        // A short centred title must keep its start when the close button
+        // A short title must keep its leading anchor when the close button
         // appears: the label truncates in place rather than re-centring.
         let tab_id: &'static str = Box::leak(document_session_tab_id(short).into_boxed_str());
         let label_id: &'static str = Box::leak(format!("{tab_id}-visible-label").into_boxed_str());
@@ -888,9 +888,10 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
         cx.simulate_mouse_move(short_centre, None, gpui::Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let revealed = cx.debug_bounds(label_id).unwrap();
-        assert!(
-            revealed.left() > rest.left(),
-            "short label must keep its centred start on reveal: rest={rest:?}, revealed={revealed:?}"
+        assert_eq!(
+            revealed.left(),
+            rest.left(),
+            "short label must not shift on reveal"
         );
         assert!(
             revealed.right() < rest.right(),
@@ -1697,7 +1698,7 @@ fn workspace_right_rail_replaces_horizontal_tools_and_keeps_canvas_band_between_
         .expect("right rail");
     let left = cx.debug_bounds("document-left-rail").unwrap();
     let toolbar = cx.debug_bounds("viewer-toolbar").unwrap();
-    assert_eq!(rail.size.width, px(84.));
+    assert_eq!(rail.size.width, px(84.), "two tool columns by default");
     assert_eq!(rail.top(), left.top(), "both rails meet the tab band");
     assert_eq!(
         rail.top(),
@@ -1922,6 +1923,22 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
             cx.debug_bounds("viewer-toolbar").unwrap().right(),
             resized.left()
         );
+        // From three columns, Open and New sit over the rail's last three
+        // columns and the tab strip's divider continues the rail's edge.
+        let tab_actions =
+            cx.debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID);
+        if expected_width >= 124. {
+            let tab_actions = tab_actions.expect("actions over a wide rail");
+            assert_eq!(
+                (tab_actions.left(), tab_actions.right()),
+                (resized.left(), resized.right())
+            );
+            let open = cx.debug_bounds("document-tab-open").unwrap();
+            let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
+            assert!(open.left() > resized.left() && picker.right() < resized.right());
+        } else {
+            assert!(tab_actions.is_none());
+        }
         let select = cx.debug_bounds("document-workspace-select-tool").unwrap();
         let hand = cx.debug_bounds("document-workspace-pan-tool").unwrap();
         let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
@@ -1942,6 +1959,15 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
                 (select.left() + hand.right()) / 2.,
                 resized.center().x + px(0.5)
             );
+            // Edit Text has its own section between General and Review.
+            let edit_text = cx
+                .debug_bounds("document-workspace-edit-text-tool")
+                .unwrap();
+            let text_box = cx
+                .debug_bounds(butter_paper::document_workspace::DOCUMENT_TEXT_BOX_TOOL_ID)
+                .unwrap();
+            assert!(edit_text.top() > hand.bottom() && edit_text.bottom() < text_box.top());
+            assert_eq!(edit_text.center().x, resized.center().x + px(0.5));
         }
     }
     let document_id =
@@ -2704,10 +2730,15 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
             });
             cx.run_until_parked();
         }
-        for (status, increments) in [
-            (UpdateMenuStatus::Available(version), (1, 0, 0)),
-            (UpdateMenuStatus::Downloading, (0, 0, 0)),
-            (UpdateMenuStatus::Ready(version), (0, 0, 1)),
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            cx.debug_bounds("document-status-bar").is_some(),
+            has_document
+        );
+        for status in [
+            UpdateMenuStatus::Available(version),
+            UpdateMenuStatus::Downloading,
+            UpdateMenuStatus::Ready(version),
         ] {
             cx.update(|_, cx| {
                 cx.set_global(ApplicationUpdatePresentation {
@@ -2719,11 +2750,33 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
                 })
             });
             cx.update(|window, cx| window.draw(cx).clear(cx));
-            let update = cx
-                .debug_bounds("application-update-button")
-                .expect("production update affordance");
+            let update = cx.debug_bounds("application-update-button");
+            if !matches!(status, UpdateMenuStatus::Ready(_)) {
+                assert!(update.is_none());
+                assert!(cx.debug_bounds("application-update-lane").is_none());
+                continue;
+            }
+            let update = update.expect("ready update affordance");
             let template = cx.debug_bounds(TEMPLATE_PICKER_ID).unwrap();
-            assert!(update.left() >= template.right());
+            let lane = cx.debug_bounds("application-update-lane").unwrap();
+            let tabs = cx
+                .debug_bounds("document-workspace-native-session-tab-bar")
+                .unwrap();
+            assert_eq!(lane.top(), tabs.top());
+            assert_eq!(lane.bottom(), tabs.bottom());
+            // In a document the update sits before Open and New, which stay
+            // over the rail; without one it follows them.
+            match cx
+                .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
+            {
+                Some(actions) => {
+                    assert!(lane.right() <= actions.left());
+                    assert!(template.left() > lane.right());
+                }
+                None => assert!(lane.left() >= template.right()),
+            }
+            assert!(update.left() > lane.left());
+            assert_eq!(update.size.height, template.size.height);
             let width = cx.update(|window, _| window.viewport_size().width);
             assert!(update.right() <= width);
             let before = (opened.get(), downloaded.get(), restarted.get());
@@ -2731,12 +2784,24 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
             cx.run_until_parked();
             assert_eq!(
                 (opened.get(), downloaded.get(), restarted.get()),
-                (
-                    before.0 + increments.0,
-                    before.1 + increments.1,
-                    before.2 + increments.2
-                )
+                before,
+                "opening the popup must not restart"
+            );
+            cx.simulate_keystrokes("down down enter");
+            cx.run_until_parked();
+            assert_eq!(
+                (opened.get(), downloaded.get(), restarted.get()),
+                (before.0, before.1, before.2 + 1)
             );
         }
+        cx.simulate_resize(gpui::size(px(800.), px(650.)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let update = cx.debug_bounds("application-update-button").unwrap();
+        assert!(update.right() <= px(800.));
+        assert_eq!(
+            update.size.height,
+            cx.debug_bounds(TEMPLATE_PICKER_ID).unwrap().size.height
+        );
+        cx.simulate_resize(gpui::size(px(1280.), px(800.)));
     }
 }

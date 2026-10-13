@@ -151,7 +151,10 @@ pub struct ApplicationCloseRecovery {
     pub document_id: String,
     pub document_name: String,
     pub title: String,
+    /// What the alert says, in plain language.
     pub message: String,
+    /// The failure as reported, which may be technical.
+    pub detail: String,
     pub primary_label: String,
     pub publication_warning_generation: Option<u64>,
 }
@@ -1102,6 +1105,8 @@ impl ApplicationCloseWorkspace {
             })
             .map(|document| document.name.clone())
             .unwrap_or_else(|| "this PDF".to_owned());
+        let reported = detail;
+        let detail = plain_failure_detail(&reported);
         let (title, message, primary_label) = match kind {
             ApplicationCloseRecoveryKind::PickerFailed => (
                 format!("Couldn’t choose a location for “{document_name}”"),
@@ -1143,6 +1148,7 @@ impl ApplicationCloseWorkspace {
             document_name,
             title,
             message,
+            detail: reported,
             primary_label: primary_label.to_owned(),
             publication_warning_generation: None,
         });
@@ -1565,6 +1571,39 @@ fn selected_path_key(token: &ApplicationCloseToken) -> String {
     )
 }
 
+/// A failure as an alert says it: a detail that is already a sentence is
+/// kept; a technical one (an internal error's debug form) gives way to its
+/// cause in plain words.
+fn plain_failure_detail(detail: &str) -> String {
+    let technical = detail.contains(['{', '}', '(', ')', ':']);
+    if !technical {
+        return detail.to_owned();
+    }
+    let lowercase = detail.to_lowercase();
+    [
+        ("notfound", "A folder it needs is missing."),
+        ("no such file", "A folder it needs is missing."),
+        (
+            "permissiondenied",
+            "Butter Paper isn’t allowed to write there.",
+        ),
+        (
+            "permission denied",
+            "Butter Paper isn’t allowed to write there.",
+        ),
+        ("storagefull", "The disk is full."),
+        ("no space left", "The disk is full."),
+        ("quotaexceeded", "The disk quota is full."),
+        ("readonlyfilesystem", "The disk is read-only."),
+        ("read-only file system", "The disk is read-only."),
+        ("timedout", "The disk took too long to respond."),
+    ]
+    .into_iter()
+    .find_map(|(marker, cause)| lowercase.contains(marker).then_some(cause))
+    .unwrap_or("Something unexpected went wrong while writing it.")
+    .to_owned()
+}
+
 #[cfg(test)]
 mod activation_click_tests {
     use super::swallow_window_activation_click;
@@ -1576,5 +1615,37 @@ mod activation_click_tests {
         assert!(!swallow_window_activation_click(true, true, px(10.)));
         assert!(!swallow_window_activation_click(true, false, px(200.)));
         assert!(!swallow_window_activation_click(false, true, px(200.)));
+    }
+}
+
+#[cfg(test)]
+mod failure_detail_tests {
+    use super::plain_failure_detail;
+
+    #[test]
+    fn technical_failures_are_told_in_plain_language() {
+        assert_eq!(
+            plain_failure_detail(
+                "session checkpoint publication failed: Operation(Io { operation: InspectRoot, kind: NotFound })"
+            ),
+            "A folder it needs is missing."
+        );
+        assert_eq!(
+            plain_failure_detail("session checkpoint directory sync failed: permission denied"),
+            "Butter Paper isn’t allowed to write there."
+        );
+        assert_eq!(
+            plain_failure_detail("Operation(Io { kind: StorageFull })"),
+            "The disk is full."
+        );
+        assert_eq!(
+            plain_failure_detail("Validation(ManifestTooLarge)"),
+            "Something unexpected went wrong while writing it."
+        );
+        // A detail that is already a sentence is kept.
+        assert_eq!(
+            plain_failure_detail("the file is open in another application"),
+            "the file is open in another application"
+        );
     }
 }

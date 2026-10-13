@@ -1,0 +1,108 @@
+name: Review
+
+# On-screen review on Linux and Windows, run by hand: the review driver
+# (`--features review-driver`) plays crates/butter-paper/tests/review/edit-text.txt
+# against a copy of a test fixture, and the captures and log are kept as
+# artifacts for a person to inspect. It asserts nothing; CI runs the tests.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: review-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build prerequisites, a virtual display and software Vulkan
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang libdbus-1-dev libfontconfig-dev libvulkan-dev \
+            libx11-dev libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config \
+            xvfb xauth imagemagick mesa-vulkan-drivers fonts-dejavu-core
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build with the review driver
+        run: cargo build --locked -p butter-paper --bins --features review-driver
+      - name: Run the Edit Text review
+        run: |
+          set -euo pipefail
+          library="$(cargo xtask pdfium)"
+          review="$PWD/target/review"
+          mkdir -p "$review"
+          cp crates/butter-paper/tests/fixtures/text-edit/libreoffice.pdf "$review/fixture.pdf"
+          export BP_NATIVE_DEVELOPMENT=1
+          export BP_GPUI_DATA_DIR="$review/profile"
+          export BP_PDFIUM_LIBRARY="$library"
+          export BP_REVIEW_SCRIPT="$PWD/crates/butter-paper/tests/review/edit-text.txt"
+          export BP_REVIEW_OUT="$review/captures"
+          export BP_REVIEW_CAPTURE_CMD='import -window root {path}'
+          # The script ends with quit; the timeout covers a hang.
+          timeout 600 xvfb-run --auto-servernum \
+            --server-args="-screen 0 1600x1100x24" \
+            target/debug/butter-paper "$review/fixture.pdf" || status=$?
+          echo "exit status ${status:-0}"
+          test -f "$review/captures/review.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: review-linux
+          path: target/review/captures
+          if-no-files-found: warn
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build with the review driver
+        run: cargo build --locked -p butter-paper --bins --features review-driver
+      - name: Run the Edit Text review
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $library = (cargo xtask pdfium | Select-Object -Last 1).Trim()
+          $review = Join-Path $PWD 'target\review'
+          New-Item -ItemType Directory -Force $review | Out-Null
+          Copy-Item crates\butter-paper\tests\fixtures\text-edit\libreoffice.pdf "$review\fixture.pdf"
+          $env:BP_NATIVE_DEVELOPMENT = '1'
+          $env:BP_GPUI_DATA_DIR = "$review\profile"
+          $env:BP_PDFIUM_LIBRARY = $library
+          $env:BP_REVIEW_SCRIPT = Join-Path $PWD 'crates\butter-paper\tests\review\edit-text.txt'
+          $env:BP_REVIEW_OUT = "$review\captures"
+          # The driver runs this with PowerShell for each shot.
+          $env:BP_REVIEW_CAPTURE_CMD = "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; " +
+            "`$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; " +
+            "`$i = New-Object System.Drawing.Bitmap `$b.Width, `$b.Height; " +
+            "[System.Drawing.Graphics]::FromImage(`$i).CopyFromScreen(`$b.Location, [System.Drawing.Point]::Empty, `$b.Size); " +
+            "`$i.Save('{path}')"
+          $app = Start-Process -FilePath target\debug\butter-paper.exe `
+            -ArgumentList "`"$review\fixture.pdf`"" -PassThru
+          # The script ends with quit; stop a hang after ten minutes.
+          if (-not $app.WaitForExit(600000)) { Stop-Process -Id $app.Id -Force }
+          if (-not (Test-Path "$review\captures\review.log")) { throw 'the review did not run' }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: review-windows
+          path: target/review/captures
+          if-no-files-found: warn

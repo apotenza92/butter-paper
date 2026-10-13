@@ -171,6 +171,7 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::select_highlight_tool_from_action))
             .on_action(cx.listener(Self::select_image_tool_from_action))
             .on_action(cx.listener(Self::select_snapshot_tool_from_action))
+            .on_action(cx.listener(Self::select_edit_text_tool_from_action))
             .on_action(cx.listener(Self::select_length_tool_from_action))
             .on_action(cx.listener(Self::select_all_annotations_from_action))
             .on_action(cx.listener(Self::copy_annotations_from_action))

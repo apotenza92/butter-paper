@@ -249,14 +249,13 @@ fn close_controls_overlay_naturally_sized_labels_without_a_reserved_suffix() {
         "fn session_tab_overlay_label",
         "impl Render for DocumentWorkspace",
     );
-    assert!(matches(
-        r"\.opacity\(0\.\)\s*\.child\(label\.clone\(\)\)",
-        label
-    ));
-    // Revealing the close button keeps the label's measured start and
+    assert!(matches(r"\.opacity\(0\.\)", label));
+    // Revealing the close button keeps the label's leading anchor and
     // truncates against the close lane instead of re-centring.
-    assert!(label.contains(".when(revealed, |this| this.pl(text_offset.get()).pr_6())"));
-    assert!(label.contains(".when(!revealed, |this| this.text_center())"));
+    assert!(label.contains(".when(revealed, |this| this.pr_6())"));
+    assert!(!label.contains(".text_center()"));
+    assert!(label.contains("IconName::Asterisk"));
+    assert!(label.contains(".rounded_full()"));
     assert!(!label.contains(".group_hover("));
 }
 

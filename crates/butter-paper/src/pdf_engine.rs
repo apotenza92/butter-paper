@@ -1657,6 +1657,48 @@ impl PdfPersistenceSession {
         &self.page_scales
     }
 
+    /// Applies edits to existing page text. Edits name lines of this
+    /// session's source document.
+    /// Whether the document has signature dictionaries (`/ByteRange` over
+    /// signed bytes), which a full-rewrite save invalidates.
+    pub fn is_digitally_signed(&self) -> bool {
+        self.document.objects.values().any(|object| {
+            object.as_dict().is_ok_and(|dictionary| {
+                dictionary
+                    .get(b"ByteRange")
+                    .is_ok_and(|range| range.as_array().is_ok())
+                    && dictionary.get(b"Contents").is_ok()
+            })
+        })
+    }
+
+    pub fn apply_page_text_edits(
+        &mut self,
+        edits: &[crate::pdf_text_edit::PageTextEdit],
+    ) -> Result<(), PdfPersistenceError> {
+        if edits.is_empty() {
+            return Ok(());
+        }
+        crate::pdf_text_edit::apply_text_edits(
+            &mut self.document,
+            edits,
+            &crate::pdf_text_edit::TextEditLimits::default(),
+        )
+        .map_err(|error| PdfPersistenceError::InvalidDocument(error.to_string()))
+    }
+
+    pub fn page_text(
+        &self,
+        page_index: u32,
+    ) -> Result<crate::pdf_text_edit::PageTextLayer, PdfPersistenceError> {
+        crate::pdf_text_edit::extract_page_text(
+            &self.document,
+            page_index,
+            &crate::pdf_text_edit::TextEditLimits::default(),
+        )
+        .map_err(|error| PdfPersistenceError::InvalidDocument(error.to_string()))
+    }
+
     pub fn page_rotations(&self) -> &BTreeMap<u32, PageRotation> {
         &self.page_rotations
     }
@@ -4016,7 +4058,7 @@ impl PdfPersistenceSession {
                 &self.changed_page_rotations,
             )?;
             prune_unreachable_objects_for_save(&mut document);
-            document.save_to(&mut *output)?;
+            write_saved_document(&mut document, &mut *output)?;
             output.flush()?;
             output.sync_all()?;
             Ok(PreparedPdfSave {
@@ -4070,7 +4112,7 @@ impl PdfPersistenceSession {
             &self.changed_page_rotations,
         )?;
         prune_unreachable_objects_for_save(&mut document);
-        document.save_to(&mut *output)?;
+        write_saved_document(&mut document, &mut *output)?;
         output.flush()?;
         output.sync_all()?;
         Ok(PreparedPdfSave {
@@ -4110,7 +4152,7 @@ impl PdfPersistenceSession {
                     &self.changed_page_rotations,
                 )?;
                 prune_unreachable_objects_for_save(&mut document);
-                document.save_to(&mut *output)?;
+                write_saved_document(&mut document, &mut *output)?;
                 output.flush()?;
                 output.sync_all()?;
                 Ok::<(), PdfPersistenceError>(())
@@ -4175,6 +4217,19 @@ fn normalize_max_id_for_save(document: &mut Document) {
         .map(|(object_number, _)| *object_number)
         .max()
         .unwrap_or(0);
+}
+
+/// Writes a saved PDF encrypted as it was opened: a file with only an owner
+/// password keeps its permissions and passwords, under the same key.
+fn write_saved_document(
+    document: &mut Document,
+    output: &mut impl std::io::Write,
+) -> Result<(), PdfPersistenceError> {
+    if let Some(state) = document.encryption_state.clone() {
+        document.encrypt(&state)?;
+    }
+    document.save_to(output)?;
+    Ok(())
 }
 
 fn prune_unreachable_objects_for_save(document: &mut Document) -> Vec<ObjectId> {
@@ -5565,6 +5620,27 @@ impl StandardTextFont {
     }
 }
 
+/// The ascent and descent in em of the font a Text Box line is written in:
+/// the embedded bundled font, else Helvetica's standard metrics.
+fn appearance_font_vertical_metrics(font_family: &str, bold: bool, italic: bool) -> (f64, f64) {
+    embedded_annotation_font_variant(font_family, bold, italic)
+        .and_then(|font| {
+            let face = ttf_parser::Face::parse(font.data(), 0).ok()?;
+            let em = f64::from(face.units_per_em());
+            Some((
+                f64::from(face.ascender()) / em,
+                -f64::from(face.descender()) / em,
+            ))
+        })
+        .unwrap_or((0.718, 0.207))
+}
+
+/// A baseline's depth below the top of its line box when the text's ascent
+/// and descent are centred in it, as GPUI lays out a line.
+fn line_box_baseline(line_height: f64, ascent: f64, descent: f64) -> f64 {
+    (line_height - ascent - descent) / 2. + ascent
+}
+
 fn text_appearance_line_bytes(line: &str) -> Vec<u8> {
     let encoding = Encoding::SimpleEncoding(b"WinAnsiEncoding");
     line.chars()
@@ -5594,6 +5670,8 @@ struct RichTextAppearanceSpan {
     shaped_index: usize,
     font_size_pt: f64,
     color: String,
+    ascent_em: f64,
+    descent_em: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -5626,6 +5704,8 @@ fn rich_text_appearance_lines(
                     })?;
                 let shaped_index = shaped.len();
                 shaped.push(line);
+                let (ascent_em, descent_em) =
+                    appearance_font_vertical_metrics(family, run.bold(), run.italic());
                 lines
                     .last_mut()
                     .expect("rich text layout always retains one line")
@@ -5634,6 +5714,8 @@ fn rich_text_appearance_lines(
                         shaped_index,
                         font_size_pt: size,
                         color: color.clone(),
+                        ascent_em,
+                        descent_em,
                     });
             }
             if index + 1 < parts.len() {
@@ -5665,7 +5747,7 @@ fn text_content_is_winansi(content: &str) -> bool {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum EmbeddedTextFont {
+pub(crate) enum EmbeddedTextFont {
     ArimoRegular,
     ArimoBold,
     ArimoItalic,
@@ -6211,13 +6293,41 @@ fn unicode_destination_hex(value: &str) -> String {
         .collect()
 }
 
+/// A TrueType program to embed: a bundled font, or a face of an installed
+/// font file (`index` within a collection).
+#[derive(Clone, Copy)]
+struct FontSource<'a> {
+    data: &'a [u8],
+    index: u32,
+    name: &'a str,
+}
+
+impl EmbeddedTextFont {
+    fn source(self) -> FontSource<'static> {
+        FontSource {
+            data: self.data(),
+            index: 0,
+            name: self.pdf_name(),
+        }
+    }
+}
+
 fn add_embedded_unicode_font(
     document: &mut Document,
     font: EmbeddedTextFont,
     requested: &BTreeSet<EmbeddedCidGlyph>,
 ) -> Result<(ObjectId, BTreeMap<EmbeddedCidGlyph, u16>), PdfPersistenceError> {
-    let data = font.data();
-    let face = ttf_parser::Face::parse(data, 0).expect("prepared Noto font must remain valid");
+    add_embedded_font_source(document, font.source(), requested)
+}
+
+fn add_embedded_font_source(
+    document: &mut Document,
+    font: FontSource<'_>,
+    requested: &BTreeSet<EmbeddedCidGlyph>,
+) -> Result<(ObjectId, BTreeMap<EmbeddedCidGlyph, u16>), PdfPersistenceError> {
+    let face = ttf_parser::Face::parse(font.data, font.index).map_err(|error| {
+        PdfPersistenceError::InvalidDocument(format!("font {}: {error}", font.name))
+    })?;
     let units_per_em = face.units_per_em();
     let existing_id = document.objects.iter().find_map(|(object_id, object)| {
         let dictionary = object.as_dict().ok()?;
@@ -6285,6 +6395,44 @@ fn add_embedded_unicode_font(
             .as_stream_mut()
             .expect("Butter Paper ToUnicode map must remain a stream")
             .set_content(unicode_to_unicode_cmap(&merged).into_bytes());
+        // The program now holds the added glyphs too.
+        let (program, name) = bundled_font_program(font, &merged)?;
+        let descriptor_id = document
+            .get_object(descendant_id)
+            .ok()
+            .and_then(|descendant| descendant.as_dict().ok())
+            .and_then(|descendant| descendant.get(b"FontDescriptor").ok())
+            .and_then(|descriptor| descriptor.as_reference().ok())
+            .expect("Butter Paper descendant font must retain its descriptor");
+        let program_id = document
+            .get_object(descriptor_id)
+            .ok()
+            .and_then(|descriptor| descriptor.as_dict().ok())
+            .and_then(|descriptor| descriptor.get(b"FontFile2").ok())
+            .and_then(|program| program.as_reference().ok())
+            .expect("Butter Paper font descriptor must retain its program");
+        let program_stream = document
+            .get_object_mut(program_id)
+            .expect("Butter Paper font program must remain present")
+            .as_stream_mut()
+            .expect("Butter Paper font program must remain a stream");
+        program_stream.dict.remove(b"Filter");
+        program_stream.dict.remove(b"DecodeParms");
+        program_stream.dict.set("Length1", program.len() as i64);
+        program_stream.set_content(program);
+        let _ = program_stream.compress();
+        for (id, key) in [
+            (existing_id, b"BaseFont".as_slice()),
+            (descendant_id, b"BaseFont".as_slice()),
+            (descriptor_id, b"FontName".as_slice()),
+        ] {
+            document
+                .get_object_mut(id)
+                .expect("Butter Paper font object must remain present")
+                .as_dict_mut()
+                .expect("Butter Paper font object must remain a dictionary")
+                .set(key, Object::Name(name.clone().into_bytes()));
+        }
         return Ok((existing_id, reverse));
     }
     let merged = requested
@@ -6306,13 +6454,13 @@ fn add_embedded_unicode_font(
         .map(|(cid, glyph)| (glyph.clone(), *cid))
         .collect::<BTreeMap<_, _>>();
     let bbox = face.global_bounding_box();
-    let font_file_id = document.add_object(Stream::new(
-        dictionary! { "Length1" => data.len() as i64 },
-        data.to_vec(),
-    ));
+    let (program, name) = bundled_font_program(font, &merged)?;
+    let mut font_file = Stream::new(dictionary! { "Length1" => program.len() as i64 }, program);
+    let _ = font_file.compress();
+    let font_file_id = document.add_object(font_file);
     let descriptor_id = document.add_object(dictionary! {
         "Type" => "FontDescriptor",
-        "FontName" => Object::Name(font.pdf_name().as_bytes().to_vec()),
+        "FontName" => Object::Name(name.clone().into_bytes()),
         "Flags" => 32,
         "FontBBox" => vec![
             Object::Integer(pdf_font_units(bbox.x_min, units_per_em)),
@@ -6335,7 +6483,7 @@ fn add_embedded_unicode_font(
     let descendant_id = document.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "CIDFontType2",
-        "BaseFont" => Object::Name(font.pdf_name().as_bytes().to_vec()),
+        "BaseFont" => Object::Name(name.clone().into_bytes()),
         "CIDSystemInfo" => dictionary! {
             "Registry" => Object::String(b"Adobe".to_vec(), StringFormat::Literal),
             "Ordering" => Object::String(b"Identity".to_vec(), StringFormat::Literal),
@@ -6353,12 +6501,336 @@ fn add_embedded_unicode_font(
     let font_id = document.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type0",
-        "BaseFont" => Object::Name(font.pdf_name().as_bytes().to_vec()),
+        "BaseFont" => Object::Name(name.into_bytes()),
         "Encoding" => "Identity-H",
         "DescendantFonts" => vec![Object::Reference(descendant_id)],
         "ToUnicode" => to_unicode_id,
     });
     Ok((font_id, reverse))
+}
+
+/// The font that draws characters a page font lacks when its text is edited
+/// ([`crate::pdf_text_edit`]): a bundled font, or an installed face (by its
+/// index in [`crate::system_fonts::SystemFonts::installed`]).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum TextEditFallbackFont {
+    Bundled(EmbeddedTextFont),
+    Installed(usize),
+}
+
+/// A face's glyph for `character` and its advance in thousandths of an em,
+/// as written to `/W`.
+fn glyph_and_advance(data: &[u8], index: u32, character: char) -> Option<(u16, f64)> {
+    let face = ttf_parser::Face::parse(data, index).ok()?;
+    let glyph = face.glyph_index(character)?;
+    let advance = face.glyph_hor_advance(glyph)?;
+    Some((
+        glyph.0,
+        (f64::from(advance) * 1000. / f64::from(face.units_per_em())).round(),
+    ))
+}
+
+/// Arimo, Tinos or Roboto Mono in `face`'s style: metric matches for
+/// Helvetica/Arial, Times and monospace faces.
+fn bundled_family(face: crate::pdf_text_edit::FallbackFace) -> Option<EmbeddedTextFont> {
+    use crate::pdf_text_edit::FallbackFamily;
+    let family = match face.family {
+        FallbackFamily::Sans => "Arimo",
+        FallbackFamily::Serif => "Tinos",
+        FallbackFamily::Mono => "Roboto Mono",
+    };
+    embedded_annotation_font_variant(family, face.bold, face.italic)
+}
+
+/// The bundled glyph and advance for `character` in `face`'s style, for
+/// standard fonts' metrics.
+pub(crate) fn bundled_text_edit_glyph(
+    face: crate::pdf_text_edit::FallbackFace,
+    character: char,
+) -> Option<(u16, f64)> {
+    glyph_and_advance(bundled_family(face)?.data(), 0, character)
+}
+
+/// The font, glyph and advance (thousandths of an em) that draw `character`
+/// in place of a page font of `face`'s style named `postscript_name`. In
+/// order: an installed face of that name (an exact match, for fonts other
+/// than the standard 14, which the bundled families match), the bundled
+/// family, Noto Sans SC, then any installed face that has the character, so
+/// no character is refused while some font can draw it.
+pub(crate) fn text_edit_fallback_glyph(
+    face: crate::pdf_text_edit::FallbackFace,
+    postscript_name: Option<&str>,
+    character: char,
+) -> Option<(TextEditFallbackFont, u16, f64)> {
+    let installed = crate::system_fonts::SystemFonts::installed();
+    let from_installed = |index: usize| {
+        let data = installed.data(index)?;
+        let face_index = installed.face(index)?.index;
+        glyph_and_advance(&data, face_index, character)
+            .map(|(glyph, advance)| (TextEditFallbackFont::Installed(index), glyph, advance))
+    };
+    let standard = postscript_name.is_some_and(|name| {
+        STANDARD_14_POSTSCRIPT_NAMES.contains(&name)
+            || ["Arial", "TimesNewRoman", "CourierNew"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+    });
+    if let Some(name) = postscript_name.filter(|_| !standard)
+        && let Some(index) = installed.by_postscript_name(name)
+        && installed.has(index, character)
+        && let Some(found) = from_installed(index)
+    {
+        return Some(found);
+    }
+    bundled_family(face)
+        .into_iter()
+        .chain([EmbeddedTextFont::Sans])
+        .find_map(|font| {
+            glyph_and_advance(font.data(), 0, character)
+                .map(|(glyph, advance)| (TextEditFallbackFont::Bundled(font), glyph, advance))
+        })
+        .or_else(|| from_installed(installed.covering(character, face.bold, face.italic)?))
+}
+
+/// The font, glyph and advance that draw `character` in a chosen face: the
+/// installed face it names, then its bundled family and the fallbacks of
+/// [`text_edit_fallback_glyph`].
+pub(crate) fn chosen_face_glyph(
+    face: &crate::pdf_text_edit::TextFace,
+    character: char,
+) -> Option<(TextEditFallbackFont, u16, f64)> {
+    let installed = crate::system_fonts::SystemFonts::installed();
+    if let Some(index) = face
+        .postscript_name
+        .as_deref()
+        .and_then(|name| installed.by_postscript_name(name))
+        && installed.has(index, character)
+        && let (Some(data), Some(found)) = (installed.data(index), installed.face(index))
+        && let Some((glyph, advance)) = glyph_and_advance(&data, found.index, character)
+    {
+        return Some((TextEditFallbackFont::Installed(index), glyph, advance));
+    }
+    text_edit_fallback_glyph(face.fallback, None, character)
+}
+
+/// The bundled families edited text can be set in, with the style of font
+/// each stands in for.
+const BUNDLED_TEXT_FAMILIES: [(&str, crate::pdf_text_edit::FallbackFamily); 3] = [
+    ("Arimo", crate::pdf_text_edit::FallbackFamily::Sans),
+    ("Tinos", crate::pdf_text_edit::FallbackFamily::Serif),
+    ("Roboto Mono", crate::pdf_text_edit::FallbackFamily::Mono),
+];
+
+/// The families a run of edited text can be set in: the bundled ones, then
+/// the installed ones.
+pub(crate) fn text_face_families() -> Vec<String> {
+    let mut families = BUNDLED_TEXT_FAMILIES
+        .iter()
+        .map(|(family, _)| (*family).to_owned())
+        .collect::<Vec<_>>();
+    for family in crate::system_fonts::SystemFonts::installed().families() {
+        if !families.contains(&family) {
+            families.push(family);
+        }
+    }
+    families
+}
+
+/// The face that sets text in `family`, bold and italic as asked: an
+/// installed face, or a bundled one, with the bundled family of its kind
+/// for characters it lacks.
+pub(crate) fn text_face_for(
+    family: &str,
+    bold: bool,
+    italic: bool,
+) -> crate::pdf_text_edit::TextFace {
+    use crate::pdf_text_edit::{FallbackFace, FallbackFamily, TextFace};
+    let bundled = BUNDLED_TEXT_FAMILIES
+        .iter()
+        .find(|(name, _)| *name == family)
+        .map(|(_, kind)| *kind);
+    let kind = bundled.unwrap_or_else(|| {
+        let lower = family.to_lowercase();
+        if ["mono", "courier", "consol", "menlo", "code"]
+            .iter()
+            .any(|hint| lower.contains(hint))
+        {
+            FallbackFamily::Mono
+        } else if [
+            "serif", "times", "georgia", "garamond", "roman", "book", "palatino",
+        ]
+        .iter()
+        .any(|hint| lower.contains(hint))
+            && !lower.contains("sans")
+        {
+            FallbackFamily::Serif
+        } else {
+            FallbackFamily::Sans
+        }
+    });
+    let installed = crate::system_fonts::SystemFonts::installed();
+    let postscript_name = bundled.is_none().then(|| {
+        installed
+            .styled(family, bold, italic)
+            .and_then(|index| installed.face(index))
+            .map(|face| face.postscript_name.clone())
+    });
+    TextFace {
+        postscript_name: postscript_name.flatten(),
+        fallback: FallbackFace {
+            family: kind,
+            bold,
+            italic,
+        },
+    }
+}
+
+/// The family a face sets text in.
+pub(crate) fn text_face_family(face: &crate::pdf_text_edit::TextFace) -> String {
+    let installed = crate::system_fonts::SystemFonts::installed();
+    face.postscript_name
+        .as_deref()
+        .and_then(|name| installed.by_postscript_name(name))
+        .and_then(|index| installed.face(index))
+        .map_or_else(
+            || bundled_family_name(face.fallback.family).to_owned(),
+            |found| found.family.clone(),
+        )
+}
+
+fn bundled_family_name(kind: crate::pdf_text_edit::FallbackFamily) -> &'static str {
+    BUNDLED_TEXT_FAMILIES
+        .iter()
+        .find(|(_, candidate)| *candidate == kind)
+        .map_or("Arimo", |(family, _)| family)
+}
+
+/// The family nearest a page font, to set its text bold or italic in: the
+/// installed font of its name, or the bundled family of its kind.
+pub(crate) fn page_font_family(metrics: &crate::pdf_text_edit::TextFontMetrics) -> String {
+    let installed = crate::system_fonts::SystemFonts::installed();
+    metrics
+        .postscript_name
+        .as_deref()
+        .filter(|name| !STANDARD_14_POSTSCRIPT_NAMES.contains(name))
+        .and_then(|name| installed.by_postscript_name(name))
+        .and_then(|index| installed.face(index))
+        .map_or_else(
+            || bundled_family_name(metrics.fallback.family).to_owned(),
+            |face| face.family.clone(),
+        )
+}
+
+/// The font a chosen face names: the installed face, or its bundled one.
+pub(crate) fn chosen_face_font(
+    face: &crate::pdf_text_edit::TextFace,
+) -> Option<TextEditFallbackFont> {
+    match face.postscript_name.as_deref() {
+        Some(name) => installed_font_named(name).map(TextEditFallbackFont::Installed),
+        None => bundled_family(face.fallback).map(TextEditFallbackFont::Bundled),
+    }
+}
+
+/// A font's PostScript name, to name a substitute.
+pub(crate) fn text_edit_font_name(font: TextEditFallbackFont) -> String {
+    match font {
+        TextEditFallbackFont::Bundled(font) => font.source().name.to_owned(),
+        TextEditFallbackFont::Installed(index) => crate::system_fonts::SystemFonts::installed()
+            .face(index)
+            .map_or_else(String::new, |face| face.postscript_name.clone()),
+    }
+}
+
+/// The installed face named `postscript_name`, if any.
+pub(crate) fn installed_font_named(postscript_name: &str) -> Option<usize> {
+    crate::system_fonts::SystemFonts::installed().by_postscript_name(postscript_name)
+}
+
+/// An installed face's advance for `character`, in thousandths of an em.
+pub(crate) fn installed_glyph_advance(index: usize, character: char) -> Option<f64> {
+    let installed = crate::system_fonts::SystemFonts::installed();
+    let data = installed.data(index)?;
+    glyph_and_advance(&data, installed.face(index)?.index, character).map(|(_, advance)| advance)
+}
+
+const STANDARD_14_POSTSCRIPT_NAMES: [&str; 14] = [
+    "Helvetica",
+    "Helvetica-Bold",
+    "Helvetica-Oblique",
+    "Helvetica-BoldOblique",
+    "Times-Roman",
+    "Times-Bold",
+    "Times-Italic",
+    "Times-BoldItalic",
+    "Courier",
+    "Courier-Bold",
+    "Courier-Oblique",
+    "Courier-BoldOblique",
+    "Symbol",
+    "ZapfDingbats",
+];
+
+/// Embeds (or extends) `font` with `characters`, returning the Type0 font
+/// and each character's CID.
+pub(crate) fn embed_text_edit_fallback(
+    document: &mut Document,
+    font: TextEditFallbackFont,
+    characters: &BTreeSet<char>,
+) -> Result<(ObjectId, BTreeMap<char, u16>), PdfPersistenceError> {
+    let installed_data;
+    let source = match font {
+        TextEditFallbackFont::Bundled(font) => font.source(),
+        TextEditFallbackFont::Installed(index) => {
+            let installed = crate::system_fonts::SystemFonts::installed();
+            let face = installed.face(index).ok_or_else(|| {
+                PdfPersistenceError::InvalidDocument("installed font is gone".into())
+            })?;
+            installed_data = installed.data(index).ok_or_else(|| {
+                PdfPersistenceError::InvalidDocument(format!(
+                    "installed font {} cannot be read",
+                    face.postscript_name
+                ))
+            })?;
+            FontSource {
+                data: installed_data.as_slice(),
+                index: face.index,
+                name: face.postscript_name.as_str(),
+            }
+        }
+    };
+    let face = ttf_parser::Face::parse(source.data, source.index).map_err(|error| {
+        PdfPersistenceError::InvalidDocument(format!("font {}: {error}", source.name))
+    })?;
+    let glyphs = characters
+        .iter()
+        .map(|character| {
+            face.glyph_index(*character)
+                .map(|glyph| {
+                    (
+                        *character,
+                        EmbeddedCidGlyph {
+                            glyph_id: glyph.0,
+                            unicode: Some(character.to_string()),
+                        },
+                    )
+                })
+                .ok_or_else(|| {
+                    PdfPersistenceError::InvalidDocument(format!(
+                        "font {} cannot draw {character:?}",
+                        source.name
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let requested = glyphs.iter().map(|(_, glyph)| glyph.clone()).collect();
+    let (font_id, cids) = add_embedded_font_source(document, source, &requested)?;
+    Ok((
+        font_id,
+        glyphs
+            .into_iter()
+            .map(|(character, glyph)| (character, cids[&glyph]))
+            .collect(),
+    ))
 }
 
 fn existing_cid_to_gid_map(
@@ -6423,11 +6895,15 @@ fn unicode_font_widths(
 fn is_bundled_embedded_font(
     document: &Document,
     font_dictionary: &Dictionary,
-    font: EmbeddedTextFont,
+    font: FontSource<'_>,
 ) -> bool {
     let matches = || -> Option<bool> {
+        let base_font = font_dictionary.get(b"BaseFont").ok()?.as_name().ok()?;
+        let subset = base_font.len() == font.name.len() + 7
+            && base_font[6] == b'+'
+            && &base_font[7..] == font.name.as_bytes();
         if dictionary_name(font_dictionary, b"Subtype").as_deref() != Some("Type0")
-            || font_dictionary.get(b"BaseFont").ok()?.as_name().ok()? != font.pdf_name().as_bytes()
+            || !(subset || base_font == font.name.as_bytes())
         {
             return Some(false);
         }
@@ -6451,9 +6927,46 @@ fn is_bundled_embedded_font(
             .ok()?
             .as_stream()
             .ok()?;
-        Some(program.dict.get(b"Length1").ok()?.as_i64().ok()? == font.data().len() as i64)
+        if !subset {
+            // Written before subsetting: the whole bundled program.
+            return Some(
+                program.dict.get(b"Length1").ok()?.as_i64().ok()? == font.data.len() as i64,
+            );
+        }
+        // A subset is ours only if it is exactly the subset of the bundled
+        // program for the glyphs it maps; another producer's subset of the
+        // same family may number its glyphs differently.
+        let mapping = embedded_cid_mapping_from_standard_font(document, font_dictionary);
+        let (expected, name) = bundled_font_program(font, &mapping).ok()?;
+        Some(name.as_bytes() == base_font && program.decompressed_content().ok()? == expected)
     };
     matches().unwrap_or(false)
+}
+
+/// The program and PostScript name a font is embedded with when it draws
+/// `glyphs`: a subset, tagged as the PDF format requires
+/// ("ABCDEF+Arimo-Regular"), or a whole single font that cannot be subset.
+fn bundled_font_program(
+    font: FontSource<'_>,
+    glyphs: &BTreeMap<u16, EmbeddedCidGlyph>,
+) -> Result<(Vec<u8>, String), PdfPersistenceError> {
+    let ids = glyphs
+        .values()
+        .map(|glyph| glyph.glyph_id)
+        .collect::<BTreeSet<_>>();
+    match crate::font_subset::subset_truetype_face(font.data, font.index, &ids) {
+        Some(program) => Ok((
+            program,
+            format!("{}+{}", crate::font_subset::subset_tag(&ids), font.name),
+        )),
+        None if font.index == 0 && font.data.get(..4) != Some(b"ttcf") => {
+            Ok((font.data.to_vec(), font.name.to_owned()))
+        }
+        None => Err(PdfPersistenceError::InvalidDocument(format!(
+            "font {} cannot be embedded",
+            font.name
+        ))),
+    }
 }
 
 /// Rebuilds a bundled font's CID assignments from its standard
@@ -6710,13 +7223,24 @@ fn add_text_appearance(
     let font_size = annotation.style().font_size_pt();
     let line_height = font_size * TEXT_APPEARANCE_LINE_HEIGHT_FACTOR;
     let inset = annotation.style().inset_pt();
-    let start_y = (annotation.layout_rect.height - inset - font_size).max(0.);
+    // As on the canvas, each line's text is centred in its line box by the
+    // font's ascent and descent.
+    let (ascent, descent) = appearance_font_vertical_metrics(
+        annotation.style().font_family(),
+        text_is_bold(annotation.style()),
+        false,
+    );
+    let start_y = (annotation.layout_rect.height
+        - inset
+        - line_box_baseline(line_height, ascent * font_size, descent * font_size))
+    .max(0.);
     let mut fonts = Dictionary::new();
     let mut content = format!("q\n/GS0 gs\nBT\n{red:.6} {green:.6} {blue:.6} rg\n").into_bytes();
     if !annotation.rich_text_runs().is_empty() {
         let (lines, mut shaped) = rich_text_appearance_lines(annotation)?;
         fonts = appearance_text_font_resources(document, &mut shaped)?;
-        for (line_index, line) in lines.iter().enumerate() {
+        let mut line_top = annotation.layout_rect.height - inset;
+        for line in &lines {
             let width = line
                 .spans
                 .iter()
@@ -6729,7 +7253,25 @@ fn add_text_appearance(
                     annotation.style().alignment(),
                     inset,
                 );
-            let y = annotation.layout_rect.y + start_y - line_index as f64 * line_height;
+            // A line is as tall as its largest text, as on the canvas.
+            let height = line
+                .spans
+                .iter()
+                .map(|span| span.font_size_pt * TEXT_APPEARANCE_LINE_HEIGHT_FACTOR)
+                .fold(line_height, f64::max);
+            let ascent = line
+                .spans
+                .iter()
+                .map(|span| span.ascent_em * span.font_size_pt)
+                .fold(0., f64::max);
+            let descent = line
+                .spans
+                .iter()
+                .map(|span| span.descent_em * span.font_size_pt)
+                .fold(0., f64::max);
+            let y = annotation.layout_rect.y
+                + (line_top - line_box_baseline(height, ascent, descent)).max(0.);
+            line_top -= height;
             for span in &line.spans {
                 let (red, green, blue) = color_components(&span.color);
                 content.extend_from_slice(format!("{red:.6} {green:.6} {blue:.6} rg\n").as_bytes());
@@ -14451,12 +14993,21 @@ mod tests {
         stage.receipt_lease.take();
         std::mem::forget(stage);
 
-        super::recover_abandoned_in_place_stage(
-            &parent_fd,
-            parent_identity,
-            std::ffi::OsStr::new("source.pdf"),
-        )
-        .unwrap();
+        // A worker spawned by a parallel test forks before it execs, and the
+        // child briefly shares the receipt's open file and so its lock; the
+        // recovery rightly leaves a locked receipt for later. Retry briefly.
+        for _ in 0..100 {
+            super::recover_abandoned_in_place_stage(
+                &parent_fd,
+                parent_identity,
+                std::ffi::OsStr::new("source.pdf"),
+            )
+            .unwrap();
+            if !receipt_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         assert_eq!(
             std::fs::read(root.join("source.pdf")).unwrap(),
@@ -15369,6 +15920,79 @@ mod tests {
         assert_eq!(imported.cloud_pluses.len(), 1);
         assert!(imported.cloud_pluses[0].cloud_appearance_path().is_none());
         assert!(imported.cloud_pluses[0].same_persisted_state_as(&cloud_plus));
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn an_owner_password_pdf_saves_encrypted_with_its_permissions() {
+        use super::*;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "target/test-scratch/encrypted-save-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _scratch = Scratch(root.clone());
+        let source = root.join("source.pdf");
+        let saved = root.join("saved.pdf");
+
+        // Opens without a password; the owner password restricts editing.
+        let mut document = retained_render_test_document();
+        let file_id = Object::String(
+            b"butter-paper-enc".to_vec(),
+            lopdf::StringFormat::Hexadecimal,
+        );
+        document.trailer.set("ID", vec![file_id.clone(), file_id]);
+        let permissions = lopdf::Permissions::PRINTABLE | lopdf::Permissions::COPYABLE;
+        let state = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V2 {
+            document: &document,
+            owner_password: "owner",
+            user_password: "",
+            key_length: 128,
+            permissions,
+        })
+        .unwrap();
+        document.encrypt(&state).unwrap();
+        document.save(&source).unwrap();
+
+        let mut opened = PdfPersistenceSession::open(&source).unwrap();
+        opened
+            .add_rectangle(RectangleAnnotation {
+                id: MarkupId::new("rectangle:encrypted").unwrap(),
+                page_index: 0,
+                rect: PdfRect::new(10., 10., 40., 30.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked: false,
+            })
+            .unwrap();
+        let authority = SaveAsTargetAuthority::bind(saved.clone(), &source).unwrap();
+        opened
+            .prepare_save_authorized(&authority)
+            .unwrap()
+            .publish()
+            .unwrap();
+
+        let bytes = std::fs::read(&saved).unwrap();
+        assert!(bytes.windows(8).any(|window| window == b"/Encrypt"));
+        let permissions_of = |path: &Path| {
+            Document::load(path)
+                .unwrap()
+                .encryption_state
+                .as_ref()
+                .map(|state| state.permissions())
+        };
+        let kept = permissions_of(&saved).expect("the saved PDF stays encrypted");
+        assert_eq!(Some(kept), permissions_of(&source));
+        assert!(kept.contains(permissions) && !kept.contains(lopdf::Permissions::MODIFIABLE));
+        let reopened = PdfPersistenceSession::open(&saved).unwrap();
+        assert_eq!(reopened.rectangles().len(), 1);
     }
 
     #[test]
@@ -17835,6 +18459,50 @@ mod tests {
     }
 
     #[test]
+    fn text_box_appearance_centres_the_first_line_in_its_line_box_like_the_canvas() {
+        use super::*;
+
+        // Helvetica's standard metrics, then Arimo's own (1854 and 434 of
+        // 2048): the canvas centres a line's ascent and descent in its
+        // 1.15 em line box, one inset below the top.
+        for (family, ascent, descent) in [
+            ("Helvetica", 0.718, 0.207),
+            ("Arimo", 1854. / 2048., 434. / 2048.),
+        ] {
+            let style = TextBoxStyle::new(family, 12., "#172b4d", 1.).unwrap();
+            let inset = style.inset_pt();
+            let annotation = TextBoxAnnotation::new(
+                MarkupId::new(format!("baseline-{family}")).unwrap(),
+                0,
+                PdfRect::new(40., 50., 260., 60.).unwrap(),
+                "First\nSecond",
+                style,
+            )
+            .unwrap();
+            let mut document = Document::with_version("1.7");
+            let appearance_id = add_text_appearance(&mut document, &annotation).unwrap();
+            let content = String::from_utf8_lossy(
+                &document
+                    .get_object(appearance_id)
+                    .unwrap()
+                    .as_stream()
+                    .unwrap()
+                    .content,
+            )
+            .into_owned();
+            let line_height = 12. * 1.15;
+            let first =
+                110. - inset - ((line_height - 12. * (ascent + descent)) / 2. + 12. * ascent);
+            for y in [first, first - line_height] {
+                assert!(
+                    content.contains(&format!(" {y:.6} Tm")),
+                    "{family}: no line at {y:.6} in {content}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn standard_css_font_aliases_import_without_private_metadata() {
         use super::*;
 
@@ -18859,5 +19527,181 @@ mod tests {
             json!(true)
         );
         assert_eq!(decode_response(&encoded).unwrap(), response);
+    }
+}
+
+#[cfg(test)]
+mod bundled_font_subset_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_fonts_embed_as_tagged_subsets_and_never_adopt_another_producers_subset() {
+        let mut document = Document::with_version("1.7");
+        // Another producer's subset of the same family, with its own glyph
+        // numbering.
+        let foreign_program = document.add_object(Stream::new(
+            dictionary! { "Length1" => 4 },
+            b"true".to_vec(),
+        ));
+        let foreign_descriptor = document.add_object(dictionary! {
+            "Type" => "FontDescriptor",
+            "FontName" => "QWERTY+Arimo-Regular",
+            "FontFile2" => foreign_program,
+        });
+        let foreign_map =
+            document.add_object(Stream::new(Dictionary::new(), vec![0, 0, 0, 7, 0, 9]));
+        let foreign_descendant = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "CIDFontType2",
+            "BaseFont" => "QWERTY+Arimo-Regular",
+            "FontDescriptor" => foreign_descriptor,
+            "CIDToGIDMap" => foreign_map,
+        });
+        let foreign = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type0",
+            "BaseFont" => "QWERTY+Arimo-Regular",
+            "Encoding" => "Identity-H",
+            "DescendantFonts" => vec![Object::Reference(foreign_descendant)],
+        });
+
+        let (ours, first) = embed_text_edit_fallback(
+            &mut document,
+            TextEditFallbackFont::Bundled(EmbeddedTextFont::ArimoRegular),
+            &BTreeSet::from(['Ж']),
+        )
+        .unwrap();
+        assert_ne!(ours, foreign);
+        assert_eq!(
+            document
+                .get_object(foreign_program)
+                .unwrap()
+                .as_stream()
+                .unwrap()
+                .content,
+            b"true"
+        );
+        let base_font = |document: &Document, id| {
+            String::from_utf8(
+                document
+                    .get_dictionary(id)
+                    .unwrap()
+                    .get(b"BaseFont")
+                    .unwrap()
+                    .as_name()
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap()
+        };
+        let name = base_font(&document, ours);
+        assert_eq!(name.len(), "ABCDEF+Arimo-Regular".len());
+        assert!(name.ends_with("+Arimo-Regular"));
+
+        // Our own subset is extended in place, and stays a valid font that
+        // draws both characters.
+        let (again, second) = embed_text_edit_fallback(
+            &mut document,
+            TextEditFallbackFont::Bundled(EmbeddedTextFont::ArimoRegular),
+            &BTreeSet::from(['Ж', 'Ω']),
+        )
+        .unwrap();
+        assert_eq!(again, ours);
+        assert_eq!(second[&'Ж'], first[&'Ж']);
+        assert_ne!(
+            base_font(&document, ours),
+            name,
+            "the tag follows the glyphs"
+        );
+        let descendant = document
+            .get_dictionary(ours)
+            .unwrap()
+            .get(b"DescendantFonts")
+            .unwrap()
+            .as_array()
+            .unwrap()[0]
+            .as_reference()
+            .unwrap();
+        let descriptor = document
+            .get_dictionary(descendant)
+            .unwrap()
+            .get(b"FontDescriptor")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let program = document
+            .get_dictionary(descriptor)
+            .unwrap()
+            .get(b"FontFile2")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let program = document.get_object(program).unwrap().as_stream().unwrap();
+        let bytes = program.decompressed_content().unwrap();
+        assert_eq!(
+            program.dict.get(b"Length1").unwrap().as_i64().unwrap(),
+            bytes.len() as i64
+        );
+        assert!(bytes.len() < 40_000, "{} bytes", bytes.len());
+        let face = ttf_parser::Face::parse(&bytes, 0).unwrap();
+        let bundled = ttf_parser::Face::parse(EmbeddedTextFont::ArimoRegular.data(), 0).unwrap();
+        for character in ['Ж', 'Ω'] {
+            let glyph = bundled.glyph_index(character).unwrap();
+            assert!(face.glyph_bounding_box(glyph).is_some(), "{character}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod signature_detection_tests {
+    use super::*;
+
+    fn session(signed: bool) -> PdfPersistenceSession {
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let mut catalog = dictionary! { "Type" => "Catalog", "Pages" => pages_id };
+        if signed {
+            let signature = document.add_object(dictionary! {
+                "Type" => "Sig",
+                "Filter" => "Adobe.PPKLite",
+                "ByteRange" => vec![0.into(), 100.into(), 200.into(), 300.into()],
+                "Contents" => Object::String(vec![0; 16], StringFormat::Hexadecimal),
+            });
+            let field = document.add_object(dictionary! {
+                "FT" => "Sig",
+                "T" => Object::string_literal("Signature1"),
+                "V" => signature,
+            });
+            catalog.set("AcroForm", dictionary! { "Fields" => vec![field.into()] });
+        }
+        let catalog_id = document.add_object(catalog);
+        document.trailer.set("Root", catalog_id);
+        let path = std::env::temp_dir().join(format!(
+            "bp-signature-detection-{}-{signed}.pdf",
+            std::process::id()
+        ));
+        document.save(&path).unwrap();
+        let session = PdfPersistenceSession::open(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        session
+    }
+
+    #[test]
+    fn signature_dictionaries_mark_a_document_signed() {
+        assert!(session(true).is_digitally_signed());
+        assert!(!session(false).is_digitally_signed());
     }
 }

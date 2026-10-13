@@ -20,6 +20,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::pdf_content_geometry::PageSnapGeometry;
+use crate::pdf_text_edit::{PageTextEdit, PageTextLayer};
 
 pub const MAX_PROTOCOL_LINE_BYTES: usize = 32 * 1024 * 1024;
 const WORKER_LIFECYCLE_REQUEST_ENV: &str = "BP_MACOS_WORKER_LIFECYCLE";
@@ -334,6 +335,19 @@ pub enum WorkerRequest {
         session_id: SessionId,
         page_index: u32,
     },
+    /// The editable text of a page of the unedited document.
+    PageText {
+        request_id: RequestId,
+        session_id: SessionId,
+        page_index: u32,
+    },
+    /// Replaces the page-text edits renders show. Edits always apply to the
+    /// unedited document, so an empty list restores it.
+    SetTextEdits {
+        request_id: RequestId,
+        session_id: SessionId,
+        edits: Vec<PageTextEdit>,
+    },
     RenderCrop {
         request_id: RequestId,
         #[serde(flatten)]
@@ -355,6 +369,8 @@ impl WorkerRequest {
             Self::Open { request_id, .. }
             | Self::PageGeometry { request_id, .. }
             | Self::PageSnapGeometry { request_id, .. }
+            | Self::PageText { request_id, .. }
+            | Self::SetTextEdits { request_id, .. }
             | Self::RenderCrop { request_id, .. }
             | Self::Cancel { request_id, .. }
             | Self::Close { request_id, .. } => *request_id,
@@ -381,6 +397,15 @@ pub enum WorkerResponse {
         session_id: SessionId,
         page_index: u32,
         geometry: PageSnapGeometry,
+    },
+    PageText {
+        request_id: RequestId,
+        session_id: SessionId,
+        layer: PageTextLayer,
+    },
+    TextEditsSet {
+        request_id: RequestId,
+        session_id: SessionId,
     },
     Rendered {
         request_id: RequestId,
@@ -409,6 +434,8 @@ impl WorkerResponse {
             Self::Opened { request_id, .. }
             | Self::PageGeometry { request_id, .. }
             | Self::PageSnapGeometry { request_id, .. }
+            | Self::PageText { request_id, .. }
+            | Self::TextEditsSet { request_id, .. }
             | Self::Rendered { request_id, .. }
             | Self::Cancelled { request_id, .. }
             | Self::Closed { request_id, .. }
@@ -437,6 +464,22 @@ pub trait PdfBackend {
         document: &mut Self::Document,
         page_index: u32,
     ) -> Result<PageSnapGeometry, WorkerError>;
+
+    fn page_text(
+        &mut self,
+        _document: &mut Self::Document,
+        _page_index: u32,
+    ) -> Result<PageTextLayer, WorkerError> {
+        Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
+
+    fn set_text_edits(
+        &mut self,
+        _document: &mut Self::Document,
+        _edits: &[PageTextEdit],
+    ) -> Result<(), WorkerError> {
+        Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
 
     fn render_crop(
         &mut self,
@@ -737,6 +780,51 @@ where
                         session_id,
                         page_index,
                         geometry,
+                    },
+                    Err(error) => failed(request_id, None, error),
+                }
+            }
+            WorkerRequest::PageText {
+                session_id,
+                page_index,
+                ..
+            } => {
+                let Some(document) = self.documents.get_mut(&session_id) else {
+                    return failed(
+                        request_id,
+                        None,
+                        WorkerError::with_detail(
+                            WorkerErrorCode::InvalidRequest,
+                            "session identifier is not open",
+                        ),
+                    );
+                };
+                match self.backend.page_text(document, page_index) {
+                    Ok(layer) => WorkerResponse::PageText {
+                        request_id,
+                        session_id,
+                        layer,
+                    },
+                    Err(error) => failed(request_id, None, error),
+                }
+            }
+            WorkerRequest::SetTextEdits {
+                session_id, edits, ..
+            } => {
+                let Some(document) = self.documents.get_mut(&session_id) else {
+                    return failed(
+                        request_id,
+                        None,
+                        WorkerError::with_detail(
+                            WorkerErrorCode::InvalidRequest,
+                            "session identifier is not open",
+                        ),
+                    );
+                };
+                match self.backend.set_text_edits(document, &edits) {
+                    Ok(()) => WorkerResponse::TextEditsSet {
+                        request_id,
+                        session_id,
                     },
                     Err(error) => failed(request_id, None, error),
                 }

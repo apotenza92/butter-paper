@@ -28,28 +28,34 @@ alone do not establish these behaviours.
 - The template library offers both a top-right X and a Done button that do
   the same thing; decide whether to drop Done (the X is the convention for
   transient panels).
-- Quit and close recovery alerts show raw internal errors (for example
-  `Operation(Io { operation: InspectRoot, kind: NotFound })`); map them to
-  plain language.
 
 ## Editing
 
-- Ellipse, Text Box, Image, Snapshot and Redact resize only from corners and
-  edge midpoints; give them the Rectangle's resize-from-any-edge zone.
-- Text box appearances export the first baseline one font size below the
-  inset, about 1.8 pt lower than the canvas at 12 pt; align the export with
-  the canvas line box.
 - Elliptical Arcs import and render but are not editable as ellipses.
 - Properties the reference had but native lacks: separate fill opacity,
   hatch fill, text vertical alignment and auto-size, image borders, editing
   imported appearances.
 - Pdf-format follow-ups are listed in [pdf-format.md](pdf-format.md#known-differences-follow-ups).
+- Undo after Save does nothing in the review build (Rectangles too): the
+  Undo action reports no error. Check whether history should survive a save.
+
+## Edit Text
+
+Paragraph editing works and is checked against real Chrome, LibreOffice
+and Quartz output (`tests/page_text_corpus.rs`; see [interactions.md](interactions.md#editing-page-text)
+and [pdf-format.md](pdf-format.md#edited-page-text)); the target is in
+[decisions.md](decisions.md#interface). Each step below ends
+with `cargo test --workspace`, `cargo xtask check`, the real-PDFium
+`--ignored` worker tests and, for visible changes, a native review with
+inspected captures. Steps are in priority order.
+
+1. **Linux review workflow.** Edit Text, lists, columns and edge resize
+    pass the native review on Windows and on Linux under WSLg. The manual
+    `Review` workflow (`.github/workflows/review.yml`) runs Linux under Xvfb
+    with software Vulkan, which drew only black windows under WSL (with GL
+    too). Run the workflow once pushed and check its Linux captures.
 
 ## Platforms and release
-
-- The macOS recovery test `recovery_after_rename_removes_only_receipt_and_never_published_target`
-  intermittently leaves its receipt during parallel workspace tests; it passes
-  alone and in the serial suite. Investigate the parallel-test interaction.
 
 - Remove the unused local phone helper (`local_phone_signature`,
   `xtask/src/phone.rs`, `crates/butter-paper/phone-helper/`, its packaging and

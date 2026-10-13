@@ -29,7 +29,8 @@ use crate::annotation_model::{
     SceneInteractionFeedback, SceneLength, SceneMeasurementPath, SceneRectangle, SceneRedact,
     SceneSnapshot, SceneStraightLine, SceneVertexPath, SnapshotAnnotation, SpatialQueryWork,
     StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
-    TextBoxStyle, VertexPathAnnotation, VertexPathKind,
+    TextBoxStyle, VertexPathAnnotation, VertexPathKind, box_outline_resize_handle,
+    ellipse_move_zone_contains, ellipse_outline_resize_handle,
 };
 use crate::cloud_plus_routing::{
     CloudPlusObstacle, CloudPlusRoutingContext, place_initial_cloud_plus_text_box,
@@ -41,6 +42,7 @@ use crate::native_editing_v5::{
     SnapGestureCommit, SnapResolution, SnapTransformPlan, StrokeWidthEditTransaction, Translation,
 };
 use crate::pdf_content_geometry::PageSnapGeometry;
+use crate::pdf_text_edit::PageTextEdit;
 use crate::selection_geometry::{
     SelectionMarquee, SelectionOperation, SelectionPoint, SelectionShape,
 };
@@ -156,14 +158,6 @@ pub fn text_box_rotation_handle_point(
         annotation.layout_rect,
         annotation.rotation_degrees(),
         observed_pixels_per_point,
-    )
-}
-
-fn image_resize_handle_point(annotation: &ImageAnnotation, handle: ImageResizeHandle) -> PdfPoint {
-    rotate_point_around_rect_center(
-        image_resize_handle_local_point(annotation.rect, handle),
-        annotation.rect,
-        -annotation.rotation_degrees(),
     )
 }
 
@@ -413,6 +407,8 @@ pub enum AnnotationTool {
     Length,
     Image,
     Snapshot,
+    /// Edits existing page text in place (Revu's Edit Text).
+    EditText,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -447,6 +443,7 @@ impl AnnotationTool {
             Self::Length => "Length",
             Self::Image => "Insert Image",
             Self::Snapshot => "Snapshot",
+            Self::EditText => "Edit Text",
         }
     }
 
@@ -469,6 +466,7 @@ impl AnnotationTool {
             Self::Pen => Some("P"),
             Self::Highlight => Some("H"),
             Self::Snapshot => Some("G"),
+            Self::EditText => Some("Shift+T"),
             Self::Redact | Self::TextBox | Self::Length | Self::Image => None,
         }
     }
@@ -520,6 +518,7 @@ impl AnnotationTool {
             Self::Length => "measure-ruler-dimension-line",
             Self::Image => "markup-image",
             Self::Snapshot => "tool-snapshot",
+            Self::EditText => "tool-edit-text",
         }
     }
 
@@ -546,12 +545,18 @@ impl AnnotationTool {
             "measure-ruler-dimension-line" => Some(Self::Length),
             "markup-image" => Some(Self::Image),
             "tool-snapshot" => Some(Self::Snapshot),
+            "tool-edit-text" => Some(Self::EditText),
             _ => None,
         }
     }
 
     pub fn uses_crosshair(self) -> bool {
-        !matches!(self, Self::Select)
+        !matches!(self, Self::Select | Self::EditText)
+    }
+
+    /// Whether the tool edits page content rather than drawing a markup.
+    pub fn edits_page_text(self) -> bool {
+        self == Self::EditText
     }
 }
 
@@ -656,6 +661,9 @@ enum ActivePointer {
         current: PdfPoint,
         original_rect: PdfRect,
         original_rotation_degrees: f64,
+        /// From the press to its handle, so the grabbed point of the curve
+        /// follows the pointer.
+        grab_offset: (f64, f64),
     },
     EllipseRotate {
         document_id: u64,
@@ -1081,7 +1089,9 @@ enum EllipseHandleKind {
 
 #[derive(Clone, Copy, Debug)]
 enum EqualSizeResizeGeometry {
-    Ellipse,
+    Ellipse {
+        grab_offset: (f64, f64),
+    },
     Redact,
     Rectangle,
     Image {
@@ -1104,11 +1114,11 @@ struct EqualSizeResizeTarget {
 impl EqualSizeResizeTarget {
     fn rect_at(&self, point: PdfPoint) -> Option<PdfRect> {
         match self.geometry {
-            EqualSizeResizeGeometry::Ellipse => Some(ellipse_resized_rect(
+            EqualSizeResizeGeometry::Ellipse { grab_offset } => Some(ellipse_resized_rect(
                 self.original_rect,
                 0.,
                 self.handle,
-                point,
+                offset_point(point, grab_offset),
             )),
             EqualSizeResizeGeometry::Redact => {
                 redact_resized_rect(self.original_rect, self.handle, point).ok()
@@ -1524,6 +1534,36 @@ impl AnnotationAdapter {
         self.documents
             .get(&document_id)
             .and_then(|document| document.page_rotation(page_index))
+    }
+
+    pub fn document_page_text_edits(&self, document_id: u64) -> &[PageTextEdit] {
+        self.documents
+            .get(&document_id)
+            .map_or(&[], |document| document.page_text_edits())
+    }
+
+    pub fn set_document_page_text_edit(
+        &mut self,
+        document_id: u64,
+        edit: PageTextEdit,
+    ) -> Result<bool, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .set_page_text_edit(edit)
+    }
+
+    pub fn set_document_page_text_edits(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        anchors: &[crate::pdf_text_edit::TextLineAnchor],
+        edits: Vec<PageTextEdit>,
+    ) -> Result<bool, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .set_page_text_edits(page_index, anchors, edits)
     }
 
     pub fn load_density_fixture(
@@ -3197,6 +3237,7 @@ impl AnnotationAdapter {
                 handle,
                 original_rect,
                 original_rotation_degrees,
+                grab_offset,
                 ..
             }) if original_rotation_degrees.rem_euclid(360.).abs() <= f64::EPSILON => {
                 Some(EqualSizeResizeTarget {
@@ -3205,7 +3246,9 @@ impl AnnotationAdapter {
                     id: id.clone(),
                     handle: *handle,
                     original_rect: *original_rect,
-                    geometry: EqualSizeResizeGeometry::Ellipse,
+                    geometry: EqualSizeResizeGeometry::Ellipse {
+                        grab_offset: *grab_offset,
+                    },
                 })
             }
             Some(ActivePointer::RedactResize {
@@ -5438,7 +5481,7 @@ impl AnnotationAdapter {
         document_id: u64,
         page_index: u32,
         point: PdfPoint,
-        tolerance_pt: f64,
+        _tolerance_pt: f64,
     ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
         let document = self
             .documents
@@ -5447,20 +5490,10 @@ impl AnnotationAdapter {
         if self.tool != AnnotationTool::Select {
             return Ok(None);
         }
-        let handle_tolerance = tolerance_pt.max(
-            crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-                / self.observed_pixels_per_point.0.max(f64::EPSILON),
-        );
+        let reach = edge_resize_reach(self.observed_pixels_per_point.0);
         let to_hit = |annotation: &RedactAnnotation| {
-            RectangleResizeHandle::ALL
-                .into_iter()
-                .enumerate()
-                .rev()
-                .find(|(_, handle)| {
-                    distance(redact_resize_handle_point(annotation, *handle), point)
-                        <= handle_tolerance
-                })
-                .map(|(index, _)| (annotation.id.clone(), index))
+            box_outline_resize_handle(annotation.rect, 0., point, reach)
+                .map(|handle| (annotation.id.clone(), resize_handle_index(handle)))
         };
         let selected = document.selected_id();
         let hit = selected
@@ -5495,7 +5528,7 @@ impl AnnotationAdapter {
         document_id: u64,
         page_index: u32,
         point: PdfPoint,
-        tolerance_pt: f64,
+        _tolerance_pt: f64,
     ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
         let document = self
             .documents
@@ -5504,20 +5537,15 @@ impl AnnotationAdapter {
         if self.tool != AnnotationTool::Select {
             return Ok(None);
         }
-        let handle_tolerance = tolerance_pt.max(
-            crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-                / self.observed_pixels_per_point.0.max(f64::EPSILON),
-        );
+        let reach = edge_resize_reach(self.observed_pixels_per_point.0);
         let to_hit = |annotation: &EllipseAnnotation| {
-            RectangleResizeHandle::ALL
-                .into_iter()
-                .enumerate()
-                .rev()
-                .find(|(_, handle)| {
-                    distance(ellipse_resize_handle_point(annotation, *handle), point)
-                        <= handle_tolerance
-                })
-                .map(|(index, _)| (annotation.id.clone(), index))
+            ellipse_outline_resize_handle(
+                annotation.rect,
+                annotation.rotation_degrees,
+                point,
+                reach,
+            )
+            .map(|handle| (annotation.id.clone(), resize_handle_index(handle)))
         };
         let selected = document.selected_id();
         let hit = selected
@@ -5803,13 +5831,15 @@ impl AnnotationAdapter {
             {
                 return Some((annotation.id.clone(), 8));
             }
-            hit_image_resize_handle(annotation, point, handle_tolerance).map(|handle| {
-                let index = ImageResizeHandle::ALL
-                    .iter()
-                    .position(|candidate| candidate == &handle)
-                    .expect("Image handle belongs to the stable feedback order");
-                (annotation.id.clone(), index)
-            })
+            hit_image_resize_handle(annotation, point, self.observed_pixels_per_point.0).map(
+                |handle| {
+                    let index = ImageResizeHandle::ALL
+                        .iter()
+                        .position(|candidate| candidate == &handle)
+                        .expect("Image handle belongs to the stable feedback order");
+                    (annotation.id.clone(), index)
+                },
+            )
         };
         let selected = document.selected_id();
         let hit = selected
@@ -6941,6 +6971,14 @@ impl AnnotationAdapter {
                 .clear_selection();
             return Ok(PointerPhaseOutcome::SelectionChanged(None));
         }
+        // Edit Text changes page content; the workspace owns its presses.
+        if self.tool == AnnotationTool::EditText {
+            self.documents
+                .entry(document_id)
+                .or_default()
+                .clear_selection();
+            return Ok(PointerPhaseOutcome::SelectionChanged(None));
+        }
         let tool = self.tool;
         let id = if tool == AnnotationTool::Select {
             None
@@ -6953,6 +6991,15 @@ impl AnnotationAdapter {
                 .unwrap_or_else(|| FROZEN_TEXT_CREATE.to_owned())
         });
         let tool_properties = self.tool_properties(tool);
+        // An unselected box's edge resizes only where the cursor shows it.
+        let transform_owner = if tool == AnnotationTool::Select {
+            self.hover_transform_handle(document_id, page_index, point, tolerance_pt)
+                .ok()
+                .flatten()
+                .map(|(id, _)| id)
+        } else {
+            None
+        };
         let document = self.documents.entry(document_id).or_default();
         match tool {
             AnnotationTool::Select => {
@@ -7012,6 +7059,7 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     self.observed_pixels_per_point.0,
+                    transform_owner.as_ref(),
                 ) {
                     document.select(&id);
                     let annotation = document
@@ -7024,17 +7072,21 @@ impl AnnotationAdapter {
                         return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                     }
                     self.active = Some(match handle {
-                        EllipseHandleKind::Resize(handle) => ActivePointer::EllipseResize {
-                            document_id,
-                            page_index,
-                            pointer_id,
-                            id: id.clone(),
-                            handle,
-                            start: point,
-                            current: point,
-                            original_rect: annotation.rect,
-                            original_rotation_degrees: annotation.rotation_degrees,
-                        },
+                        EllipseHandleKind::Resize(handle) => {
+                            let grabbed = ellipse_resize_handle_point(&annotation, handle);
+                            ActivePointer::EllipseResize {
+                                document_id,
+                                page_index,
+                                pointer_id,
+                                id: id.clone(),
+                                handle,
+                                start: point,
+                                current: point,
+                                original_rect: annotation.rect,
+                                original_rotation_degrees: annotation.rotation_degrees,
+                                grab_offset: (grabbed.x - point.x, grabbed.y - point.y),
+                            }
+                        }
                         EllipseHandleKind::Rotate => ActivePointer::EllipseRotate {
                             document_id,
                             page_index,
@@ -7054,6 +7106,7 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     self.observed_pixels_per_point.0,
+                    transform_owner.as_ref(),
                 ) {
                     document.select(&id);
                     let annotation = document
@@ -7405,6 +7458,7 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     self.observed_pixels_per_point.0,
+                    transform_owner.as_ref(),
                 ) {
                     document.select(&id);
                     let annotation = document
@@ -7459,6 +7513,7 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     self.observed_pixels_per_point.0,
+                    transform_owner.as_ref(),
                 ) {
                     document.select(&id);
                     let annotation = document
@@ -7489,6 +7544,7 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     self.observed_pixels_per_point.0,
+                    transform_owner.as_ref(),
                 ) {
                     document.select(&id);
                     let annotation = document
@@ -8197,6 +8253,8 @@ impl AnnotationAdapter {
             AnnotationTool::Dimension => Err(AnnotationError::InvalidGeometry(
                 "dimension creation requires the two-click placement interface".into(),
             )),
+            // Returned before an identifier is allocated.
+            AnnotationTool::EditText => Ok(PointerPhaseOutcome::SelectionChanged(None)),
             AnnotationTool::Image => {
                 let id = id.expect("drawing tools allocate an annotation ID");
                 let pending = self.image_asset.clone().ok_or_else(|| {
@@ -8385,6 +8443,7 @@ impl AnnotationAdapter {
             point,
             tolerance_pt,
             self.observed_pixels_per_point.0,
+            None,
         ) else {
             return Ok(PointerPhaseOutcome::Ignored);
         };
@@ -9148,6 +9207,7 @@ impl AnnotationAdapter {
                 start,
                 original_rect,
                 original_rotation_degrees,
+                grab_offset,
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
@@ -9165,7 +9225,7 @@ impl AnnotationAdapter {
                             original_rect,
                             original_rotation_degrees,
                             handle,
-                            point,
+                            offset_point(point, grab_offset),
                         )),
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
@@ -12016,6 +12076,7 @@ impl AnnotationAdapter {
             current,
             original_rect,
             original_rotation_degrees,
+            grab_offset,
             ..
         }) = &self.active
             && (*active_document_id, *active_page_index) == (document_id, page_index)
@@ -12028,7 +12089,7 @@ impl AnnotationAdapter {
                 *original_rect,
                 *original_rotation_degrees,
                 *handle,
-                *current,
+                offset_point(*current, *grab_offset),
             );
             annotation.preview = true;
             annotation.feedback = SceneInteractionFeedback::Transform {
@@ -13363,6 +13424,7 @@ impl AnnotationAdapter {
             AnnotationTool::Dimension => "dimension",
             AnnotationTool::Image => "image",
             AnnotationTool::Snapshot => "snapshot",
+            AnnotationTool::EditText => "edit-text",
         };
         MarkupId::new(format!("comparison:{family}:{}", self.next_sequence))
     }
@@ -13884,23 +13946,41 @@ fn hit_selected_image_resize_handle(
     point: PdfPoint,
     tolerance: f64,
     observed_pixels_per_point: f64,
+    transform_owner: Option<&MarkupId>,
 ) -> Option<(MarkupId, ImageResizeHandle)> {
-    let selected = document.selected_id()?;
-    let annotation = document
+    if let Some(annotation) = document.selected_id().and_then(|selected| {
+        document
+            .images()
+            .iter()
+            .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)
+    }) {
+        let handle_tolerance = tolerance.max(
+            crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
+                / observed_pixels_per_point.max(f64::EPSILON),
+        );
+        if image_rotation_handle_point(annotation, observed_pixels_per_point)
+            .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+        {
+            return None;
+        }
+        if let Some(handle) = hit_image_resize_handle(annotation, point, observed_pixels_per_point)
+        {
+            return Some((annotation.id.clone(), handle));
+        }
+    }
+    document
         .images()
         .iter()
-        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let handle_tolerance = tolerance.max(
-        crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-            / observed_pixels_per_point.max(f64::EPSILON),
-    );
-    if image_rotation_handle_point(annotation, observed_pixels_per_point)
-        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
-    {
-        return None;
-    }
-    hit_image_resize_handle(annotation, point, handle_tolerance)
-        .map(|handle| (annotation.id.clone(), handle))
+        .rev()
+        .filter(|annotation| {
+            annotation.page_index == page_index
+                && !annotation.locked
+                && transform_owner == Some(&annotation.id)
+        })
+        .find_map(|annotation| {
+            hit_image_resize_handle(annotation, point, observed_pixels_per_point)
+                .map(|handle| (annotation.id.clone(), handle))
+        })
 }
 
 fn hit_selected_image_rotation_handle(
@@ -13923,24 +14003,37 @@ fn hit_selected_image_rotation_handle(
         .then(|| annotation.id.clone())
 }
 
+/// Images resize from anywhere along their edges; aspect-locked Images only
+/// from their corners.
 fn hit_image_resize_handle(
     annotation: &ImageAnnotation,
     point: PdfPoint,
-    tolerance: f64,
+    observed_pixels_per_point: f64,
 ) -> Option<ImageResizeHandle> {
-    ImageResizeHandle::ALL
-        .into_iter()
-        .filter(|handle| {
-            !annotation.aspect_locked
-                || matches!(
-                    handle,
-                    ImageResizeHandle::SouthWest
-                        | ImageResizeHandle::SouthEast
-                        | ImageResizeHandle::NorthEast
-                        | ImageResizeHandle::NorthWest
-                )
-        })
-        .find(|handle| distance(image_resize_handle_point(annotation, *handle), point) <= tolerance)
+    let handle = match box_outline_resize_handle(
+        annotation.rect,
+        annotation.rotation_degrees(),
+        point,
+        edge_resize_reach(observed_pixels_per_point),
+    )? {
+        RectangleResizeHandle::NorthWest => ImageResizeHandle::NorthWest,
+        RectangleResizeHandle::North => ImageResizeHandle::North,
+        RectangleResizeHandle::NorthEast => ImageResizeHandle::NorthEast,
+        RectangleResizeHandle::East => ImageResizeHandle::East,
+        RectangleResizeHandle::SouthEast => ImageResizeHandle::SouthEast,
+        RectangleResizeHandle::South => ImageResizeHandle::South,
+        RectangleResizeHandle::SouthWest => ImageResizeHandle::SouthWest,
+        RectangleResizeHandle::West => ImageResizeHandle::West,
+    };
+    (!annotation.aspect_locked
+        || matches!(
+            handle,
+            ImageResizeHandle::SouthWest
+                | ImageResizeHandle::SouthEast
+                | ImageResizeHandle::NorthEast
+                | ImageResizeHandle::NorthWest
+        ))
+    .then_some(handle)
 }
 
 fn image_resize_handle_local_point(rect: PdfRect, handle: ImageResizeHandle) -> PdfPoint {
@@ -13983,21 +14076,41 @@ fn hit_selected_snapshot_resize_handle(
     point: PdfPoint,
     tolerance: f64,
     observed_pixels_per_point: f64,
+    transform_owner: Option<&MarkupId>,
 ) -> Option<(MarkupId, RectangleResizeHandle)> {
-    let selected = document.selected_id()?;
-    let annotation = document
+    let snapshot_handle = |annotation: &SnapshotAnnotation| {
+        hit_snapshot_handle_index(
+            annotation,
+            point,
+            tolerance,
+            observed_pixels_per_point,
+            false,
+        )
+        .and_then(|index| RectangleResizeHandle::ALL.get(index).copied())
+    };
+    if let Some((annotation, handle)) = document
+        .selected_id()
+        .and_then(|selected| {
+            document.snapshots().iter().find(|annotation| {
+                annotation.page_index == page_index && &annotation.id == selected
+            })
+        })
+        .and_then(|annotation| snapshot_handle(annotation).map(|handle| (annotation, handle)))
+    {
+        return Some((annotation.id.clone(), handle));
+    }
+    document
         .snapshots()
         .iter()
-        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    hit_snapshot_handle_index(
-        annotation,
-        point,
-        tolerance,
-        observed_pixels_per_point,
-        false,
-    )
-    .and_then(|index| RectangleResizeHandle::ALL.get(index).copied())
-    .map(|handle| (annotation.id.clone(), handle))
+        .rev()
+        .filter(|annotation| {
+            annotation.page_index == page_index
+                && !annotation.locked
+                && transform_owner == Some(&annotation.id)
+        })
+        .find_map(|annotation| {
+            snapshot_handle(annotation).map(|handle| (annotation.id.clone(), handle))
+        })
 }
 
 fn hit_selected_snapshot_rotation_handle(
@@ -14039,14 +14152,13 @@ fn hit_snapshot_handle_index(
     {
         return Some(RectangleResizeHandle::ALL.len());
     }
-    RectangleResizeHandle::ALL
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, handle)| {
-            distance(snapshot_resize_handle_point(annotation, **handle), point) <= handle_tolerance
-        })
-        .map(|(index, _)| index)
+    box_outline_resize_handle(
+        annotation.rect,
+        annotation.rotation_degrees(),
+        point,
+        edge_resize_reach(observed_pixels_per_point),
+    )
+    .map(resize_handle_index)
 }
 
 fn resized_image_rect(
@@ -14320,7 +14432,14 @@ fn annotation_body_contains(
         .iter()
         .find(|annotation| &annotation.id == id)
     {
-        return annotation.page_index == page_index && ellipse_hit(annotation, point, tolerance);
+        return annotation.page_index == page_index
+            && (ellipse_hit(annotation, point, tolerance)
+                || ellipse_move_zone_contains(
+                    annotation.rect,
+                    annotation.rotation_degrees,
+                    point,
+                    edge_resize_reach(observed_pixels_per_point),
+                ));
     }
     if let Some(annotation) = document
         .vertex_paths()
@@ -14935,25 +15054,38 @@ fn hit_selected_redact_handle(
     document: &AnnotationDocument,
     page_index: u32,
     point: PdfPoint,
-    tolerance: f64,
+    _tolerance: f64,
     observed_pixels_per_point: f64,
+    transform_owner: Option<&MarkupId>,
 ) -> Option<(MarkupId, RectangleResizeHandle)> {
-    let selected = document.selected_id()?;
-    let annotation = document
+    let reach = edge_resize_reach(observed_pixels_per_point);
+    if let Some((annotation, handle)) = document
+        .selected_id()
+        .and_then(|selected| {
+            document.redacts().iter().find(|annotation| {
+                annotation.page_index == page_index && &annotation.id == selected
+            })
+        })
+        .and_then(|annotation| {
+            box_outline_resize_handle(annotation.rect, 0., point, reach)
+                .map(|handle| (annotation, handle))
+        })
+    {
+        return Some((annotation.id.clone(), handle));
+    }
+    document
         .redacts()
         .iter()
-        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let handle_tolerance = tolerance.max(
-        crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-            / observed_pixels_per_point.max(f64::EPSILON),
-    );
-    RectangleResizeHandle::ALL
-        .into_iter()
         .rev()
-        .find(|handle| {
-            distance(redact_resize_handle_point(annotation, *handle), point) <= handle_tolerance
+        .filter(|annotation| {
+            annotation.page_index == page_index
+                && !annotation.locked
+                && transform_owner == Some(&annotation.id)
         })
-        .map(|handle| (annotation.id.clone(), handle))
+        .find_map(|annotation| {
+            box_outline_resize_handle(annotation.rect, 0., point, reach)
+                .map(|handle| (annotation.id.clone(), handle))
+        })
 }
 
 fn redact_resized_rect(
@@ -15221,28 +15353,51 @@ fn hit_selected_ellipse_handle(
     point: PdfPoint,
     tolerance: f64,
     observed_pixels_per_point: f64,
+    transform_owner: Option<&MarkupId>,
 ) -> Option<(MarkupId, EllipseHandleKind)> {
-    let selected = document.selected_id()?;
-    let annotation = document
+    let reach = edge_resize_reach(observed_pixels_per_point);
+    if let Some(annotation) = document.selected_id().and_then(|selected| {
+        document
+            .ellipses()
+            .iter()
+            .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)
+    }) {
+        let handle_tolerance = tolerance.max(
+            crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
+                / observed_pixels_per_point.max(f64::EPSILON),
+        );
+        if ellipse_rotation_handle_point(annotation, observed_pixels_per_point)
+            .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+        {
+            return Some((annotation.id.clone(), EllipseHandleKind::Rotate));
+        }
+        if let Some(handle) = ellipse_outline_resize_handle(
+            annotation.rect,
+            annotation.rotation_degrees,
+            point,
+            reach,
+        ) {
+            return Some((annotation.id.clone(), EllipseHandleKind::Resize(handle)));
+        }
+    }
+    document
         .ellipses()
         .iter()
-        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let handle_tolerance = tolerance.max(
-        crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-            / observed_pixels_per_point.max(f64::EPSILON),
-    );
-    if ellipse_rotation_handle_point(annotation, observed_pixels_per_point)
-        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
-    {
-        return Some((annotation.id.clone(), EllipseHandleKind::Rotate));
-    }
-    RectangleResizeHandle::ALL
-        .into_iter()
         .rev()
-        .find(|handle| {
-            distance(ellipse_resize_handle_point(annotation, *handle), point) <= handle_tolerance
+        .filter(|annotation| {
+            annotation.page_index == page_index
+                && !annotation.locked
+                && transform_owner == Some(&annotation.id)
         })
-        .map(|handle| (annotation.id.clone(), EllipseHandleKind::Resize(handle)))
+        .find_map(|annotation| {
+            ellipse_outline_resize_handle(
+                annotation.rect,
+                annotation.rotation_degrees,
+                point,
+                reach,
+            )
+            .map(|handle| (annotation.id.clone(), EllipseHandleKind::Resize(handle)))
+        })
 }
 
 fn hit_selected_text_box_resize_handle(
@@ -15251,23 +15406,42 @@ fn hit_selected_text_box_resize_handle(
     point: PdfPoint,
     tolerance: f64,
     observed_pixels_per_point: f64,
+    transform_owner: Option<&MarkupId>,
 ) -> Option<(MarkupId, RectangleResizeHandle)> {
-    let selected = document.selected_id()?;
-    let annotation = document
+    if let Some(annotation) = document.selected_id().and_then(|selected| {
+        document
+            .text_boxes()
+            .iter()
+            .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)
+    }) {
+        let handle_tolerance = tolerance.max(
+            crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
+                / observed_pixels_per_point.max(f64::EPSILON),
+        );
+        if text_box_rotation_handle_point(annotation, observed_pixels_per_point)
+            .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
+        {
+            return None;
+        }
+        if let Some(handle) =
+            hit_text_box_resize_handle(annotation, point, tolerance, observed_pixels_per_point)
+        {
+            return Some((annotation.id.clone(), handle));
+        }
+    }
+    document
         .text_boxes()
         .iter()
-        .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    let handle_tolerance = tolerance.max(
-        crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-            / observed_pixels_per_point.max(f64::EPSILON),
-    );
-    if text_box_rotation_handle_point(annotation, observed_pixels_per_point)
-        .is_ok_and(|handle| distance(handle, point) <= handle_tolerance)
-    {
-        return None;
-    }
-    hit_text_box_resize_handle(annotation, point, tolerance, observed_pixels_per_point)
-        .map(|handle| (annotation.id.clone(), handle))
+        .rev()
+        .filter(|annotation| {
+            annotation.page_index == page_index
+                && !annotation.locked
+                && transform_owner == Some(&annotation.id)
+        })
+        .find_map(|annotation| {
+            hit_text_box_resize_handle(annotation, point, tolerance, observed_pixels_per_point)
+                .map(|handle| (annotation.id.clone(), handle))
+        })
 }
 
 fn hit_selected_text_box_rotation_handle(
@@ -15290,19 +15464,32 @@ fn hit_selected_text_box_rotation_handle(
         .then(|| annotation.id.clone())
 }
 
+/// Text Boxes resize from anywhere along their edges, like Rectangles.
 fn hit_text_box_resize_handle(
     annotation: &TextBoxAnnotation,
     point: PdfPoint,
-    tolerance: f64,
+    _tolerance: f64,
     observed_pixels_per_point: f64,
 ) -> Option<RectangleResizeHandle> {
-    let handle_tolerance = tolerance.max(
-        crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-            / observed_pixels_per_point.max(f64::EPSILON),
-    );
-    RectangleResizeHandle::ALL.into_iter().rev().find(|handle| {
-        distance(text_box_resize_handle_point(annotation, *handle), point) <= handle_tolerance
-    })
+    box_outline_resize_handle(
+        annotation.layout_rect,
+        annotation.rotation_degrees(),
+        point,
+        edge_resize_reach(observed_pixels_per_point),
+    )
+}
+
+/// The resize band's reach either side of a box's outline, in page points.
+fn edge_resize_reach(observed_pixels_per_point: f64) -> f64 {
+    crate::annotation_model::RECTANGLE_EDGE_GRAB_CSS_PX
+        / observed_pixels_per_point.max(f64::EPSILON)
+}
+
+fn resize_handle_index(handle: RectangleResizeHandle) -> usize {
+    RectangleResizeHandle::ALL
+        .iter()
+        .position(|candidate| *candidate == handle)
+        .expect("every resize handle is in the stable feedback order")
 }
 
 fn ellipse_resize_point_from_handle(
@@ -15346,6 +15533,13 @@ fn ellipse_resize_point_from_handle(
         y: opposite.y + (local_point.y - opposite.y) / opposite_factor,
     };
     rotate_point_around_rect_center(bounds_point, original, -rotation_degrees)
+}
+
+fn offset_point(point: PdfPoint, (dx, dy): (f64, f64)) -> PdfPoint {
+    PdfPoint {
+        x: point.x + dx,
+        y: point.y + dy,
+    }
 }
 
 fn ellipse_resized_rect(
@@ -17121,8 +17315,9 @@ mod tests {
             .with_source(SemanticSnapSource::ConstructionGrid, false);
         adapter.set_semantic_snap_settings(snapping_off).unwrap();
         adapter.set_tool(AnnotationTool::Select).unwrap();
-        adapter.pointer_down(7, 0, 2, point(20., 40.), 4.).unwrap();
-        adapter.pointer_move(2, point(30., 50.)).unwrap();
+        // The move band just inside the curve; the curve itself resizes.
+        adapter.pointer_down(7, 0, 2, point(30., 50.), 4.).unwrap();
+        adapter.pointer_move(2, point(40., 60.)).unwrap();
         let moving = adapter.document_scene(7, 0).ellipses.remove(0);
         assert_eq!(
             moving.feedback,
@@ -17154,8 +17349,8 @@ mod tests {
 
         let snapping = snapping_off.with_source(SemanticSnapSource::Annotation, true);
         adapter.set_semantic_snap_settings(snapping).unwrap();
-        adapter.pointer_down(7, 0, 4, point(20., 40.), 4.).unwrap();
-        adapter.pointer_move(4, point(30., 50.)).unwrap();
+        adapter.pointer_down(7, 0, 4, point(30., 50.), 4.).unwrap();
+        adapter.pointer_move(4, point(40., 60.)).unwrap();
         assert_eq!(
             adapter.document_scene(7, 0).ellipses[0].feedback,
             SceneInteractionFeedback::Move {
@@ -17171,6 +17366,154 @@ mod tests {
         assert_eq!(
             redact.document_scene(9, 0).redacts[0].feedback,
             SceneInteractionFeedback::Creation
+        );
+    }
+
+    #[test]
+    fn box_shapes_resize_from_anywhere_along_their_edges_selected_or_not() {
+        let mut adapter = AnnotationAdapter::default();
+        let text_id = MarkupId::new("text-box:edge").unwrap();
+        let image_id = MarkupId::new("image:edge").unwrap();
+        let redact_id = MarkupId::new("redact:edge").unwrap();
+        let ellipse_id = MarkupId::new("ellipse:edge").unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        for annotation in [
+            Annotation::TextBox(
+                TextBoxAnnotation::new(
+                    text_id.clone(),
+                    0,
+                    PdfRect::new(20., 20., 100., 50.).unwrap(),
+                    "Text",
+                    TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Image(
+                ImageAnnotation::new(
+                    image_id.clone(),
+                    0,
+                    PdfRect::new(200., 20., 100., 50.).unwrap(),
+                    DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap(),
+                    false,
+                )
+                .unwrap(),
+            ),
+            Annotation::Redact(
+                RedactAnnotation::new(
+                    redact_id.clone(),
+                    0,
+                    PdfRect::new(200., 120., 100., 50.).unwrap(),
+                    "#000000",
+                    None::<String>,
+                    RectangleAppearance::new("#ff0000", 1., Some("#000000"), 0.35)
+                        .unwrap()
+                        .with_fill_opacity(0.35)
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+            Annotation::Ellipse(
+                EllipseAnnotation::new(
+                    ellipse_id.clone(),
+                    0,
+                    PdfRect::new(20., 120., 100., 60.).unwrap(),
+                    RectangleAppearance::default(),
+                )
+                .unwrap(),
+            ),
+        ] {
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(annotation))
+                .unwrap();
+        }
+        let snapping_off = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false);
+        adapter.set_semantic_snap_settings(snapping_off).unwrap();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+
+        // An Ellipse resizes from its curve, by the nearest eighth of a turn,
+        // and the grabbed point follows the pointer without jumping to the
+        // handle.
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        let original = PdfRect::new(20., 120., 100., 60.).unwrap();
+        let turn = 30_f64.to_radians();
+        let grab = point(70. + 50. * turn.cos(), 150. + 30. * turn.sin());
+        let north_east = RectangleResizeHandle::ALL
+            .iter()
+            .position(|handle| *handle == RectangleResizeHandle::NorthEast)
+            .unwrap();
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, grab, 1.).unwrap(),
+            Some((ellipse_id.clone(), north_east))
+        );
+        adapter.pointer_down(7, 0, 4, grab, 1.).unwrap();
+        adapter
+            .pointer_up(4, point(grab.x + 12., grab.y + 6.))
+            .unwrap();
+        let handle =
+            ellipse_resize_handle_point_for_rect(original, 0., RectangleResizeHandle::NorthEast);
+        assert_eq!(
+            adapter.snapshot(7).unwrap().ellipses[0].rect,
+            ellipse_resized_rect(
+                original,
+                0.,
+                RectangleResizeHandle::NorthEast,
+                point(handle.x + 12., handle.y + 6.),
+            )
+        );
+        // Well away from the east edge's midpoint, with nothing selected:
+        // the cursor offers East and the press resizes.
+        let east = RectangleResizeHandle::ALL
+            .iter()
+            .position(|handle| *handle == RectangleResizeHandle::East)
+            .unwrap();
+        for (pointer, id, grab) in [
+            (1, &text_id, point(120., 28.)),
+            (2, &image_id, point(300., 28.)),
+            (3, &redact_id, point(300., 128.)),
+        ] {
+            adapter.documents.get_mut(&7).unwrap().clear_selection();
+            assert_eq!(
+                adapter.hover_transform_handle(7, 0, grab, 1.).unwrap(),
+                Some((id.clone(), east)),
+                "{id:?}"
+            );
+            adapter.pointer_down(7, 0, pointer, grab, 1.).unwrap();
+            adapter
+                .pointer_up(pointer, point(grab.x + 40., grab.y))
+                .unwrap();
+            let snapshot = adapter.snapshot(7).unwrap();
+            let width = snapshot
+                .text_boxes
+                .iter()
+                .map(|annotation| (&annotation.id, annotation.layout_rect.width))
+                .chain(
+                    snapshot
+                        .images
+                        .iter()
+                        .map(|annotation| (&annotation.id, annotation.rect.width)),
+                )
+                .chain(
+                    snapshot
+                        .redacts
+                        .iter()
+                        .map(|annotation| (&annotation.id, annotation.rect.width)),
+                )
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(_, width)| width);
+            assert_eq!(width, Some(140.), "{id:?}");
+        }
+
+        // Just inside the curve is the move band, as for a Rectangle.
+        adapter.documents.get_mut(&7).unwrap().clear_selection();
+        assert_eq!(
+            adapter
+                .hover_transform_handle(7, 0, point(80., 150.), 1.)
+                .unwrap(),
+            None
         );
     }
 
@@ -19406,10 +19749,11 @@ mod tests {
             .unwrap();
         let ellipse_before = ellipse_adapter.snapshot(8).unwrap();
         let ellipse_history = ellipse_adapter.history_depths(8);
+        // The move band just inside the curve; the curve itself resizes.
         ellipse_adapter
-            .pointer_down(8, 0, 93, point(10., 30.), 4.)
+            .pointer_down(8, 0, 93, point(20., 40.), 4.)
             .unwrap();
-        ellipse_adapter.pointer_move(93, point(19., 39.)).unwrap();
+        ellipse_adapter.pointer_move(93, point(29., 49.)).unwrap();
         assert_eq!(
             ellipse_adapter.document_scene(8, 0).ellipses[0].rect,
             PdfRect::new(20., 20., 100., 60.).unwrap()
@@ -19421,7 +19765,7 @@ mod tests {
             &ellipse_target_id,
             SemanticSnapRole::Endpoint,
         );
-        ellipse_adapter.pointer_up(93, point(19., 39.)).unwrap();
+        ellipse_adapter.pointer_up(93, point(29., 49.)).unwrap();
         assert_eq!(
             ellipse_adapter.history_depths(8),
             (ellipse_history.0 + 1, 0)

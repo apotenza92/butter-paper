@@ -1,0 +1,5 @@
+Quartz plain text corpus line one.
+Second line with a tab	here and café façade.
+
+A longer paragraph of plain text printed by the macOS text filter, which wraps
+only where the source has line breaks, so each line is its own text object.

@@ -35,15 +35,19 @@ changes it; history is in git.
 - Document tabs: stock Outline appearance; width follows the
   title up to 190px; the close button is hidden at rest and appears on hover
   or focus over the end of the title, which keeps its position and truncates.
-  Open, New and template controls stay pinned right; an overflow menu appears
-  only when tabs overflow. Close buttons use the stock small ghost icon
+  Open, New and template controls stay pinned right, over the tool rail's
+  last three columns when it has at least three (the strip's divider continues
+  the rail's edge; Recovery and Update sit just before them); an overflow menu
+  appears only when tabs overflow. Close buttons use the stock small ghost icon
   Button with the theme full radius for circular hover, pressed and focus
-  backgrounds.
+  backgrounds. Filenames keep their leading position when close appears;
+  only the trailing truncation changes.
 - Recovery and save problems live in a conditional Recovery button beside
   Open/New, with a warning icon and item count. Its bounded, scrollable panel
   has a fixed top-right X; closing it never discards data. Recovery actions
   stay beside the affected document, including inactive documents. Ordinary
-  unsaved edits use the tab asterisk and the close/save decision, not a banner
+  unsaved edits use a centred asterisk in a small circle before the tab title,
+  plus the close/save decision, not a banner
   or notification. Reviewing a historical warning explicitly clears it.
 - New from template and Manage templates split list and preview 50/50.
 - Transient panels and dialogs close with an icon-only top-right X inside the
@@ -52,9 +56,33 @@ changes it; history is in git.
 - Sidebars: page thumbnails on the left, properties on the right, both 300px
   by default and resizable; thumbnails hide automatically when the window is
   too narrow for both and return when it widens. The right tool rail snaps to
-  whole columns.
+  whole columns, two by default, in sections General, Edit, Review, Draw
+  and Measure. When it overflows, an ellipsis cue at the hidden edge covers
+  the tools faded under it; hovering it shows "Scroll to see other tools"
+  beside the ellipsis, and a rail with nothing to scroll never shows it.
 - The viewer toolbar has zoom, fit and page-mode controls; CAD View was
   removed from it.
+- Page text editing takes the best of Revu, Acrobat and OnlyOffice rather
+  than matching Revu alone (Revu's Edit Text is line-only, for minor
+  changes). The target:
+  - A separate Edit Text tool (`Shift+T`), not part of Select, as in all
+    three.
+  - Revu's fidelity: edits are drawn in place by PDFium, untouched lines
+    keep their exact bytes, and the original embedded font is used.
+  - Acrobat's unit: a click edits the recognised paragraph, which reflows
+    within its width. Editing never moves other content. A block that
+    grows past its space extends downward with a warning outline. Enter
+    starts a new line; Escape or a click away finishes.
+  - No font is ever required, unlike Acrobat. Characters come from the
+    embedded program, then an installed font of the same name, then the
+    closest bundled family. Fonts that are not embedded or are missing
+    glyphs never block editing. The Properties panel names any substitute.
+  - Formatting from Acrobat and OnlyOffice: font (any installed or bundled
+    face, embedded as a subset), size, colour, bold, italic, alignment and
+    line spacing; lists that continue their bullets and numbering, and
+    paragraphs that flow between columns (OnlyOffice).
+  - Signed PDFs: warn that saving invalidates the signatures, then allow
+    editing (Revu refuses).
 
 - About Butter Paper and Settings are available in both application menus.
   Settings is a dedicated reusable window with edge-to-edge navigation,
@@ -64,11 +92,13 @@ changes it; history is in git.
   left-aligned, full-width navigation controls. Narrow windows replace the rail and
   sidebar with a category row and a Jump to section menu. Settings owns update
   checks, their visible results, the check frequency and release notes. Checks
-  discover releases without downloading them. A compact
-  button pinned beside the template control offers Update available, then
-  Downloading, then Restart to update, including with the in-app menu hidden.
-  Update available opens Settings without downloading; Download update in
-  Settings starts the download. Default automatic checks run at startup for
+  discover releases and download them automatically in the background. A
+  button appears beside the template control only when an update is ready,
+  separated by a full-height vertical rule and matching the adjacent control
+  height and neutral outline style.
+  Its first click opens a popup; Restart to update installs and relaunches,
+  while View release notes opens Settings. Failed downloads can be retried in
+  Settings. Default automatic checks run at startup for
   beta builds and weekly for stable builds, preserving saved user choices.
   Interface size stays in the View menu, not Settings. Restart uses the normal
   unsaved-work quit flow.

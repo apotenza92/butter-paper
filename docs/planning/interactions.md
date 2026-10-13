@@ -9,8 +9,9 @@ reference; entries marked *native* are deliberate departures from it.
   `E`, Arc `Shift+C`, Line `L`, Arrow `A`, Dimension `Shift+L`, Length
   `Shift+Alt+L`, Polylength `Shift+Alt+Q`, Area `Shift+Alt+A`, Polyline
   `Shift+N`, Polygon `Shift+P`, Pen `P`, Highlight `H`, Cloud `C`, Cloud+
-  `K`, Callout `Q`, Image `I`, Snapshot `G`. Tool shortcuts ignore Cmd/Ctrl
-  and editable or menu targets.
+  `K`, Callout `Q`, Image `I`, Snapshot `G`, Edit Text `Shift+T`. Tool
+  shortcuts ignore Cmd/Ctrl and editable or menu targets, including the Edit
+  Text editor.
 - Holding Space pans and restores the previous tool on release; two Space
   presses within 300ms toggle Pan.
 - Holding the middle button is Pan while held: the Pan tool shows active and
@@ -73,9 +74,15 @@ tooltip expands the instructions when the window truncates them.
   and zoom. Small Rectangles shrink the inward resize and move bands together
   to keep the central half of the shorter side empty. Corners follow the same
   band boundaries, with diagonal resize feedback in the resize band.
-- Other box shapes resize from corners and edge midpoints. Dragging along the
-  band around a selected markup's outline, from outside it to 20px inside,
-  moves it.
+- Ellipses, Text Boxes, Images, Snapshots and Redactions use the Rectangle's
+  resize band, selected or not: anywhere along an edge resizes from that
+  edge, and near a corner from the corner. An Ellipse's band follows its
+  curve, takes the handle at the nearest eighth of a turn, and the grabbed
+  point follows the pointer; Move bands lie either side of it, as for a
+  Rectangle. Aspect-locked Images resize only from their corners. An
+  unselected markup's edge takes the press only where the cursor offers to
+  resize it. Dragging along the band around a selected markup's outline,
+  from outside it to 20px inside, moves it.
 - A markup is hit on its strokes, its fill and its text or image. The empty
   inside of an unfilled shape is not part of it: a press there reaches what
   is underneath, selected or not.
@@ -89,6 +96,73 @@ tooltip expands the instructions when the window truncates them.
 - Select All works on the current page. Locked markups cannot be moved,
   resized or deleted.
 
+## Editing page text
+
+Edit Text (the rail's Edit section) edits the PDF's own text a paragraph at a
+time, as Acrobat does; it is a separate tool, not part of Select.
+
+- Lines group into paragraphs: same font, size and line spacing, sharing a
+  left, right or centre edge (or both edges, justified), in one column.
+  A list (items beginning with the same bullet, or numbered `1.` / `1)`, at
+  one edge, with their wrapped lines at the items' text) is one paragraph.
+  A paragraph that runs to the foot of a column without ending a sentence
+  and continues at the top of the next column of the same width is one
+  paragraph over both. Hovering outlines the paragraph.
+- A click places the caret, dragging selects across its lines, a
+  double-click selects a word, a triple-click the line and a quadruple-click
+  the paragraph. Shift-click extends the selection.
+- Input methods (Chinese, Japanese, dead keys) compose in place with an
+  underline, and the committed text replaces it.
+- Typing, Backspace/Delete (with Option/Ctrl for words), arrows, Up/Down
+  between lines, Home/End (the line), Cut/Copy/Paste (line breaks kept) and
+  Select All work in the paragraph. Enter starts a new line; in a list it
+  starts the next item with the same bullet or the next number, and in an
+  empty item it removes the item's marker, ending the list there. Numbers
+  count on from the first item whenever items are added or removed. Undo and Redo
+  step through the editing session while it is open.
+- The page shows the edited text as it will be saved: PDFium re-renders the
+  page after each change while the previous tiles stay on screen. Text
+  rewraps at the paragraph's width from the changed line on, keeping its
+  alignment (justified lines stay justified); lines before the change, and
+  lines the text wraps back onto, keep their bytes. A single line (a
+  heading, a label) grows instead of wrapping, as in Revu. A list item's
+  wrapped lines start at the items' text, and its text after the marker
+  starts there too. A paragraph over two columns wraps through the first
+  column's lines into the next column's.
+- Other text never moves. A paragraph that grows adds lines below its last
+  at its line spacing; when they overlap other text the frame turns to the
+  warning colour. Text made larger than the paragraph's own, or a chosen
+  line spacing, places every line afresh: the first keeps its baseline, each
+  next is the line spacing times its largest text below, and at the foot of
+  a column the next line starts at the top of the next column.
+- Typed text takes the style of the character before the caret, or of the
+  first replaced character when typing over a selection. Characters the
+  line's font cannot draw use, in order: an installed font of the same name,
+  a matching bundled font (Arimo, Tinos or Roboto Mono), Noto Sans SC, then
+  any installed font that has the character (in the line's weight and
+  slant first). Only a character no available font draws is refused, with a
+  status message.
+- While a paragraph is edited, the Edit Text properties show its font
+  (the document font, the bundled families or any installed family), size,
+  bold, italic and colour, applied to the selection or, with none, the whole
+  paragraph; and its alignment and line spacing (a multiple of the font
+  size), applied to the paragraph. A note names any font drawing characters
+  the chosen one lacks. Each change is a step of the session's undo; buttons,
+  the font list and Enter in a field return typing to the text. The X hides
+  the properties until another paragraph is edited.
+- Escape, a click elsewhere, changing tool or document, saving and closing
+  all finish editing. One finished paragraph edit is one undo step.
+- Text inside Form XObjects (stamped, imported or flattened content) edits
+  like page text.
+- Text that cannot be edited (Type3 fonts, vertical text, CMaps other than
+  Identity-H and Adobe's horizontal Unicode CMaps, invisible OCR text,
+  glyphs without Unicode, a form drawn more than once on the page, or a file
+  whose permissions forbid changing content) is shown with a not-allowed
+  cursor; a click explains why.
+- In a digitally signed PDF the first press asks "Edit text in a signed
+  PDF?" (saving invalidates the signatures); Cancel leaves the text alone
+  and asks again next time, Edit Text allows editing for that document.
+
 ## Cursors
 
 | Where | Cursor |
@@ -98,6 +172,8 @@ tooltip expands the instructions when the window truncates them.
 | Vertex or endpoint | crosshair |
 | Rotation knob | Butter Paper's rotate arrow |
 | Movable stroke, fill or content; either Rectangle move band, selected or not | open hand |
+| Editable page text with Edit Text, and while selecting it | I-beam |
+| Page text Edit Text cannot change | not allowed |
 | Moving a markup | closed hand |
 | Pan tool | open hand; closed while dragging |
 | Elsewhere | arrow |
@@ -121,7 +197,8 @@ is under the pointer.
   Ctrl+wheel reverses their Scroll/Zoom choice. CAD View always zooms with a
   discrete mouse wheel. Scrolling up zooms in; Reverse Scroll Zoom flips it.
 - A full-width bottom status bar explains the active tool and navigation
-  shortcuts. Narrow windows show shorter guidance; full help remains in tooltips.
+  shortcuts while a document is open. Empty windows omit it. Narrow windows
+  show shorter guidance; full help remains in tooltips.
 - *Native:* a pan (Pan tool, Space or middle button) goes past the pages into
   blank space until 48px of a page stays in view; zooming over blank space
   keeps the page where it is. Scrolling stops at the pages' margins, as a

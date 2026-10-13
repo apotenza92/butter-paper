@@ -6,6 +6,9 @@ use butter_paper::pdf_engine::{
     RetainedAnnotationRender, pdfium_display_render_bytes, retained_annotation_render,
     vector_snapshot_layer,
 };
+use butter_paper::pdf_text_edit::{
+    PageTextEdit, PageTextLayer, TextEditError, TextEditLimits, apply_text_edits, extract_page_text,
+};
 use butter_paper::pdf_worker::{
     AnnotationRenderMode, CancellationRegistry, DocumentInfo, FileSurfaceStore, PageGeometry,
     PdfBackend, RenderRequest, Rotation, SourceHandleId, SurfaceLimits, WorkerError,
@@ -38,7 +41,13 @@ fn prepare_pdfium_display_bytes(
 
 struct PdfiumDocument {
     document: PdfDocument<'static>,
+    /// The displayed document: the source with any page-text edits.
     metadata: PdfMetadataDocument,
+    /// The unedited source, which page-text edits always apply to.
+    source: PdfMetadataDocument,
+    source_bytes: Vec<u8>,
+    password: Option<String>,
+    edits: Vec<PageTextEdit>,
     retained: RetainedPdfiumDocument,
     vector_snapshots: Option<Result<PdfDocument<'static>, WorkerError>>,
 }
@@ -91,6 +100,7 @@ impl PdfBackend for PdfiumBackend {
                 format!("page metadata parser rejected the PDF: {error}"),
             )
         })?;
+        let source_bytes = metadata_bytes.clone();
         let document = self
             .load_display_document(&metadata, metadata_bytes, password)
             .map_err(|error| {
@@ -110,7 +120,11 @@ impl PdfBackend for PdfiumBackend {
         Ok((
             PdfiumDocument {
                 document,
+                source: metadata.clone(),
                 metadata,
+                source_bytes,
+                password: password.map(str::to_owned),
+                edits: Vec::new(),
                 retained: RetainedPdfiumDocument::Unprepared,
                 vector_snapshots: None,
             },
@@ -209,6 +223,53 @@ impl PdfBackend for PdfiumBackend {
                 WorkerError::with_detail(WorkerErrorCode::MalformedDocument, detail)
             }
         })
+    }
+
+    fn page_text(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+    ) -> Result<PageTextLayer, WorkerError> {
+        extract_page_text(&document.source, page_index, &TextEditLimits::default())
+            .map_err(map_text_edit_error)
+    }
+
+    fn set_text_edits(
+        &mut self,
+        document: &mut Self::Document,
+        edits: &[PageTextEdit],
+    ) -> Result<(), WorkerError> {
+        if document.edits == edits {
+            return Ok(());
+        }
+        let (metadata, bytes) = if edits.is_empty() {
+            (document.source.clone(), document.source_bytes.clone())
+        } else {
+            let mut edited = document.source.clone();
+            apply_text_edits(&mut edited, edits, &TextEditLimits::default())
+                .map_err(map_text_edit_error)?;
+            let mut bytes = Vec::with_capacity(document.source_bytes.len());
+            edited.save_to(&mut bytes).map_err(|error| {
+                WorkerError::with_detail(
+                    WorkerErrorCode::MalformedDocument,
+                    format!("edited PDF cannot be written: {error}"),
+                )
+            })?;
+            // Reparse so the display metadata matches what PDFium reads.
+            let edited = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
+                WorkerError::with_detail(
+                    WorkerErrorCode::MalformedDocument,
+                    format!("edited PDF cannot be read: {error}"),
+                )
+            })?;
+            (edited, bytes)
+        };
+        document.document =
+            self.load_display_document(&metadata, bytes, document.password.as_deref())?;
+        document.metadata = metadata;
+        document.retained = RetainedPdfiumDocument::Unprepared;
+        document.edits = edits.to_vec();
+        Ok(())
     }
 
     fn render_crop(
@@ -442,6 +503,18 @@ fn duplicate_inherited_source(_source: SourceHandleId) -> Result<File, WorkerErr
         WorkerErrorCode::BackendUnavailable,
         "inherited source-handle duplication is not implemented on this platform",
     ))
+}
+
+fn map_text_edit_error(error: TextEditError) -> WorkerError {
+    let code = match error {
+        TextEditError::LimitExceeded(_) => WorkerErrorCode::LimitExceeded,
+        TextEditError::Page(_) => WorkerErrorCode::PageError,
+        TextEditError::Malformed(_) => WorkerErrorCode::MalformedDocument,
+        TextEditError::Stale(_) | TextEditError::ReadOnly(_) | TextEditError::Unencodable(_) => {
+            WorkerErrorCode::InvalidRequest
+        }
+    };
+    WorkerError::with_detail(code, error.to_string())
 }
 
 fn map_pdfium_error(error: PdfiumError) -> WorkerError {
@@ -1122,6 +1195,762 @@ mod tests {
                 byte_len: u64::from(width) * 160 * 4,
                 format: SurfaceFormat::Bgra8Premultiplied,
             },
+        }
+    }
+
+    fn page_text_fixture() -> Vec<u8> {
+        use lopdf::{Document, Object, Stream, dictionary};
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let font_id = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let content_id = document.add_object(Stream::new(
+            dictionary! {},
+            b"BT /F1 48 Tf 10 60 Td (Hello) Tj ET".to_vec(),
+        ));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 160.into(), 160.into()],
+            "Contents" => content_id,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font_id } },
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        document.trailer.set("Root", catalog_id);
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn page_text_edits_render_and_clear_without_changing_the_source_text() {
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let path = env::temp_dir().join(format!("bp-page-text-{}.pdf", std::process::id()));
+        std::fs::write(&path, page_text_fixture()).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+            let request = retained_test_request(AnnotationRenderMode::RetainedOnly, 160);
+            let mut pixels = vec![0; request.surface.byte_len as usize];
+            backend
+                .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                .unwrap();
+            // Dark text pixels on the white page.
+            pixels
+                .chunks(4)
+                .filter(|pixel| pixel[0] < 128 && pixel[3] > 0)
+                .count()
+        };
+        let original = render(&mut backend, &mut document);
+        assert!(original > 100, "the source text renders");
+
+        let layer = backend.page_text(&mut document, 0).unwrap();
+        let line = &layer.lines[0];
+        assert_eq!(line.text, "Hello");
+        let emptied = PageTextEdit {
+            page_index: 0,
+            anchor: line.anchor,
+            original: line.original_runs(),
+            runs: Vec::new(),
+            layout: Default::default(),
+        };
+        backend
+            .set_text_edits(&mut document, std::slice::from_ref(&emptied))
+            .unwrap();
+        assert_eq!(render(&mut backend, &mut document), 0, "the edit renders");
+        // Page text and later edits still address the unedited source.
+        assert_eq!(
+            backend.page_text(&mut document, 0).unwrap().lines[0].text,
+            "Hello"
+        );
+
+        backend.set_text_edits(&mut document, &[]).unwrap();
+        assert_eq!(render(&mut backend, &mut document), original);
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn a_re_encrypted_owner_password_pdf_opens_and_renders_in_pdfium() {
+        use lopdf::{Document, EncryptionState, EncryptionVersion, Object, Permissions};
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let mut document = Document::load_mem(&page_text_fixture()).unwrap();
+        let file_id = Object::string_literal("butter-paper-enc");
+        document.trailer.set("ID", vec![file_id.clone(), file_id]);
+        let state = EncryptionState::try_from(EncryptionVersion::V2 {
+            document: &document,
+            owner_password: "owner",
+            user_password: "",
+            key_length: 128,
+            permissions: Permissions::PRINTABLE,
+        })
+        .unwrap();
+        document.encrypt(&state).unwrap();
+        let mut encrypted = Vec::new();
+        document.save_to(&mut encrypted).unwrap();
+        // As Save does: open (decrypting), then encrypt again on writing.
+        let mut opened = Document::load_mem(&encrypted).unwrap();
+        let state = opened.encryption_state.clone().unwrap();
+        opened.encrypt(&state).unwrap();
+        let mut saved = Vec::new();
+        opened.save_to(&mut saved).unwrap();
+
+        let path = env::temp_dir().join(format!("bp-re-encrypted-{}.pdf", std::process::id()));
+        std::fs::write(&path, &saved).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let request = retained_test_request(AnnotationRenderMode::RetainedOnly, 160);
+        let mut pixels = vec![0; request.surface.byte_len as usize];
+        backend
+            .render_crop(
+                &mut document,
+                &request,
+                &mut pixels,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let dark = pixels
+            .chunks(4)
+            .filter(|pixel| pixel[0] < 128 && pixel[3] > 0)
+            .count();
+        assert!(dark > 100, "the decrypted text renders");
+        assert_eq!(
+            backend.page_text(&mut document, 0).unwrap().lines[0].text,
+            "Hello"
+        );
+    }
+
+    /// A 300-page document of about 30 MB: a text line and an
+    /// incompressible 100 KB image on every page.
+    fn large_text_fixture() -> Vec<u8> {
+        use lopdf::{Document, Object, Stream, dictionary};
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let font_id = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut kids = Vec::new();
+        for page in 0..300 {
+            let pixels = (0..100 * 1024)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as u8
+                })
+                .collect::<Vec<_>>();
+            let image_id = document.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Image",
+                    "Width" => 320,
+                    "Height" => 320,
+                    "ColorSpace" => "DeviceGray",
+                    "BitsPerComponent" => 8,
+                },
+                pixels,
+            ));
+            let content_id = document.add_object(Stream::new(
+                dictionary! {},
+                format!(
+                    "q 200 0 0 200 300 400 cm /Im0 Do Q BT /F1 24 Tf 72 700 Td (Page {page} heading text) Tj ET"
+                )
+                .into_bytes(),
+            ));
+            kids.push(Object::Reference(document.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "Contents" => content_id,
+                "Resources" => dictionary! {
+                    "Font" => dictionary! { "F1" => font_id },
+                    "XObject" => dictionary! { "Im0" => image_id },
+                },
+            })));
+        }
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => kids,
+                "Count" => 300,
+            }),
+        );
+        let catalog_id =
+            document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        document.trailer.set("Root", catalog_id);
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn bench_text_edit_update_time_on_a_large_document() {
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let bytes = large_text_fixture();
+        let path = env::temp_dir().join(format!("bp-large-text-{}.pdf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        // The page is on screen before it is edited.
+        let mut request = retained_test_request(AnnotationRenderMode::None, 160);
+        request.page_index = 150;
+        let mut pixels = vec![0; request.surface.byte_len as usize];
+        backend
+            .render_crop(
+                &mut document,
+                &request,
+                &mut pixels,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let layer = backend.page_text(&mut document, 150).unwrap();
+        let line = &layer.lines[0];
+        let mut timings = Vec::new();
+        for text in [
+            "Page 150 heading textX",
+            "Page 150 heading textXY",
+            "Page 150 heading textXYZ",
+        ] {
+            let edit = PageTextEdit {
+                page_index: 150,
+                anchor: line.anchor,
+                original: line.original_runs(),
+                runs: vec![butter_paper::pdf_text_edit::TextEditRun {
+                    style: line.styles[0].clone(),
+                    text: text.into(),
+                }],
+                layout: Default::default(),
+            };
+            let started = std::time::Instant::now();
+            backend.set_text_edits(&mut document, &[edit]).unwrap();
+            backend
+                .render_crop(
+                    &mut document,
+                    &request,
+                    &mut pixels,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            timings.push(started.elapsed());
+        }
+        eprintln!(
+            "{} MB, 300 pages: keystroke to tile {:?}",
+            bytes.len() / 1_000_000,
+            timings
+        );
+        let budget = std::time::Duration::from_millis(
+            env::var("BP_TEXT_EDIT_BUDGET_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(250),
+        );
+        assert!(
+            timings.iter().all(|timing| *timing < budget),
+            "each update must stay under {budget:?}: {timings:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn form_xobject_text_edits_render_on_their_page_only() {
+        use butter_paper::pdf_text_edit::TextEditRun;
+        use lopdf::{Dictionary, Document, Object, Stream, dictionary};
+        // Two pages drawing one form whose text says "Shared form text".
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let font = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let form = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 400.into(), 100.into()],
+                "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 40.into(), 400.into()],
+                "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+            },
+            b"BT /F1 24 Tf 0 20 Td (Shared form text) Tj ET".to_vec(),
+        ));
+        let mut kids = Vec::new();
+        for _ in 0..2 {
+            let content =
+                document.add_object(Stream::new(Dictionary::new(), b"q /Fm0 Do Q".to_vec()));
+            kids.push(Object::Reference(document.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "Contents" => content,
+                "Resources" => dictionary! { "XObject" => dictionary! { "Fm0" => form } },
+            })));
+        }
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => 2 }),
+        );
+        let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        document.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let path = env::temp_dir().join(format!("bp-form-text-{}.pdf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut opened, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let layer = backend.page_text(&mut opened, 0).unwrap();
+        let line = &layer.lines[0];
+        assert_eq!(line.text, "Shared form text");
+        let edit = PageTextEdit {
+            page_index: 0,
+            anchor: line.anchor,
+            original: line.original_runs(),
+            runs: vec![TextEditRun {
+                style: line.styles[0].clone(),
+                text: "Edited form text Ж".into(),
+            }],
+            layout: Default::default(),
+        };
+        backend.set_text_edits(&mut opened, &[edit]).unwrap();
+        let text = |opened: &PdfiumDocument, page: i32| {
+            opened
+                .document
+                .pages()
+                .get(page)
+                .unwrap()
+                .text()
+                .unwrap()
+                .all()
+        };
+        assert_eq!(text(&opened, 0).trim(), "Edited form text Ж");
+        assert_eq!(text(&opened, 1).trim(), "Shared form text");
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn paragraph_reflow_renders_and_reads_back_in_pdfium() {
+        use butter_paper::pdf_text_blocks::paragraph_blocks;
+        use butter_paper::pdf_text_reflow::Paragraph;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        for name in ["chrome", "libreoffice"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/text-edit")
+                .join(format!("{name}.pdf"));
+            let source = File::open(&path).unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+            let (width, height) = {
+                let page = document.document.pages().get(0).unwrap();
+                (
+                    page.width().value.ceil() as u32,
+                    page.height().value.ceil() as u32,
+                )
+            };
+            let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+                let mut request = retained_test_request(AnnotationRenderMode::None, width);
+                request.clip.height = height;
+                request.surface.height = height;
+                request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+                let mut pixels = vec![0; request.surface.byte_len as usize];
+                backend
+                    .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                    .unwrap();
+                pixels
+            };
+            let before = render(&mut backend, &mut document);
+            let layer = std::sync::Arc::new(backend.page_text(&mut document, 0).unwrap());
+            let block = paragraph_blocks(&layer)
+                .into_iter()
+                .find(|block| {
+                    layer
+                        .line(&block.lines[0])
+                        .unwrap()
+                        .text
+                        .starts_with("The contractor")
+                })
+                .unwrap();
+            let paragraph = Paragraph::new(layer.clone(), &block).unwrap();
+            let mut text = paragraph.text(&[], &[]);
+            let style = text[4].1.clone();
+            let insert = " together with all welding, bolting and painting of every member";
+            text.splice(
+                15..15,
+                insert.chars().map(|character| (character, style.clone())),
+            );
+            let wrapped = paragraph.wrap(&text).unwrap();
+            let edits = paragraph.edits(&text, &wrapped);
+            backend.set_text_edits(&mut document, &edits).unwrap();
+            let after = render(&mut backend, &mut document);
+
+            // PDFium reads the paragraph as edited.
+            let normalise = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let read = normalise(
+                &document
+                    .document
+                    .pages()
+                    .get(0)
+                    .unwrap()
+                    .text()
+                    .unwrap()
+                    .all(),
+            );
+            let expected = normalise(
+                &text
+                    .iter()
+                    .map(|(character, _)| *character)
+                    .collect::<String>(),
+            );
+            assert!(read.contains(&expected), "{name}: {read}");
+
+            // Pixels change only from the paragraph's top down to its last
+            // line, added lines included.
+            let top = height as f64 - layer.line(&block.lines[0]).unwrap().quad(0., 1.)[3].1 - 4.;
+            let last = wrapped.last().unwrap();
+            let bottom = height as f64 - last.line.quad(0., 1.)[0].1 + 4.;
+            for (index, (old, new)) in before.chunks(4).zip(after.chunks(4)).enumerate() {
+                if old != new {
+                    let y = (index as u32 / width) as f64;
+                    assert!(
+                        (top..=bottom).contains(&y),
+                        "{name}: row {y} outside {top}..{bottom}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn a_list_item_added_with_enter_reads_back_in_pdfium() {
+        use butter_paper::page_text_editor::PageTextEditState;
+        use butter_paper::pdf_text_blocks::paragraph_blocks;
+        use butter_paper::pdf_text_reflow::Paragraph;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/text-edit/libreoffice.pdf");
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        let layer = std::sync::Arc::new(backend.page_text(&mut document, 0).unwrap());
+        let block = paragraph_blocks(&layer)
+            .into_iter()
+            .find(|block| block.list.is_some())
+            .unwrap();
+        let paragraph = Paragraph::new(layer.clone(), &block).unwrap();
+        let mut state = PageTextEditState::new(paragraph, &[], &[], &[], 0).unwrap();
+        let first_break = state.text().chars().position(|c| c == '\n').unwrap();
+        state.move_to(first_break, false);
+        assert!(state.insert_newline());
+        assert!(state.insert("Weld inspection"));
+        backend
+            .set_text_edits(&mut document, &state.edits())
+            .unwrap();
+
+        let normalise = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let read = normalise(
+            &document
+                .document
+                .pages()
+                .get(0)
+                .unwrap()
+                .text()
+                .unwrap()
+                .all(),
+        );
+        let items = [
+            "• Grade S355 steel for primary members.",
+            "• Weld inspection",
+            "• Hot-dip galvanised bolts, nuts and washers.",
+            "• Office efficient fluid workflow, café façade naïve.",
+        ];
+        assert!(read.contains(&items.join(" ")), "{read}");
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn text_properties_render_and_read_back_in_pdfium() {
+        use butter_paper::pdf_text_blocks::{TextBlockAlignment, paragraph_blocks};
+        use butter_paper::pdf_text_edit::{
+            FallbackFace, FallbackFamily, ParagraphFormat, TextFace,
+        };
+        use butter_paper::pdf_text_reflow::Paragraph;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        for name in ["chrome", "libreoffice"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/text-edit")
+                .join(format!("{name}.pdf"));
+            let source = File::open(&path).unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+            let (width, height) = {
+                let page = document.document.pages().get(0).unwrap();
+                (
+                    page.width().value.ceil() as u32,
+                    page.height().value.ceil() as u32,
+                )
+            };
+            let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+                let mut request = retained_test_request(AnnotationRenderMode::None, width);
+                request.clip.height = height;
+                request.surface.height = height;
+                request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+                let mut pixels = vec![0; request.surface.byte_len as usize];
+                backend
+                    .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                    .unwrap();
+                pixels
+            };
+            let before = render(&mut backend, &mut document);
+            let layer = std::sync::Arc::new(backend.page_text(&mut document, 0).unwrap());
+            let block = paragraph_blocks(&layer)
+                .into_iter()
+                .find(|block| {
+                    layer
+                        .line(&block.lines[0])
+                        .unwrap()
+                        .text
+                        .starts_with("The contractor")
+                })
+                .unwrap();
+            let format = ParagraphFormat {
+                alignment: Some(TextBlockAlignment::Right),
+                line_spacing: Some(1.6),
+            };
+            let paragraph = Paragraph::new(layer.clone(), &block)
+                .unwrap()
+                .with_format(format);
+            let mut text = paragraph.text(&[], &[]);
+            // "contractor": red, bold, larger, in the bundled serif.
+            let face = TextFace {
+                postscript_name: None,
+                fallback: FallbackFace {
+                    family: FallbackFamily::Serif,
+                    bold: true,
+                    italic: false,
+                },
+            };
+            for (_, style) in &mut text[4..14] {
+                style.fill = Some([1., 0., 0.]);
+                style.face = Some(face.clone());
+                style.font_size *= 1.25;
+            }
+            let wrapped = paragraph.wrap(&text).unwrap();
+            let edits = paragraph.edits(&text, &wrapped);
+            backend.set_text_edits(&mut document, &edits).unwrap();
+            let after = render(&mut backend, &mut document);
+
+            let normalise = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let read = normalise(
+                &document
+                    .document
+                    .pages()
+                    .get(0)
+                    .unwrap()
+                    .text()
+                    .unwrap()
+                    .all(),
+            );
+            let expected = normalise(
+                &text
+                    .iter()
+                    .map(|(character, _)| *character)
+                    .collect::<String>(),
+            );
+            assert!(read.contains(&expected), "{name}: {read}");
+
+            // The word is drawn red; nothing outside the paragraph changes.
+            let red = after
+                .chunks(4)
+                .filter(|pixel| {
+                    let (high, low) = (pixel[0].max(pixel[2]), pixel[0].min(pixel[2]));
+                    high > 180 && low < 90 && pixel[1] < 90
+                })
+                .count();
+            assert!(red > 20, "{name}: {red} red pixels");
+            let top = height as f64 - layer.line(&block.lines[0]).unwrap().quad(0., 1.)[3].1 - 8.;
+            let bottom = height as f64
+                - wrapped
+                    .iter()
+                    .map(|line| line.line.quad(0., 1.)[0].1)
+                    .fold(f64::INFINITY, f64::min)
+                + 8.;
+            let bottom = bottom.max(
+                height as f64
+                    - layer
+                        .line(block.lines.last().unwrap())
+                        .unwrap()
+                        .quad(0., 1.)[0]
+                        .1
+                    + 8.,
+            );
+            for (index, (old, new)) in before.chunks(4).zip(after.chunks(4)).enumerate() {
+                if old != new {
+                    let y = (index as u32 / width) as f64;
+                    assert!(
+                        (top..=bottom).contains(&y),
+                        "{name}: row {y} outside {top}..{bottom}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn producer_text_edits_change_only_their_lines_and_read_back_in_pdfium() {
+        use butter_paper::pdf_text_edit::{TextEditRun, layout_text_edit};
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        for name in ["chrome", "libreoffice", "quartz"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/text-edit")
+                .join(format!("{name}.pdf"));
+            let source = File::open(&path).unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+            let (page_width, page_height) = {
+                let page = document.document.pages().get(0).unwrap();
+                (
+                    f64::from(page.width().value),
+                    f64::from(page.height().value),
+                )
+            };
+            let (width, height) = (page_width.ceil() as u32, page_height.ceil() as u32);
+            let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+                let mut request = retained_test_request(AnnotationRenderMode::None, width);
+                request.clip.height = height;
+                request.surface.height = height;
+                request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+                let mut pixels = vec![0; request.surface.byte_len as usize];
+                backend
+                    .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                    .unwrap();
+                pixels
+            };
+            let before = render(&mut backend, &mut document);
+
+            // Edit every other line: insert a word with a fallback letter in
+            // the middle and drop as many letters from the end, so lines that
+            // fill the page width stay on it (PDFium reads no text past it).
+            let layer = backend.page_text(&mut document, 0).unwrap();
+            let inserted = "Zebra Ж ";
+            let edits = layer
+                .lines
+                .iter()
+                .filter(|line| {
+                    line.read_only.is_none()
+                        && line.text.trim().chars().count() > 2 * inserted.chars().count()
+                })
+                .step_by(2)
+                .map(|line| {
+                    let chars = line.text.trim_end().chars().collect::<Vec<_>>();
+                    let middle = chars.len() / 2;
+                    let text = chars[..middle].iter().collect::<String>()
+                        + inserted
+                        + &chars[middle..chars.len() - inserted.chars().count()]
+                            .iter()
+                            .collect::<String>();
+                    let style =
+                        line.styles[line.chars[middle.min(line.chars.len() - 1)].style].clone();
+                    let mut runs = line.original_runs();
+                    runs.clear();
+                    runs.push(TextEditRun { style, text });
+                    PageTextEdit {
+                        page_index: 0,
+                        anchor: line.anchor,
+                        original: line.original_runs(),
+                        runs,
+                        layout: Default::default(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert!(edits.len() >= 2, "{name}");
+            backend.set_text_edits(&mut document, &edits).unwrap();
+            let after = render(&mut backend, &mut document);
+
+            // Pixels may change only inside the edited lines' boxes (the
+            // wider of the original and edited line), with a small margin.
+            let boxes = edits
+                .iter()
+                .map(|edit| {
+                    let line = layer.line(&edit.anchor).unwrap();
+                    let laid = layout_text_edit(&layer, line, &edit.runs).unwrap();
+                    let quad = line.quad(0f64.min(laid.caret_x(0)), line.end_x.max(laid.end_x));
+                    let xs = quad.iter().map(|(x, _)| *x);
+                    let ys = quad.iter().map(|(_, y)| page_height - *y);
+                    (
+                        xs.clone().fold(f64::MAX, f64::min) - 3.,
+                        ys.clone().fold(f64::MAX, f64::min) - 3.,
+                        xs.fold(f64::MIN, f64::max) + 3.,
+                        ys.fold(f64::MIN, f64::max) + 3.,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut changed_inside = 0;
+            for (index, (old, new)) in before.chunks(4).zip(after.chunks(4)).enumerate() {
+                if old == new {
+                    continue;
+                }
+                let (x, y) = ((index as u32 % width) as f64, (index as u32 / width) as f64);
+                let inside = boxes.iter().any(|(left, top, right, bottom)| {
+                    (*left..=*right).contains(&x) && (*top..=*bottom).contains(&y)
+                });
+                assert!(
+                    inside,
+                    "{name}: pixel {x},{y} changed outside the edited lines"
+                );
+                changed_inside += 1;
+            }
+            assert!(changed_inside > 100, "{name}: the edits render");
+
+            // PDFium reads the edited text from the edited document.
+            let text = document
+                .document
+                .pages()
+                .get(0)
+                .unwrap()
+                .text()
+                .unwrap()
+                .all();
+            let normalise = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let text = normalise(&text);
+            for edit in &edits {
+                assert!(
+                    text.contains(&normalise(&edit.text())),
+                    "{name}: PDFium does not read {:?} in {text:?}",
+                    edit.text()
+                );
+            }
         }
     }
 

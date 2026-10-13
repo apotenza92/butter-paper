@@ -1,0 +1,5395 @@
+//! Editing existing page text in place (Revu's Edit Text).
+//!
+//! A page's top-level content is read into *lines*: consecutive text-showing
+//! operators that share a baseline, colour, clip and orientation. A line may
+//! mix fonts and sizes (runs). An edit replaces one line's text:
+//!
+//! - The line's first operator draws the whole edited line. Unchanged glyphs
+//!   keep their original codes and exact positions (kerning, justified word
+//!   gaps); inserted text uses the run's font, or a bundled fallback font for
+//!   characters the page font lacks. Text after an insertion or deletion
+//!   moves by the changed width.
+//! - The line's other operators become pure text-matrix moves of their
+//!   original width, and the first operator ends where it originally ended,
+//!   so every following operator draws exactly where it did before.
+//! - Only the edited operators' bytes change. Every other byte of every
+//!   content stream is preserved.
+//!
+//! Edits are keyed by a line's anchor (its origin) and its original text, and
+//! always apply to the unedited base document. Text inside Form XObjects,
+//! Type3 fonts, vertical writing, CMaps other than Identity-H and invisible
+//! (OCR) text are not editable.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::error::Error;
+use std::fmt;
+
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
+use serde::{Deserialize, Serialize};
+
+type Matrix = [f64; 6];
+
+const IDENTITY: Matrix = [1., 0., 0., 1., 0., 0.];
+const MAX_NESTING: usize = 64;
+const MAX_REFERENCE_HOPS: usize = 32;
+const DEFAULT_SPACE_WIDTH: f64 = 250.;
+/// Gaps wider than this (in ems) between merged operators read as a space.
+const SYNTHETIC_SPACE_GAP_EM: f64 = 0.15;
+/// Operators further apart than this (in ems) start a new line.
+const MAX_MERGE_GAP_EM: f64 = 1.0;
+const MIN_MERGE_GAP_EM: f64 = -0.3;
+const BASELINE_TOLERANCE_EM: f64 = 0.1;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextEditLimits {
+    pub max_decoded_bytes_per_page: usize,
+    pub max_operations_per_page: usize,
+    pub max_lines_per_page: usize,
+    pub max_chars_per_line: usize,
+    pub max_cmap_entries: usize,
+}
+
+impl Default for TextEditLimits {
+    fn default() -> Self {
+        Self {
+            max_decoded_bytes_per_page: 64 * 1024 * 1024,
+            max_operations_per_page: 2_000_000,
+            max_lines_per_page: 50_000,
+            max_chars_per_line: 4_096,
+            max_cmap_entries: 65_536,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextEditError {
+    /// The page or one of its streams cannot be read.
+    Malformed(String),
+    LimitExceeded(String),
+    /// The page does not exist.
+    Page(String),
+    /// The edited line is not in the base document as recorded.
+    Stale(String),
+    /// The line cannot be edited (unsupported font, Form XObject, ...).
+    ReadOnly(String),
+    /// Neither the line's font nor a bundled font can draw the character.
+    Unencodable(char),
+}
+
+impl fmt::Display for TextEditError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed(detail) => write!(formatter, "page text cannot be read: {detail}"),
+            Self::LimitExceeded(detail) => write!(formatter, "page text exceeds a limit: {detail}"),
+            Self::Page(detail) => write!(formatter, "page text is unavailable: {detail}"),
+            Self::Stale(detail) => write!(formatter, "edited text no longer matches: {detail}"),
+            Self::ReadOnly(detail) => write!(formatter, "text cannot be edited: {detail}"),
+            Self::Unencodable(character) => write!(
+                formatter,
+                "no available font can draw {character:?} (U+{:04X})",
+                u32::from(*character)
+            ),
+        }
+    }
+}
+
+impl Error for TextEditError {}
+
+impl From<lopdf::Error> for TextEditError {
+    fn from(error: lopdf::Error) -> Self {
+        Self::Malformed(error.to_string())
+    }
+}
+
+/// Identifies a line within its page: its origin in page user space, in
+/// hundredths of a point, and its order among lines with the same origin.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct TextLineAnchor {
+    pub x_centipoints: i64,
+    pub y_centipoints: i64,
+    pub ordinal: u32,
+}
+
+/// The text state a run of a line is drawn with.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TextRunStyle {
+    /// The font's name in the page's `/Resources /Font` dictionary.
+    pub font: Vec<u8>,
+    pub font_size: f64,
+    pub char_spacing: f64,
+    pub word_spacing: f64,
+    /// A colour chosen for the run, as DeviceRGB components; `None` keeps
+    /// the line's own fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[f64; 3]>,
+    /// A face chosen for the run; `None` draws it in `font`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face: Option<TextFace>,
+}
+
+/// A font chosen for text in place of its page font: the installed face
+/// named `postscript_name`, or, when that is not installed (or for a
+/// character it lacks), the bundled family in `fallback`'s style. `font`
+/// still names the run's page font, which supplies its text state.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct TextFace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postscript_name: Option<String>,
+    pub fallback: FallbackFace,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum FallbackFamily {
+    Sans,
+    Serif,
+    Mono,
+}
+
+/// The bundled face that draws characters a page font lacks.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct FallbackFace {
+    pub family: FallbackFamily,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// What the editor needs to lay out new text in one page font.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TextFontMetrics {
+    pub font: Vec<u8>,
+    /// Glyph widths, in thousandths of an em, of the characters the font can
+    /// draw for new text.
+    pub advances: Vec<(char, f64)>,
+    /// The character drawn with single-byte code 32, which word spacing
+    /// widens.
+    pub word_space: Option<char>,
+    pub fallback: FallbackFace,
+    /// The font's PostScript name without a subset tag: an installed font of
+    /// that name draws the characters its program lacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub postscript_name: Option<String>,
+    /// In thousandths of an em.
+    pub ascent: f64,
+    pub descent: f64,
+}
+
+impl TextFontMetrics {
+    fn advance(&self, character: char) -> Option<f64> {
+        self.advances
+            .binary_search_by(|(candidate, _)| candidate.cmp(&character))
+            .ok()
+            .map(|index| self.advances[index].1)
+    }
+}
+
+/// One character of a line, in the line's text space.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TextLineChar {
+    pub character: char,
+    pub x: f64,
+    pub advance: f64,
+    /// Index into the line's `styles`.
+    pub style: usize,
+    /// A gap between operators read as a space; it has no glyph.
+    pub synthetic: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PageTextLine {
+    pub anchor: TextLineAnchor,
+    pub text: String,
+    pub chars: Vec<TextLineChar>,
+    /// Where the line ends in its text space.
+    pub end_x: f64,
+    pub styles: Vec<TextRunStyle>,
+    /// Maps the line's text space to page user space.
+    pub matrix: [f64; 6],
+    /// Horizontal scaling as a fraction (`Tz` / 100).
+    pub horizontal_scale: f64,
+    pub rise: f64,
+    /// Extent above and below the baseline, in text space.
+    pub ascent: f64,
+    pub descent: f64,
+    /// The line's fill as DeviceRGB components, when it is a device colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[f64; 3]>,
+    /// Why the line cannot be edited, if it cannot.
+    pub read_only: Option<String>,
+}
+
+impl PageTextLine {
+    /// The line's origin in page user space.
+    pub fn origin(&self) -> (f64, f64) {
+        apply(self.matrix, 0., 0.)
+    }
+
+    /// The four corners of the box from `x0` to `x1` (text space) between
+    /// descent and ascent, in page user space.
+    pub fn quad(&self, x0: f64, x1: f64) -> [(f64, f64); 4] {
+        let bottom = self.rise + self.descent;
+        let top = self.rise + self.ascent;
+        [
+            apply(self.matrix, x0, bottom),
+            apply(self.matrix, x1, bottom),
+            apply(self.matrix, x1, top),
+            apply(self.matrix, x0, top),
+        ]
+    }
+
+    /// The point in text space for a page user-space point.
+    pub fn text_space_point(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        invert(self.matrix).map(|inverse| apply(inverse, x, y))
+    }
+
+    pub fn original_runs(&self) -> Vec<TextEditRun> {
+        let mut runs: Vec<TextEditRun> = Vec::new();
+        for character in &self.chars {
+            let style = &self.styles[character.style];
+            match runs.last_mut() {
+                Some(run) if &run.style == style => run.text.push(character.character),
+                _ => runs.push(TextEditRun {
+                    style: style.clone(),
+                    text: character.character.to_string(),
+                }),
+            }
+        }
+        runs
+    }
+}
+
+/// The editable text of one page.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct PageTextLayer {
+    pub page_index: u32,
+    pub fonts: Vec<TextFontMetrics>,
+    pub lines: Vec<PageTextLine>,
+}
+
+impl PageTextLayer {
+    pub fn line(&self, anchor: &TextLineAnchor) -> Option<&PageTextLine> {
+        self.lines.iter().find(|line| &line.anchor == anchor)
+    }
+
+    pub fn font(&self, name: &[u8]) -> Option<&TextFontMetrics> {
+        self.fonts.iter().find(|font| font.font == name)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TextEditRun {
+    pub style: TextRunStyle,
+    pub text: String,
+}
+
+/// How a line rewrapped in its paragraph is placed: moved along the line
+/// (centred or right-aligned text) and, for justified text, stretched so
+/// its last visible character ends at `justify_end`. A list item's text
+/// after its marker starts at `tab`: the character index and where it
+/// starts, at least. Text space units, before the move.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct LineFit {
+    #[serde(default)]
+    pub shift: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub justify_end: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<(usize, f64)>,
+}
+
+impl LineFit {
+    pub fn is_plain(&self) -> bool {
+        self.shift == 0. && self.justify_end.is_none() && self.tab.is_none()
+    }
+}
+
+/// A line a paragraph grew by, drawn `below` the edited (last) line's
+/// baseline in its text space. `anchor` names it once saved.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ExtraLine {
+    pub anchor: TextLineAnchor,
+    pub below: f64,
+    /// How far along the line its operator starts from the paragraph's, in
+    /// text space; its glyphs do not move. A hundredth of a point keeps its
+    /// anchor from coinciding with a line already there.
+    #[serde(default)]
+    pub origin_shift: f64,
+    #[serde(default, skip_serializing_if = "LineFit::is_plain")]
+    pub fit: LineFit,
+    pub runs: Vec<TextEditRun>,
+    /// A hard line break ends it, as one ends a list item.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hard_break: bool,
+}
+
+/// Paragraph settings chosen while editing in place of those the page
+/// shows. They are kept with the paragraph's first line so it reopens with
+/// them; the lines' fits and positions already draw them.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ParagraphFormat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<crate::pdf_text_blocks::TextBlockAlignment>,
+    /// Baseline to baseline, as a multiple of the paragraph's font size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_spacing: Option<f64>,
+}
+
+impl ParagraphFormat {
+    pub fn is_default(&self) -> bool {
+        self.alignment.is_none() && self.line_spacing.is_none()
+    }
+}
+
+/// Placement of a line in a rewrapped paragraph.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct TextEditLayout {
+    #[serde(default, skip_serializing_if = "LineFit::is_plain")]
+    pub fit: LineFit,
+    /// Lines added below this one, the paragraph's last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_lines: Vec<ExtraLine>,
+    #[serde(default, skip_serializing_if = "ParagraphFormat::is_default")]
+    pub paragraph: ParagraphFormat,
+    /// A hard line break ends the line's text, as one ends a list item, so
+    /// the paragraph reopens with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hard_break: bool,
+}
+
+impl TextEditLayout {
+    pub fn is_plain(&self) -> bool {
+        self.fit.is_plain()
+            && self.extra_lines.is_empty()
+            && self.paragraph.is_default()
+            && !self.hard_break
+    }
+}
+
+/// Replaces the text of one line.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PageTextEdit {
+    pub page_index: u32,
+    pub anchor: TextLineAnchor,
+    /// The line in the base document. Only its text must still match;
+    /// its runs restore the line when an edit is undone after saving.
+    pub original: Vec<TextEditRun>,
+    pub runs: Vec<TextEditRun>,
+    /// Placement in a rewrapped paragraph; plain for a line edited alone.
+    #[serde(default, skip_serializing_if = "TextEditLayout::is_plain")]
+    pub layout: TextEditLayout,
+}
+
+impl PageTextEdit {
+    pub fn text(&self) -> String {
+        self.runs.iter().map(|run| run.text.as_str()).collect()
+    }
+
+    pub fn original_text(&self) -> String {
+        self.original.iter().map(|run| run.text.as_str()).collect()
+    }
+
+    /// Whether the edit leaves the line as it was.
+    pub fn is_unchanged(&self) -> bool {
+        self.draws_as_original() && self.layout.paragraph.is_default()
+    }
+
+    /// Whether the edit draws the line as it was (it may still record
+    /// paragraph settings).
+    pub fn draws_as_original(&self) -> bool {
+        normalized_runs(&self.runs) == normalized_runs(&self.original)
+            && self.layout.fit.is_plain()
+            && self.layout.extra_lines.is_empty()
+    }
+}
+
+/// Runs with empty runs dropped and neighbours of one style joined.
+pub fn normalized_runs(runs: &[TextEditRun]) -> Vec<TextEditRun> {
+    let mut normalized: Vec<TextEditRun> = Vec::new();
+    for run in runs.iter().filter(|run| !run.text.is_empty()) {
+        match normalized.last_mut() {
+            Some(last) if last.style == run.style => last.text.push_str(&run.text),
+            _ => normalized.push(run.clone()),
+        }
+    }
+    normalized
+}
+
+/// Rewrites a history state's edits once `saved` edits are in the file, so
+/// they apply to the saved file as their new base. A line `saved` changed
+/// now reads as its saved runs; a state that differs from that becomes an
+/// edit from it, and a state that matches it needs no edit.
+pub fn rebase_text_edits(state: &[PageTextEdit], saved: &[PageTextEdit]) -> Vec<PageTextEdit> {
+    let key = |edit: &PageTextEdit| (edit.page_index, edit.anchor);
+    let mut rebased = state
+        .iter()
+        .filter(|edit| !saved.iter().any(|done| key(done) == key(edit)))
+        .cloned()
+        .collect::<Vec<_>>();
+    for done in saved {
+        let state_edit = state.iter().find(|edit| key(edit) == key(done));
+        let desired_runs = state_edit.map_or(&done.original, |edit| &edit.runs);
+        let desired = state_edit
+            .map(|edit| edit.layout.clone())
+            .unwrap_or_default();
+        // The saved line already sits at its fit: a shift is relative to it.
+        let fit = LineFit {
+            shift: desired.fit.shift - done.layout.fit.shift,
+            justify_end: desired.fit.justify_end,
+            tab: desired.fit.tab,
+        };
+        let fit = if fit.shift.abs() < 1e-9
+            && fit.justify_end == done.layout.fit.justify_end
+            && fit.tab == done.layout.fit.tab
+        {
+            LineFit::default()
+        } else {
+            fit
+        };
+        let saved_extras = &done.layout.extra_lines;
+        let mut edit = PageTextEdit {
+            page_index: done.page_index,
+            anchor: done.anchor,
+            original: normalized_runs(&done.runs),
+            runs: normalized_runs(desired_runs),
+            layout: TextEditLayout {
+                fit,
+                extra_lines: Vec::new(),
+                ..Default::default()
+            },
+        };
+        // Lines a save added are lines of the file now: each takes the
+        // desired state's text for it, or none.
+        let mut extra_edits = Vec::new();
+        for (index, extra) in saved_extras.iter().enumerate() {
+            let wanted = desired.extra_lines.get(index);
+            extra_edits.push(PageTextEdit {
+                page_index: done.page_index,
+                anchor: extra.anchor,
+                original: normalized_runs(&extra.runs),
+                runs: wanted.map_or_else(Vec::new, |wanted| normalized_runs(&wanted.runs)),
+                layout: TextEditLayout {
+                    fit: wanted.map_or_else(LineFit::default, |wanted| LineFit {
+                        shift: wanted.fit.shift - extra.fit.shift,
+                        justify_end: (wanted.fit.justify_end != extra.fit.justify_end)
+                            .then_some(wanted.fit.justify_end)
+                            .flatten(),
+                        tab: (wanted.fit.tab != extra.fit.tab)
+                            .then_some(wanted.fit.tab)
+                            .flatten(),
+                    }),
+                    extra_lines: Vec::new(),
+                    hard_break: wanted.is_some_and(|wanted| wanted.hard_break),
+                    ..Default::default()
+                },
+            });
+        }
+        // Lines beyond those continue below the last line in the file.
+        let further = desired.extra_lines.iter().skip(saved_extras.len());
+        match (extra_edits.last_mut(), saved_extras.last()) {
+            (Some(last_edit), Some(last_saved)) => {
+                last_edit
+                    .layout
+                    .extra_lines
+                    .extend(further.map(|extra| ExtraLine {
+                        below: extra.below - last_saved.below,
+                        ..extra.clone()
+                    }));
+            }
+            _ => edit.layout.extra_lines.extend(further.cloned()),
+        }
+        for edit in std::iter::once(edit).chain(extra_edits) {
+            if !edit.is_unchanged() {
+                rebased.push(edit);
+            }
+        }
+    }
+    rebased.sort_by_key(|edit| (edit.page_index, edit.anchor));
+    rebased
+}
+
+/// How a laid-out character is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LaidOutSource {
+    /// The original line's character at this index.
+    Original(usize),
+    /// New text drawn with the run's font.
+    Font,
+    /// New text drawn with a bundled fallback font.
+    Fallback,
+    /// A space the font cannot draw: a gap with no glyph.
+    Gap,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaidOutChar {
+    pub character: char,
+    pub x: f64,
+    pub advance: f64,
+    /// Index into the edit's runs.
+    pub run: usize,
+    pub source: LaidOutSource,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextLineLayout {
+    pub chars: Vec<LaidOutChar>,
+    pub end_x: f64,
+}
+
+impl TextLineLayout {
+    /// The caret position before character `index` (or the end).
+    pub fn caret_x(&self, index: usize) -> f64 {
+        match self.chars.get(index) {
+            Some(character) => character.x,
+            None => self
+                .chars
+                .last()
+                .map_or(0., |character| character.x + character.advance),
+        }
+    }
+
+    /// The caret index nearest to text-space `x`.
+    pub fn index_at(&self, x: f64) -> usize {
+        for (index, character) in self.chars.iter().enumerate() {
+            if x < character.x + character.advance / 2. {
+                return index;
+            }
+        }
+        self.chars.len()
+    }
+}
+
+/// Lays out an edit of `line`. The editor and the writer share this, so the
+/// caret matches what is saved.
+pub fn layout_text_edit(
+    layer: &PageTextLayer,
+    line: &PageTextLine,
+    runs: &[TextEditRun],
+) -> Result<TextLineLayout, TextEditError> {
+    let original = line
+        .chars
+        .iter()
+        .map(|character| (character.character, &line.styles[character.style]))
+        .collect::<Vec<_>>();
+    let edited = runs
+        .iter()
+        .enumerate()
+        .flat_map(|(run_index, run)| {
+            run.text
+                .chars()
+                .map(move |character| (character, run_index, &run.style))
+        })
+        .collect::<Vec<_>>();
+    let matches = align(
+        &original,
+        &edited
+            .iter()
+            .map(|(character, _, style)| (*character, *style))
+            .collect::<Vec<_>>(),
+    );
+    // Each character is drawn after the one before it, separated by the gap
+    // it had before it in the original. Gaps on either side of whitespace
+    // belong to the whitespace (justification widens both sides of a space)
+    // and go with it when it is deleted. Inserted text takes the gap before
+    // the character it is typed in front of, or, before whitespace, joins
+    // the text before it.
+    let is_space = |index: usize| line.chars[index].character.is_whitespace();
+    let end_of = |index: usize| line.chars[index].x + line.chars[index].advance;
+    let gap_before = |index: usize| match index.checked_sub(1) {
+        Some(previous) => line.chars[index].x - end_of(previous),
+        None => line.chars[index].x,
+    };
+    let mut chars = Vec::with_capacity(edited.len());
+    let mut end = 0.;
+    let mut next_original = 0;
+    // While inserting: the original whose leading gap the insertion took.
+    let mut inserting: Option<Option<usize>> = None;
+    for (edited_index, (character, run_index, style)) in edited.iter().enumerate() {
+        if let Some(original_index) = matches[edited_index] {
+            let deleted_space_before =
+                original_index > next_original && is_space(original_index - 1);
+            let gap = if inserting == Some(Some(original_index)) || deleted_space_before {
+                0.
+            } else {
+                gap_before(original_index)
+            };
+            let source = &line.chars[original_index];
+            chars.push(LaidOutChar {
+                character: *character,
+                x: end + gap,
+                advance: source.advance,
+                run: *run_index,
+                source: LaidOutSource::Original(original_index),
+            });
+            end += gap + source.advance;
+            next_original = original_index + 1;
+            inserting = None;
+            continue;
+        }
+        let gap = match inserting {
+            Some(_) => 0.,
+            None => {
+                let taken = (next_original < line.chars.len()
+                    && (next_original == 0 || !is_space(next_original)))
+                .then_some(next_original);
+                inserting = Some(taken);
+                taken.map_or(0., gap_before)
+            }
+        };
+        let (advance, source) = inserted_advance(layer, line, style, *character)?;
+        chars.push(LaidOutChar {
+            character: *character,
+            x: end + gap,
+            advance,
+            run: *run_index,
+            source,
+        });
+        end += gap + advance;
+    }
+    let trailing = match line.chars.len().checked_sub(1) {
+        Some(last) if next_original == line.chars.len() => line.end_x - end_of(last),
+        Some(_) => 0.,
+        None => line.end_x,
+    };
+    Ok(TextLineLayout {
+        chars,
+        end_x: end + trailing,
+    })
+}
+
+/// [`layout_text_edit`], placed by `fit`: moved, and stretched across its
+/// spaces to end at `fit.justify_end`.
+pub fn layout_text_edit_fitted(
+    layer: &PageTextLayer,
+    line: &PageTextLine,
+    runs: &[TextEditRun],
+    fit: LineFit,
+) -> Result<TextLineLayout, TextEditError> {
+    let mut layout = layout_text_edit(layer, line, runs)?;
+    apply_fit(&mut layout, fit);
+    Ok(layout)
+}
+
+/// The layout of an extra line: all its text new, in `line`'s fonts, on a
+/// baseline `below` it.
+pub fn layout_extra_line(
+    layer: &PageTextLayer,
+    line: &PageTextLine,
+    extra: &ExtraLine,
+) -> Result<TextLineLayout, TextEditError> {
+    layout_text_edit_fitted(
+        layer,
+        &extra_line_base(line, extra.below),
+        &extra.runs,
+        extra.fit,
+    )
+}
+
+/// An empty line `below` `line`, in its text space and state, to lay out new
+/// text on.
+pub fn extra_line_base(line: &PageTextLine, below: f64) -> PageTextLine {
+    let mut base = line.clone();
+    base.text.clear();
+    base.chars.clear();
+    base.end_x = 0.;
+    base.matrix = multiply([1., 0., 0., 1., 0., -below], line.matrix);
+    base.read_only = None;
+    base
+}
+
+fn apply_fit(layout: &mut TextLineLayout, fit: LineFit) {
+    if let Some((index, target)) = fit.tab
+        && let Some(start) = layout.chars.get(index).map(|character| character.x)
+        && target > start
+    {
+        for character in &mut layout.chars[index..] {
+            character.x += target - start;
+        }
+        if let Some(gap) = index.checked_sub(1) {
+            layout.chars[gap].advance += target - start;
+        }
+        layout.end_x += target - start;
+    }
+    if let Some(target) = fit.justify_end {
+        let first = layout
+            .chars
+            .iter()
+            .position(|character| !character.character.is_whitespace());
+        let last = layout
+            .chars
+            .iter()
+            .rposition(|character| !character.character.is_whitespace());
+        if let (Some(first), Some(last)) = (first, last) {
+            let end = layout.chars[last].x + layout.chars[last].advance;
+            let gaps = (first..last)
+                .filter(|index| layout.chars[*index].character.is_whitespace())
+                .count();
+            if gaps > 0 && target > end {
+                let extra = (target - end) / gaps as f64;
+                let mut shift = 0.;
+                for index in first..layout.chars.len() {
+                    layout.chars[index].x += shift;
+                    if index < last && layout.chars[index].character.is_whitespace() {
+                        layout.chars[index].advance += extra;
+                        shift += extra;
+                    }
+                }
+                layout.end_x += shift;
+            }
+        }
+    }
+    if fit.shift != 0. {
+        for character in &mut layout.chars {
+            character.x += fit.shift;
+        }
+        layout.end_x += fit.shift;
+    }
+}
+
+fn inserted_advance(
+    layer: &PageTextLayer,
+    line: &PageTextLine,
+    style: &TextRunStyle,
+    character: char,
+) -> Result<(f64, LaidOutSource), TextEditError> {
+    let font = layer.font(&style.font).ok_or_else(|| {
+        TextEditError::ReadOnly(format!(
+            "font {} is not on the page",
+            String::from_utf8_lossy(&style.font)
+        ))
+    })?;
+    let scale = line.horizontal_scale;
+    if style.face.is_none() {
+        if let Some(width) = font.advance(character) {
+            let word_spacing = if font.word_space == Some(character) {
+                style.word_spacing
+            } else {
+                0.
+            };
+            return Ok((
+                (width / 1000. * style.font_size + style.char_spacing + word_spacing) * scale,
+                LaidOutSource::Font,
+            ));
+        }
+        if character == ' ' {
+            let width = font.advance(' ').unwrap_or(DEFAULT_SPACE_WIDTH);
+            return Ok((
+                (width / 1000. * style.font_size + style.char_spacing) * scale,
+                LaidOutSource::Gap,
+            ));
+        }
+    }
+    let width = substitute_glyph(font, style, character)
+        .map(|(_, _, width)| width)
+        .ok_or(TextEditError::Unencodable(character))?;
+    Ok((
+        (width / 1000. * style.font_size + style.char_spacing) * scale,
+        LaidOutSource::Fallback,
+    ))
+}
+
+/// The font drawing `character` in `style` when it is not the one the run
+/// asks for (its page font, or its chosen face): `None` when that draws it.
+pub fn substitute_font(
+    layer: &PageTextLayer,
+    style: &TextRunStyle,
+    character: char,
+) -> Option<String> {
+    let metrics = layer.font(&style.font)?;
+    if character.is_whitespace() {
+        return None;
+    }
+    if style.face.is_none() && metrics.advance(character).is_some() {
+        return None;
+    }
+    let (font, _, _) = substitute_glyph(metrics, style, character)?;
+    if let Some(face) = &style.face
+        && crate::pdf_engine::chosen_face_font(face) == Some(font)
+    {
+        return None;
+    }
+    Some(crate::pdf_engine::text_edit_font_name(font))
+}
+
+/// The font, glyph and advance that draw `character` in `style` where its
+/// page font does not: the run's chosen face, or the page font's fallback.
+fn substitute_glyph(
+    metrics: &TextFontMetrics,
+    style: &TextRunStyle,
+    character: char,
+) -> Option<(crate::pdf_engine::TextEditFallbackFont, u16, f64)> {
+    match &style.face {
+        Some(face) => crate::pdf_engine::chosen_face_glyph(face, character),
+        None => crate::pdf_engine::text_edit_fallback_glyph(
+            metrics.fallback,
+            metrics.postscript_name.as_deref(),
+            character,
+        ),
+    }
+}
+
+fn align(
+    original: &[(char, &TextRunStyle)],
+    edited: &[(char, &TextRunStyle)],
+) -> Vec<Option<usize>> {
+    let same = |left: &(char, &TextRunStyle), right: &(char, &TextRunStyle)| {
+        left.0 == right.0 && left.1 == right.1
+    };
+    let mut result = vec![None; edited.len()];
+    let mut prefix = 0;
+    while prefix < original.len()
+        && prefix < edited.len()
+        && same(&original[prefix], &edited[prefix])
+    {
+        result[prefix] = Some(prefix);
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < original.len() - prefix
+        && suffix < edited.len() - prefix
+        && same(
+            &original[original.len() - 1 - suffix],
+            &edited[edited.len() - 1 - suffix],
+        )
+    {
+        result[edited.len() - 1 - suffix] = Some(original.len() - 1 - suffix);
+        suffix += 1;
+    }
+    let original_middle = &original[prefix..original.len() - suffix];
+    let edited_middle = &edited[prefix..edited.len() - suffix];
+    let (rows, columns) = (original_middle.len(), edited_middle.len());
+    if rows == 0 || columns == 0 || rows.saturating_mul(columns) > 4_000_000 {
+        return result;
+    }
+    let mut lengths = vec![0u32; (rows + 1) * (columns + 1)];
+    let at = |row: usize, column: usize| row * (columns + 1) + column;
+    for row in (0..rows).rev() {
+        for column in (0..columns).rev() {
+            lengths[at(row, column)] = if same(&original_middle[row], &edited_middle[column]) {
+                lengths[at(row + 1, column + 1)] + 1
+            } else {
+                lengths[at(row + 1, column)].max(lengths[at(row, column + 1)])
+            };
+        }
+    }
+    let (mut row, mut column) = (0, 0);
+    while row < rows && column < columns {
+        if same(&original_middle[row], &edited_middle[column]) {
+            result[prefix + column] = Some(prefix + row);
+            row += 1;
+            column += 1;
+        } else if lengths[at(row + 1, column)] >= lengths[at(row, column + 1)] {
+            row += 1;
+        } else {
+            column += 1;
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Matrices
+
+fn multiply(left: Matrix, right: Matrix) -> Matrix {
+    [
+        left[0] * right[0] + left[1] * right[2],
+        left[0] * right[1] + left[1] * right[3],
+        left[2] * right[0] + left[3] * right[2],
+        left[2] * right[1] + left[3] * right[3],
+        left[4] * right[0] + left[5] * right[2] + right[4],
+        left[4] * right[1] + left[5] * right[3] + right[5],
+    ]
+}
+
+fn apply(matrix: Matrix, x: f64, y: f64) -> (f64, f64) {
+    (
+        matrix[0] * x + matrix[2] * y + matrix[4],
+        matrix[1] * x + matrix[3] * y + matrix[5],
+    )
+}
+
+fn invert(matrix: Matrix) -> Option<Matrix> {
+    let determinant = matrix[0] * matrix[3] - matrix[1] * matrix[2];
+    if !determinant.is_finite() || determinant.abs() < 1e-12 {
+        return None;
+    }
+    let a = matrix[3] / determinant;
+    let b = -matrix[1] / determinant;
+    let c = -matrix[2] / determinant;
+    let d = matrix[0] / determinant;
+    Some([
+        a,
+        b,
+        c,
+        d,
+        -(matrix[4] * a + matrix[5] * c),
+        -(matrix[4] * b + matrix[5] * d),
+    ])
+}
+
+fn same_linear(left: Matrix, right: Matrix) -> bool {
+    let scale = left[..4]
+        .iter()
+        .chain(&right[..4])
+        .fold(0f64, |largest, value| largest.max(value.abs()));
+    scale > 0.
+        && left[..4]
+            .iter()
+            .zip(&right[..4])
+            .all(|(left, right)| (left - right).abs() <= scale * 1e-4)
+}
+
+// ---------------------------------------------------------------------------
+// Content stream lexing
+
+#[derive(Clone, Debug, PartialEq)]
+enum Operand {
+    Number(f64),
+    Name(Vec<u8>),
+    Str(Vec<u8>),
+    Array(Vec<Operand>),
+    Dict(Vec<(Vec<u8>, Operand)>),
+    Other,
+}
+
+#[derive(Clone, Debug)]
+struct ContentOp {
+    operator: Vec<u8>,
+    operands: Vec<Operand>,
+    /// Byte range of operands and operator in `stream`.
+    stream: usize,
+    start: usize,
+    end: usize,
+    /// The operands began in an earlier stream than the operator.
+    spans_streams: bool,
+}
+
+fn is_whitespace(byte: u8) -> bool {
+    matches!(byte, b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' ')
+}
+
+fn is_delimiter(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+    )
+}
+
+fn is_regular(byte: u8) -> bool {
+    !is_whitespace(byte) && !is_delimiter(byte)
+}
+
+enum Token {
+    Operand(Operand),
+    Operator(Vec<u8>),
+    ArrayEnd,
+    DictEnd,
+}
+
+struct Lexer<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> Lexer<'a> {
+    fn skip_whitespace_and_comments(&mut self) {
+        while let Some(&byte) = self.bytes.get(self.position) {
+            if is_whitespace(byte) {
+                self.position += 1;
+            } else if byte == b'%' {
+                while let Some(&byte) = self.bytes.get(self.position) {
+                    if byte == b'\r' || byte == b'\n' {
+                        break;
+                    }
+                    self.position += 1;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// The next token and where it starts.
+    fn next(&mut self, depth: usize) -> Result<Option<(Token, usize)>, TextEditError> {
+        if depth > MAX_NESTING {
+            return Err(TextEditError::LimitExceeded(
+                "content operands nest too deeply".into(),
+            ));
+        }
+        self.skip_whitespace_and_comments();
+        let start = self.position;
+        let Some(&byte) = self.bytes.get(self.position) else {
+            return Ok(None);
+        };
+        let token = match byte {
+            b'(' => Token::Operand(Operand::Str(self.literal_string()?)),
+            b'<' if self.bytes.get(self.position + 1) == Some(&b'<') => {
+                self.position += 2;
+                let mut entries = Vec::new();
+                let mut key: Option<Vec<u8>> = None;
+                loop {
+                    match self.next(depth + 1)? {
+                        Some((Token::DictEnd, _)) => break,
+                        Some((Token::Operand(Operand::Name(name)), _)) if key.is_none() => {
+                            key = Some(name);
+                        }
+                        Some((Token::Operand(value), _)) => {
+                            if let Some(key) = key.take() {
+                                entries.push((key, value));
+                            }
+                        }
+                        Some((Token::Operator(_), _)) => {
+                            if let Some(key) = key.take() {
+                                entries.push((key, Operand::Other));
+                            }
+                        }
+                        Some((Token::ArrayEnd, _)) => {}
+                        None => {
+                            return Err(TextEditError::Malformed("unterminated dictionary".into()));
+                        }
+                    }
+                }
+                Token::Operand(Operand::Dict(entries))
+            }
+            b'<' => Token::Operand(Operand::Str(self.hex_string()?)),
+            b'>' if self.bytes.get(self.position + 1) == Some(&b'>') => {
+                self.position += 2;
+                Token::DictEnd
+            }
+            b'[' => {
+                self.position += 1;
+                let mut items = Vec::new();
+                loop {
+                    match self.next(depth + 1)? {
+                        Some((Token::ArrayEnd, _)) => break,
+                        Some((Token::Operand(operand), _)) => items.push(operand),
+                        Some((Token::Operator(operator), _)) => {
+                            items.push(match operator.as_slice() {
+                                b"true" | b"false" | b"null" => Operand::Other,
+                                _ => {
+                                    return Err(TextEditError::Malformed(
+                                        "operator inside an array".into(),
+                                    ));
+                                }
+                            })
+                        }
+                        Some((Token::DictEnd, _)) | None => {
+                            return Err(TextEditError::Malformed("unterminated array".into()));
+                        }
+                    }
+                }
+                Token::Operand(Operand::Array(items))
+            }
+            b']' => {
+                self.position += 1;
+                Token::ArrayEnd
+            }
+            b'/' => {
+                self.position += 1;
+                let mut name = Vec::new();
+                while let Some(&byte) = self.bytes.get(self.position) {
+                    if !is_regular(byte) {
+                        break;
+                    }
+                    self.position += 1;
+                    if byte == b'#'
+                        && let Some(value) = self
+                            .bytes
+                            .get(self.position..self.position + 2)
+                            .and_then(|hex| std::str::from_utf8(hex).ok())
+                            .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                    {
+                        name.push(value);
+                        self.position += 2;
+                    } else {
+                        name.push(byte);
+                    }
+                }
+                Token::Operand(Operand::Name(name))
+            }
+            b')' | b'>' | b'{' | b'}' => {
+                // Stray delimiters are skipped, as viewers do.
+                self.position += 1;
+                return self.next(depth);
+            }
+            _ => {
+                while let Some(&byte) = self.bytes.get(self.position) {
+                    if !is_regular(byte) {
+                        break;
+                    }
+                    self.position += 1;
+                }
+                let word = &self.bytes[start..self.position];
+                match parse_number(word) {
+                    Some(number) => Token::Operand(Operand::Number(number)),
+                    None => Token::Operator(word.to_vec()),
+                }
+            }
+        };
+        Ok(Some((token, start)))
+    }
+
+    fn literal_string(&mut self) -> Result<Vec<u8>, TextEditError> {
+        self.position += 1;
+        let mut value = Vec::new();
+        let mut depth = 1usize;
+        loop {
+            let Some(&byte) = self.bytes.get(self.position) else {
+                return Err(TextEditError::Malformed("unterminated string".into()));
+            };
+            self.position += 1;
+            match byte {
+                b'\\' => {
+                    let Some(&escaped) = self.bytes.get(self.position) else {
+                        return Err(TextEditError::Malformed("unterminated string".into()));
+                    };
+                    self.position += 1;
+                    match escaped {
+                        b'n' => value.push(b'\n'),
+                        b'r' => value.push(b'\r'),
+                        b't' => value.push(b'\t'),
+                        b'b' => value.push(0x08),
+                        b'f' => value.push(0x0c),
+                        b'0'..=b'7' => {
+                            let mut code = u32::from(escaped - b'0');
+                            for _ in 0..2 {
+                                match self.bytes.get(self.position) {
+                                    Some(&digit @ b'0'..=b'7') => {
+                                        code = code * 8 + u32::from(digit - b'0');
+                                        self.position += 1;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            value.push((code & 0xff) as u8);
+                        }
+                        b'\r' => {
+                            if self.bytes.get(self.position) == Some(&b'\n') {
+                                self.position += 1;
+                            }
+                        }
+                        b'\n' => {}
+                        other => value.push(other),
+                    }
+                }
+                b'(' => {
+                    depth += 1;
+                    value.push(byte);
+                }
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(value);
+                    }
+                    value.push(byte);
+                }
+                _ => value.push(byte),
+            }
+        }
+    }
+
+    fn hex_string(&mut self) -> Result<Vec<u8>, TextEditError> {
+        self.position += 1;
+        let mut digits = Vec::new();
+        loop {
+            let Some(&byte) = self.bytes.get(self.position) else {
+                return Err(TextEditError::Malformed("unterminated hex string".into()));
+            };
+            self.position += 1;
+            match byte {
+                b'>' => break,
+                byte if is_whitespace(byte) => {}
+                byte => digits.push(
+                    (byte as char)
+                        .to_digit(16)
+                        .ok_or_else(|| TextEditError::Malformed("invalid hex string".into()))?
+                        as u8,
+                ),
+            }
+        }
+        if digits.len() % 2 == 1 {
+            digits.push(0);
+        }
+        Ok(digits
+            .chunks(2)
+            .map(|pair| (pair[0] << 4) | pair[1])
+            .collect())
+    }
+
+    /// Skips inline image data after `ID`, returning where `EI` ends.
+    fn skip_inline_image(&mut self) -> Result<usize, TextEditError> {
+        // One whitespace byte separates ID from the data.
+        self.position += 1;
+        let bytes = self.bytes;
+        let mut index = self.position;
+        while index + 1 < bytes.len() {
+            if bytes[index] == b'E'
+                && bytes[index + 1] == b'I'
+                && index > 0
+                && is_whitespace(bytes[index - 1])
+                && bytes
+                    .get(index + 2)
+                    .is_none_or(|&next| is_whitespace(next) || is_delimiter(next))
+            {
+                self.position = index + 2;
+                return Ok(self.position);
+            }
+            index += 1;
+        }
+        Err(TextEditError::Malformed("unterminated inline image".into()))
+    }
+}
+
+fn parse_number(word: &[u8]) -> Option<f64> {
+    let text = std::str::from_utf8(word).ok()?;
+    let first = *word.first()?;
+    if !(first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.')) {
+        return None;
+    }
+    if !word
+        .iter()
+        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.'))
+    {
+        return None;
+    }
+    // PDF numbers have no exponent; tolerate doubled signs as viewers do.
+    let trimmed = text.trim_start_matches(['+', '-']);
+    let negative = text[..text.len() - trimmed.len()].contains('-');
+    let value = if trimmed.is_empty() || trimmed == "." {
+        0.
+    } else {
+        trimmed.parse::<f64>().ok()?
+    };
+    Some(if negative { -value } else { value })
+}
+
+fn parse_operations(
+    streams: &[Vec<u8>],
+    limits: &TextEditLimits,
+) -> Result<Vec<ContentOp>, TextEditError> {
+    let mut operations = Vec::new();
+    let mut operands = Vec::new();
+    let mut operand_start: Option<(usize, usize)> = None;
+    for (stream_index, bytes) in streams.iter().enumerate() {
+        let mut lexer = Lexer { bytes, position: 0 };
+        while let Some((token, start)) = lexer.next(0)? {
+            match token {
+                Token::Operand(operand) => {
+                    operand_start.get_or_insert((stream_index, start));
+                    operands.push(operand);
+                }
+                Token::ArrayEnd | Token::DictEnd => {}
+                Token::Operator(operator) => {
+                    if matches!(operator.as_slice(), b"true" | b"false" | b"null") {
+                        operand_start.get_or_insert((stream_index, start));
+                        operands.push(Operand::Other);
+                        continue;
+                    }
+                    let mut end = lexer.position;
+                    if operator == b"BI" {
+                        // Key/value pairs up to ID, then binary data up to EI.
+                        loop {
+                            match lexer.next(0)? {
+                                Some((Token::Operator(word), _)) if word == b"ID" => break,
+                                Some(_) => {}
+                                None => {
+                                    return Err(TextEditError::Malformed(
+                                        "unterminated inline image".into(),
+                                    ));
+                                }
+                            }
+                        }
+                        end = lexer.skip_inline_image()?;
+                    }
+                    let (first_stream, first_start) =
+                        operand_start.take().unwrap_or((stream_index, start));
+                    operations.push(ContentOp {
+                        operator,
+                        operands: std::mem::take(&mut operands),
+                        stream: stream_index,
+                        start: if first_stream == stream_index {
+                            first_start
+                        } else {
+                            start
+                        },
+                        end,
+                        spans_streams: first_stream != stream_index,
+                    });
+                    if operations.len() > limits.max_operations_per_page {
+                        return Err(TextEditError::LimitExceeded(format!(
+                            "page content has more than {} operations",
+                            limits.max_operations_per_page
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(operations)
+}
+
+// ---------------------------------------------------------------------------
+// Fonts
+
+#[derive(Clone, Debug)]
+struct LoadedFont {
+    /// The font's name in the resources of the stream that uses it; its key
+    /// in a page's fonts adds the path of Form XObjects ("Fm0/F1").
+    resource_name: Vec<u8>,
+    /// Bytes per character code.
+    code_length: usize,
+    decode: HashMap<u32, String>,
+    widths: HashMap<u32, f64>,
+    default_width: f64,
+    encode: BTreeMap<char, u32>,
+    /// Codes known only from `/ActualText`; drawing them needs the span.
+    learned: BTreeMap<char, u32>,
+    simple: bool,
+    metrics: TextFontMetrics,
+    /// Whether the fallback family came from the font rather than a guess.
+    family_known: bool,
+    /// A predefined Unicode CMap: codes are UTF-16 (or UCS-2) text, and
+    /// widths are keyed by the CID it maps them to.
+    cmap: Option<crate::pdf_cmaps::UnicodeCMap>,
+    /// Codes are two bytes, or four for a surrogate pair.
+    utf16: bool,
+    unsupported: Option<String>,
+}
+
+impl LoadedFont {
+    fn unsupported(name: &[u8], reason: impl Into<String>) -> Self {
+        Self {
+            resource_name: name.to_vec(),
+            code_length: 1,
+            decode: HashMap::new(),
+            widths: HashMap::new(),
+            default_width: 0.,
+            encode: BTreeMap::new(),
+            learned: BTreeMap::new(),
+            simple: true,
+            family_known: false,
+            cmap: None,
+            utf16: false,
+            metrics: TextFontMetrics {
+                font: name.to_vec(),
+                advances: Vec::new(),
+                word_space: None,
+                fallback: FallbackFace {
+                    family: FallbackFamily::Sans,
+                    bold: false,
+                    italic: false,
+                },
+                postscript_name: None,
+                ascent: 800.,
+                descent: -200.,
+            },
+            unsupported: Some(reason.into()),
+        }
+    }
+
+    fn width(&self, code: u32) -> f64 {
+        let key = match self.cmap {
+            Some(cmap) => {
+                crate::pdf_cmaps::utf16_character(code).and_then(|character| cmap.cid(character))
+            }
+            None => Some(code),
+        };
+        key.and_then(|key| self.widths.get(&key))
+            .copied()
+            .unwrap_or(self.default_width)
+    }
+
+    /// The text a code stands for: its ToUnicode entry, or in a Unicode
+    /// CMap the code itself.
+    fn decode_code(&self, code: u32) -> Option<String> {
+        self.decode.get(&code).cloned().or_else(|| {
+            self.cmap?;
+            crate::pdf_cmaps::utf16_character(code).map(String::from)
+        })
+    }
+
+    fn codes(&self, bytes: &[u8]) -> Vec<(u32, Vec<u8>)> {
+        let mut codes = Vec::new();
+        let mut index = 0;
+        while index + self.code_length <= bytes.len() {
+            // A UTF-16 high surrogate takes the low one after it.
+            let length = if self.utf16
+                && (0xd8..=0xdb).contains(&bytes[index])
+                && bytes
+                    .get(index + 2)
+                    .is_some_and(|byte| (0xdc..=0xdf).contains(byte))
+                && index + 4 <= bytes.len()
+            {
+                4
+            } else {
+                self.code_length
+            };
+            let chunk = &bytes[index..index + length];
+            codes.push((
+                chunk
+                    .iter()
+                    .fold(0u32, |code, byte| (code << 8) | u32::from(*byte)),
+                chunk.to_vec(),
+            ));
+            index += length;
+        }
+        codes
+    }
+
+    /// The code that draws `character` and whether it needs an
+    /// `/ActualText` span to read back as that character.
+    fn encode_char(&self, character: char) -> Option<(u32, bool)> {
+        self.encode
+            .get(&character)
+            .map(|code| (*code, false))
+            .or_else(|| self.learned.get(&character).map(|code| (*code, true)))
+    }
+
+    /// Adds codes learned from `/ActualText` to the editor's metrics.
+    fn refresh_metrics(&mut self) {
+        let mut advances = self
+            .encode
+            .iter()
+            .chain(
+                self.learned
+                    .iter()
+                    .filter(|(character, _)| !self.encode.contains_key(character)),
+            )
+            .map(|(character, code)| (*character, self.width(*code)))
+            .collect::<Vec<_>>();
+        advances.sort_by_key(|advance| advance.0);
+        self.metrics.advances = advances;
+    }
+
+    fn code_bytes(&self, code: u32) -> Vec<u8> {
+        let length = if self.utf16 && code > 0xffff {
+            4
+        } else {
+            self.code_length
+        };
+        (0..length)
+            .rev()
+            .map(|shift| ((code >> (shift * 8)) & 0xff) as u8)
+            .collect()
+    }
+}
+
+fn resolve<'a>(document: &'a Document, object: &'a Object) -> Result<&'a Object, TextEditError> {
+    let mut object = object;
+    for _ in 0..MAX_REFERENCE_HOPS {
+        match object {
+            Object::Reference(id) => object = document.get_object(*id)?,
+            _ => return Ok(object),
+        }
+    }
+    Err(TextEditError::Malformed(
+        "reference chain is too long".into(),
+    ))
+}
+
+fn resolve_dict<'a>(document: &'a Document, object: &'a Object) -> Option<&'a Dictionary> {
+    resolve(document, object).ok()?.as_dict().ok()
+}
+
+fn get_dict<'a>(
+    document: &'a Document,
+    dictionary: &'a Dictionary,
+    key: &[u8],
+) -> Option<&'a Dictionary> {
+    resolve_dict(document, dictionary.get(key).ok()?)
+}
+
+fn get_number(document: &Document, dictionary: &Dictionary, key: &[u8]) -> Option<f64> {
+    object_number(resolve(document, dictionary.get(key).ok()?).ok()?)
+}
+
+fn object_number(object: &Object) -> Option<f64> {
+    match object {
+        Object::Integer(value) => Some(*value as f64),
+        Object::Real(value) => Some(f64::from(*value)),
+        _ => None,
+    }
+}
+
+fn get_name(document: &Document, dictionary: &Dictionary, key: &[u8]) -> Option<Vec<u8>> {
+    resolve(document, dictionary.get(key).ok()?)
+        .ok()?
+        .as_name()
+        .ok()
+        .map(<[u8]>::to_vec)
+}
+
+fn is_subset_name(name: &[u8]) -> bool {
+    name.len() > 7 && name[6] == b'+' && name[..6].iter().all(u8::is_ascii_uppercase)
+}
+
+fn base_name(name: &[u8]) -> String {
+    let name = if is_subset_name(name) {
+        &name[7..]
+    } else {
+        name
+    };
+    String::from_utf8_lossy(name).into_owned()
+}
+
+/// The serif class, boldness and slant an embedded TrueType or OpenType
+/// program declares in its OS/2 table.
+fn embedded_font_style(
+    document: &Document,
+    descriptor: &Dictionary,
+) -> Option<(Option<bool>, bool, bool)> {
+    const MAX_FONT_PROGRAM_BYTES: usize = 32 * 1024 * 1024;
+    let program = [b"FontFile2".as_slice(), b"FontFile3"]
+        .iter()
+        .find_map(|key| {
+            resolve(document, descriptor.get(key).ok()?)
+                .ok()?
+                .as_stream()
+                .ok()
+        })?;
+    let bytes = if program.dict.get(b"Filter").is_ok() {
+        program
+            .decompressed_content_with_limit(MAX_FONT_PROGRAM_BYTES)
+            .ok()?
+    } else {
+        program.content.clone()
+    };
+    let face = ttf_parser::RawFace::parse(&bytes, 0).ok()?;
+    let os2 = face.table(ttf_parser::Tag::from_bytes(b"OS/2"))?;
+    let weight = u16::from_be_bytes([*os2.get(4)?, *os2.get(5)?]);
+    let family_class = *os2.get(30)?;
+    let serif_style = *os2.get(33)?;
+    let selection = u16::from_be_bytes([*os2.get(62)?, *os2.get(63)?]);
+    // sFamilyClass 1-7 are serif classes and 8 is sans serif; PANOSE serif
+    // styles 11-13 are sans.
+    let serif = match (family_class, serif_style) {
+        (1..=7, _) => Some(true),
+        (8, _) => Some(false),
+        (_, 2..=10) => Some(true),
+        (_, 11..=13) => Some(false),
+        _ => None,
+    };
+    Some((serif, weight >= 600, selection & 1 != 0))
+}
+
+/// The bundled face for a font, and whether its family (serif, sans or
+/// mono) is known rather than assumed.
+fn fallback_face(
+    base_font: &str,
+    descriptor: Option<(&Dictionary, &Document)>,
+) -> (FallbackFace, bool) {
+    let lower = base_font.to_ascii_lowercase();
+    let embedded =
+        descriptor.and_then(|(descriptor, document)| embedded_font_style(document, descriptor));
+    let flags = descriptor
+        .and_then(|(descriptor, document)| get_number(document, descriptor, b"Flags"))
+        .map(|flags| flags as i64)
+        .unwrap_or(0);
+    let weight = descriptor
+        .and_then(|(descriptor, document)| get_number(document, descriptor, b"FontWeight"))
+        .unwrap_or(400.);
+    let italic_angle = descriptor
+        .and_then(|(descriptor, document)| get_number(document, descriptor, b"ItalicAngle"))
+        .unwrap_or(0.);
+    let mono = flags & 1 != 0
+        || ["courier", "mono", "consol", "menlo", "monaco", "typewriter"]
+            .iter()
+            .any(|word| lower.contains(word));
+    let named_serif = flags & 2 != 0
+        || [
+            "times",
+            "serif",
+            "roman",
+            "georgia",
+            "garamond",
+            "libertine",
+            "cambria",
+            "minion",
+            "palatino",
+            "book",
+            "baskerville",
+            "caslon",
+            "bodoni",
+            "didot",
+            "century",
+            "charter",
+            "utopia",
+            "sabon",
+            "bembo",
+            "goudy",
+            "antiqua",
+            "mincho",
+            "songti",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
+            && !lower.contains("sans");
+    let named_sans = [
+        "sans",
+        "arial",
+        "helvetica",
+        "gothic",
+        "grotesk",
+        "verdana",
+        "calibri",
+        "frutiger",
+        "univers",
+        "futura",
+        "myriad",
+        "segoe",
+        "tahoma",
+        "roboto",
+        "inter",
+        "avenir",
+        "franklin",
+        "trebuchet",
+        "heiti",
+    ]
+    .iter()
+    .any(|word| lower.contains(word));
+    let embedded_serif = embedded.and_then(|(serif, _, _)| serif);
+    let known = mono || embedded_serif.is_some() || named_serif || named_sans;
+    // A sans name wins over a weight word such as "Book".
+    let serif = !mono && embedded_serif.unwrap_or(named_serif && !named_sans);
+    let bold = weight >= 600.
+        || embedded.is_some_and(|(_, bold, _)| bold)
+        || flags & (1 << 18) != 0
+        || ["bold", "black", "heavy", "semibold", "demi"]
+            .iter()
+            .any(|word| lower.contains(word));
+    let italic = italic_angle.abs() > 0.5
+        || embedded.is_some_and(|(_, _, italic)| italic)
+        || flags & (1 << 6) != 0
+        || ["italic", "oblique"]
+            .iter()
+            .any(|word| lower.contains(word));
+    (
+        FallbackFace {
+            family: if mono {
+                FallbackFamily::Mono
+            } else if serif {
+                FallbackFamily::Serif
+            } else {
+                FallbackFamily::Sans
+            },
+            bold,
+            italic,
+        },
+        known,
+    )
+}
+
+const STANDARD_14: [&str; 14] = [
+    "Helvetica",
+    "Helvetica-Bold",
+    "Helvetica-Oblique",
+    "Helvetica-BoldOblique",
+    "Times-Roman",
+    "Times-Bold",
+    "Times-Italic",
+    "Times-BoldItalic",
+    "Courier",
+    "Courier-Bold",
+    "Courier-Oblique",
+    "Courier-BoldOblique",
+    "Symbol",
+    "ZapfDingbats",
+];
+
+fn is_standard_latin_font(base_font: &str) -> bool {
+    let name = base_font.split(',').next().unwrap_or(base_font);
+    STANDARD_14[..12].contains(&name)
+        || ["Arial", "TimesNewRoman", "Times New Roman", "CourierNew"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
+
+/// Unicode mappings from a ToUnicode CMap, for codes of `code_length` bytes.
+fn to_unicode_map(
+    document: &Document,
+    font: &Dictionary,
+    code_length: usize,
+    limits: &TextEditLimits,
+) -> Result<HashMap<u32, String>, TextEditError> {
+    let Ok(to_unicode) = font.get(b"ToUnicode") else {
+        return Ok(HashMap::new());
+    };
+    let probe = dictionary! {
+        "Type" => "Font",
+        "ToUnicode" => to_unicode.clone(),
+    };
+    let Ok(lopdf::Encoding::UnicodeMapEncoding(cmap)) =
+        probe.get_font_encoding_with_limit(document, limits.max_decoded_bytes_per_page)
+    else {
+        return Ok(HashMap::new());
+    };
+    let mut map = HashMap::new();
+    let ranges = &cmap.bf_ranges[code_length - 1];
+    for (range, _) in ranges.iter() {
+        let mut code = *range.start();
+        loop {
+            if map.len() >= limits.max_cmap_entries {
+                return Ok(map);
+            }
+            if let Some(units) = cmap.get(code, code_length as u8) {
+                let text = char::decode_utf16(units)
+                    .collect::<Result<String, _>>()
+                    .unwrap_or_default();
+                if !text.is_empty() && !text.contains('\u{fffd}') {
+                    map.insert(code, text);
+                }
+            }
+            if code == *range.end() {
+                break;
+            }
+            code += 1;
+        }
+    }
+    Ok(map)
+}
+
+/// Codes listed explicitly in an `/Encoding /Differences` array.
+fn difference_codes(document: &Document, font: &Dictionary) -> BTreeSet<u32> {
+    let mut codes = BTreeSet::new();
+    let Some(encoding) = get_dict(document, font, b"Encoding") else {
+        return codes;
+    };
+    let Some(differences) = encoding
+        .get(b"Differences")
+        .ok()
+        .and_then(|value| resolve(document, value).ok())
+        .and_then(|value| value.as_array().ok())
+    else {
+        return codes;
+    };
+    let mut code = 0i64;
+    for item in differences {
+        match resolve(document, item) {
+            Ok(Object::Integer(start)) => code = *start,
+            Ok(Object::Name(_)) => {
+                if let Ok(value) = u32::try_from(code) {
+                    codes.insert(value);
+                }
+                code += 1;
+            }
+            _ => {}
+        }
+    }
+    codes
+}
+
+fn load_font(
+    document: &Document,
+    name: &[u8],
+    font: &Dictionary,
+    limits: &TextEditLimits,
+) -> LoadedFont {
+    match try_load_font(document, name, font, limits) {
+        Ok(font) => font,
+        Err(error) => LoadedFont::unsupported(name, error.to_string()),
+    }
+}
+
+fn try_load_font(
+    document: &Document,
+    name: &[u8],
+    font: &Dictionary,
+    limits: &TextEditLimits,
+) -> Result<LoadedFont, TextEditError> {
+    let subtype = get_name(document, font, b"Subtype").unwrap_or_default();
+    let base_font = get_name(document, font, b"BaseFont").unwrap_or_default();
+    let base = base_name(&base_font);
+    let mut loaded = match subtype.as_slice() {
+        b"Type0" => load_type0_font(document, name, font, &base, limits),
+        b"Type1" | b"MMType1" | b"TrueType" => {
+            load_simple_font(document, name, font, &base_font, &base, limits)
+        }
+        b"Type3" => Err(TextEditError::ReadOnly(
+            "Type3 fonts are not editable".into(),
+        )),
+        other => Err(TextEditError::ReadOnly(format!(
+            "font type {} is not editable",
+            String::from_utf8_lossy(other)
+        ))),
+    }?;
+    // Neither the name nor the descriptor says serif or sans: look at the
+    // glyphs.
+    if !loaded.family_known {
+        let descriptor = if loaded.simple {
+            get_dict(document, font, b"FontDescriptor")
+        } else {
+            font.get(b"DescendantFonts")
+                .ok()
+                .and_then(|value| resolve(document, value).ok())
+                .and_then(|value| value.as_array().ok())
+                .and_then(|array| array.first())
+                .and_then(|value| resolve_dict(document, value))
+                .and_then(|descendant| get_dict(document, descendant, b"FontDescriptor"))
+        };
+        if let Some(serif) = descriptor
+            .and_then(|descriptor| font_program(document, descriptor))
+            .and_then(|program| outline_serif(&program, &loaded.encode, !loaded.simple))
+        {
+            loaded.metrics.fallback.family = if serif {
+                FallbackFamily::Serif
+            } else {
+                FallbackFamily::Sans
+            };
+            loaded.family_known = true;
+        }
+    }
+    Ok(loaded)
+}
+
+/// A descriptor's embedded font program, decompressed.
+fn font_program(document: &Document, descriptor: &Dictionary) -> Option<Vec<u8>> {
+    const MAX_FONT_PROGRAM_BYTES: usize = 32 * 1024 * 1024;
+    let program = [b"FontFile2".as_slice(), b"FontFile3", b"FontFile"]
+        .iter()
+        .find_map(|key| {
+            resolve(document, descriptor.get(key).ok()?)
+                .ok()?
+                .as_stream()
+                .ok()
+        })?;
+    if program.dict.get(b"Filter").is_ok() {
+        program
+            .decompressed_content_with_limit(MAX_FONT_PROGRAM_BYTES)
+            .ok()
+    } else {
+        Some(program.content.clone())
+    }
+}
+
+/// Whether a font program's letters have serifs, judged by the outline of
+/// a plain stem letter: serif faces draw "l", "I", "i", "H" or "T" with about
+/// three times as many segments as sans faces (Tinos "l" 10, Arimo 4; STIX
+/// 11, SF Compact 3). `codes` maps characters to the font's codes; in a
+/// Type0 font (`cid_glyphs`) a code is also its glyph id.
+fn outline_serif(program: &[u8], codes: &BTreeMap<char, u32>, cid_glyphs: bool) -> Option<bool> {
+    struct Segments(usize);
+    impl ttf_parser::OutlineBuilder for Segments {
+        fn move_to(&mut self, _: f32, _: f32) {}
+        fn line_to(&mut self, _: f32, _: f32) {
+            self.0 += 1;
+        }
+        fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {
+            self.0 += 1;
+        }
+        fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {
+            self.0 += 1;
+        }
+        fn close(&mut self) {}
+    }
+    // The fewest segments a serif face draws each letter with.
+    const PROBES: [(char, usize); 5] = [('l', 7), ('I', 7), ('i', 11), ('H', 19), ('T', 11)];
+    let code = |character: char| codes.get(&character).copied();
+    if let Ok(face) = ttf_parser::Face::parse(program, 0) {
+        let glyph = |character: char| {
+            face.glyph_index(character).or_else(|| {
+                let code = code(character)?;
+                if cid_glyphs {
+                    return u16::try_from(code).ok().map(ttf_parser::GlyphId);
+                }
+                // Symbolic TrueType fonts map codes through (3,0) at
+                // 0xF000 + code, or (1,0) directly.
+                face.tables()
+                    .cmap?
+                    .subtables
+                    .into_iter()
+                    .find_map(
+                        |subtable| match (subtable.platform_id, subtable.encoding_id) {
+                            (ttf_parser::PlatformId::Windows, 0) => {
+                                subtable.glyph_index(0xF000 + code)
+                            }
+                            (ttf_parser::PlatformId::Macintosh, 0) => subtable.glyph_index(code),
+                            _ => None,
+                        },
+                    )
+            })
+        };
+        return PROBES.iter().find_map(|(character, threshold)| {
+            let mut segments = Segments(0);
+            face.outline_glyph(glyph(*character)?, &mut segments)?;
+            Some(segments.0 >= *threshold)
+        });
+    }
+    let table = ttf_parser::cff::Table::parse(program)?;
+    PROBES.iter().find_map(|(character, threshold)| {
+        let glyph = table
+            .glyph_index_by_name(&character.to_string())
+            .or_else(|| table.glyph_index(u8::try_from(code(*character)?).ok()?))?;
+        let mut segments = Segments(0);
+        table.outline(glyph, &mut segments).ok()?;
+        Some(segments.0 >= *threshold)
+    })
+}
+
+fn descriptor_metrics(document: &Document, descriptor: Option<&Dictionary>) -> (f64, f64) {
+    let ascent = descriptor
+        .and_then(|descriptor| get_number(document, descriptor, b"Ascent"))
+        .filter(|value| *value > 0.)
+        .unwrap_or(800.);
+    let descent = descriptor
+        .and_then(|descriptor| get_number(document, descriptor, b"Descent"))
+        .filter(|value| *value < 0.)
+        .unwrap_or(-200.);
+    (ascent, descent)
+}
+
+fn is_embedded(document: &Document, descriptor: Option<&Dictionary>) -> bool {
+    descriptor.is_some_and(|descriptor| {
+        [b"FontFile".as_slice(), b"FontFile2", b"FontFile3"]
+            .iter()
+            .any(|key| {
+                descriptor
+                    .get(key)
+                    .is_ok_and(|value| resolve(document, value).is_ok())
+            })
+    })
+}
+
+fn load_simple_font(
+    document: &Document,
+    name: &[u8],
+    font: &Dictionary,
+    base_font: &[u8],
+    base: &str,
+    limits: &TextEditLimits,
+) -> Result<LoadedFont, TextEditError> {
+    let descriptor = get_dict(document, font, b"FontDescriptor");
+    let (fallback, family_known) =
+        fallback_face(base, descriptor.map(|descriptor| (descriptor, document)));
+    let mut decode = to_unicode_map(document, font, 1, limits)?;
+    let to_unicode_codes = decode.keys().copied().collect::<BTreeSet<_>>();
+    let mut without_to_unicode = font.clone();
+    without_to_unicode.remove(b"ToUnicode");
+    if let Ok(encoding) =
+        without_to_unicode.get_font_encoding_with_limit(document, limits.max_decoded_bytes_per_page)
+    {
+        for code in 0u32..=255 {
+            if decode.contains_key(&code) {
+                continue;
+            }
+            if let Ok(text) = encoding.bytes_to_string(&[code as u8])
+                && !text.is_empty()
+                && !text.contains('\u{fffd}')
+            {
+                decode.insert(code, text);
+            }
+        }
+    }
+    let first_char = get_number(document, font, b"FirstChar").unwrap_or(0.) as i64;
+    let widths_array = font
+        .get(b"Widths")
+        .ok()
+        .and_then(|value| resolve(document, value).ok())
+        .and_then(|value| value.as_array().ok());
+    let missing_width = descriptor
+        .and_then(|descriptor| get_number(document, descriptor, b"MissingWidth"))
+        .unwrap_or(0.);
+    let mut widths = HashMap::new();
+    let embedded = is_embedded(document, descriptor);
+    if let Some(array) = widths_array {
+        for (offset, value) in array.iter().enumerate() {
+            let Some(width) = resolve(document, value).ok().and_then(object_number) else {
+                continue;
+            };
+            if let Ok(code) = u32::try_from(first_char + offset as i64) {
+                widths.insert(code, width);
+            }
+        }
+    } else if !embedded {
+        // A font without /Widths that the viewer supplies: the bundled faces
+        // are metric matches for Helvetica, Times and Courier; another font
+        // takes an installed font of its name, or the closest bundled family.
+        let installed = (!is_standard_latin_font(base))
+            .then(|| crate::pdf_engine::installed_font_named(base))
+            .flatten();
+        for (code, text) in &decode {
+            let mut characters = text.chars();
+            if let (Some(character), None) = (characters.next(), characters.next())
+                && let Some(width) = installed
+                    .and_then(|index| crate::pdf_engine::installed_glyph_advance(index, character))
+                    .or_else(|| {
+                        crate::pdf_engine::bundled_text_edit_glyph(fallback, character)
+                            .map(|(_, width)| width)
+                    })
+            {
+                widths.insert(*code, width);
+            }
+        }
+    } else {
+        return Err(TextEditError::ReadOnly(format!(
+            "font {base} has no glyph widths"
+        )));
+    }
+    // Which codes a font program certainly contains: a subset keeps only the
+    // glyphs it lists; a complete or system font draws its whole encoding.
+    let subset = is_subset_name(base_font);
+    let listed = to_unicode_codes
+        .union(&difference_codes(document, font))
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut encode = BTreeMap::new();
+    let mut codes = decode.keys().copied().collect::<Vec<_>>();
+    codes.sort_unstable();
+    for code in codes {
+        let available = if subset {
+            listed.contains(&code)
+        } else {
+            widths.get(&code).is_some_and(|width| *width > 0.) || code == 32
+        };
+        if !available || !widths.contains_key(&code) {
+            continue;
+        }
+        let mut characters = decode[&code].chars();
+        if let (Some(character), None) = (characters.next(), characters.next()) {
+            encode.entry(character).or_insert(code);
+        }
+    }
+    let (ascent, descent) = descriptor_metrics(document, descriptor);
+    let word_space = decode.get(&32).and_then(|text| {
+        let mut characters = text.chars();
+        match (characters.next(), characters.next()) {
+            (Some(character), None) if encode.get(&character) == Some(&32) => Some(character),
+            _ => None,
+        }
+    });
+    let advances = encode
+        .iter()
+        .map(|(character, code)| {
+            (
+                *character,
+                widths.get(code).copied().unwrap_or(missing_width),
+            )
+        })
+        .collect();
+    Ok(LoadedFont {
+        resource_name: name.to_vec(),
+        code_length: 1,
+        decode,
+        widths,
+        default_width: missing_width,
+        encode,
+        learned: BTreeMap::new(),
+        simple: true,
+        family_known,
+        cmap: None,
+        utf16: false,
+        metrics: TextFontMetrics {
+            font: name.to_vec(),
+            advances,
+            word_space,
+            fallback,
+            postscript_name: Some(base.to_owned()),
+            ascent,
+            descent,
+        },
+        unsupported: None,
+    })
+}
+
+fn load_type0_font(
+    document: &Document,
+    name: &[u8],
+    font: &Dictionary,
+    base: &str,
+    limits: &TextEditLimits,
+) -> Result<LoadedFont, TextEditError> {
+    let encoding = get_name(document, font, b"Encoding").unwrap_or_default();
+    let (cmap, utf16) = match encoding.as_slice() {
+        b"Identity-H" => (None, false),
+        b"Identity-V" => {
+            return Err(TextEditError::ReadOnly(
+                "vertical text is not editable".into(),
+            ));
+        }
+        other => match crate::pdf_cmaps::UnicodeCMap::from_encoding(other) {
+            Some((cmap, utf16)) => (Some(cmap), utf16),
+            None => {
+                return Err(TextEditError::ReadOnly(format!(
+                    "font {base} uses CMap {}, which is not editable",
+                    String::from_utf8_lossy(other)
+                )));
+            }
+        },
+    };
+    let descendant = font
+        .get(b"DescendantFonts")
+        .ok()
+        .and_then(|value| resolve(document, value).ok())
+        .and_then(|value| value.as_array().ok())
+        .and_then(|array| array.first())
+        .and_then(|value| resolve_dict(document, value))
+        .ok_or_else(|| TextEditError::ReadOnly(format!("font {base} has no descendant font")))?;
+    let descriptor = get_dict(document, descendant, b"FontDescriptor");
+    let (fallback, family_known) =
+        fallback_face(base, descriptor.map(|descriptor| (descriptor, document)));
+    let decode = to_unicode_map(document, font, 2, limits)?;
+    if decode.is_empty() && cmap.is_none() {
+        return Err(TextEditError::ReadOnly(format!(
+            "font {base} has no Unicode mapping"
+        )));
+    }
+    let default_width = get_number(document, descendant, b"DW").unwrap_or(1000.);
+    let mut widths = HashMap::new();
+    if let Some(array) = descendant
+        .get(b"W")
+        .ok()
+        .and_then(|value| resolve(document, value).ok())
+        .and_then(|value| value.as_array().ok())
+    {
+        let items = array
+            .iter()
+            .map(|item| resolve(document, item))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut index = 0;
+        while index < items.len() {
+            let Some(first) = object_number(items[index]) else {
+                break;
+            };
+            match items.get(index + 1) {
+                Some(Object::Array(list)) => {
+                    for (offset, value) in list.iter().enumerate() {
+                        if let Some(width) = resolve(document, value).ok().and_then(object_number) {
+                            widths.insert(first as u32 + offset as u32, width);
+                        }
+                        if widths.len() > limits.max_cmap_entries {
+                            break;
+                        }
+                    }
+                    index += 2;
+                }
+                Some(last) => {
+                    let (Some(last), Some(width)) = (
+                        object_number(last),
+                        items.get(index + 2).and_then(|value| object_number(value)),
+                    ) else {
+                        break;
+                    };
+                    let (first, last) = (first as u32, last as u32);
+                    if last >= first && last - first <= limits.max_cmap_entries as u32 {
+                        for code in first..=last {
+                            widths.insert(code, width);
+                        }
+                    }
+                    index += 3;
+                }
+                None => break,
+            }
+        }
+    }
+    let mut encode = BTreeMap::new();
+    let mut codes = decode.keys().copied().collect::<Vec<_>>();
+    codes.sort_unstable();
+    for code in codes {
+        let mut characters = decode[&code].chars();
+        if let (Some(character), None) = (characters.next(), characters.next()) {
+            encode.entry(character).or_insert(code);
+        }
+    }
+    let (ascent, descent) = descriptor_metrics(document, descriptor);
+    let width_of = |code: u32| match cmap {
+        Some(cmap) => crate::pdf_cmaps::utf16_character(code)
+            .and_then(|character| cmap.cid(character))
+            .and_then(|cid| widths.get(&cid).copied()),
+        None => widths.get(&code).copied(),
+    };
+    let advances = encode
+        .iter()
+        .map(|(character, code)| (*character, width_of(*code).unwrap_or(default_width)))
+        .collect();
+    Ok(LoadedFont {
+        resource_name: name.to_vec(),
+        code_length: 2,
+        decode,
+        widths,
+        default_width,
+        encode,
+        learned: BTreeMap::new(),
+        simple: false,
+        family_known,
+        cmap,
+        utf16,
+        metrics: TextFontMetrics {
+            font: name.to_vec(),
+            advances,
+            word_space: None,
+            fallback,
+            postscript_name: Some(base.to_owned()),
+            ascent,
+            descent,
+        },
+        unsupported: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Pages
+
+fn page_id(document: &Document, page_index: u32) -> Result<ObjectId, TextEditError> {
+    page_index
+        .checked_add(1)
+        .and_then(|number| document.get_pages().get(&number).copied())
+        .ok_or_else(|| TextEditError::Page(format!("page {page_index} does not exist")))
+}
+
+/// The page's own or nearest inherited `/Resources`.
+fn page_resources(document: &Document, page_id: ObjectId) -> Option<Dictionary> {
+    let mut node_id = page_id;
+    for _ in 0..MAX_NESTING {
+        let node = document.get_object(node_id).ok()?.as_dict().ok()?;
+        if let Ok(resources) = node.get(b"Resources") {
+            return resolve_dict(document, resources).cloned();
+        }
+        node_id = node.get(b"Parent").ok()?.as_reference().ok()?;
+    }
+    None
+}
+
+fn page_content_ids(
+    document: &Document,
+    page_id: ObjectId,
+) -> Result<Vec<ObjectId>, TextEditError> {
+    let page = document.get_object(page_id)?.as_dict()?;
+    let Ok(contents) = page.get(b"Contents") else {
+        return Ok(Vec::new());
+    };
+    match contents {
+        Object::Reference(id) => match document.get_object(*id)? {
+            Object::Array(items) => items
+                .iter()
+                .map(|item| {
+                    item.as_reference()
+                        .map_err(|_| TextEditError::Malformed("direct content stream".into()))
+                })
+                .collect(),
+            _ => Ok(vec![*id]),
+        },
+        Object::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_reference()
+                    .map_err(|_| TextEditError::Malformed("direct content stream".into()))
+            })
+            .collect(),
+        _ => Err(TextEditError::Malformed(
+            "page contents are not a stream reference".into(),
+        )),
+    }
+}
+
+/// Colour operators in effect, as text that sets them again (or, prefixed
+/// with `?`, a description of operators that cannot be rewritten).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ColorState {
+    fill_space: Option<String>,
+    fill: Option<String>,
+    /// The fill as DeviceRGB, when it is a device colour.
+    device_fill: Option<[u64; 3]>,
+    stroke_space: Option<String>,
+    stroke: Option<String>,
+    graphics_state: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct GraphicsState {
+    ctm: Matrix,
+    clip: u32,
+    font: Option<Vec<u8>>,
+    font_size: f64,
+    char_spacing: f64,
+    word_spacing: f64,
+    horizontal_scale: f64,
+    leading: f64,
+    rise: f64,
+    render_mode: i64,
+    color: ColorState,
+}
+
+impl Default for GraphicsState {
+    fn default() -> Self {
+        Self {
+            ctm: IDENTITY,
+            clip: 0,
+            font: None,
+            font_size: 0.,
+            char_spacing: 0.,
+            word_spacing: 0.,
+            horizontal_scale: 1.,
+            leading: 0.,
+            rise: 0.,
+            render_mode: 0,
+            color: ColorState::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ShownGlyph {
+    code: Vec<u8>,
+    unicode: Option<String>,
+    /// Its text comes from an `/ActualText` span.
+    actual_text: bool,
+    /// Start in the operator's text space.
+    x: f64,
+    advance: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ShowKind {
+    Show,
+    ShowArray,
+    NextLineShow,
+    SpacedNextLineShow { word: f64, character: f64 },
+}
+
+#[derive(Clone, Debug)]
+struct ShowOp {
+    op_index: usize,
+    kind: ShowKind,
+    state: GraphicsState,
+    /// The text and line matrices where the operator starts drawing.
+    text_matrix: Matrix,
+    line_matrix: Matrix,
+    /// Text matrix times CTM where the operator starts drawing.
+    space: Matrix,
+    glyphs: Vec<ShownGlyph>,
+    has_string: bool,
+    /// The operator's total text-matrix advance.
+    advance: f64,
+    /// How many marked-content levels enclose the operator up to and
+    /// including the outermost `/ActualText` span (zero when none does).
+    actual_text_depth: usize,
+}
+
+struct ExtractedLine {
+    public: PageTextLine,
+    ops: Vec<usize>,
+    /// For each character, the glyphs that draw it; `None` for a synthetic
+    /// space.
+    clusters: Vec<Option<Cluster>>,
+}
+
+/// The glyphs of one show operator that together draw `parts` characters,
+/// of which a character is `part`. A glyph without text of its own (a
+/// contextual alternate) joins the cluster before it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cluster {
+    show: usize,
+    first_glyph: usize,
+    last_glyph: usize,
+    part: usize,
+    parts: usize,
+}
+
+/// Where a decoded stream comes from: one of the page's content streams, or
+/// a Form XObject drawn by `Do /name` from the stream `parent`.
+#[derive(Clone, Debug)]
+enum StreamOwner {
+    Page,
+    Form {
+        object: ObjectId,
+        parent: usize,
+        name: Vec<u8>,
+        /// The form's resources (its own, or those it inherits).
+        resources: Dictionary,
+    },
+}
+
+struct ExtractedPage {
+    page_id: ObjectId,
+    content_ids: Vec<ObjectId>,
+    /// The page's content streams, then each drawn Form XObject's.
+    streams: Vec<Vec<u8>>,
+    owners: Vec<StreamOwner>,
+    operations: Vec<ContentOp>,
+    fonts: BTreeMap<Vec<u8>, LoadedFont>,
+    shows: Vec<ShowOp>,
+    lines: Vec<ExtractedLine>,
+}
+
+/// Decodes one content stream, counting its bytes against the page limit.
+fn decode_stream(
+    stream: &Stream,
+    total: &mut usize,
+    limits: &TextEditLimits,
+) -> Result<Vec<u8>, TextEditError> {
+    let remaining = limits.max_decoded_bytes_per_page.saturating_sub(*total);
+    let bytes = if stream.dict.get(b"Filter").is_ok() {
+        stream
+            .decompressed_content_with_limit(remaining)
+            .map_err(|error| match error {
+                lopdf::Error::Decompress(lopdf::DecompressError::MemoryLimitExceeded {
+                    ..
+                }) => TextEditError::LimitExceeded(format!(
+                    "page content exceeds {} decoded bytes",
+                    limits.max_decoded_bytes_per_page
+                )),
+                other => {
+                    TextEditError::Malformed(format!("content stream cannot be decoded: {other}"))
+                }
+            })?
+    } else {
+        stream.content.clone()
+    };
+    *total = total.saturating_add(bytes.len());
+    if *total > limits.max_decoded_bytes_per_page {
+        return Err(TextEditError::LimitExceeded(format!(
+            "page content exceeds {} decoded bytes",
+            limits.max_decoded_bytes_per_page
+        )));
+    }
+    Ok(bytes)
+}
+
+fn decode_streams(
+    document: &Document,
+    content_ids: &[ObjectId],
+    total: &mut usize,
+    limits: &TextEditLimits,
+) -> Result<Vec<Vec<u8>>, TextEditError> {
+    content_ids
+        .iter()
+        .map(|id| decode_stream(document.get_object(*id)?.as_stream()?, total, limits))
+        .collect()
+}
+
+fn numbers<const N: usize>(operands: &[Operand]) -> Option<[f64; N]> {
+    if operands.len() < N {
+        return None;
+    }
+    let mut values = [0.; N];
+    for (value, operand) in values.iter_mut().zip(&operands[operands.len() - N..]) {
+        let Operand::Number(number) = operand else {
+            return None;
+        };
+        *value = *number;
+    }
+    Some(values)
+}
+
+/// Form XObjects drawn inside forms deeper than this are not read.
+const MAX_FORM_DEPTH: usize = 8;
+
+/// The resources a stream's operators name, and the font-key prefix of
+/// the forms it is drawn through ("Fm0/").
+struct Scope {
+    prefix: Vec<u8>,
+    resources: Dictionary,
+}
+
+/// Reads a page's operators, and those of the Form XObjects it draws, into
+/// text shows.
+struct Walk<'a> {
+    document: &'a Document,
+    limits: &'a TextEditLimits,
+    fonts: BTreeMap<Vec<u8>, LoadedFont>,
+    shows: Vec<ShowOp>,
+    operations: Vec<ContentOp>,
+    streams: Vec<Vec<u8>>,
+    owners: Vec<StreamOwner>,
+    actual_texts: Vec<(String, std::ops::Range<usize>)>,
+    next_clip: u32,
+    decoded_bytes: usize,
+    /// How often each Form XObject is drawn on the page.
+    form_uses: HashMap<ObjectId, usize>,
+}
+
+impl Walk<'_> {
+    /// The key of font `name` in `scope`, loading it on first use.
+    fn font(&mut self, scope: &Scope, name: &[u8]) -> Vec<u8> {
+        let key = [scope.prefix.as_slice(), name].concat();
+        if !self.fonts.contains_key(&key) {
+            let mut font = match get_dict(self.document, &scope.resources, b"Font")
+                .and_then(|fonts| fonts.get(name).ok())
+                .and_then(|value| resolve_dict(self.document, value))
+            {
+                Some(font) => load_font(self.document, &key, font, self.limits),
+                None => LoadedFont::unsupported(&key, "the text's font is missing"),
+            };
+            font.resource_name = name.to_vec();
+            self.fonts.insert(key.clone(), font);
+        }
+        key
+    }
+
+    /// Reads the Form XObject `name` drawn from stream `parent`, with the
+    /// graphics state at its `Do`.
+    fn form(
+        &mut self,
+        scope: &Scope,
+        name: &[u8],
+        parent: usize,
+        state: &GraphicsState,
+        depth: usize,
+    ) -> Result<(), TextEditError> {
+        let Some(object) = get_dict(self.document, &scope.resources, b"XObject")
+            .and_then(|xobjects| xobjects.get(name).ok())
+            .and_then(|value| value.as_reference().ok())
+        else {
+            return Ok(());
+        };
+        let Ok(stream) = self.document.get_object(object).and_then(Object::as_stream) else {
+            return Ok(());
+        };
+        if get_name(self.document, &stream.dict, b"Subtype").as_deref() != Some(b"Form")
+            || depth >= MAX_FORM_DEPTH
+        {
+            return Ok(());
+        }
+        *self.form_uses.entry(object).or_default() += 1;
+        let bytes = decode_stream(stream, &mut self.decoded_bytes, self.limits)?;
+        let mut operations = parse_operations(std::slice::from_ref(&bytes), self.limits)?;
+        if self.operations.len() + operations.len() > self.limits.max_operations_per_page {
+            return Err(TextEditError::LimitExceeded(format!(
+                "page content has more than {} operations",
+                self.limits.max_operations_per_page
+            )));
+        }
+        let stream_index = self.streams.len();
+        for operation in &mut operations {
+            operation.stream = stream_index;
+        }
+        let resources = get_dict(self.document, &stream.dict, b"Resources")
+            .cloned()
+            .unwrap_or_else(|| scope.resources.clone());
+        let matrix = stream
+            .dict
+            .get(b"Matrix")
+            .ok()
+            .and_then(|value| resolve(self.document, value).ok())
+            .and_then(|value| value.as_array().ok())
+            .and_then(|values| {
+                let values = values
+                    .iter()
+                    .map(object_number)
+                    .collect::<Option<Vec<_>>>()?;
+                <[f64; 6]>::try_from(values).ok()
+            })
+            .unwrap_or(IDENTITY);
+        self.streams.push(bytes);
+        self.owners.push(StreamOwner::Form {
+            object,
+            parent,
+            name: name.to_vec(),
+            resources: resources.clone(),
+        });
+        let first = self.operations.len();
+        self.operations.extend(operations);
+        let last = self.operations.len();
+        let inner = Scope {
+            prefix: [scope.prefix.as_slice(), name, b"/"].concat(),
+            resources,
+        };
+        let mut inner_state = state.clone();
+        inner_state.ctm = multiply(matrix, state.ctm);
+        // A form clips to its bounding box: its text never joins a line
+        // outside it.
+        self.next_clip += 1;
+        inner_state.clip = self.next_clip;
+        self.run(first..last, &inner, inner_state, depth + 1)
+    }
+
+    fn run(
+        &mut self,
+        operation_range: std::ops::Range<usize>,
+        scope: &Scope,
+        mut state: GraphicsState,
+        depth: usize,
+    ) -> Result<(), TextEditError> {
+        let mut stack: Vec<GraphicsState> = Vec::new();
+        let mut text_matrix = IDENTITY;
+        let mut line_matrix = IDENTITY;
+        let mut pending_clip = false;
+        // Marked content: each level's ActualText and the first show inside it.
+        let mut marked: Vec<(Option<String>, usize)> = Vec::new();
+        for op_index in operation_range {
+            let operation = self.operations[op_index].clone();
+            let operands = &operation.operands;
+            if operation.operator == b"Do" {
+                if let Some(Operand::Name(name)) = operands.last() {
+                    self.form(scope, name, operation.stream, &state, depth)?;
+                }
+                continue;
+            }
+            match operation.operator.as_slice() {
+                b"q" => {
+                    if stack.len() < 1_024 {
+                        stack.push(state.clone());
+                    }
+                }
+                b"Q" => {
+                    if let Some(saved) = stack.pop() {
+                        state = saved;
+                    }
+                }
+                b"cm" => {
+                    if let Some(matrix) = numbers::<6>(operands) {
+                        state.ctm = multiply(matrix, state.ctm);
+                    }
+                }
+                b"W" | b"W*" => pending_clip = true,
+                b"n" | b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" => {
+                    if pending_clip {
+                        self.next_clip += 1;
+                        state.clip = self.next_clip;
+                        pending_clip = false;
+                    }
+                }
+                b"BT" => {
+                    text_matrix = IDENTITY;
+                    line_matrix = IDENTITY;
+                }
+                b"Tf" => {
+                    if let (Some(Operand::Name(name)), Some([size])) =
+                        (operands.first(), numbers::<1>(operands))
+                    {
+                        state.font = Some(self.font(scope, name));
+                        state.font_size = size;
+                    }
+                }
+                b"Tc" => {
+                    if let Some([value]) = numbers::<1>(operands) {
+                        state.char_spacing = value;
+                    }
+                }
+                b"Tw" => {
+                    if let Some([value]) = numbers::<1>(operands) {
+                        state.word_spacing = value;
+                    }
+                }
+                b"Tz" => {
+                    if let Some([value]) = numbers::<1>(operands) {
+                        state.horizontal_scale = value / 100.;
+                    }
+                }
+                b"TL" => {
+                    if let Some([value]) = numbers::<1>(operands) {
+                        state.leading = value;
+                    }
+                }
+                b"Ts" => {
+                    if let Some([value]) = numbers::<1>(operands) {
+                        state.rise = value;
+                    }
+                }
+                b"Tr" => {
+                    if let Some([value]) = numbers::<1>(operands) {
+                        state.render_mode = value as i64;
+                    }
+                }
+                b"Td" | b"TD" => {
+                    if let Some([x, y]) = numbers::<2>(operands) {
+                        if operation.operator == b"TD" {
+                            state.leading = -y;
+                        }
+                        line_matrix = multiply([1., 0., 0., 1., x, y], line_matrix);
+                        text_matrix = line_matrix;
+                    }
+                }
+                b"Tm" => {
+                    if let Some(matrix) = numbers::<6>(operands) {
+                        line_matrix = matrix;
+                        text_matrix = matrix;
+                    }
+                }
+                b"T*" => {
+                    line_matrix = multiply([1., 0., 0., 1., 0., -state.leading], line_matrix);
+                    text_matrix = line_matrix;
+                }
+                b"g" | b"rg" | b"k" | b"sc" | b"scn" => {
+                    state.color.fill = Some(operation_text(operands, &operation.operator));
+                    if operation.operator != b"sc" && operation.operator != b"scn" {
+                        state.color.fill_space = None;
+                    }
+                    state.color.device_fill = device_rgb(
+                        operands,
+                        &operation.operator,
+                        state.color.fill_space.as_deref(),
+                    )
+                    .map(|rgb| rgb.map(f64::to_bits));
+                }
+                b"cs" => {
+                    state.color.fill_space = Some(operation_text(operands, b"cs"));
+                    state.color.fill = None;
+                    state.color.device_fill = match operands.last() {
+                        Some(Operand::Name(name))
+                            if matches!(
+                                name.as_slice(),
+                                b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK"
+                            ) =>
+                        {
+                            Some([0f64; 3].map(f64::to_bits))
+                        }
+                        _ => None,
+                    };
+                }
+                b"G" | b"RG" | b"K" | b"SC" | b"SCN" => {
+                    state.color.stroke = Some(format!("{operands:?}{:?}", operation.operator));
+                    if operation.operator != b"SC" && operation.operator != b"SCN" {
+                        state.color.stroke_space = None;
+                    }
+                }
+                b"CS" => {
+                    state.color.stroke_space = Some(format!("{operands:?}"));
+                    state.color.stroke = None;
+                }
+                b"gs" => state.color.graphics_state = Some(format!("{operands:?}")),
+                b"BMC" => marked.push((None, self.shows.len())),
+                b"BDC" => {
+                    let actual_text = match operands.last() {
+                        Some(Operand::Dict(entries)) => {
+                            entries
+                                .iter()
+                                .find_map(|(key, value)| match (key.as_slice(), value) {
+                                    (b"ActualText", Operand::Str(bytes)) => {
+                                        Some(decode_text_string(bytes))
+                                    }
+                                    _ => None,
+                                })
+                        }
+                        _ => None,
+                    };
+                    marked.push((actual_text, self.shows.len()));
+                }
+                b"EMC" => {
+                    if let Some((Some(text), first_show)) = marked.pop() {
+                        self.actual_texts.push((text, first_show..self.shows.len()));
+                    }
+                }
+                b"Tj" | b"TJ" | b"'" | b"\"" => {
+                    let kind = match operation.operator.as_slice() {
+                        b"Tj" => ShowKind::Show,
+                        b"TJ" => ShowKind::ShowArray,
+                        b"'" => ShowKind::NextLineShow,
+                        _ => {
+                            let Some([word, character]) = (operands.len() >= 3)
+                                .then(|| numbers::<2>(&operands[..2]))
+                                .flatten()
+                            else {
+                                continue;
+                            };
+                            ShowKind::SpacedNextLineShow { word, character }
+                        }
+                    };
+                    if let ShowKind::SpacedNextLineShow { word, character } = kind {
+                        state.word_spacing = word;
+                        state.char_spacing = character;
+                    }
+                    if matches!(
+                        kind,
+                        ShowKind::NextLineShow | ShowKind::SpacedNextLineShow { .. }
+                    ) {
+                        line_matrix = multiply([1., 0., 0., 1., 0., -state.leading], line_matrix);
+                        text_matrix = line_matrix;
+                    }
+                    let space = multiply(text_matrix, state.ctm);
+                    let starting_text_matrix = text_matrix;
+                    let font = state.font.as_ref().and_then(|name| self.fonts.get(name));
+                    let (glyphs, has_string, advance) = shown_glyphs(operands, kind, &state, font);
+                    text_matrix = multiply([1., 0., 0., 1., advance, 0.], text_matrix);
+                    let actual_text_depth = marked
+                        .iter()
+                        .position(|(text, _)| text.is_some())
+                        .map_or(0, |outermost| marked.len() - outermost);
+                    self.shows.push(ShowOp {
+                        op_index,
+                        kind,
+                        state: state.clone(),
+                        text_matrix: starting_text_matrix,
+                        line_matrix,
+                        space,
+                        glyphs,
+                        has_string,
+                        advance,
+                        actual_text_depth,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+fn extract_page(
+    document: &Document,
+    page_index: u32,
+    limits: &TextEditLimits,
+) -> Result<ExtractedPage, TextEditError> {
+    let page_id = page_id(document, page_index)?;
+    let content_ids = page_content_ids(document, page_id)?;
+    let mut decoded_bytes = 0;
+    let streams = decode_streams(document, &content_ids, &mut decoded_bytes, limits)?;
+    let operations = parse_operations(&streams, limits)?;
+    let resources = page_resources(document, page_id).unwrap_or_default();
+    let mut walk = Walk {
+        document,
+        limits,
+        fonts: BTreeMap::new(),
+        shows: Vec::new(),
+        owners: vec![StreamOwner::Page; streams.len()],
+        operations,
+        streams,
+        actual_texts: Vec::new(),
+        next_clip: 0,
+        decoded_bytes,
+        form_uses: HashMap::new(),
+    };
+    let page_operations = 0..walk.operations.len();
+    walk.run(
+        page_operations,
+        &Scope {
+            prefix: Vec::new(),
+            resources,
+        },
+        GraphicsState::default(),
+        0,
+    )?;
+    let Walk {
+        mut fonts,
+        mut shows,
+        operations,
+        streams,
+        owners,
+        actual_texts,
+        form_uses,
+        ..
+    } = walk;
+
+    for (text, range) in actual_texts {
+        let mut drawing = range.filter(|index| !shows[*index].glyphs.is_empty());
+        if let (Some(index), None) = (drawing.next(), drawing.next()) {
+            apply_actual_text(&mut shows[index].glyphs, &text);
+            // A lone glyph read as one character teaches the font that code.
+            let show = &shows[index];
+            if let ([glyph], Some(font)) = (
+                show.glyphs.as_slice(),
+                show.state
+                    .font
+                    .as_ref()
+                    .and_then(|name| fonts.get_mut(name)),
+            ) && let Some(unicode) = &glyph.unicode
+                && let (Some(character), None) = {
+                    let mut characters = unicode.chars();
+                    (characters.next(), characters.next())
+                }
+                && glyph.actual_text
+                && font.unsupported.is_none()
+            {
+                let code = glyph
+                    .code
+                    .iter()
+                    .fold(0u32, |code, byte| (code << 8) | u32::from(*byte));
+                if !font.decode.contains_key(&code) {
+                    font.learned.entry(character).or_insert(code);
+                }
+            }
+        }
+    }
+    // A Unicode-CMap font draws the characters its codes spell, so any
+    // character the page draws in it can be typed again.
+    let mut drawn = BTreeSet::new();
+    for show in &shows {
+        let Some(font) = show
+            .state
+            .font
+            .as_ref()
+            .and_then(|name| fonts.get_mut(name))
+        else {
+            continue;
+        };
+        if font.cmap.is_none() || font.unsupported.is_some() {
+            continue;
+        }
+        for glyph in show.glyphs.iter().filter(|glyph| !glyph.actual_text) {
+            let code = glyph
+                .code
+                .iter()
+                .fold(0u32, |code, byte| (code << 8) | u32::from(*byte));
+            if let Some(character) = crate::pdf_cmaps::utf16_character(code)
+                && !font.encode.contains_key(&character)
+            {
+                font.encode.insert(character, code);
+                drawn.insert(font.metrics.font.clone());
+            }
+        }
+    }
+    for font in fonts.values_mut() {
+        if !font.learned.is_empty() || drawn.contains(&font.metrics.font) {
+            font.refresh_metrics();
+        }
+    }
+    let mut lines = group_lines(&operations, &fonts, &shows, limits)?;
+    adopt_line_fallback_families(&mut fonts, &lines);
+    // An encrypted file can forbid changing its content (owner restrictions,
+    // which open without a password).
+    if document
+        .encryption_state
+        .as_ref()
+        .is_some_and(|state| !state.permissions().contains(lopdf::Permissions::MODIFIABLE))
+    {
+        for line in &mut lines {
+            line.public.read_only =
+                Some("the document's permissions do not allow changing its content".into());
+        }
+    }
+    // A form drawn more than once on the page (directly or through an
+    // enclosing form) draws its text in each place: editing one would
+    // change all.
+    let repeated = |mut stream: usize| loop {
+        match &owners[stream] {
+            StreamOwner::Page => break false,
+            StreamOwner::Form { object, parent, .. } => {
+                if form_uses.get(object).copied().unwrap_or(0) > 1 {
+                    break true;
+                }
+                stream = *parent;
+            }
+        }
+    };
+    for line in &mut lines {
+        if line.public.read_only.is_none()
+            && repeated(operations[shows[line.ops[0]].op_index].stream)
+        {
+            line.public.read_only =
+                Some("the text is in a form drawn more than once on this page".into());
+        }
+    }
+    Ok(ExtractedPage {
+        page_id,
+        content_ids,
+        streams,
+        owners,
+        operations,
+        fonts,
+        shows,
+        lines,
+    })
+}
+
+fn decode_text_string(bytes: &[u8]) -> String {
+    lopdf::decode_text_string(&Object::String(
+        bytes.to_vec(),
+        lopdf::StringFormat::Literal,
+    ))
+    .unwrap_or_default()
+}
+
+/// Assigns a span's `/ActualText` to the glyphs of the one operator inside
+/// it. The span's text is authoritative: glyphs whose own mapping agrees with
+/// it from either end keep their text, and the glyphs between take the rest
+/// (a ligature its letters; the extra glyphs of a cluster nothing). Producers
+/// such as LibreOffice map a ligature to the text of its first use, so its
+/// mapping can disagree with a later span.
+fn apply_actual_text(glyphs: &mut [ShownGlyph], text: &str) {
+    if text.is_empty() || text.contains('\u{fffd}') || glyphs.is_empty() {
+        return;
+    }
+    let mut rest = text;
+    let mut start = 0;
+    while let Some(mapped) = glyphs.get(start).and_then(|glyph| glyph.unicode.as_deref())
+        && !mapped.is_empty()
+        && rest.starts_with(mapped)
+    {
+        rest = &rest[mapped.len()..];
+        start += 1;
+    }
+    let mut end = glyphs.len();
+    while end > start
+        && let Some(mapped) = glyphs[end - 1].unicode.as_deref()
+        && !mapped.is_empty()
+        && rest.ends_with(mapped)
+    {
+        rest = &rest[..rest.len() - mapped.len()];
+        end -= 1;
+    }
+    let middle = &mut glyphs[start..end];
+    let assign = |glyph: &mut ShownGlyph, text: String| {
+        if glyph.unicode.as_ref() != Some(&text) {
+            glyph.unicode = Some(text);
+            glyph.actual_text = true;
+        }
+    };
+    match middle {
+        [] => {}
+        [glyph] => assign(glyph, rest.to_owned()),
+        glyphs if rest.chars().count() == glyphs.len() => {
+            for (glyph, character) in glyphs.iter_mut().zip(rest.chars()) {
+                assign(glyph, character.to_string());
+            }
+        }
+        [first, others @ ..] => {
+            assign(first, rest.to_owned());
+            for glyph in others {
+                assign(glyph, String::new());
+            }
+        }
+    }
+}
+
+/// A font whose family is unknown takes the family most of the known fonts
+/// on its lines have, so a bold run of a serif paragraph falls back to the
+/// serif face.
+fn adopt_line_fallback_families(
+    fonts: &mut BTreeMap<Vec<u8>, LoadedFont>,
+    lines: &[ExtractedLine],
+) {
+    let unknown = fonts
+        .iter()
+        .filter(|(_, font)| !font.family_known && font.unsupported.is_none())
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    for name in unknown {
+        let mut votes: BTreeMap<FallbackFamily, usize> = BTreeMap::new();
+        for line in lines
+            .iter()
+            .filter(|line| line.public.styles.iter().any(|style| style.font == name))
+        {
+            for style in &line.public.styles {
+                if let Some(font) = fonts.get(&style.font)
+                    && font.family_known
+                {
+                    *votes.entry(font.metrics.fallback.family).or_default() += 1;
+                }
+            }
+        }
+        if let Some((family, _)) = votes.into_iter().max_by_key(|(_, count)| *count)
+            && let Some(font) = fonts.get_mut(&name)
+        {
+            font.metrics.fallback.family = family;
+        }
+    }
+}
+
+fn shown_glyphs(
+    operands: &[Operand],
+    kind: ShowKind,
+    state: &GraphicsState,
+    font: Option<&LoadedFont>,
+) -> (Vec<ShownGlyph>, bool, f64) {
+    let items: Vec<&Operand> = match (kind, operands.last()) {
+        (ShowKind::ShowArray, Some(Operand::Array(items))) => items.iter().collect(),
+        (_, Some(operand @ Operand::Str(_))) => vec![operand],
+        _ => Vec::new(),
+    };
+    let mut glyphs = Vec::new();
+    let mut has_string = false;
+    let mut x = 0.;
+    let scale = state.horizontal_scale;
+    for item in items {
+        match item {
+            Operand::Number(adjustment) => x -= adjustment / 1000. * state.font_size * scale,
+            Operand::Str(bytes) => {
+                has_string = true;
+                let Some(font) = font else {
+                    continue;
+                };
+                for (code, code_bytes) in font.codes(bytes) {
+                    let word_spacing = if font.simple && code == 32 {
+                        state.word_spacing
+                    } else {
+                        0.
+                    };
+                    let advance = (font.width(code) / 1000. * state.font_size
+                        + state.char_spacing
+                        + word_spacing)
+                        * scale;
+                    glyphs.push(ShownGlyph {
+                        code: code_bytes,
+                        unicode: font.decode_code(code),
+                        actual_text: false,
+                        x,
+                        advance,
+                    });
+                    x += advance;
+                }
+            }
+            _ => {}
+        }
+    }
+    (glyphs, has_string, x)
+}
+
+/// A colour state's fill as DeviceRGB, when it is a device colour.
+fn device_fill(color: &ColorState) -> Option<[f64; 3]> {
+    match (&color.fill_space, &color.fill) {
+        (None, None) => Some([0.; 3]),
+        _ => color.device_fill.map(|rgb| rgb.map(f64::from_bits)),
+    }
+}
+
+/// The fill of `show`'s text in a line begun by `first`, as a run's
+/// `fill`: its device colour, or `None` for `first`'s own colour when that
+/// is not a device colour. The outer `None` when the two cannot share a
+/// line: the writer sets device colours and then restores `first`'s.
+fn run_fill(first: &ShowOp, show: &ShowOp) -> Option<Option<[f64; 3]>> {
+    let (first_color, color) = (&first.state.color, &show.state.color);
+    if color == first_color {
+        return Some(device_fill(color));
+    }
+    let restorable = first_color
+        .fill_space
+        .iter()
+        .chain(&first_color.fill)
+        .all(|part| !part.starts_with('?'));
+    let device = device_fill(color)?;
+    (restorable
+        && color.stroke_space == first_color.stroke_space
+        && color.stroke == first_color.stroke
+        && color.graphics_state == first_color.graphics_state)
+        .then_some(Some(device))
+}
+
+fn read_only_reason(
+    operations: &[ContentOp],
+    fonts: &BTreeMap<Vec<u8>, LoadedFont>,
+    show: &ShowOp,
+) -> Option<String> {
+    if operations[show.op_index].spans_streams {
+        return Some("the text operator spans content streams".into());
+    }
+    if !(0..=2).contains(&show.state.render_mode) {
+        return Some("invisible or clipping text is not editable".into());
+    }
+    if show.state.font_size == 0. || show.state.horizontal_scale == 0. {
+        return Some("the text has no size".into());
+    }
+    let Some(font) = show.state.font.as_ref().and_then(|name| fonts.get(name)) else {
+        return Some("the text's font is missing".into());
+    };
+    if let Some(reason) = &font.unsupported {
+        return Some(reason.clone());
+    }
+    if show.glyphs.iter().any(|glyph| glyph.unicode.is_none()) {
+        return Some("the text has characters without a Unicode mapping".into());
+    }
+    None
+}
+
+fn group_lines(
+    operations: &[ContentOp],
+    fonts: &BTreeMap<Vec<u8>, LoadedFont>,
+    shows: &[ShowOp],
+    limits: &TextEditLimits,
+) -> Result<Vec<ExtractedLine>, TextEditError> {
+    struct Building {
+        first: usize,
+        members: Vec<usize>,
+        /// End of the last member in the first member's text space.
+        end_x: f64,
+        inverse: Matrix,
+    }
+    let mut groups: Vec<Building> = Vec::new();
+    let mut current: Option<Building> = None;
+    for (show_index, show) in shows.iter().enumerate() {
+        if show.glyphs.is_empty() {
+            // Moves and empty strings never join a line. An empty string is
+            // kept as an anchor so an emptied line can be edited again.
+            if show.has_string {
+                if let Some(building) = current.take() {
+                    groups.push(building);
+                }
+                groups.push(Building {
+                    first: show_index,
+                    members: vec![show_index],
+                    end_x: 0.,
+                    inverse: IDENTITY,
+                });
+            }
+            continue;
+        }
+        if let Some(building) = current.as_mut() {
+            let first = &shows[building.first];
+            let em = first.state.font_size.abs().max(show.state.font_size.abs());
+            let (x, y) = apply(building.inverse, show.space[4], show.space[5]);
+            let compatible = read_only_reason(operations, fonts, first).is_none()
+                && read_only_reason(operations, fonts, show).is_none()
+                && show.state.render_mode == first.state.render_mode
+                && run_fill(first, show).is_some()
+                && show.state.clip == first.state.clip
+                && show.state.horizontal_scale == first.state.horizontal_scale
+                && show.state.rise == first.state.rise
+                && !matches!(
+                    show.kind,
+                    ShowKind::NextLineShow | ShowKind::SpacedNextLineShow { .. }
+                )
+                && same_linear(show.space, first.space)
+                && y.abs() <= BASELINE_TOLERANCE_EM * em
+                && x - building.end_x >= MIN_MERGE_GAP_EM * em * first.state.horizontal_scale
+                && x - building.end_x <= MAX_MERGE_GAP_EM * em * first.state.horizontal_scale;
+            if compatible {
+                building.members.push(show_index);
+                building.end_x = x + show.advance;
+                continue;
+            }
+            groups.push(current.take().expect("current line exists"));
+        }
+        let inverse = invert(show.space).unwrap_or(IDENTITY);
+        current = Some(Building {
+            first: show_index,
+            members: vec![show_index],
+            end_x: show.advance,
+            inverse,
+        });
+    }
+    if let Some(building) = current.take() {
+        groups.push(building);
+    }
+    if groups.len() > limits.max_lines_per_page {
+        return Err(TextEditError::LimitExceeded(format!(
+            "page has more than {} text lines",
+            limits.max_lines_per_page
+        )));
+    }
+
+    let mut lines = Vec::with_capacity(groups.len());
+    let mut anchor_counts: HashMap<(i64, i64), u32> = HashMap::new();
+    for group in groups {
+        let first = &shows[group.first];
+        let mut styles: Vec<TextRunStyle> = Vec::new();
+        let mut chars = Vec::new();
+        let mut clusters = Vec::new();
+        let mut text = String::new();
+        let mut read_only = read_only_reason(operations, fonts, first);
+        let mut ascent = 0f64;
+        let mut descent = 0f64;
+        let mut previous_end: Option<f64> = None;
+        for &member in &group.members {
+            let show = &shows[member];
+            if read_only.is_none() {
+                read_only = read_only_reason(operations, fonts, show);
+            }
+            let style = TextRunStyle {
+                font: show.state.font.clone().unwrap_or_default(),
+                font_size: show.state.font_size,
+                char_spacing: show.state.char_spacing,
+                word_spacing: show.state.word_spacing,
+                fill: run_fill(first, show).flatten(),
+                face: None,
+            };
+            let style_index = match styles.iter().position(|existing| existing == &style) {
+                Some(index) => index,
+                None => {
+                    styles.push(style);
+                    styles.len() - 1
+                }
+            };
+            if let Some(font) = show.state.font.as_ref().and_then(|name| fonts.get(name)) {
+                ascent = ascent.max(font.metrics.ascent / 1000. * show.state.font_size.abs());
+                descent = descent.min(font.metrics.descent / 1000. * show.state.font_size.abs());
+            }
+            let (offset, _) = apply(group.inverse, show.space[4], show.space[5]);
+            let offset = if member == group.first { 0. } else { offset };
+            let em = show.state.font_size.abs() * show.state.horizontal_scale.abs();
+            for (glyph_index, glyph) in show.glyphs.iter().enumerate() {
+                let x = offset + glyph.x;
+                if glyph.unicode.as_deref() == Some("") {
+                    if !extend_previous_cluster(
+                        &mut chars,
+                        &mut clusters,
+                        member,
+                        glyph_index,
+                        x + glyph.advance,
+                    ) {
+                        read_only = Some("the text has glyphs without characters".into());
+                    }
+                    previous_end = Some(x + glyph.advance);
+                    continue;
+                }
+                if let Some(end) = previous_end {
+                    let gap = x - end;
+                    let last_is_space = text.ends_with(char::is_whitespace);
+                    let next_is_space = glyph
+                        .unicode
+                        .as_deref()
+                        .is_some_and(|unicode| unicode.starts_with(char::is_whitespace));
+                    if gap > SYNTHETIC_SPACE_GAP_EM * em && !last_is_space && !next_is_space {
+                        text.push(' ');
+                        chars.push(TextLineChar {
+                            character: ' ',
+                            x: end,
+                            advance: gap,
+                            style: style_index,
+                            synthetic: true,
+                        });
+                        clusters.push(None);
+                    }
+                }
+                let unicode = glyph.unicode.clone().unwrap_or_else(|| "\u{fffd}".into());
+                let parts = unicode.chars().count().max(1);
+                for (part, character) in unicode.chars().enumerate() {
+                    text.push(character);
+                    chars.push(TextLineChar {
+                        character,
+                        x: x + glyph.advance * part as f64 / parts as f64,
+                        advance: glyph.advance / parts as f64,
+                        style: style_index,
+                        synthetic: false,
+                    });
+                    clusters.push(Some(Cluster {
+                        show: member,
+                        first_glyph: glyph_index,
+                        last_glyph: glyph_index,
+                        part,
+                        parts,
+                    }));
+                }
+                previous_end = Some(x + glyph.advance);
+            }
+            if chars.len() > limits.max_chars_per_line {
+                read_only = Some("the line is too long to edit".into());
+            }
+        }
+        if ascent == 0. && descent == 0. {
+            ascent = 0.8 * first.state.font_size.abs();
+            descent = -0.2 * first.state.font_size.abs();
+        }
+        let (origin_x, origin_y) = apply(first.space, 0., 0.);
+        let key = (
+            (origin_x * 100.).round() as i64,
+            (origin_y * 100.).round() as i64,
+        );
+        let ordinal = anchor_counts.entry(key).or_insert(0);
+        let anchor = TextLineAnchor {
+            x_centipoints: key.0,
+            y_centipoints: key.1,
+            ordinal: *ordinal,
+        };
+        *ordinal += 1;
+        if styles.is_empty() {
+            styles.push(TextRunStyle {
+                font: first.state.font.clone().unwrap_or_default(),
+                font_size: first.state.font_size,
+                char_spacing: first.state.char_spacing,
+                word_spacing: first.state.word_spacing,
+                fill: device_fill(&first.state.color),
+                face: None,
+            });
+        }
+        let fill = device_fill(&first.state.color);
+        lines.push(ExtractedLine {
+            public: PageTextLine {
+                anchor,
+                text,
+                chars,
+                end_x: group.end_x,
+                styles,
+                matrix: first.space,
+                horizontal_scale: first.state.horizontal_scale,
+                rise: first.state.rise,
+                ascent,
+                descent,
+                fill,
+                read_only,
+            },
+            ops: group.members,
+            clusters,
+        });
+    }
+    Ok(lines)
+}
+
+/// Adds glyph `glyph_index` of `show` to the cluster of the last
+/// characters, spreading them across the cluster's new width.
+fn extend_previous_cluster(
+    chars: &mut [TextLineChar],
+    clusters: &mut [Option<Cluster>],
+    show: usize,
+    glyph_index: usize,
+    end_x: f64,
+) -> bool {
+    let Some(Some(last)) = clusters.last().copied() else {
+        return false;
+    };
+    if last.show != show || last.last_glyph + 1 != glyph_index {
+        return false;
+    }
+    let count = last.parts;
+    let start = chars.len() - count;
+    let x = chars[start].x;
+    let advance = (end_x - x) / count as f64;
+    for (offset, (character, cluster)) in chars[start..]
+        .iter_mut()
+        .zip(clusters[start..].iter_mut())
+        .enumerate()
+    {
+        character.x = x + advance * offset as f64;
+        character.advance = advance;
+        if let Some(cluster) = cluster {
+            cluster.last_glyph = glyph_index;
+        }
+    }
+    true
+}
+
+/// Reads the editable text of a page.
+pub fn extract_page_text(
+    document: &Document,
+    page_index: u32,
+    limits: &TextEditLimits,
+) -> Result<PageTextLayer, TextEditError> {
+    let page = extract_page(document, page_index, limits)?;
+    Ok(PageTextLayer {
+        page_index,
+        fonts: page
+            .fonts
+            .values()
+            .filter(|font| font.unsupported.is_none())
+            .map(|font| font.metrics.clone())
+            .collect(),
+        lines: page.lines.into_iter().map(|line| line.public).collect(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Writing
+
+/// An operator with number and name operands as content-stream text; other
+/// operands give a `?`-prefixed description instead.
+fn operation_text(operands: &[Operand], operator: &[u8]) -> String {
+    let mut text = String::new();
+    for operand in operands {
+        match operand {
+            Operand::Number(value) => text.push_str(&format_number(*value)),
+            Operand::Name(name) => text.push_str(&format_name(name)),
+            _ => return format!("?{operands:?}{operator:?}"),
+        }
+        text.push(' ');
+    }
+    text.push_str(&String::from_utf8_lossy(operator));
+    text
+}
+
+/// The DeviceRGB colour a fill operator sets: `g`, `rg` and `k`, or `sc`
+/// and `scn` in a device colour space (`space` is the `cs` in effect).
+fn device_rgb(operands: &[Operand], operator: &[u8], space: Option<&str>) -> Option<[f64; 3]> {
+    let device_space = space
+        .is_none_or(|space| matches!(space, "/DeviceGray cs" | "/DeviceRGB cs" | "/DeviceCMYK cs"));
+    let components = match operator {
+        b"g" | b"rg" | b"k" => operands.len(),
+        b"sc" | b"scn" if device_space => operands.len(),
+        _ => return None,
+    };
+    let clamp = |value: f64| value.clamp(0., 1.);
+    match components {
+        1 => numbers::<1>(operands).map(|[gray]| [clamp(gray); 3]),
+        3 => numbers::<3>(operands).map(|rgb| rgb.map(clamp)),
+        4 => {
+            let [c, m, y, k] = numbers::<4>(operands)?.map(clamp);
+            Some([
+                (1. - c) * (1. - k),
+                (1. - m) * (1. - k),
+                (1. - y) * (1. - k),
+            ])
+        }
+        _ => None,
+    }
+}
+
+fn format_number(value: f64) -> String {
+    let rounded = (value * 10_000.).round() / 10_000.;
+    if rounded == 0. {
+        return "0".into();
+    }
+    let mut text = format!("{rounded:.4}");
+    while text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
+fn format_matrix(matrix: Matrix) -> String {
+    matrix
+        .iter()
+        .map(|value| format_number(*value))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn format_name(name: &[u8]) -> String {
+    let mut text = String::from("/");
+    for &byte in name {
+        if byte.is_ascii_graphic() && is_regular(byte) && byte != b'#' {
+            text.push(byte as char);
+        } else {
+            text.push_str(&format!("#{byte:02X}"));
+        }
+    }
+    text
+}
+
+/// A text string as UTF-16BE hex with a byte-order mark.
+fn format_text_string(text: &str) -> String {
+    let mut bytes = vec![0xfe, 0xff];
+    for unit in text.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_be_bytes());
+    }
+    format_hex(&bytes)
+}
+
+fn format_hex(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2 + 2);
+    text.push('<');
+    for byte in bytes {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text.push('>');
+    text
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum GlyphFont {
+    Page(Vec<u8>),
+    Fallback(crate::pdf_engine::TextEditFallbackFont),
+}
+
+struct EmittedGlyph {
+    font: GlyphFont,
+    style: TextRunStyle,
+    /// Glyphs that read back only through `/ActualText`: the span's text
+    /// and an identifier shared by the glyphs of one span.
+    actual_text: Option<(usize, String)>,
+    code: Vec<u8>,
+    x: f64,
+    /// The advance a viewer gives this glyph.
+    advance: f64,
+}
+
+type FallbackFonts =
+    BTreeMap<crate::pdf_engine::TextEditFallbackFont, (Vec<u8>, BTreeMap<char, u16>)>;
+
+struct PlannedEdit {
+    line: usize,
+    runs: Vec<TextEditRun>,
+    layout: TextLineLayout,
+    /// Lines added below, laid out.
+    extras: Vec<(ExtraLine, TextLineLayout)>,
+}
+
+/// Applies edits to the base document. Edits for different lines of a page
+/// are independent; each must name a line of the base document with its
+/// original text.
+pub fn apply_text_edits(
+    document: &mut Document,
+    edits: &[PageTextEdit],
+    limits: &TextEditLimits,
+) -> Result<(), TextEditError> {
+    let mut by_page: BTreeMap<u32, Vec<&PageTextEdit>> = BTreeMap::new();
+    for edit in edits {
+        by_page.entry(edit.page_index).or_default().push(edit);
+    }
+    for (page_index, edits) in by_page {
+        apply_page_edits(document, page_index, &edits, limits)?;
+    }
+    Ok(())
+}
+
+fn apply_page_edits(
+    document: &mut Document,
+    page_index: u32,
+    edits: &[&PageTextEdit],
+    limits: &TextEditLimits,
+) -> Result<(), TextEditError> {
+    let page = extract_page(document, page_index, limits)?;
+    let layer = PageTextLayer {
+        page_index,
+        fonts: page
+            .fonts
+            .values()
+            .filter(|font| font.unsupported.is_none())
+            .map(|font| font.metrics.clone())
+            .collect(),
+        lines: page.lines.iter().map(|line| line.public.clone()).collect(),
+    };
+    let mut planned = Vec::new();
+    let mut seen = BTreeSet::new();
+    for edit in edits {
+        let line_index = page
+            .lines
+            .iter()
+            .position(|line| line.public.anchor == edit.anchor)
+            .ok_or_else(|| {
+                TextEditError::Stale(format!(
+                    "page {page_index} has no text line at the edited position"
+                ))
+            })?;
+        if !seen.insert(line_index) {
+            return Err(TextEditError::Stale(
+                "two edits change the same text line".into(),
+            ));
+        }
+        let line = &page.lines[line_index].public;
+        let original = edit.original_text();
+        if line.text != original {
+            return Err(TextEditError::Stale(format!(
+                "expected {original:?}, found {:?}",
+                line.text
+            )));
+        }
+        if let Some(reason) = &line.read_only {
+            return Err(TextEditError::ReadOnly(reason.clone()));
+        }
+        // An unchanged line keeps its bytes.
+        if edit.draws_as_original() {
+            continue;
+        }
+        for run in &edit.runs {
+            let font = page.fonts.get(&run.style.font);
+            if font.is_none_or(|font| font.unsupported.is_some()) {
+                return Err(TextEditError::ReadOnly(format!(
+                    "font {} cannot draw new text",
+                    String::from_utf8_lossy(&run.style.font)
+                )));
+            }
+        }
+        if edit
+            .runs
+            .iter()
+            .map(|run| run.text.chars().count())
+            .sum::<usize>()
+            > limits.max_chars_per_line
+        {
+            return Err(TextEditError::LimitExceeded(
+                "the edited line is too long".into(),
+            ));
+        }
+        let extras = edit
+            .layout
+            .extra_lines
+            .iter()
+            .map(|extra| Ok((extra.clone(), layout_extra_line(&layer, line, extra)?)))
+            .collect::<Result<Vec<_>, TextEditError>>()?;
+        planned.push(PlannedEdit {
+            line: line_index,
+            runs: edit.runs.clone(),
+            layout: layout_text_edit_fitted(&layer, line, &edit.runs, edit.layout.fit)?,
+            extras,
+        });
+    }
+    if planned.is_empty() {
+        return Ok(());
+    }
+
+    // Embed the fallback fonts the edits need.
+    let mut fallback_glyphs: BTreeMap<crate::pdf_engine::TextEditFallbackFont, BTreeSet<char>> =
+        BTreeMap::new();
+    for plan in &planned {
+        for (laid_index, character) in plan.layout.chars.iter().enumerate() {
+            if character.source == LaidOutSource::Fallback
+                || needs_reencoding(&page, plan, character)
+                || (gap_only(&page, plan, laid_index) && gap_needs_glyph(plan, laid_index))
+            {
+                let style = &plan.runs[character.run].style;
+                let font = &page.fonts[&style.font];
+                if page_code(font, style, character.character).is_some() {
+                    continue;
+                }
+                let (fallback, _, _) = substitute_glyph(&font.metrics, style, character.character)
+                    .ok_or(TextEditError::Unencodable(character.character))?;
+                fallback_glyphs
+                    .entry(fallback)
+                    .or_default()
+                    .insert(character.character);
+            }
+        }
+        // Added lines' text is all new.
+        for (extra, layout) in &plan.extras {
+            for (laid_index, character) in layout.chars.iter().enumerate() {
+                let drawn = match character.source {
+                    LaidOutSource::Fallback => true,
+                    LaidOutSource::Gap => layout_gap_needs_glyph(&layout.chars, laid_index),
+                    LaidOutSource::Font | LaidOutSource::Original(_) => false,
+                };
+                let style = &extra.runs[character.run].style;
+                let font = &page.fonts[&style.font];
+                if !drawn || page_code(font, style, character.character).is_some() {
+                    continue;
+                }
+                let (fallback, _, _) = substitute_glyph(&font.metrics, style, character.character)
+                    .ok_or(TextEditError::Unencodable(character.character))?;
+                fallback_glyphs
+                    .entry(fallback)
+                    .or_default()
+                    .insert(character.character);
+            }
+        }
+    }
+    let mut fallback_objects = Vec::new();
+    for (fallback, characters) in &fallback_glyphs {
+        let (font_id, cids) =
+            crate::pdf_engine::embed_text_edit_fallback(document, *fallback, characters)
+                .map_err(|error| TextEditError::Malformed(error.to_string()))?;
+        fallback_objects.push((*fallback, font_id, cids));
+    }
+
+    // Each line is written in the stream of its first operator, with that
+    // stream's resources: the page's, or a Form XObject's (`Some(stream)`).
+    let scope_of = |plan: &PlannedEdit| {
+        let stream = page.operations[page.shows[page.lines[plan.line].ops[0]].op_index].stream;
+        match page.owners[stream] {
+            StreamOwner::Page => None,
+            StreamOwner::Form { .. } => Some(stream),
+        }
+    };
+    let mut page_resources_dictionary = page_resources(document, page.page_id).unwrap_or_default();
+    let mut page_resources_changed = false;
+    let mut form_resources: BTreeMap<usize, Dictionary> = BTreeMap::new();
+    let mut fallback_fonts: BTreeMap<Option<usize>, FallbackFonts> = BTreeMap::new();
+    if !fallback_objects.is_empty() {
+        for scope in planned.iter().map(scope_of).collect::<BTreeSet<_>>() {
+            let resources = match scope {
+                None => {
+                    page_resources_changed = true;
+                    &mut page_resources_dictionary
+                }
+                Some(stream) => {
+                    form_resources
+                        .entry(stream)
+                        .or_insert_with(|| match &page.owners[stream] {
+                            StreamOwner::Form { resources, .. } => resources.clone(),
+                            StreamOwner::Page => Dictionary::new(),
+                        })
+                }
+            };
+            let mut font_dictionary = get_dict(document, resources, b"Font")
+                .cloned()
+                .unwrap_or_default();
+            let mut names = FallbackFonts::new();
+            for (fallback, font_id, cids) in &fallback_objects {
+                let existing = font_dictionary
+                    .iter()
+                    .find(|(_, value)| value.as_reference().ok() == Some(*font_id))
+                    .map(|(name, _)| name.clone());
+                let name = existing.unwrap_or_else(|| {
+                    let mut index = 1;
+                    loop {
+                        let candidate = format!("BPEdit{index}").into_bytes();
+                        if !font_dictionary.has(&candidate) {
+                            break candidate;
+                        }
+                        index += 1;
+                    }
+                });
+                font_dictionary.set(name.clone(), Object::Reference(*font_id));
+                names.insert(*fallback, (name, cids.clone()));
+            }
+            resources.set("Font", Object::Dictionary(font_dictionary));
+            fallback_fonts.insert(scope, names);
+        }
+    }
+
+    // Replace each edited line's operators.
+    let no_fallbacks = FallbackFonts::new();
+    let mut splices: BTreeMap<usize, Vec<(usize, usize, String)>> = BTreeMap::new();
+    for plan in &planned {
+        let line = &page.lines[plan.line];
+        let first_show = &page.shows[line.ops[0]];
+        let replacement = first_operator_replacement(
+            &page,
+            plan,
+            fallback_fonts.get(&scope_of(plan)).unwrap_or(&no_fallbacks),
+        )?;
+        let operation = &page.operations[first_show.op_index];
+        splices.entry(operation.stream).or_default().push((
+            operation.start,
+            operation.end,
+            replacement,
+        ));
+        for &member in &line.ops[1..] {
+            let show = &page.shows[member];
+            let operation = &page.operations[show.op_index];
+            splices.entry(operation.stream).or_default().push((
+                operation.start,
+                operation.end,
+                move_replacement(show),
+            ));
+        }
+    }
+    let spliced = |stream: usize| -> Result<Vec<u8>, TextEditError> {
+        let original = &page.streams[stream];
+        let Some(stream_splices) = splices.get(&stream) else {
+            return Ok(original.clone());
+        };
+        let mut stream_splices = stream_splices.iter().collect::<Vec<_>>();
+        stream_splices.sort_by_key(|(start, _, _)| *start);
+        let mut bytes = Vec::with_capacity(original.len() + 256);
+        let mut cursor = 0;
+        for (start, end, replacement) in stream_splices {
+            if *start < cursor {
+                return Err(TextEditError::Malformed("overlapping text edits".into()));
+            }
+            bytes.extend_from_slice(&original[cursor..*start]);
+            bytes.push(b' ');
+            bytes.extend_from_slice(replacement.as_bytes());
+            bytes.push(b' ');
+            cursor = *end;
+        }
+        bytes.extend_from_slice(&original[cursor..]);
+        Ok(bytes)
+    };
+
+    // The page's own content streams.
+    let mut content_ids = page.content_ids.clone();
+    for &stream in splices.keys() {
+        if matches!(page.owners[stream], StreamOwner::Page) {
+            let mut written = Stream::new(Dictionary::new(), spliced(stream)?);
+            written.compress()?;
+            content_ids[stream] = document.add_object(written);
+        }
+    }
+
+    // Edited Form XObjects, and the forms that draw them, become copies
+    // private to this page: another page, or another `Do` of the same name,
+    // keeps the original.
+    let parent_of = |stream: usize| match &page.owners[stream] {
+        StreamOwner::Form { parent, .. } => Some(*parent),
+        StreamOwner::Page => None,
+    };
+    let mut copied = BTreeSet::new();
+    for &stream in splices.keys().chain(form_resources.keys()) {
+        let mut current = Some(stream);
+        while let Some(stream) = current.filter(|stream| parent_of(*stream).is_some()) {
+            copied.insert(stream);
+            current = parent_of(stream);
+        }
+    }
+    let depth = |mut stream: usize| {
+        let mut depth = 0;
+        while let Some(parent) = parent_of(stream) {
+            depth += 1;
+            stream = parent;
+        }
+        depth
+    };
+    let mut order = copied.into_iter().collect::<Vec<_>>();
+    order.sort_by_key(|stream| std::cmp::Reverse(depth(*stream)));
+    let mut copies: BTreeMap<usize, ObjectId> = BTreeMap::new();
+    // Points `resources`' XObject entries at the copies drawn from `parent`.
+    let redirect = |resources: &mut Dictionary,
+                    parent: usize,
+                    copies: &BTreeMap<usize, ObjectId>,
+                    document: &Document| {
+        let children = copies
+            .iter()
+            .filter_map(|(child, id)| match &page.owners[*child] {
+                StreamOwner::Form {
+                    parent: child_parent,
+                    name,
+                    ..
+                } if *child_parent == parent => Some((name.clone(), *id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if children.is_empty() {
+            return false;
+        }
+        let mut xobjects = get_dict(document, resources, b"XObject")
+            .cloned()
+            .unwrap_or_default();
+        for (name, id) in children {
+            xobjects.set(name, Object::Reference(id));
+        }
+        resources.set("XObject", Object::Dictionary(xobjects));
+        true
+    };
+    for stream in order {
+        let StreamOwner::Form {
+            object, resources, ..
+        } = &page.owners[stream]
+        else {
+            continue;
+        };
+        let mut resources = form_resources
+            .remove(&stream)
+            .unwrap_or_else(|| resources.clone());
+        redirect(&mut resources, stream, &copies, document);
+        let mut dictionary = document.get_object(*object)?.as_stream()?.dict.clone();
+        for key in [b"Filter".as_slice(), b"DecodeParms", b"Length"] {
+            dictionary.remove(key);
+        }
+        dictionary.set("Resources", Object::Dictionary(resources));
+        let mut written = Stream::new(dictionary, spliced(stream)?);
+        written.compress()?;
+        copies.insert(stream, document.add_object(written));
+    }
+    // Forms drawn by the page's content streams.
+    let page_children = copies
+        .keys()
+        .any(|stream| parent_of(*stream).is_some_and(|parent| parent_of(parent).is_none()));
+    if page_children {
+        let children = copies
+            .iter()
+            .filter_map(|(stream, id)| match &page.owners[*stream] {
+                StreamOwner::Form { parent, name, .. } if parent_of(*parent).is_none() => {
+                    Some((name.clone(), *id))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut xobjects = get_dict(document, &page_resources_dictionary, b"XObject")
+            .cloned()
+            .unwrap_or_default();
+        for (name, id) in children {
+            xobjects.set(name, Object::Reference(id));
+        }
+        page_resources_dictionary.set("XObject", Object::Dictionary(xobjects));
+        page_resources_changed = true;
+    }
+
+    let contents = if content_ids.len() == 1 {
+        Object::Reference(content_ids[0])
+    } else {
+        Object::Array(content_ids.into_iter().map(Object::Reference).collect())
+    };
+    let page_dictionary = document.get_object_mut(page.page_id)?.as_dict_mut()?;
+    page_dictionary.set("Contents", contents);
+    if page_resources_changed {
+        page_dictionary.set("Resources", Object::Dictionary(page_resources_dictionary));
+    }
+    Ok(())
+}
+
+/// Whether laid-out character `laid_index` is a space drawn as a gap, with
+/// no glyph.
+fn gap_only(page: &ExtractedPage, plan: &PlannedEdit, laid_index: usize) -> bool {
+    match plan.layout.chars[laid_index].source {
+        LaidOutSource::Gap => true,
+        LaidOutSource::Original(index) => page.lines[plan.line].public.chars[index].synthetic,
+        LaidOutSource::Font | LaidOutSource::Fallback => false,
+    }
+}
+
+/// A gap reads back as a space only between two glyphs that are not
+/// whitespace; anywhere else the space needs a glyph.
+fn gap_needs_glyph(plan: &PlannedEdit, laid_index: usize) -> bool {
+    layout_gap_needs_glyph(&plan.layout.chars, laid_index)
+}
+
+fn layout_gap_needs_glyph(chars: &[LaidOutChar], laid_index: usize) -> bool {
+    let is_space = |index: Option<usize>| {
+        index
+            .and_then(|index| chars.get(index))
+            .is_none_or(|character| character.character.is_whitespace())
+    };
+    is_space(laid_index.checked_sub(1)) || is_space(Some(laid_index + 1))
+}
+
+/// Whether an unchanged character must be encoded afresh because the glyph
+/// it shared (a ligature) was split by the edit.
+fn needs_reencoding(page: &ExtractedPage, plan: &PlannedEdit, character: &LaidOutChar) -> bool {
+    let LaidOutSource::Original(index) = character.source else {
+        return false;
+    };
+    original_glyph(page, plan, index).is_none()
+        && !page.lines[plan.line].public.chars[index].synthetic
+}
+
+/// The original glyphs to draw for original character `index`, when the
+/// edit kept every character of their cluster in order.
+fn original_glyph<'a>(
+    page: &'a ExtractedPage,
+    plan: &PlannedEdit,
+    index: usize,
+) -> Option<&'a [ShownGlyph]> {
+    let line = &page.lines[plan.line];
+    let cluster = line.clusters[index]?;
+    let position = plan
+        .layout
+        .chars
+        .iter()
+        .position(|character| character.source == LaidOutSource::Original(index))?;
+    let first = index.checked_sub(cluster.part)?;
+    let first_position = position.checked_sub(cluster.part)?;
+    for offset in 0..cluster.parts {
+        let laid = plan.layout.chars.get(first_position + offset)?;
+        if laid.source != LaidOutSource::Original(first + offset) {
+            return None;
+        }
+    }
+    Some(&page.shows[cluster.show].glyphs[cluster.first_glyph..=cluster.last_glyph])
+}
+
+fn first_operator_replacement(
+    page: &ExtractedPage,
+    plan: &PlannedEdit,
+    fallback_fonts: &FallbackFonts,
+) -> Result<String, TextEditError> {
+    let line = &page.lines[plan.line];
+    let first = &page.shows[line.ops[0]];
+    let state = &first.state;
+    let scale = state.horizontal_scale;
+    let mut glyphs = Vec::new();
+    for (laid_index, character) in plan.layout.chars.iter().enumerate() {
+        let style = &plan.runs[character.run].style;
+        let font = &page.fonts[&style.font];
+        let encoded = |code: u32, needs_span: bool| {
+            let word_spacing = if font.simple && code == 32 {
+                style.word_spacing
+            } else {
+                0.
+            };
+            EmittedGlyph {
+                font: GlyphFont::Page(style.font.clone()),
+                style: style.clone(),
+                actual_text: needs_span.then(|| (laid_index, character.character.to_string())),
+                code: font.code_bytes(code),
+                x: character.x,
+                advance: (font.width(code) / 1000. * style.font_size
+                    + style.char_spacing
+                    + word_spacing)
+                    * scale,
+            }
+        };
+        if gap_only(page, plan, laid_index) {
+            if gap_needs_glyph(plan, laid_index) {
+                match page_code(font, style, character.character) {
+                    Some((code, needs_span)) => glyphs.push(encoded(code, needs_span)),
+                    None => glyphs.push(fallback_glyph(
+                        font,
+                        style,
+                        scale,
+                        character,
+                        fallback_fonts,
+                    )?),
+                }
+            }
+            continue;
+        }
+        match character.source {
+            LaidOutSource::Gap => {}
+            LaidOutSource::Original(index) => {
+                let part = line.clusters[index].map_or(0, |cluster| cluster.part);
+                if let Some(cluster) = original_glyph(page, plan, index) {
+                    if part == 0 {
+                        let actual_text =
+                            cluster.iter().any(|glyph| glyph.actual_text).then(|| {
+                                let text = cluster
+                                    .iter()
+                                    .filter_map(|glyph| glyph.unicode.as_deref())
+                                    .collect::<String>();
+                                (laid_index, text)
+                            });
+                        for glyph in cluster {
+                            glyphs.push(EmittedGlyph {
+                                font: GlyphFont::Page(style.font.clone()),
+                                style: style.clone(),
+                                actual_text: actual_text.clone(),
+                                code: glyph.code.clone(),
+                                x: character.x + glyph.x - cluster[0].x,
+                                advance: glyph.advance,
+                            });
+                        }
+                    }
+                } else if let Some((code, needs_span)) = page_code(font, style, character.character)
+                {
+                    glyphs.push(encoded(code, needs_span));
+                } else {
+                    glyphs.push(fallback_glyph(
+                        font,
+                        style,
+                        scale,
+                        character,
+                        fallback_fonts,
+                    )?);
+                }
+            }
+            LaidOutSource::Font => {
+                let (code, needs_span) = page_code(font, style, character.character)
+                    .ok_or(TextEditError::Unencodable(character.character))?;
+                glyphs.push(encoded(code, needs_span));
+            }
+            LaidOutSource::Fallback => {
+                glyphs.push(fallback_glyph(
+                    font,
+                    style,
+                    scale,
+                    character,
+                    fallback_fonts,
+                )?);
+            }
+        }
+    }
+
+    // Added lines' glyphs: their text is all new.
+    let mut extra_glyphs = Vec::new();
+    for (extra, layout) in &plan.extras {
+        let mut drawn = Vec::new();
+        for (laid_index, character) in layout.chars.iter().enumerate() {
+            let style = &extra.runs[character.run].style;
+            let font = &page.fonts[&style.font];
+            let gap = character.source == LaidOutSource::Gap;
+            if gap && !layout_gap_needs_glyph(&layout.chars, laid_index) {
+                continue;
+            }
+            match page_code(font, style, character.character) {
+                Some((code, needs_span))
+                    if !matches!(character.source, LaidOutSource::Fallback) =>
+                {
+                    let word_spacing = if font.simple && code == 32 {
+                        style.word_spacing
+                    } else {
+                        0.
+                    };
+                    drawn.push(EmittedGlyph {
+                        font: GlyphFont::Page(style.font.clone()),
+                        style: style.clone(),
+                        actual_text: needs_span
+                            .then(|| (usize::MAX - laid_index, character.character.to_string())),
+                        code: font.code_bytes(code),
+                        x: character.x,
+                        advance: (font.width(code) / 1000. * style.font_size
+                            + style.char_spacing
+                            + word_spacing)
+                            * scale,
+                    });
+                }
+                _ => drawn.push(fallback_glyph(
+                    font,
+                    style,
+                    scale,
+                    character,
+                    fallback_fonts,
+                )?),
+            }
+        }
+        extra_glyphs.push((extra, drawn));
+    }
+
+    let mut output = String::new();
+    // An /ActualText span around the first operator would relabel the whole
+    // edited line: close it before the line and reopen plain spans after.
+    for _ in 0..first.actual_text_depth {
+        output.push_str("EMC ");
+    }
+    match first.kind {
+        ShowKind::NextLineShow => output.push_str("T* "),
+        ShowKind::SpacedNextLineShow { word, character } => output.push_str(&format!(
+            "{} Tw {} Tc T* ",
+            format_number(word),
+            format_number(character)
+        )),
+        ShowKind::Show | ShowKind::ShowArray => {}
+    }
+    // Fonts are written by their names in the stream's own resources.
+    let resource_name = |key: &[u8]| {
+        page.fonts
+            .get(key)
+            .map_or_else(|| key.to_vec(), |font| font.resource_name.clone())
+    };
+    let first_font = resource_name(&state.font.clone().unwrap_or_default());
+    let mut current_font = (first_font.clone(), state.font_size);
+    let mut current_spacing = (state.char_spacing, state.word_spacing);
+    // The operators that set the line's own fill again after a chosen colour.
+    let color = &state.color;
+    let restore_fill = match (&color.fill_space, &color.fill) {
+        (None, None) => Some("0 g".to_owned()),
+        (space, fill) => {
+            let parts = space.iter().chain(fill).cloned().collect::<Vec<_>>();
+            (!parts.iter().any(|part| part.starts_with('?'))).then(|| parts.join(" "))
+        }
+    };
+    let line_fill = device_fill(color);
+    let colored = glyphs
+        .iter()
+        .chain(extra_glyphs.iter().flat_map(|(_, drawn)| drawn))
+        .any(|glyph| glyph.style.fill != line_fill);
+    if colored && restore_fill.is_none() {
+        return Err(TextEditError::ReadOnly(
+            "the line's colour cannot be set again after a colour change".into(),
+        ));
+    }
+    let restore_fill = restore_fill.unwrap_or_default();
+    let mut current_fill = line_fill;
+    // Draws glyphs from pen position `pen`, setting fonts, spacing and fill
+    // as they change. Returns whether it wrote a string.
+    let emit = |glyphs: &[EmittedGlyph],
+                pen: &mut f64,
+                output: &mut String,
+                current_font: &mut (Vec<u8>, f64),
+                current_spacing: &mut (f64, f64),
+                current_fill: &mut Option<[f64; 3]>| {
+        let mut wrote_string = false;
+        let mut index = 0;
+        while index < glyphs.len() {
+            let segment_font = glyphs[index].font.clone();
+            let segment_style = glyphs[index].style.clone();
+            if *current_fill != segment_style.fill {
+                match segment_style.fill {
+                    Some([red, green, blue]) => output.push_str(&format!(
+                        "{} {} {} rg ",
+                        format_number(red),
+                        format_number(green),
+                        format_number(blue)
+                    )),
+                    None => {
+                        output.push_str(&restore_fill);
+                        output.push(' ');
+                    }
+                }
+                *current_fill = segment_style.fill;
+            }
+            let font_name = match &segment_font {
+                GlyphFont::Page(name) => resource_name(name),
+                GlyphFont::Fallback(fallback) => fallback_fonts[fallback].0.clone(),
+            };
+            if *current_font != (font_name.clone(), segment_style.font_size) {
+                output.push_str(&format!(
+                    "{} {} Tf ",
+                    format_name(&font_name),
+                    format_number(segment_style.font_size)
+                ));
+                *current_font = (font_name, segment_style.font_size);
+            }
+            if current_spacing.0 != segment_style.char_spacing {
+                output.push_str(&format!(
+                    "{} Tc ",
+                    format_number(segment_style.char_spacing)
+                ));
+            }
+            if current_spacing.1 != segment_style.word_spacing {
+                output.push_str(&format!(
+                    "{} Tw ",
+                    format_number(segment_style.word_spacing)
+                ));
+            }
+            *current_spacing = (segment_style.char_spacing, segment_style.word_spacing);
+            let unit = segment_style.font_size * scale / 1000.;
+            let segment_span = glyphs[index].actual_text.clone();
+            if let Some((_, text)) = &segment_span {
+                output.push_str(&format!(
+                    "/Span <</ActualText {}>> BDC ",
+                    format_text_string(text)
+                ));
+            }
+            output.push('[');
+            let mut string = Vec::new();
+            while index < glyphs.len()
+                && glyphs[index].font == segment_font
+                && glyphs[index].style == segment_style
+                && glyphs[index].actual_text == segment_span
+            {
+                let glyph = &glyphs[index];
+                let adjustment = rounded_adjustment(*pen - glyph.x, unit);
+                if adjustment != 0. {
+                    if !string.is_empty() {
+                        output.push_str(&format_hex(&string));
+                        string.clear();
+                    }
+                    output.push_str(&format_number(adjustment));
+                    *pen -= adjustment * unit;
+                }
+                string.extend_from_slice(&glyph.code);
+                *pen += glyph.advance;
+                index += 1;
+            }
+            output.push_str(&format_hex(&string));
+            wrote_string = true;
+            output.push_str("] TJ ");
+            if segment_span.is_some() {
+                output.push_str("EMC ");
+            }
+        }
+        wrote_string
+    };
+    let mut pen = 0.;
+    let wrote_string = emit(
+        &glyphs,
+        &mut pen,
+        &mut output,
+        &mut current_font,
+        &mut current_spacing,
+        &mut current_fill,
+    );
+    // Added lines, each on its own baseline below the line.
+    for (extra, drawn) in &extra_glyphs {
+        output.push_str(&format!(
+            "{} Tm ",
+            format_matrix(multiply(
+                [1., 0., 0., 1., extra.origin_shift, -extra.below],
+                first.text_matrix
+            ))
+        ));
+        let mut extra_pen = extra.origin_shift;
+        emit(
+            drawn,
+            &mut extra_pen,
+            &mut output,
+            &mut current_font,
+            &mut current_spacing,
+            &mut current_fill,
+        );
+    }
+    // Restore the first operator's state and end where it originally ended.
+    if current_fill != line_fill {
+        output.push_str(&restore_fill);
+        output.push(' ');
+    }
+    if current_font != (first_font.clone(), state.font_size) {
+        output.push_str(&format!(
+            "{} {} Tf ",
+            format_name(&first_font),
+            format_number(state.font_size)
+        ));
+    }
+    if current_spacing.0 != state.char_spacing {
+        output.push_str(&format!("{} Tc ", format_number(state.char_spacing)));
+    }
+    if current_spacing.1 != state.word_spacing {
+        output.push_str(&format!("{} Tw ", format_number(state.word_spacing)));
+    }
+    if !extra_glyphs.is_empty() {
+        // Back on the line, where the operator originally left the text
+        // matrix: following operators move from there.
+        output.push_str(&format!("{} Tm ", format_matrix(first.line_matrix)));
+        pen = 0.;
+        let offset = invert(first.line_matrix).map_or(0., |inverse| {
+            apply(inverse, first.text_matrix[4], first.text_matrix[5]).0
+        });
+        pen -= offset;
+    }
+    let adjustment = rounded_adjustment(pen - first.advance, state.font_size * scale / 1000.);
+    if !wrote_string || adjustment != 0. {
+        output.push('[');
+        if !wrote_string {
+            // An emptied line keeps an empty string as its anchor.
+            output.push_str("<>");
+        }
+        if adjustment != 0. {
+            output.push_str(&format_number(adjustment));
+        }
+        output.push_str("] TJ");
+    }
+    for _ in 0..first.actual_text_depth {
+        output.push_str(" /Span BMC");
+    }
+    Ok(output)
+}
+
+/// The page font's code for `character`, unless the run draws in a chosen
+/// face.
+fn page_code(font: &LoadedFont, style: &TextRunStyle, character: char) -> Option<(u32, bool)> {
+    if style.face.is_some() {
+        None
+    } else {
+        font.encode_char(character)
+    }
+}
+
+/// A TJ adjustment, in thousandths of the font size, that moves the pen back
+/// by `distance`; zero when negligible.
+fn rounded_adjustment(distance: f64, unit: f64) -> f64 {
+    if unit == 0. {
+        return 0.;
+    }
+    let adjustment = (distance / unit * 10_000.).round() / 10_000.;
+    if adjustment.abs() < 0.001 {
+        0.
+    } else {
+        adjustment
+    }
+}
+
+fn fallback_glyph(
+    font: &LoadedFont,
+    style: &TextRunStyle,
+    scale: f64,
+    character: &LaidOutChar,
+    fallback_fonts: &FallbackFonts,
+) -> Result<EmittedGlyph, TextEditError> {
+    let (fallback, _, width) = substitute_glyph(&font.metrics, style, character.character)
+        .ok_or(TextEditError::Unencodable(character.character))?;
+    let cid = fallback_fonts
+        .get(&fallback)
+        .and_then(|(_, cids)| cids.get(&character.character))
+        .ok_or(TextEditError::Unencodable(character.character))?;
+    Ok(EmittedGlyph {
+        font: GlyphFont::Fallback(fallback),
+        style: style.clone(),
+        actual_text: None,
+        code: cid.to_be_bytes().to_vec(),
+        x: character.x,
+        advance: (width / 1000. * style.font_size + style.char_spacing) * scale,
+    })
+}
+
+/// A replacement that moves the text matrix as the operator did, drawing
+/// nothing.
+fn move_replacement(show: &ShowOp) -> String {
+    let mut output = String::new();
+    match show.kind {
+        ShowKind::NextLineShow => output.push_str("T* "),
+        ShowKind::SpacedNextLineShow { word, character } => output.push_str(&format!(
+            "{} Tw {} Tc T* ",
+            format_number(word),
+            format_number(character)
+        )),
+        ShowKind::Show | ShowKind::ShowArray => {}
+    }
+    let unit = show.state.font_size * show.state.horizontal_scale / 1000.;
+    if unit != 0. && show.advance.abs() > 1e-9 {
+        output.push_str(&format!("[{}] TJ", format_number(-show.advance / unit)));
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::Object;
+
+    fn helvetica() -> Dictionary {
+        dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        }
+    }
+
+    fn document(content: &[u8], fonts: Vec<(&str, Object)>) -> Document {
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let mut font_dictionary = Dictionary::new();
+        for (name, font) in fonts {
+            let id = document.add_object(font);
+            font_dictionary.set(name, id);
+        }
+        let content_id = document.add_object(Stream::new(Dictionary::new(), content.to_vec()));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Contents" => content_id,
+            "Resources" => dictionary! { "Font" => font_dictionary },
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        document.trailer.set("Root", catalog_id);
+        document
+    }
+
+    fn reload(document: &mut Document) -> Document {
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).expect("save");
+        Document::load_mem(&bytes).expect("reload")
+    }
+
+    fn layer(document: &Document) -> PageTextLayer {
+        extract_page_text(document, 0, &TextEditLimits::default()).expect("extract")
+    }
+
+    fn edit(line: &PageTextLine, text: &str) -> PageTextEdit {
+        PageTextEdit {
+            page_index: 0,
+            anchor: line.anchor,
+            original: line.original_runs(),
+            runs: vec![TextEditRun {
+                style: line.styles[line.chars.first().map_or(0, |c| c.style)].clone(),
+                text: text.into(),
+            }],
+            layout: Default::default(),
+        }
+    }
+
+    fn page_content(document: &Document) -> Vec<u8> {
+        let page_id = page_id(document, 0).unwrap();
+        decode_streams(
+            document,
+            &page_content_ids(document, page_id).unwrap(),
+            &mut 0,
+            &TextEditLimits::default(),
+        )
+        .unwrap()
+        .concat()
+    }
+
+    fn char_x(line: &PageTextLine, character: char, occurrence: usize) -> f64 {
+        line.chars
+            .iter()
+            .filter(|candidate| candidate.character == character)
+            .nth(occurrence)
+            .unwrap()
+            .x
+    }
+
+    #[test]
+    fn edits_a_simple_line_and_preserves_other_content_bytes() {
+        let content = b"q 0 0 1 rg 10 10 50 50 re f Q\nBT /F1 12 Tf 72 700 Td (Hello World) Tj ET\nBT /F1 12 Tf 72 680 Td (Second line) Tj ET\n";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        assert_eq!(
+            before
+                .lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Hello World", "Second line"]
+        );
+        let line = &before.lines[0];
+        assert_eq!(line.read_only, None);
+        assert_eq!(line.origin(), (72., 700.));
+
+        let change = edit(line, "Hello Butter");
+        let expected = layout_text_edit(&before, line, &change.runs).unwrap();
+        apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+        let mut document = reload(&mut document);
+        let after = layer(&document);
+        assert_eq!(after.lines[0].text, "Hello Butter");
+        assert_eq!(after.lines[0].anchor, line.anchor);
+        assert_eq!(after.lines[1], before.lines[1]);
+        // Unchanged glyphs keep their positions; the layout the editor shows
+        // is what is written.
+        for (laid, extracted) in expected.chars.iter().zip(&after.lines[0].chars) {
+            assert!(
+                (laid.x - extracted.x).abs() < 1e-3,
+                "{laid:?} {extracted:?}"
+            );
+        }
+        let content_after = page_content(&document);
+        let text = String::from_utf8_lossy(&content_after);
+        assert!(text.starts_with("q 0 0 1 rg 10 10 50 50 re f Q\nBT /F1 12 Tf 72 700 Td "));
+        assert!(
+            text.ends_with(" ET\nBT /F1 12 Tf 72 680 Td (Second line) Tj ET\n"),
+            "{text}"
+        );
+
+        // A second edit applies to the edited document as its new base.
+        let edited = layer(&document);
+        let change = edit(&edited.lines[0], "Hi Butter");
+        apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+        assert_eq!(layer(&reload(&mut document)).lines[0].text, "Hi Butter");
+    }
+
+    #[test]
+    fn merges_positioned_words_and_keeps_untouched_glyph_positions() {
+        // LibreOffice positions each word with its own text matrix.
+        let content = b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (The) Tj 1 0 0 1 100 700 Tm (quick) Tj 1 0 0 1 140 700 Tm (fox) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        assert_eq!(before.lines.len(), 1);
+        let line = &before.lines[0];
+        assert_eq!(line.text, "The quick fox");
+        assert!(line.chars[3].synthetic);
+        let quick_width = char_x(line, 'f', 0) - char_x(line, 'q', 0);
+
+        apply_text_edits(
+            &mut document,
+            &[edit(line, "The slow fox")],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut document));
+        let edited = &after.lines[0];
+        assert_eq!(edited.text, "The slow fox");
+        assert!((char_x(edited, 'T', 0) - char_x(line, 'T', 0)).abs() < 1e-3);
+        assert!((char_x(edited, 'e', 0) - char_x(line, 'e', 0)).abs() < 1e-3);
+        let slow_width = char_x(edited, 'f', 0) - char_x(edited, 's', 0);
+        let shift = char_x(edited, 'f', 0) - char_x(line, 'f', 0);
+        // "slow" replaced "quick" (and the gap after it is kept).
+        assert!((shift - (slow_width - quick_width)).abs() < 1e-3, "{shift}");
+    }
+
+    #[test]
+    fn following_operators_keep_their_positions() {
+        let content = b"BT /F1 12 Tf 72 700 Td (Hello) Tj /CS0 cs 1 sc ( World) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        assert_eq!(before.lines.len(), 2, "a non-device colour splits lines");
+        apply_text_edits(
+            &mut document,
+            &[edit(&before.lines[0], "Hi")],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut document));
+        assert_eq!(after.lines[0].text, "Hi");
+        assert_eq!(after.lines[1].text, " World");
+        assert_eq!(after.lines[1].anchor, before.lines[1].anchor);
+    }
+
+    #[test]
+    fn run_colours_save_read_back_and_restore_the_line_fill() {
+        let red = Some([1., 0., 0.]);
+        let blue = Some([0., 0., 1.]);
+        let content =
+            b"BT /F1 12 Tf 72 700 Td (Hello) Tj 1 0 0 rg ( World) Tj 0 g 0 -20 Td (Next) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        assert_eq!(before.lines.len(), 2, "device colours share a line");
+        let line = &before.lines[0];
+        assert_eq!(line.fill, Some([0.; 3]));
+        let runs = line.original_runs();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            (runs[0].style.fill, runs[1].style.fill),
+            (Some([0.; 3]), red)
+        );
+        let mut change = edit(line, "Hi");
+        change.runs[0].style.fill = blue;
+        change.runs.push(runs[1].clone());
+        apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        assert_eq!(after.lines.len(), 2);
+        assert_eq!(after.lines[0].text, "Hi World");
+        let fills = after.lines[0]
+            .original_runs()
+            .iter()
+            .map(|run| run.style.fill)
+            .collect::<Vec<_>>();
+        assert_eq!(fills, vec![blue, red]);
+        // The rest of the stream draws in the colours it did.
+        assert_eq!(after.lines[1].text, "Next");
+        assert_eq!(after.lines[1].fill, Some([0.; 3]));
+
+        // A colour space without device components is set again by name.
+        let content =
+            b"BT /F1 12 Tf /Cs1 cs 0.2 0.2 0.2 sc 72 700 Td (Grey text) Tj 0 -20 Td (After) Tj ET";
+        let mut document = super::tests::document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let mut change = edit(&before.lines[0], "Grey ");
+        change.runs.push(TextEditRun {
+            style: TextRunStyle {
+                fill: red,
+                ..change.runs[0].style.clone()
+            },
+            text: "text".into(),
+        });
+        apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+        let reloaded = reload(&mut document);
+        let after = layer(&reloaded);
+        assert_eq!(after.lines.len(), 2);
+        assert_eq!(after.lines[0].fill, None);
+        let fills = after.lines[0]
+            .original_runs()
+            .iter()
+            .map(|run| run.style.fill)
+            .collect::<Vec<_>>();
+        assert_eq!(fills, vec![None, red]);
+        let page = reloaded.get_pages()[&1];
+        let bytes = reloaded.get_page_content(page);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("1 0 0 rg "), "{text}");
+        assert!(text.contains("/Cs1 cs 0.2 0.2 0.2 sc "), "{text}");
+    }
+
+    #[test]
+    fn a_chosen_face_draws_the_run_in_that_font() {
+        let content = b"BT /F1 12 Tf 72 700 Td (Plain words) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let line = &before.lines[0];
+        let face = TextFace {
+            postscript_name: None,
+            fallback: FallbackFace {
+                family: FallbackFamily::Serif,
+                bold: true,
+                italic: false,
+            },
+        };
+        let mut change = edit(line, "Plain ");
+        change.runs.push(TextEditRun {
+            style: TextRunStyle {
+                face: Some(face),
+                font_size: 14.,
+                ..change.runs[0].style.clone()
+            },
+            text: "words".into(),
+        });
+        let expected = layout_text_edit(&before, line, &change.runs).unwrap();
+        assert!(
+            expected.chars[6..]
+                .iter()
+                .all(|character| character.source == LaidOutSource::Fallback)
+        );
+        apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let edited = &after.lines[0];
+        assert_eq!(edited.text, "Plain words");
+        let styles = edited
+            .original_runs()
+            .into_iter()
+            .map(|run| (run.text, run.style.font_size))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            styles,
+            vec![("Plain ".to_owned(), 12.), ("words".to_owned(), 14.)]
+        );
+        let font = after
+            .font(&edited.styles[edited.chars[6].style].font)
+            .unwrap();
+        assert_eq!(font.postscript_name.as_deref(), Some("Tinos-Bold"));
+        for (laid, extracted) in expected.chars.iter().zip(&edited.chars) {
+            assert!(
+                (laid.x - extracted.x).abs() < 1e-3,
+                "{laid:?} {extracted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn characters_the_font_lacks_use_an_embedded_fallback() {
+        let content = b"BT /F1 12 Tf 72 700 Td (Area 5 m2) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let line = &before.lines[0];
+        let change = edit(line, "Area 5 m\u{b2} \u{3a9}");
+        let expected = layout_text_edit(&before, line, &change.runs).unwrap();
+        assert_eq!(
+            expected.chars.last().unwrap().source,
+            LaidOutSource::Fallback
+        );
+        apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+        let document = reload(&mut document);
+        let after = layer(&document);
+        assert_eq!(after.lines[0].text, "Area 5 m\u{b2} \u{3a9}");
+        assert_eq!(after.lines[0].anchor, line.anchor);
+        assert!(after.fonts.iter().any(|font| font.font == b"BPEdit1"));
+        assert_eq!(after.lines[0].styles.len(), 2);
+        for (laid, extracted) in expected.chars.iter().zip(&after.lines[0].chars) {
+            assert!(
+                (laid.x - extracted.x).abs() < 1e-3,
+                "{laid:?} {extracted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn type0_identity_fonts_encode_new_text_with_their_glyphs_or_extend_the_fallback() {
+        let mut document = document(b"", vec![]);
+        let characters = "Helo Wrd".chars().collect::<BTreeSet<_>>();
+        let (font_id, cids) = crate::pdf_engine::embed_text_edit_fallback(
+            &mut document,
+            crate::pdf_engine::text_edit_fallback_glyph(
+                FallbackFace {
+                    family: FallbackFamily::Sans,
+                    bold: false,
+                    italic: false,
+                },
+                None,
+                'a',
+            )
+            .unwrap()
+            .0,
+            &characters,
+        )
+        .unwrap();
+        let codes = "Hello Word"
+            .chars()
+            .flat_map(|character| cids[&character].to_be_bytes())
+            .collect::<Vec<_>>();
+        let content = format!("BT /F0 10 Tf 50 500 Td {} Tj ET", format_hex(&codes));
+        let page_id = page_id(&document, 0).unwrap();
+        let content_id = document.add_object(Stream::new(Dictionary::new(), content.into_bytes()));
+        let page = document
+            .get_object_mut(page_id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap();
+        page.set("Contents", content_id);
+        page.set(
+            "Resources",
+            dictionary! { "Font" => dictionary! { "F0" => font_id } },
+        );
+        let before = layer(&document);
+        assert_eq!(before.lines[0].text, "Hello Word");
+        assert_eq!(before.lines[0].read_only, None);
+        apply_text_edits(
+            &mut document,
+            &[edit(&before.lines[0], "Hello World!")],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut document));
+        assert_eq!(after.lines[0].text, "Hello World!");
+    }
+
+    #[test]
+    fn an_emptied_line_keeps_its_anchor_so_it_can_be_restored() {
+        let content = b"BT /F1 12 Tf 72 700 Td (Remove me) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        apply_text_edits(
+            &mut document,
+            &[edit(&before.lines[0], "")],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let mut emptied = reload(&mut document);
+        let after = layer(&emptied);
+        assert_eq!(after.lines.len(), 1);
+        assert_eq!(after.lines[0].text, "");
+        assert_eq!(after.lines[0].anchor, before.lines[0].anchor);
+        let restore = PageTextEdit {
+            page_index: 0,
+            anchor: after.lines[0].anchor,
+            original: Vec::new(),
+            runs: before.lines[0].original_runs(),
+            layout: Default::default(),
+        };
+        apply_text_edits(&mut emptied, &[restore], &TextEditLimits::default()).unwrap();
+        assert_eq!(layer(&reload(&mut emptied)).lines[0].text, "Remove me");
+    }
+
+    #[test]
+    fn stale_and_read_only_edits_are_rejected() {
+        let content = b"BT /F1 12 Tf 72 700 Td (Visible) Tj 3 Tr 72 680 Td (Hidden) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let mut stale = edit(&before.lines[0], "Changed");
+        stale.original[0].text = "Other".into();
+        assert!(matches!(
+            apply_text_edits(&mut document, &[stale], &TextEditLimits::default()),
+            Err(TextEditError::Stale(_))
+        ));
+        assert!(before.lines[1].read_only.is_some());
+        assert!(matches!(
+            apply_text_edits(
+                &mut document,
+                &[edit(&before.lines[1], "Shown")],
+                &TextEditLimits::default()
+            ),
+            Err(TextEditError::ReadOnly(_))
+        ));
+    }
+
+    #[test]
+    fn rebasing_after_save_restores_earlier_states_from_the_saved_text() {
+        let style = TextRunStyle {
+            font: b"F1".to_vec(),
+            font_size: 12.,
+            char_spacing: 0.,
+            word_spacing: 0.,
+            fill: None,
+            face: None,
+        };
+        let run = |text: &str| TextEditRun {
+            style: style.clone(),
+            text: text.into(),
+        };
+        let anchor = TextLineAnchor {
+            x_centipoints: 7200,
+            y_centipoints: 70000,
+            ordinal: 0,
+        };
+        let edit = |original: &str, text: &str| PageTextEdit {
+            page_index: 0,
+            anchor,
+            original: vec![run(original)],
+            runs: vec![run(text)],
+            layout: Default::default(),
+        };
+        let saved = vec![edit("Draft", "Final")];
+        // The saved state itself needs no edit; the state before it (no
+        // edit) and a later one become edits from "Final".
+        assert!(rebase_text_edits(&saved, &saved).is_empty());
+        assert_eq!(rebase_text_edits(&[], &saved), vec![edit("Final", "Draft")]);
+        assert_eq!(
+            rebase_text_edits(&[edit("Draft", "Later")], &saved),
+            vec![edit("Final", "Later")]
+        );
+    }
+
+    #[test]
+    fn lexes_escapes_comments_and_inline_images() {
+        let content = b"% comment\nBT /F#31 12 Tf 72 700 Td (a\\(b\\) \\101\\\nc) Tj ET\nBI /W 2 /H 1 /BPC 8 /CS /G ID \x00EI\xff EI\nBT /F1 12 Tf 72 680 Td <48 69> Tj ET";
+        let document = document(content, vec![("F1", helvetica().into())]);
+        let lines = layer(&document).lines;
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["a(b) Ac", "Hi"]
+        );
+    }
+
+    #[test]
+    fn text_matrix_scaled_fonts_and_trailing_ops_follow_the_edit() {
+        // Quartz scales a 1pt font with the text matrix.
+        let content = b"BT 12 0 0 12 72 700 Tm /F1 1 Tf (Scaled) Tj (Tail) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        assert_eq!(before.lines[0].text, "ScaledTail");
+        let tail = char_x(&before.lines[0], 'T', 0);
+        apply_text_edits(
+            &mut document,
+            &[edit(&before.lines[0], "SizedTail")],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut document));
+        assert_eq!(after.lines[0].text, "SizedTail");
+        assert!(char_x(&after.lines[0], 'T', 0) < tail);
+    }
+
+    #[test]
+    fn actual_text_overrides_a_ligature_mapped_to_its_first_use() {
+        // LibreOffice maps a ligature glyph to the text of its first use
+        // ("fix" in "fixings"); a later use carries the right /ActualText.
+        let to_unicode = Stream::new(
+            Dictionary::new(),
+            b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+              1 begincodespacerange <00> <FF> endcodespacerange\n\
+              5 beginbfchar <41> <006600690078> <63> <0063> <65> <0065> <70> <0070> <73> <0073> endbfchar\n\
+              endcmap CMapName currentdict /CMap defineresource pop end end"
+                .to_vec(),
+        );
+        let mut document = document(
+            b"BT /F1 12 Tf 72 700 Td (spe) Tj /Span <</ActualText <FEFF00660069>>> BDC (A) Tj EMC (c) Tj ET",
+            vec![],
+        );
+        let to_unicode = document.add_object(to_unicode);
+        let mut font = helvetica();
+        font.set("ToUnicode", to_unicode);
+        let font = document.add_object(font);
+        let page = page_id(&document, 0).unwrap();
+        document
+            .get_object_mut(page)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "Resources",
+                dictionary! { "Font" => dictionary! { "F1" => font } },
+            );
+        let before = layer(&document);
+        assert_eq!(before.lines[0].text, "spefic");
+
+        let change = edit(&before.lines[0], "spefics");
+        apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+        assert_eq!(layer(&reload(&mut document)).lines[0].text, "spefics");
+    }
+
+    #[test]
+    fn spaces_keep_the_justification_gaps_on_both_sides() {
+        // A justified space: 3pt gaps before and after it.
+        let content = b"BT /F1 10 Tf 72 700 Td [(ab) -300 ( ) -300 (cd)] TJ ET";
+        let document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let line = &before.lines[0];
+        assert_eq!(line.text, "ab cd");
+        let end_of_b = char_x(line, 'b', 0) + line.chars[1].advance;
+
+        // Deleting the space takes both gaps with it.
+        let joined = layout_text_edit(&before, line, &edit(line, "abcd").runs).unwrap();
+        assert!((joined.chars[2].x - end_of_b).abs() < 1e-6);
+        // Text typed before the space joins the word before it.
+        let typed = layout_text_edit(&before, line, &edit(line, "abX cd").runs).unwrap();
+        assert!((typed.chars[2].x - end_of_b).abs() < 1e-6);
+        // Text typed after it takes the gap after the space.
+        let after_space = layout_text_edit(&before, line, &edit(line, "ab Xcd").runs).unwrap();
+        assert!((after_space.chars[3].x - char_x(line, 'c', 0)).abs() < 1e-6);
+
+        for text in ["abcd", "abX cd", "ab Xcd", "a cd"] {
+            let mut edited = document.clone();
+            apply_text_edits(&mut edited, &[edit(line, text)], &TextEditLimits::default()).unwrap();
+            assert_eq!(layer(&reload(&mut edited)).lines[0].text, text);
+        }
+    }
+
+    #[test]
+    fn spaces_drawn_as_gaps_read_back_after_their_neighbours_change() {
+        // A bullet, then a gap read as a space; a space, then a kerned gap.
+        let content = br"BT /F1 10 Tf 72 700 Td [(\225) -2000 (Grade) ( are) -300 (kerned)] TJ ET";
+        let document = document(content, vec![("F1", helvetica().into())]);
+        let line = &layer(&document).lines[0];
+        assert_eq!(line.text, "\u{2022} Grade are kerned");
+        for text in [
+            " Grade are kerned",
+            "\u{2022} Grade  kerned",
+            "\u{2022} Grade are ",
+        ] {
+            let mut edited = document.clone();
+            apply_text_edits(&mut edited, &[edit(line, text)], &TextEditLimits::default()).unwrap();
+            assert_eq!(layer(&reload(&mut edited)).lines[0].text, text);
+        }
+    }
+
+    #[test]
+    fn unchanged_edits_leave_the_content_stream_alone() {
+        let content = b"BT /F1 12 Tf 72 700 Td [(Ke) 40 (rned)] TJ ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let line = &layer(&document).lines[0];
+        let unchanged = edit(line, &line.text);
+        apply_text_edits(&mut document, &[unchanged], &TextEditLimits::default()).unwrap();
+        assert_eq!(page_content(&document), content);
+    }
+
+    #[test]
+    fn letter_outlines_tell_serif_from_sans_when_names_do_not() {
+        let tinos = include_bytes!("../assets/fonts/Tinos-Regular.ttf");
+        let arimo = include_bytes!("../assets/fonts/Arimo-Bold.ttf");
+        assert_eq!(outline_serif(tinos, &BTreeMap::new(), false), Some(true));
+        assert_eq!(outline_serif(arimo, &BTreeMap::new(), false), Some(false));
+
+        // A subset named only "F1", with no serif flag, embedding Tinos
+        // without its OS/2 classification (renamed, so only the outlines
+        // can tell).
+        let mut bare = tinos.to_vec();
+        let tables = usize::from(u16::from_be_bytes([bare[4], bare[5]]));
+        let record = (0..tables)
+            .map(|index| 12 + index * 16)
+            .find(|record| &bare[*record..*record + 4] == b"OS/2")
+            .unwrap();
+        bare[record..record + 4].copy_from_slice(b"XS/2");
+        assert_eq!(outline_serif(&bare, &BTreeMap::new(), false), Some(true));
+        let program = Stream::new(dictionary! { "Length1" => bare.len() as i64 }, bare);
+        let mut document = document(b"BT /F1 12 Tf 72 700 Td (Plain line) Tj ET", vec![]);
+        let program = document.add_object(program);
+        let descriptor = document.add_object(dictionary! {
+            "Type" => "FontDescriptor",
+            "FontName" => "ABCDEF+F1",
+            "Flags" => 32,
+            "FontFile2" => program,
+        });
+        let font = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "TrueType",
+            "BaseFont" => "ABCDEF+F1",
+            "FirstChar" => 32,
+            "LastChar" => 126,
+            "Widths" => (32..=126).map(|_| Object::Integer(500)).collect::<Vec<_>>(),
+            "Encoding" => "WinAnsiEncoding",
+            "FontDescriptor" => descriptor,
+        });
+        let page = page_id(&document, 0).unwrap();
+        document
+            .get_object_mut(page)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "Resources",
+                dictionary! { "Font" => dictionary! { "F1" => font } },
+            );
+        let layer = layer(&document);
+        assert_eq!(
+            layer.font(b"F1").unwrap().fallback.family,
+            FallbackFamily::Serif
+        );
+    }
+
+    fn unicode_cmap_font(encoding: &str) -> Object {
+        // Adobe-Japan1 CIDs: 'A' 34, 'Z' 59, space 1, あ 843.
+        dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type0",
+            "BaseFont" => "KozMinPr6N-Regular",
+            "Encoding" => Object::Name(encoding.as_bytes().to_vec()),
+            "DescendantFonts" => vec![Object::Dictionary(dictionary! {
+                "Type" => "Font",
+                "Subtype" => "CIDFontType0",
+                "BaseFont" => "KozMinPr6N-Regular",
+                "CIDSystemInfo" => dictionary! {
+                    "Registry" => Object::string_literal("Adobe"),
+                    "Ordering" => Object::string_literal("Japan1"),
+                    "Supplement" => 6,
+                },
+                "DW" => 1000,
+                "W" => vec![
+                    1.into(), vec![Object::Integer(278)].into(),
+                    34.into(), vec![Object::Integer(667)].into(),
+                    59.into(), vec![Object::Integer(611)].into(),
+                ],
+            })],
+        }
+        .into()
+    }
+
+    #[test]
+    fn unicode_cmap_fonts_read_by_cid_widths_and_edit() {
+        // "Aあ A" with no ToUnicode: the codes are the text.
+        let content = b"BT /F1 20 Tf 72 700 Td <00413042002000410041> Tj ET";
+        let document = document(content, vec![("F1", unicode_cmap_font("UniJIS-UCS2-H"))]);
+        let before = layer(&document);
+        let line = &before.lines[0];
+        assert_eq!(line.text, "Aあ AA");
+        assert_eq!(line.read_only, None);
+        // Widths come from the CIDs: A 667, あ the default 1000, space 278.
+        let xs = line
+            .chars
+            .iter()
+            .map(|character| character.x)
+            .collect::<Vec<_>>();
+        for (x, expected) in xs.iter().zip([0., 13.34, 33.34, 38.9, 52.24]) {
+            assert!((x - expected).abs() < 0.01, "{xs:?}");
+        }
+
+        // あ is drawn on the page, so it is typed with the font; Z is not,
+        // so a bundled font draws it.
+        let mut edited = document.clone();
+        apply_text_edits(
+            &mut edited,
+            &[edit(line, "Aああ ZA")],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut edited));
+        assert_eq!(after.lines[0].text, "Aああ ZA");
+        assert_eq!(after.lines[0].chars[1].x, line.chars[1].x);
+        assert!(
+            after
+                .fonts
+                .iter()
+                .any(|font| font.font.starts_with(b"BPEdit"))
+        );
+    }
+
+    #[test]
+    fn utf16_cmap_codes_read_surrogate_pairs() {
+        let content = b"BT /F1 20 Tf 72 700 Td <0041D840DC0B0041> Tj ET";
+        let horizontal = document(content, vec![("F1", unicode_cmap_font("UniJIS-UTF16-H"))]);
+        assert_eq!(layer(&horizontal).lines[0].text, "A\u{2000b}A");
+        let vertical = document(content, vec![("F1", unicode_cmap_font("UniJIS-UTF16-V"))]);
+        assert!(layer(&vertical).lines[0].read_only.is_some());
+    }
+
+    /// Two pages that both draw Form XObject /Fm0, whose text uses its own
+    /// /F1 (Times, while the page's /F1 is Helvetica) at twice the size,
+    /// placed at (100, 500). With `nested`, /Fm0 draws /Fm1, which has the
+    /// text; with `twice`, page 0 draws /Fm0 a second time.
+    fn form_document(nested: bool, twice: bool) -> Document {
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let helvetica = document.add_object(helvetica());
+        let times = document.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Times-Roman",
+            "Encoding" => "WinAnsiEncoding",
+        });
+        let text_form = |document: &mut Document, matrix: Vec<Object>| {
+            document.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Form",
+                    "BBox" => vec![0.into(), 0.into(), 300.into(), 100.into()],
+                    "Matrix" => matrix,
+                    "Resources" => dictionary! { "Font" => dictionary! { "F1" => times } },
+                },
+                b"BT /F1 10 Tf 0 10 Td (Form text) Tj ET".to_vec(),
+            ))
+        };
+        let placed = vec![
+            2.into(),
+            0.into(),
+            0.into(),
+            2.into(),
+            100.into(),
+            500.into(),
+        ];
+        let form = if nested {
+            let inner = text_form(
+                &mut document,
+                vec![1.into(), 0.into(), 0.into(), 1.into(), 0.into(), 0.into()],
+            );
+            document.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Form",
+                    "BBox" => vec![0.into(), 0.into(), 300.into(), 100.into()],
+                    "Matrix" => placed,
+                    "Resources" => dictionary! { "XObject" => dictionary! { "Fm1" => inner } },
+                },
+                b"q /Fm1 Do Q".to_vec(),
+            ))
+        } else {
+            text_form(&mut document, placed)
+        };
+        let mut kids = Vec::new();
+        for page in 0..2 {
+            let content = match (page, twice) {
+                (0, false) => b"BT /F1 12 Tf 72 700 Td (Page text) Tj ET q /Fm0 Do Q".to_vec(),
+                (0, true) => b"BT /F1 12 Tf 72 700 Td (Page text) Tj ET q /Fm0 Do Q q 1 0 0 1 0 -200 cm /Fm0 Do Q".to_vec(),
+                _ => b"q /Fm0 Do Q".to_vec(),
+            };
+            let content_id = document.add_object(Stream::new(Dictionary::new(), content));
+            kids.push(Object::Reference(document.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "Contents" => content_id,
+                "Resources" => dictionary! {
+                    "Font" => dictionary! { "F1" => helvetica },
+                    "XObject" => dictionary! { "Fm0" => form },
+                },
+            })));
+        }
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => 2 }),
+        );
+        let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        document.trailer.set("Root", catalog);
+        reload(&mut document)
+    }
+
+    fn page_texts(document: &Document, page: u32) -> Vec<String> {
+        extract_page_text(document, page, &TextEditLimits::default())
+            .unwrap()
+            .lines
+            .into_iter()
+            .map(|line| line.text)
+            .collect()
+    }
+
+    #[test]
+    fn text_in_a_form_xobject_edits_on_its_page_only() {
+        for nested in [false, true] {
+            let mut document = form_document(nested, false);
+            let before = layer(&document);
+            assert_eq!(page_texts(&document, 0), ["Page text", "Form text"]);
+            let line = &before.lines[1];
+            assert_eq!(line.read_only, None);
+            // Placed by the form matrix, at twice the size.
+            let (x, y) = line.origin();
+            assert!(
+                (x - 100.).abs() < 1e-6 && (y - 520.).abs() < 1e-6,
+                "{x} {y}"
+            );
+            let font = if nested {
+                b"Fm0/Fm1/F1".as_slice()
+            } else {
+                b"Fm0/F1"
+            };
+            assert_eq!(line.styles[0].font, font);
+            assert_eq!(
+                before.font(font).unwrap().fallback.family,
+                FallbackFamily::Serif
+            );
+
+            let mut change = edit(line, "Form text edited Ж");
+            change.page_index = 0;
+            apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
+            let document = reload(&mut document);
+            assert_eq!(
+                page_texts(&document, 0),
+                ["Page text", "Form text edited Ж"],
+                "nested {nested}"
+            );
+            // The other page still draws the original form.
+            assert_eq!(page_texts(&document, 1), ["Form text"], "nested {nested}");
+            // The fallback font joined the edited form's own resources.
+            let edited = layer(&document);
+            assert!(
+                edited.lines[1]
+                    .styles
+                    .iter()
+                    .any(|style| style.font.ends_with(b"/BPEdit1"))
+            );
+        }
+    }
+
+    #[test]
+    fn a_form_drawn_twice_on_a_page_is_not_editable() {
+        let document = form_document(false, true);
+        let layer = layer(&document);
+        let forms = layer
+            .lines
+            .iter()
+            .filter(|line| line.text == "Form text")
+            .collect::<Vec<_>>();
+        assert_eq!(forms.len(), 2);
+        for line in forms {
+            assert_eq!(
+                line.read_only.as_deref(),
+                Some("the text is in a form drawn more than once on this page")
+            );
+        }
+        // Page text is still editable.
+        assert_eq!(layer.lines[0].read_only, None);
+    }
+
+    #[test]
+    fn extra_lines_and_justified_fits_leave_following_text_in_place() {
+        let content = b"BT /F1 12 Tf 72 700 Td (First line here) Tj 0 -14 Td (Second line) Tj 0 -40 Td (Next paragraph) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let [first, second, next] = [&before.lines[0], &before.lines[1], &before.lines[2]];
+        assert_eq!(next.origin(), (72., 646.));
+
+        let mut stretched = edit(first, "First line here");
+        stretched.layout.fit.justify_end = Some(200.);
+        let mut grown = edit(second, "Second line");
+        // (Unchanged text, so only the added line differs.)
+        grown.layout.extra_lines.push(ExtraLine {
+            anchor: TextLineAnchor {
+                x_centipoints: 7200,
+                y_centipoints: 67200,
+                ordinal: 0,
+            },
+            below: 14.,
+            origin_shift: 0.,
+            fit: LineFit::default(),
+            runs: vec![TextEditRun {
+                style: second.styles[0].clone(),
+                text: "Third added".into(),
+            }],
+            hard_break: false,
+        });
+        apply_text_edits(
+            &mut document,
+            &[stretched, grown.clone()],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut document));
+        let texts = after
+            .lines
+            .iter()
+            .map(|line| (line.text.clone(), line.origin()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            [
+                ("First line here".to_owned(), (72., 700.)),
+                ("Second line".to_owned(), (72., 686.)),
+                ("Third added".to_owned(), (72., 672.)),
+                ("Next paragraph".to_owned(), (72., 646.)),
+            ]
+        );
+        // The justified line now ends at 200 and keeps its first word.
+        let line = &after.lines[0];
+        let last = line.chars.last().unwrap();
+        assert!(
+            (last.x + last.advance - 200.).abs() < 0.05,
+            "{}",
+            last.x + last.advance
+        );
+        assert_eq!(line.chars[0].x, first.chars[0].x);
+
+        // After saving, undoing back to the original empties the added line
+        // through its anchor.
+        let saved = [grown.clone()];
+        let undone = rebase_text_edits(&[], &saved);
+        assert_eq!(undone.len(), 1, "{undone:#?}");
+        assert_eq!(undone[0].original_text(), "Third added");
+        assert!(undone[0].runs.is_empty());
+        let mut saved_document = reload(&mut document);
+        apply_text_edits(&mut saved_document, &undone, &TextEditLimits::default()).unwrap();
+        let texts = layer(&reload(&mut saved_document))
+            .lines
+            .iter()
+            .map(|line| line.text.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            ["First line here", "Second line", "", "Next paragraph"]
+        );
+    }
+}

@@ -25,6 +25,9 @@ impl AssetSource for ApplicationAssets {
             }
             "icons/rail/hand.svg" => Some(include_bytes!("../assets/icons/rail/hand.svg")),
             "icons/rail/type.svg" => Some(include_bytes!("../assets/icons/rail/type.svg")),
+            "icons/rail/text-cursor-input.svg" => {
+                Some(include_bytes!("../assets/icons/rail/text-cursor-input.svg"))
+            }
             "icons/rail/arrow-right.svg" => {
                 Some(include_bytes!("../assets/icons/rail/arrow-right.svg"))
             }

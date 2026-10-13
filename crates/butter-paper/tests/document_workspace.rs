@@ -1303,6 +1303,7 @@ fn persistence_annotation_snapshot(session: &PdfPersistenceSession) -> Annotatio
             .iter()
             .map(|(page_index, rotation)| (*page_index, *rotation))
             .collect(),
+        page_text_edits: Vec::new(),
         undo_depth: 1,
         redo_depth: 0,
     }
@@ -2183,10 +2184,22 @@ fn scroll_annotation_target_into_view(
     let target = cx
         .debug_bounds(target_id)
         .unwrap_or_else(|| panic!("{target_id} must render before scrolling"));
-    let delta_y = if target.bottom() > scroll.bottom() {
-        -(f32::from(target.bottom() - scroll.bottom()) + 8.)
-    } else if target.top() < scroll.top() {
-        f32::from(scroll.top() - target.top()) + 8.
+    // The rail's scroll cues cover the tools under them: clear them too.
+    let cue = |id: &'static str, cx: &mut gpui::VisualTestContext| {
+        if scroll_id == DOCUMENT_TOOLBAR_SCROLL_ID {
+            return 0.;
+        }
+        cx.debug_bounds(id)
+            .map_or(0., |cue| f32::from(cue.size.height))
+    };
+    let (bottom_cue, top_cue) = (
+        cue("document-workspace-right-rail-overflow-bottom-cue", cx),
+        cue("document-workspace-right-rail-overflow-top-cue", cx),
+    );
+    let delta_y = if target.bottom() > scroll.bottom() - px(bottom_cue) {
+        -(f32::from(target.bottom() - scroll.bottom()) + bottom_cue + 8.)
+    } else if target.top() < scroll.top() + px(top_cue) {
+        f32::from(scroll.top() - target.top()) + top_cue + 8.
     } else {
         0.
     };
@@ -6262,8 +6275,9 @@ fn ellipse_workspace_create_edit_lock_delete_undo_and_real_component_tool_are_co
         )
     };
 
-    let move_start = to_view(PdfPoint::new(187.432_771_95, 226.961_005_94).unwrap());
-    let move_end = to_view(PdfPoint::new(205.432_771_95, 220.961_005_94).unwrap());
+    // The move band just inside the curve; the curve itself resizes.
+    let move_start = to_view(PdfPoint::new(176.346_288, 222.368_939).unwrap());
+    let move_end = to_view(PdfPoint::new(194.346_288, 216.368_939).unwrap());
     cx.simulate_mouse_down(move_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(move_end, Some(MouseButton::Left), Modifiers::default());
     let move_preview = workspace.read_with(cx, |workspace, cx| {
@@ -6297,6 +6311,35 @@ fn ellipse_workspace_create_edit_lock_delete_undo_and_real_component_tool_are_co
         assert!((actual - expected).abs() < 0.001);
     }
     cx.simulate_mouse_up(resize_end, MouseButton::Left, Modifiers::default());
+
+    // Unselected, the curve resizes from anywhere along it, as the cursor
+    // offers: here a third of the way round from east.
+    let empty = to_view(PdfPoint::new(500., 600.).unwrap());
+    cx.simulate_mouse_down(empty, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(empty, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap()
+            .selected_id,
+        None
+    );
+    let turn = 30_f64.to_radians();
+    let curve = to_view(PdfPoint::new(162. + 72. * turn.cos(), 198. + 60. * turn.sin()).unwrap());
+    let curve_end = point(curve.x + px(12. * scale), curve.y);
+    cx.simulate_mouse_move(curve, None, Modifiers::default());
+    cx.simulate_mouse_down(curve, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(curve_end, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(curve_end, MouseButton::Left, Modifiers::default());
+    let grown = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap()
+        .ellipses[0]
+        .rect;
+    assert!(grown.width > 150., "{grown:?}");
 
     let rect = workspace
         .read_with(cx, |workspace, cx| {
@@ -6522,6 +6565,7 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                     .iter()
                     .map(|(page, rotation)| (*page, *rotation))
                     .collect(),
+                page_text_edits: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -6595,6 +6639,7 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                     .iter()
                     .map(|(page, rotation)| (*page, *rotation))
                     .collect(),
+                page_text_edits: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -6660,6 +6705,7 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                     .iter()
                     .map(|(page, rotation)| (*page, *rotation))
                     .collect(),
+                page_text_edits: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -8171,6 +8217,7 @@ fn line_arrow_workspace_save_as_reconciles_two_typed_reopen_cycles() {
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -8229,6 +8276,7 @@ fn line_arrow_workspace_save_as_reconciles_two_typed_reopen_cycles() {
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -22073,6 +22121,7 @@ fn page_scale_dialog_save_as_round_trips_scale_without_a_length_annotation() {
                 scale_presets: Vec::new(),
                 page_length_calibrations: vec![(0, scale.clone())],
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -22151,6 +22200,7 @@ fn page_rotation_save_as_writes_pdf_rotate_and_independently_reopens_it() {
                     .map(|(page_index, calibration)| (*page_index, calibration.clone()))
                     .collect(),
                 page_rotations,
+                page_text_edits: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -37089,6 +37139,7 @@ fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state(
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -37142,6 +37193,7 @@ fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state(
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -37226,6 +37278,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -37290,6 +37343,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -37342,6 +37396,7 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -37422,6 +37477,7 @@ fn pen_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
         scale_presets: Vec::new(),
         page_length_calibrations: Vec::new(),
         page_rotations: Vec::new(),
+        page_text_edits: Vec::new(),
         undo_depth: 2,
         redo_depth: 0,
     };
@@ -37482,6 +37538,7 @@ fn pen_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -37566,6 +37623,7 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -37627,6 +37685,7 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -37684,6 +37743,7 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
                 scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
+                page_text_edits: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -37754,6 +37814,7 @@ fn save_as_refuses_source_identity_drift_before_writing_a_target() {
             scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations: Vec::new(),
+            page_text_edits: Vec::new(),
             undo_depth: 0,
             redo_depth: 0,
         },
@@ -37856,6 +37917,7 @@ fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_remov
                     .iter()
                     .map(|(page, rotation)| (*page, *rotation))
                     .collect(),
+                page_text_edits: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -38011,6 +38073,7 @@ fn in_place_save_refuses_a_final_symlink_source_without_writing_or_staging() {
             scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations: Vec::new(),
+            page_text_edits: Vec::new(),
             undo_depth: 0,
             redo_depth: 0,
         },
@@ -38300,6 +38363,7 @@ fn save_as_does_not_publish_a_target_when_native_reopen_validation_fails() {
             scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations: Vec::new(),
+            page_text_edits: Vec::new(),
             undo_depth: 0,
             redo_depth: 0,
         },
@@ -44043,6 +44107,89 @@ fn tool_rail_overflow_shows_electron_style_fades_without_a_scrollbar(cx: &mut Te
             .is_some()
     );
     assert_eq!(RAIL_OVERFLOW_TOOLTIP, "Scroll to see other tools");
+
+    // Hovering the cue names it beside the marker, centred on it.
+    let bottom = cx
+        .debug_bounds("document-workspace-right-rail-overflow-bottom")
+        .unwrap();
+    cx.simulate_mouse_move(bottom.center(), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let label = cx
+        .debug_bounds("document-workspace-right-rail-overflow-label")
+        .expect("hovering the cue names it");
+    assert!(label.right() <= bottom.left());
+    assert!((label.center().y - bottom.center().y).abs() <= px(0.5));
+    cx.simulate_mouse_move(rail.center(), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("document-workspace-right-rail-overflow-label")
+            .is_none()
+    );
+}
+
+#[gpui::test]
+fn tool_rail_overflow_cue_covers_the_tools_faded_under_it(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = pan_test_workspace(cx);
+    cx.simulate_resize(size(px(1_200.), px(360.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let cue = cx
+        .debug_bounds("document-workspace-right-rail-overflow-bottom-cue")
+        .unwrap();
+    let scroll = cx
+        .debug_bounds("document-workspace-right-rail-scroll")
+        .unwrap();
+    // Find a tool that is partly visible under the cue.
+    let covered = [
+        DOCUMENT_TEXT_BOX_TOOL_ID,
+        DOCUMENT_ARROW_TOOL_ID,
+        DOCUMENT_HIGHLIGHT_TOOL_ID,
+        DOCUMENT_RECTANGLE_TOOL_ID,
+    ]
+    .into_iter()
+    .find_map(|id| {
+        let tool = cx.debug_bounds(id)?;
+        (tool.top() < scroll.bottom()
+            && tool.bottom() > cue.top()
+            && tool.center().y < scroll.bottom())
+        .then_some((id, tool))
+    });
+    let Some((id, tool)) = covered else {
+        panic!("no tool sits under the cue at this height");
+    };
+    let point = gpui::point(tool.center().x, tool.center().y.max(cue.top() + px(1.)));
+    cx.simulate_click(point, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Select),
+        "a press on the cue must not reach {id}"
+    );
+}
+
+#[gpui::test]
+fn tool_rail_wheel_without_overflow_shows_no_cue(cx: &mut TestAppContext) {
+    let (_workspace, _document_id, cx) = pan_test_workspace(cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let scroll = cx
+        .debug_bounds("document-workspace-right-rail-scroll")
+        .unwrap();
+    for delta in [px(-80.), px(80.)] {
+        cx.simulate_event(ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), delta)),
+            ..Default::default()
+        });
+        // Render before the next layout clamps the offset.
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for id in [
+            "document-workspace-right-rail-overflow-top",
+            "document-workspace-right-rail-overflow-bottom",
+        ] {
+            assert!(cx.debug_bounds(id).is_none(), "{id} shown after {delta:?}");
+        }
+    }
 }
 
 #[gpui::test]
@@ -44592,6 +44739,60 @@ fn dragging_a_tab_off_the_strip_reports_a_transfer_and_the_strip_accepts_drops(
         workspace.read_with(cx, |workspace, cx| workspace.session_order(cx)),
         documents
     );
+}
+
+#[gpui::test]
+fn dirty_tab_indicator_and_filename_stay_anchored_when_close_is_revealed(cx: &mut TestAppContext) {
+    let ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
+    let (workspace, documents, _released, cx) = tab_window_with_documents(
+        cx,
+        &[
+            "very-long-drawing-name-with-unsaved-changes.pdf",
+            "short.pdf",
+        ],
+        ids,
+    );
+    for document in documents {
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.create_rectangle(
+                    document,
+                    0,
+                    MarkupId::new(format!("dirty-indicator:{document}")).unwrap(),
+                    PdfPoint::new(20., 20.).unwrap(),
+                    PdfPoint::new(80., 80.).unwrap(),
+                    cx,
+                )
+            })
+            .unwrap();
+        // Put keyboard focus back in the canvas so rest is genuinely neither
+        // tab hover nor tab focus.
+        cx.update(|window, cx| workspace.read(cx).focus_handle().focus(window, cx));
+        let tab_id = document_session_tab_id(document);
+        let label_id = Box::leak(format!("{tab_id}-visible-label").into_boxed_str());
+        let indicator_id = Box::leak(format!("{tab_id}-unsaved-indicator").into_boxed_str());
+        cx.simulate_mouse_move(point(px(800.), px(500.)), None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let tab = cx.debug_bounds(Box::leak(tab_id.into_boxed_str())).unwrap();
+        let label = cx.debug_bounds(label_id).unwrap();
+        let indicator = cx.debug_bounds(indicator_id).unwrap();
+        assert!((indicator.center().y - tab.center().y).abs() <= px(1.));
+        assert!(indicator.right() <= label.left());
+        cx.simulate_mouse_move(tab.center(), None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let hovered_label = cx.debug_bounds(label_id).unwrap();
+        assert_eq!(hovered_label.left(), label.left());
+        assert_eq!(hovered_label.top(), label.top());
+        assert!(hovered_label.size.width < label.size.width);
+        assert_eq!(cx.debug_bounds(indicator_id).unwrap(), indicator);
+        assert_eq!(
+            cx.debug_bounds(Box::leak(
+                document_session_tab_id(document).into_boxed_str()
+            ))
+            .unwrap(),
+            tab
+        );
+    }
 }
 
 #[gpui::test]

@@ -3494,8 +3494,7 @@ mod updates {
             if !matches!(cx.global::<UpdateService>().status, Status::Ready(_)) {
                 return;
             }
-            cx.global_mut::<UpdateService>().relaunch_after_quit = true;
-            cx.dispatch_action(&RequestApplicationQuit);
+            restart_after_quit(cx);
         });
         set_frequency_on::<SetUpdateFrequencyNever>(cx, UpdateFrequency::Never);
         set_frequency_on::<SetUpdateFrequencyAtStartup>(cx, UpdateFrequency::Startup);
@@ -3591,6 +3590,13 @@ mod updates {
         }
     }
 
+    fn restart_after_quit(cx: &mut App) {
+        cx.global_mut::<UpdateService>().relaunch_after_quit = true;
+        // The button action is dispatched while its window is borrowed. App
+        // dispatch must wait until it can update that active window again.
+        cx.defer(|cx| cx.dispatch_action(&RequestApplicationQuit));
+    }
+
     fn refresh_menus(cx: &mut App) {
         let state = menu_state(cx);
         let service = cx.global::<UpdateService>();
@@ -3632,12 +3638,19 @@ mod updates {
         });
         cx.spawn(async move |cx| {
             let result = task.await;
-            cx.update(|cx| finish_check(cx, result));
+            cx.update(|cx| {
+                if let Some(update) = finish_check(cx, result) {
+                    download(cx, update);
+                }
+            });
         })
         .detach();
     }
 
-    fn finish_check(cx: &mut App, result: Result<Option<AvailableUpdate>, UpdateError>) {
+    fn finish_check(
+        cx: &mut App,
+        result: Result<Option<AvailableUpdate>, UpdateError>,
+    ) -> Option<AvailableUpdate> {
         let service = cx.global_mut::<UpdateService>();
         if result.is_ok() {
             let now = format_canonical_utc_timestamp(std::time::SystemTime::now());
@@ -3645,22 +3658,26 @@ mod updates {
                 let _ = service.store.save(&service.settings);
             }
         }
-        match result {
+        let download = match result {
             Ok(Some(update)) => {
                 service.notes = update.notes.clone();
-                service.status = Status::Available(update);
+                service.status = Status::Downloading;
+                Some(update)
             }
             Ok(None) => {
                 service.status = Status::Idle;
                 service.notes.clear();
                 service.message = format!("Butter Paper {} is up to date.", service.current);
+                None
             }
             Err(error) => {
                 service.status = Status::Idle;
                 service.message = format!("Couldn’t check for updates: {error}");
+                None
             }
-        }
+        };
         refresh_menus(cx);
+        download
     }
 
     fn download(cx: &mut App, update: AvailableUpdate) {
@@ -3712,23 +3729,75 @@ mod updates {
         use butter_paper::native_updater::{PackageIdentity, ReleaseAsset};
 
         #[gpui::test]
-        fn discovering_an_update_does_not_download_and_results_are_visible(
+        fn restart_dispatch_reaches_quit_after_the_window_action(cx: &mut gpui::TestAppContext) {
+            use std::{cell::Cell, rc::Rc};
+            let quits = Rc::new(Cell::new(0));
+            cx.update(|cx| {
+                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("target/test-scratch/restart-dispatch");
+                init(cx, root, NativeReleaseChannel::Stable);
+                cx.on_action(|_: &RestartToUpdate, cx| restart_after_quit(cx));
+                let quits = quits.clone();
+                cx.on_action(move |_: &RequestApplicationQuit, _| quits.set(quits.get() + 1));
+            });
+            let (_, cx) = cx.add_window_view(|_, _| gpui::Empty);
+            cx.update(|window, cx| window.dispatch_action(Box::new(RestartToUpdate), cx));
+            cx.run_until_parked();
+            assert_eq!(quits.get(), 1);
+            assert!(cx.update(|_, cx| cx.global::<UpdateService>().relaunch_after_quit));
+        }
+
+        #[gpui::test]
+        fn discovering_an_update_starts_background_download_and_results_are_visible(
             cx: &mut gpui::TestAppContext,
         ) {
             cx.update(|cx| {
-                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch/update-settings");
+                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("target/test-scratch/update-settings");
                 init(cx, root, NativeReleaseChannel::Stable);
                 let version = ReleaseVersion::stable(0, 1, 5);
-                let asset = ReleaseAsset {name: "fixture".into(), url: "https://example.invalid/fixture".into(), size: 1};
-                let update = AvailableUpdate {version, target: UpdateTarget::MacosArm64, identity: PackageIdentity::Stable, package: asset.clone(), checksums: asset, page_url: String::new(), notes: "Release notes".into()};
-                finish_check(cx, Ok(Some(update)));
-                assert!(matches!(&cx.global::<UpdateService>().status, Status::Available(update) if update.version == version));
-                assert_eq!(cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>().notes, "Release notes");
+                let asset = ReleaseAsset {
+                    name: "fixture".into(),
+                    url: "https://example.invalid/fixture".into(),
+                    size: 1,
+                };
+                let update = AvailableUpdate {
+                    version,
+                    target: UpdateTarget::MacosArm64,
+                    identity: PackageIdentity::Stable,
+                    package: asset.clone(),
+                    checksums: asset,
+                    page_url: String::new(),
+                    notes: "Release notes".into(),
+                };
+                let queued = finish_check(cx, Ok(Some(update)))
+                    .expect("discovered updates are queued for automatic download");
+                assert_eq!(queued.version, version);
+                assert!(matches!(
+                    &cx.global::<UpdateService>().status,
+                    Status::Downloading
+                ));
+                assert_eq!(
+                    cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>(
+                    )
+                    .notes,
+                    "Release notes"
+                );
                 finish_check(cx, Ok(None));
                 assert!(matches!(cx.global::<UpdateService>().status, Status::Idle));
-                assert!(cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>().message.contains("up to date"));
+                assert!(
+                    cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>(
+                    )
+                    .message
+                    .contains("up to date")
+                );
                 finish_check(cx, Err(UpdateError::new_public("Connection failed")));
-                assert!(cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>().message.contains("Connection failed"));
+                assert!(
+                    cx.global::<butter_paper::application_settings::ApplicationUpdatePresentation>(
+                    )
+                    .message
+                    .contains("Connection failed")
+                );
                 cx.global_mut::<UpdateService>().relaunch_after_quit = true;
                 cancel_restart(cx);
                 assert!(!cx.global::<UpdateService>().relaunch_after_quit);
@@ -3821,7 +3890,18 @@ mod review_driver {
                         pause(cx, 500).await;
                     }
                     "wait" => pause(cx, number(1) as u64).await,
-                    "shot" => shot(cx, &out, words[1], &mut log),
+                    "shot" => {
+                        // A background window presents a frame only for
+                        // input; draw the latest state (finished tiles)
+                        // before capturing.
+                        cx.update(|cx| {
+                            for entry in document_window_entries(cx) {
+                                let _ = entry.handle.update(cx, |_, window, _| window.refresh());
+                            }
+                        });
+                        pause(cx, 300).await;
+                        shot(cx, &out, words[1], &mut log)
+                    }
                     "new-window" => {
                         cx.update(|cx| cx.dispatch_action(&NewWindow));
                         pause(cx, 1200).await;
@@ -4114,11 +4194,12 @@ mod review_driver {
                             if let Some(entry) = document_window_entries(cx).get(index).cloned() {
                                 let _ = entry.handle.update(cx, |_, window, cx| {
                                     for _ in 0..count {
-                                        window.dispatch_event(PlatformInput::Pinch(gpui::PinchEvent {
+                                        let event = PlatformInput::Pinch(gpui::PinchEvent {
                                             position: at, delta,
                                             phase: gpui::TouchPhase::Moved,
                                             ..Default::default()
-                                        }), cx);
+                                        });
+                                        window.dispatch_event(below_title_bar(window, event), cx);
                                     }
                                 });
                             }
@@ -4217,6 +4298,53 @@ mod review_driver {
                                     }
                                 });
                             }
+                        });
+                        pause(cx, 800).await;
+                    }
+                    "log-text" => {
+                        // log-text W: the edited line's text and the status.
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(window)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                let workspace = workspace.read(cx);
+                                writeln!(
+                                    log,
+                                    "editing {:?} status {:?} sync {}",
+                                    workspace.page_text_editing_text(cx),
+                                    workspace.annotation_status(),
+                                    workspace
+                                        .active_document_id()
+                                        .map(|id| workspace.page_text_sync_summary(id))
+                                        .unwrap_or_default()
+                                )
+                                .unwrap();
+                            }
+                        });
+                    }
+                    "ime" | "ime-commit" => {
+                        // ime W TEXT: an input method composes (marks) TEXT in
+                        // window W's page-text editor; ime-commit W TEXT
+                        // commits it, through the editor's text input handler.
+                        let window = number(1) as usize;
+                        let text = words[2..].join(" ");
+                        let compose = words[0] == "ime";
+                        cx.update(|cx| {
+                            let Some(entry) = document_window_entries(cx).get(window).cloned() else {
+                                return;
+                            };
+                            let Some(workspace) = entry.workspace.upgrade() else {
+                                return;
+                            };
+                            let _ = entry.handle.update(cx, |_, window, cx| {
+                                let taken = workspace.update(cx, |workspace, cx| {
+                                    workspace.page_text_input_method(&text, compose, window, cx)
+                                });
+                                writeln!(log, "input method {text:?} compose={compose} taken={taken}")
+                                    .unwrap();
+                            });
                         });
                         pause(cx, 800).await;
                     }
@@ -4371,11 +4499,30 @@ mod review_driver {
     fn dispatch(cx: &mut AsyncApp, window: usize, event: PlatformInput) {
         cx.update(|cx| {
             if let Some(entry) = document_window_entries(cx).get(window).cloned() {
-                let _ = entry
-                    .handle
-                    .update(cx, |_, window, cx| window.dispatch_event(event, cx));
+                let _ = entry.handle.update(cx, |_, window, cx| {
+                    window.dispatch_event(below_title_bar(window, event), cx)
+                });
             }
         });
+    }
+
+    /// Script points are measured from below the title bar, so one script
+    /// serves macOS (AppKit's title bar) and platforms where the app draws
+    /// its own title bar inside the window.
+    fn below_title_bar(window: &gpui::Window, mut event: PlatformInput) -> PlatformInput {
+        if !butter_paper::window_title_bar::uses_window_title_bar(window) {
+            return event;
+        }
+        let position = match &mut event {
+            PlatformInput::MouseDown(event) => &mut event.position,
+            PlatformInput::MouseUp(event) => &mut event.position,
+            PlatformInput::MouseMove(event) => &mut event.position,
+            PlatformInput::ScrollWheel(event) => &mut event.position,
+            PlatformInput::Pinch(event) => &mut event.position,
+            _ => return event,
+        };
+        position.y += gpui_component::TITLE_BAR_HEIGHT;
+        event
     }
 
     async fn drag(

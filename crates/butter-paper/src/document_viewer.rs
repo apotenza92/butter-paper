@@ -178,6 +178,9 @@ pub(crate) struct DocumentViewerState {
     preview_cache: TileCache<Arc<RenderImage>>,
     cache: TileCache<Arc<RenderImage>>,
     detail_cache: TileCache<Arc<RenderImage>>,
+    /// Tiles shown before a content refresh, drawn until their re-rendered
+    /// replacements arrive so the page does not flash.
+    content_fallback: HashMap<TileGeometry, Arc<RenderImage>>,
     scroll_handle: ScrollHandle,
     rejected_stale_tiles: usize,
     error: Option<String>,
@@ -302,6 +305,7 @@ impl Default for DocumentViewerState {
             preview_cache: TileCache::new(cache_policy(PREVIEW_CACHE_BYTES)),
             cache: TileCache::new(cache_policy(FULL_CACHE_BYTES)),
             detail_cache: TileCache::new(cache_policy(DETAIL_CACHE_BYTES)),
+            content_fallback: HashMap::new(),
             scroll_handle: scroll_handle.clone(),
             viewport_size: (0., 0.),
             pending_offset: std::cell::Cell::new(None),
@@ -354,6 +358,42 @@ impl DocumentViewerState {
         self.cache.clear();
         self.preview_cache.clear();
         self.detail_cache.clear();
+        self.content_fallback.clear();
+    }
+
+    /// Re-renders the pages after their content changed (edited page
+    /// text). The tiles on screen stay until full-quality replacements
+    /// arrive; no low-resolution preview pass runs in between.
+    pub fn refresh_content(&mut self) {
+        let mut fallback = std::mem::take(&mut self.content_fallback);
+        if let Some(plan) = &self.plan {
+            for request in plan.tiles.iter().copied() {
+                let detail = tile_job(request, ViewerRenderQuality::Detail);
+                let full = tile_job(request, ViewerRenderQuality::Full);
+                let preview = tile_job(request, ViewerRenderQuality::Preview);
+                if let Some(image) = self
+                    .detail_cache
+                    .peek(detail.raster)
+                    .or_else(|| self.cache.peek(full.raster))
+                    .or_else(|| self.preview_cache.peek(preview.raster))
+                {
+                    fallback.insert(TileGeometry::of(request), image.clone());
+                }
+            }
+        }
+        // Unlike `invalidate_raster`, the plan stays: the pages keep their
+        // layout and tiles while the next plan schedules replacements.
+        self.raster_revision = self.raster_revision.saturating_add(1).max(1);
+        self.planner.cancel();
+        self.queue.clear();
+        self.pending.clear();
+        self.pending_promotions.clear();
+        self.scheduler_revision = self.scheduler_revision.saturating_add(1).max(1);
+        self.viewport_key = None;
+        self.cache.clear();
+        self.preview_cache.clear();
+        self.detail_cache.clear();
+        self.content_fallback = fallback;
     }
 
     pub fn invalidate_layout(&mut self) {
@@ -525,7 +565,11 @@ impl DocumentViewerState {
             }
             if self.preview_cache.contains(preview.raster) {
                 self.schedule_promotion(full, now);
-            } else if preview.raster == full.raster {
+            } else if preview.raster == full.raster
+                || self
+                    .content_fallback
+                    .contains_key(&TileGeometry::of(request))
+            {
                 self.enqueue(full, request.page == current_page);
             } else {
                 self.enqueue(preview, request.page == current_page);
@@ -766,6 +810,10 @@ impl DocumentViewerState {
                     return false;
                 }
                 self.page_errors.remove(&request.authority.page);
+                if request.quality != ViewerRenderQuality::Preview {
+                    self.content_fallback
+                        .remove(&TileGeometry::of(request.authority));
+                }
                 match request.quality {
                     ViewerRenderQuality::Preview => {
                         self.schedule_promotion(
@@ -808,6 +856,7 @@ impl DocumentViewerState {
                 self.detail_cache
                     .peek(detail.raster)
                     .or_else(|| self.cache.peek(full.raster))
+                    .or_else(|| self.content_fallback.get(&TileGeometry::of(request)))
                     .or_else(|| self.preview_cache.peek(preview.raster))
                     .cloned()
                     .map(|image| (request, image))
@@ -1130,6 +1179,34 @@ impl DocumentViewerState {
     }
 }
 
+/// Where a tile sits and at what scale, regardless of the content revision
+/// that rendered it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct TileGeometry {
+    page: usize,
+    zoom_tenths: u32,
+    device_scale_millis: u32,
+    rotation_quarter_turns: u8,
+    crop: (usize, usize, usize, usize),
+}
+
+impl TileGeometry {
+    fn of(request: TileRequest) -> Self {
+        Self {
+            page: request.page,
+            zoom_tenths: request.zoom_tenths,
+            device_scale_millis: request.device_scale_millis,
+            rotation_quarter_turns: request.rotation_quarter_turns,
+            crop: (
+                request.crop.x,
+                request.crop.y,
+                request.crop.width,
+                request.crop.height,
+            ),
+        }
+    }
+}
+
 fn cache_policy(max_bytes: usize) -> CachePolicy {
     CachePolicy {
         max_bytes,
@@ -1415,6 +1492,50 @@ mod tests {
             viewer.snapshot().current_quality,
             Some(ViewerRenderQuality::Detail)
         );
+    }
+
+    #[test]
+    fn content_refresh_keeps_tiles_on_screen_until_full_replacements_arrive() {
+        let mut viewer = DocumentViewerState::default();
+        let now = Instant::now();
+        viewer.configure(PageViewMode::SinglePage, 100.);
+        let plan = viewer
+            .plan_at(11, &[(612., 792.)], &[0], 0, 800., 600., 0., 0., 1., now)
+            .unwrap();
+        for job in viewer.claim_jobs() {
+            assert!(viewer.finish_at(job, Ok((test_image(), 16)), now));
+        }
+        let before = viewer.visible_tiles(0);
+        assert_eq!(before.len(), plan.tiles.len());
+
+        viewer.refresh_content();
+        let replanned = viewer
+            .plan_at(11, &[(612., 792.)], &[0], 0, 800., 600., 0., 0., 1., now)
+            .unwrap();
+        // The previous images are still drawn, and the refresh renders full
+        // quality directly.
+        let shown = viewer.visible_tiles(0);
+        assert_eq!(shown.len(), before.len());
+        assert!(
+            shown
+                .iter()
+                .zip(&before)
+                .all(|((_, shown), (_, before))| Arc::ptr_eq(shown, before))
+        );
+        let jobs = viewer.claim_jobs();
+        assert!(!jobs.is_empty());
+        assert!(
+            jobs.iter()
+                .all(|job| job.quality == ViewerRenderQuality::Full)
+        );
+        let fresh = test_image();
+        assert!(viewer.finish_at(jobs[0], Ok((fresh.clone(), 16)), now));
+        let tile = replanned
+            .tiles
+            .iter()
+            .position(|tile| *tile == jobs[0].authority)
+            .unwrap();
+        assert!(Arc::ptr_eq(&viewer.visible_tiles(0)[tile].1, &fresh));
     }
 
     #[test]

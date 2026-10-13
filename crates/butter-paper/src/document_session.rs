@@ -227,6 +227,8 @@ pub struct PenAnnotationDefaults {
 pub(crate) struct ThumbnailRequestState {
     pub epoch: u64,
     pub rotation: PageRotation,
+    /// The page's content revision the render shows.
+    pub content: u64,
     pub error: Option<String>,
 }
 
@@ -327,6 +329,9 @@ pub struct NativeDocumentSession {
     pub(crate) current_image: Option<Arc<RenderImage>>,
     pub(crate) thumbnails: Vec<ThumbnailPresentation>,
     pub(crate) thumbnail_requests: HashMap<u32, ThumbnailRequestState>,
+    /// Bumped when a page's drawn content changes without a new resource
+    /// (page-text edits), so its thumbnail is rendered again.
+    pub(crate) thumbnail_content_revisions: HashMap<u32, u64>,
     pub(crate) page_content_geometry_requests: HashMap<u32, PageContentGeometryRequestState>,
     pub(crate) page_content_geometry_lru: VecDeque<u32>,
     pub(crate) image_assets: HashMap<String, Arc<RenderImage>>,
@@ -385,6 +390,7 @@ impl NativeDocumentSession {
             current_image: None,
             thumbnails: Vec::new(),
             thumbnail_requests: HashMap::new(),
+            thumbnail_content_revisions: HashMap::new(),
             page_content_geometry_requests: HashMap::new(),
             page_content_geometry_lru: VecDeque::new(),
             image_assets: HashMap::new(),

@@ -29,35 +29,39 @@ pub struct ApplicationUpdatePresentation {
 }
 impl gpui::Global for ApplicationUpdatePresentation {}
 
-/// Quiet tab-strip affordance; checking and failures remain in Settings.
-pub fn update_button(state: UpdateMenuStatus) -> Option<Button> {
-    let (label, busy) = match state {
-        UpdateMenuStatus::Available(_) => ("Update available", false),
-        UpdateMenuStatus::Downloading => ("Downloading…", true),
-        UpdateMenuStatus::Ready(_) => ("Restart to update", false),
-        _ => return None,
+/// Ready updates stay out of the way until installation is one restart away.
+pub fn update_button(state: UpdateMenuStatus, cx: &App) -> Option<AnyElement> {
+    let UpdateMenuStatus::Ready(version) = state else {
+        return None;
     };
     Some(
-        Button::new("application-update-button")
-            .debug_selector(|| "application-update-button".into())
-            .accessibility_id("application-update-button")
-            .small()
-            .outline()
-            .label(label)
-            .icon(Icon::default().path(crate::application_assets::DOWNLOAD_ICON))
-            .tooltip(match state {
-                UpdateMenuStatus::Available(_) => "View the available update in Settings",
-                UpdateMenuStatus::Ready(_) => "Restart Butter Paper to install the update",
-                _ => "Downloading the update",
-            })
-            .disabled(busy)
-            .on_click(move |_, window, cx| match state {
-                UpdateMenuStatus::Available(_) => {
-                    window.dispatch_action(Box::new(OpenUpdateSettings), cx);
-                }
-                UpdateMenuStatus::Ready(_) => window.dispatch_action(Box::new(RestartToUpdate), cx),
-                _ => {}
-            }),
+        h_flex()
+            .id("application-update-lane")
+            .debug_selector(|| "application-update-lane".into())
+            .self_stretch()
+            .pl_3()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("application-update-button")
+                    .debug_selector(|| "application-update-button".into())
+                    .accessibility_id("application-update-button")
+                    .outline()
+                    .label("Update ready")
+                    .icon(Icon::default().path(crate::application_assets::DOWNLOAD_ICON))
+                    .tooltip("The update is downloaded and ready to install")
+                    .dropdown_menu(move |menu, _, _| {
+                        menu.label(format!("Butter Paper {version} is ready"))
+                            .item(PopupMenuItem::new("Restart to update").on_click(
+                                |_, window, cx| {
+                                    window.dispatch_action(Box::new(RestartToUpdate), cx);
+                                },
+                            ))
+                            .separator()
+                            .menu("View release notes", Box::new(OpenUpdateSettings))
+                    }),
+            )
+            .into_any_element(),
     )
 }
 
@@ -238,7 +242,8 @@ impl SettingsView {
                 .into_any_element(),
             v_flex().id("settings-automatic-section").debug_selector(|| "settings-automatic-section".into()).gap_3().pb_6()
                 .child(div().font_semibold().child("Automatic checks"))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose how often Butter Paper looks for updates. Downloads start when you choose to update."))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose how often Butter Paper looks for updates."))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Updates download automatically after a successful check. You choose when to restart."))
                 .child(schedule).into_any_element(),
             v_flex().id("settings-notes-section").debug_selector(|| "settings-notes-section".into()).gap_3()
                 .child(div().font_semibold().child("What’s new"))
@@ -699,22 +704,21 @@ mod tests {
         });
     }
 
-    #[test]
-    fn quiet_update_button_is_only_present_when_actionable_or_downloading() {
-        let version = crate::native_updater::ReleaseVersion::stable(0, 1, 5);
-        for status in [
-            UpdateMenuStatus::Idle,
-            UpdateMenuStatus::Unavailable,
-            UpdateMenuStatus::Checking,
-        ] {
-            assert!(update_button(status).is_none());
-        }
-        for status in [
-            UpdateMenuStatus::Available(version),
-            UpdateMenuStatus::Downloading,
-            UpdateMenuStatus::Ready(version),
-        ] {
-            assert!(update_button(status).is_some());
-        }
+    #[gpui::test]
+    fn quiet_update_button_is_only_present_when_ready(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let version = crate::native_updater::ReleaseVersion::stable(0, 1, 5);
+            for status in [
+                UpdateMenuStatus::Idle,
+                UpdateMenuStatus::Unavailable,
+                UpdateMenuStatus::Checking,
+                UpdateMenuStatus::Available(version),
+                UpdateMenuStatus::Downloading,
+            ] {
+                assert!(update_button(status, cx).is_none());
+            }
+            assert!(update_button(UpdateMenuStatus::Ready(version), cx).is_some());
+        });
     }
 }
