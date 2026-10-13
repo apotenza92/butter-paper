@@ -386,9 +386,10 @@ fn get_bounded(
     url: &str,
     limit: u64,
 ) -> Result<Vec<u8>, UpdateError> {
-    let response = client
+    let request = client
         .get(url)
-        .header("Accept", "application/vnd.github+json")
+        .header("Accept", "application/vnd.github+json");
+    let response = with_test_api_token(request, url)
         .send()
         .map_err(|_| UpdateError::new("Butter Paper could not reach GitHub."))?;
     if !response.status().is_success() {
@@ -408,6 +409,30 @@ fn get_bounded(
         ));
     }
     Ok(bytes)
+}
+
+/// Unauthenticated API requests share a 60-an-hour limit per IP, which CI's
+/// shared runners exhaust. Test builds send CI's `GITHUB_TOKEN` to the API
+/// host only; release builds never read it.
+#[cfg(test)]
+fn with_test_api_token(
+    request: reqwest::blocking::RequestBuilder,
+    url: &str,
+) -> reqwest::blocking::RequestBuilder {
+    match std::env::var("GITHUB_TOKEN") {
+        Ok(token) if !token.is_empty() && url.starts_with("https://api.github.com/") => {
+            request.bearer_auth(token)
+        }
+        _ => request,
+    }
+}
+
+#[cfg(not(test))]
+fn with_test_api_token(
+    request: reqwest::blocking::RequestBuilder,
+    _url: &str,
+) -> reqwest::blocking::RequestBuilder {
+    request
 }
 
 pub fn fetch_releases(feed_url: &str) -> Result<Vec<Release>, UpdateError> {
