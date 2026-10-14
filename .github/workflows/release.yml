@@ -248,7 +248,7 @@ jobs:
           # Windows also builds the Microsoft Store package, which is uploaded
           # in Partner Center rather than published with the release.
           if [[ "${{ matrix.os }}" == windows ]]; then store=(--store-out "$RUNNER_TEMP/store"); fi
-          cargo xtask package --target "${{ matrix.target }}" --channel "${{ matrix.channels }}" --out "$RUNNER_TEMP/assets" "${store[@]}"
+          cargo xtask package --target "${{ matrix.target }}" --channel "${{ matrix.channels }}" --out "$RUNNER_TEMP/assets" ${store[@]+"${store[@]}"}
       - name: Package, sign and notarise
         if: matrix.os == 'macos' && needs.validate.outputs.dry_run == 'false'
         shell: bash
