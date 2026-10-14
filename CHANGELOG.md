@@ -4,6 +4,21 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.8]
+
+### Edit Text
+
+- Find lines and paragraphs as a reader sees them, including in multi-column
+  layouts such as CVs, and mark hard and wrapped line ends with ↵ and ⤵.
+- Show every editable paragraph's box, lined up with the rendered text.
+- Make Edit Text properties behave like the other tools' properties.
+- Wrap growing headings and table cells before the page edge and the text
+  beside them.
+- Edit text in more PDFs: LaTeX and other subset fonts, Office maths, the
+  Symbol font, broken Unicode maps and pages drawn upside down. Right-to-left
+  text is read-only.
+- Save text edits much faster in large PDFs by appending only what changed.
+
 ## [0.1.7]
 
 ### Edit Text
