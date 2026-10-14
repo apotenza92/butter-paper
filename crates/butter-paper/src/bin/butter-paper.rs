@@ -3556,6 +3556,15 @@ mod updates {
         .detach();
     }
 
+    /// Review scripts: an update ready to install, as after a download.
+    #[cfg(feature = "review-driver")]
+    pub(super) fn set_ready_for_review(cx: &mut App, prepared: PreparedUpdate, bundle: PathBuf) {
+        let service = cx.global_mut::<UpdateService>();
+        service.installation = Some(Installation::Macos { bundle });
+        service.status = Status::Ready(prepared);
+        refresh_menus(cx);
+    }
+
     pub(super) fn cancel_restart(cx: &mut App) {
         cx.global_mut::<UpdateService>().relaunch_after_quit = false;
     }
@@ -3857,11 +3866,30 @@ mod review_driver {
                     }
                 });
                 let words = line.split_whitespace().collect::<Vec<_>>();
+                // TEXT runs to the end of the line, spaces after the first separator included.
+                let text_argument = line.splitn(3, ' ').nth(2).unwrap_or_default().to_string();
                 let number = |index: usize| words[index].parse::<f32>().unwrap();
                 match words[0] {
                     "settings" => {
                         cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenSettings));
                         pause(cx, 500).await;
+                    }
+                    "update-ready" => {
+                        // update-ready STAGED: an update staged at the bundle
+                        // STAGED replaces this app's bundle when it quits.
+                        let executable = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+                        let bundle = executable.ancestors().nth(3).unwrap().to_path_buf();
+                        let staged = PathBuf::from(line.split_once(' ').unwrap().1);
+                        let work = staged.with_extension("work");
+                        std::fs::create_dir_all(&work).unwrap();
+                        let prepared = butter_paper::native_updater::PreparedUpdate::staged_macos_for_review(
+                            butter_paper::native_updater::ReleaseVersion::stable(99, 0, 0),
+                            work,
+                            staged,
+                            bundle.clone(),
+                        );
+                        cx.update(|cx| super::updates::set_ready_for_review(cx, prepared, bundle));
+                        pause(cx, 300).await;
                     }
                     "update-settings" => {
                         cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenUpdateSettings));
@@ -4278,7 +4306,7 @@ mod review_driver {
                         // type W TEXT: characters into the focused text input of
                         // window W, through the platform input handler as typing.
                         let window = number(1) as usize;
-                        let text = words[2..].join(" ");
+                        let text = text_argument.clone();
                         cx.update(|cx| {
                             if let Some(entry) = document_window_entries(cx).get(window).cloned() {
                                 let _ = entry.handle.update(cx, |_, window, cx| {
@@ -4329,7 +4357,7 @@ mod review_driver {
                         // window W's page-text editor; ime-commit W TEXT
                         // commits it, through the editor's text input handler.
                         let window = number(1) as usize;
-                        let text = words[2..].join(" ");
+                        let text = text_argument.clone();
                         let compose = words[0] == "ime";
                         cx.update(|cx| {
                             let Some(entry) = document_window_entries(cx).get(window).cloned() else {

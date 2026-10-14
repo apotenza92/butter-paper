@@ -581,6 +581,28 @@ pub struct PreparedUpdate {
     handover: Handover,
 }
 
+impl PreparedUpdate {
+    /// An update already staged at `staged` that replaces the macOS bundle
+    /// `destination`, so review scripts can exercise Restart to update.
+    #[cfg(feature = "review-driver")]
+    pub fn staged_macos_for_review(
+        version: ReleaseVersion,
+        work_directory: PathBuf,
+        staged: PathBuf,
+        destination: PathBuf,
+    ) -> Self {
+        Self {
+            version,
+            work_directory,
+            handover: Handover::Macos {
+                staged,
+                destination,
+                retired: None,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Handover {
     Macos {
