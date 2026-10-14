@@ -7,7 +7,7 @@ use crate::{
 use gpui::{
     AnyElement, App, AppContext as _, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, px,
+    Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
@@ -190,6 +190,7 @@ impl SettingsView {
         let message = if presentation.message.is_empty() {
             match state.status {
                 UpdateMenuStatus::Unavailable => "Automatic updates are available in installed release builds. Download a release to update this copy.".into(),
+                UpdateMenuStatus::Store => "The Microsoft Store keeps Butter Paper up to date.".into(),
                 UpdateMenuStatus::Idle => "Check for a newer version of Butter Paper.".into(),
                 UpdateMenuStatus::Checking => "Checking for updates…".into(),
                 UpdateMenuStatus::Available(version) => format!("Butter Paper {version} is available."),
@@ -233,13 +234,38 @@ impl SettingsView {
                 }
                 menu
             });
+        let store = state.status == UpdateMenuStatus::Store;
+        let version = v_flex()
+            .id("settings-version-section")
+            .debug_selector(|| "settings-version-section".into())
+            .gap_3()
+            .pb_6()
+            .child(div().font_semibold().child("Version"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Installed version {}", env!("CARGO_PKG_VERSION"))),
+            )
+            .child(message)
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .when(!store, |row| row.child(action))
+                    .child(
+                        Button::new("settings-releases")
+                            .label("View releases")
+                            .on_click(|_, _, cx| cx.open_url(APPLICATION_RELEASES_URL)),
+                    ),
+            )
+            .into_any_element();
+        // The Store updates its copies itself: no checks or downloads here.
+        if store {
+            return vec![version];
+        }
         vec![
-            v_flex().id("settings-version-section").debug_selector(|| "settings-version-section".into()).gap_3().pb_6()
-                .child(div().font_semibold().child("Version"))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child(format!("Installed version {}", env!("CARGO_PKG_VERSION"))))
-                .child(message)
-                .child(h_flex().flex_wrap().gap_2().child(action).child(Button::new("settings-releases").label("View releases").on_click(|_, _, cx| cx.open_url(APPLICATION_RELEASES_URL))))
-                .into_any_element(),
+            version,
             v_flex().id("settings-automatic-section").debug_selector(|| "settings-automatic-section".into()).gap_3().pb_6()
                 .child(div().font_semibold().child("Automatic checks"))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose how often Butter Paper looks for updates."))
@@ -284,14 +310,16 @@ impl Render for SettingsView {
                 },
             ))
         });
+        let sections = match self.category {
+            SettingsCategory::Updates => self.render_update_sections(cx),
+        };
         let (title, headings): (&str, &[&str]) = match self.category {
             SettingsCategory::Updates => {
                 ("Updates", &["Version", "Automatic checks", "What’s new"])
             }
         };
-        let sections = match self.category {
-            SettingsCategory::Updates => self.render_update_sections(cx),
-        };
+        // Store copies have only the Version section.
+        let headings = &headings[..sections.len().min(headings.len())];
         let scroll = v_flex()
             .id("application-settings-scroll")
             .debug_selector(|| "application-settings-scroll".into())
@@ -537,6 +565,31 @@ mod tests {
     }
 
     #[gpui::test]
+    fn store_copies_show_their_version_without_update_controls(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| SettingsView::new(SettingsCategory::Updates, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| {
+            cx.set_global(ApplicationUpdatePresentation {
+                state: UpdateMenuState {
+                    status: UpdateMenuStatus::Store,
+                    frequency: None,
+                },
+                ..Default::default()
+            });
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("settings-version-section").is_some());
+        assert!(cx.debug_bounds("settings-update-action").is_none());
+        assert!(cx.debug_bounds("settings-automatic-section").is_none());
+        assert!(cx.debug_bounds("settings-notes-section").is_none());
+        assert!(cx.debug_bounds("settings-jump-0").is_some());
+        assert!(cx.debug_bounds("settings-jump-1").is_none());
+    }
+
+    #[gpui::test]
     fn heading_shortcuts_scroll_one_content_pane_and_restore_the_top(cx: &mut TestAppContext) {
         use std::cell::RefCell;
         cx.update(gpui_component::init);
@@ -712,6 +765,7 @@ mod tests {
             for status in [
                 UpdateMenuStatus::Idle,
                 UpdateMenuStatus::Unavailable,
+                UpdateMenuStatus::Store,
                 UpdateMenuStatus::Checking,
                 UpdateMenuStatus::Available(version),
                 UpdateMenuStatus::Downloading,

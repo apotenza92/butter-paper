@@ -4,6 +4,10 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Windows
+
+- Install Butter Paper from the Microsoft Store, which keeps it up to date.
+
 ## [0.1.8]
 
 ### Edit Text

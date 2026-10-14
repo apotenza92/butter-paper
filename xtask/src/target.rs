@@ -127,6 +127,14 @@ impl Target {
         }
     }
 
+    /// The Microsoft Store package, kept out of the GitHub release.
+    pub fn store_asset_name(self) -> String {
+        match self.arch {
+            Arch::Arm64 => "Butter-Paper-Windows-arm64.msix".into(),
+            Arch::X64 => "Butter-Paper-Windows-x64.msix".into(),
+        }
+    }
+
     /// The architecture in Windows and Linux install paths
     /// (`native_updater::UpdateTarget::package_architecture`).
     pub fn package_architecture(self) -> &'static str {

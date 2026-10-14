@@ -38,5 +38,22 @@ A manual workflow run from `main` is an unsigned dry run that publishes
 nothing; use it after changing packaging. macOS releases are Developer ID
 signed and notarised; Windows and Linux packages are unsigned.
 
+## Microsoft Store
+
+Windows release jobs also build `Butter-Paper-Windows-x64.msix` and
+`Butter-Paper-Windows-arm64.msix` (`--store-out`). They are run artifacts
+named `microsoft-store-windows-*`, not release assets; the Store signs them.
+Its identity in Partner Center is `xtask/templates/windows/store-identity.json`
+and the listing text is [docs/store/listing.md](../store/listing.md).
+
+After a stable release, in Partner Center (Apps and games > Butter Paper):
+
+1. Download both artifacts: `gh run download <run> -p 'microsoft-store-*'`.
+2. Start an update submission, replace the packages with both MSIX files and
+   submit it for certification.
+
+The Store copy needs the Microsoft Visual C++ runtime framework package,
+which the Store installs with it.
+
 Releases are immutable: never edit one; ship a new version. Never log, copy into
 artifacts or commit a signing key or certificate.

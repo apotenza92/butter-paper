@@ -74,6 +74,7 @@ pub mod rectangle_property_inspector;
 pub mod selection_geometry;
 pub mod semantic_snapping;
 pub mod session_manifest;
+pub mod store_package;
 pub mod straight_line_property_inspector;
 pub mod system_theme;
 pub mod template_library;

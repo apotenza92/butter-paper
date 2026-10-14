@@ -38,7 +38,7 @@ const USAGE: &str = "usage: cargo xtask <command>
                               build the phone signature helper and its notices
   notices --target T --out FILE
                               write the complete third-party notices for T
-  package --target T --channel stable|beta --out DIR [--sign] [--binaries DIR]
+  package --target T --channel stable|beta --out DIR [--sign] [--binaries DIR] [--store-out DIR]
                               build and package one release asset
   publish-assets --assets DIR --tag vX.Y.Z --commit SHA --run-id N --run-attempt N --jobs a,b
                               add the Homebrew bundle and SHA256SUMS.txt

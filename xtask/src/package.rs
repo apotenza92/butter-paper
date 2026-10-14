@@ -1,6 +1,7 @@
 //! Release packages: a signed and notarised macOS app (Butter Paper and
 //! Butter Paper Beta), a Windows zip and a Linux tar.xz, each named as the
-//! updater and Homebrew expect.
+//! updater and Homebrew expect. With `--store-out`, Windows also gets an
+//! unsigned MSIX for the Microsoft Store, which signs it.
 
 use std::{
     collections::BTreeMap,
@@ -38,7 +39,11 @@ pub fn run(args: &mut Args) -> Result {
     let out = PathBuf::from(args.required("--out")?);
     let sign = args.flag("--sign");
     let binaries = args.value("--binaries")?.map(PathBuf::from);
+    let store_out = args.value("--store-out")?.map(PathBuf::from);
     args.finish()?;
+    if store_out.is_some() && target.os != Os::Windows {
+        return Err("only Windows has a Microsoft Store package".into());
+    }
     let version = version::current()?;
     if target.os != Os::Macos && channels != [Channel::Stable] {
         return Err("Butter Paper Beta is macOS-only".into());
@@ -51,7 +56,16 @@ pub fn run(args: &mut Args) -> Result {
     if sign && target.os != Os::Macos {
         return Err("only macOS packages are signed".into());
     }
-    for path in package(target, &channels, version, &out, sign, binaries.as_deref())? {
+    let packages = package(
+        target,
+        &channels,
+        version,
+        &out,
+        sign,
+        binaries.as_deref(),
+        store_out.as_deref(),
+    )?;
+    for path in packages {
         println!("{}", path.display());
     }
     Ok(())
@@ -64,6 +78,7 @@ pub fn package(
     out: &Path,
     sign: bool,
     binaries: Option<&Path>,
+    store_out: Option<&Path>,
 ) -> Result<Vec<PathBuf>> {
     let binaries = match binaries {
         Some(directory) => directory.to_path_buf(),
@@ -87,7 +102,13 @@ pub fn package(
             .iter()
             .map(|&channel| macos(target, channel, version, &inputs, &work, out, sign))
             .collect(),
-        Os::Windows => Ok(vec![windows(target, version, &inputs, out)?]),
+        Os::Windows => {
+            let mut packages = vec![windows(target, version, &inputs, out)?];
+            if let Some(store_out) = store_out {
+                packages.push(store(target, version, &inputs, &work, store_out)?);
+            }
+            Ok(packages)
+        }
         Os::Linux => Ok(vec![linux(target, version, &inputs, out)?]),
     }
 }
@@ -224,6 +245,152 @@ fn windows(target: Target, version: Version, inputs: &Inputs, out: &Path) -> Res
     let path = out.join(target.asset_name(Channel::Stable));
     write(&path, archive::zip(&mut entries(files))?)?;
     Ok(path)
+}
+
+/// The Microsoft Store package: the Windows files, the Store images and a
+/// manifest declaring the app, its PDF association and its identity in
+/// Partner Center. Needs the Windows SDK's makepri and makeappx.
+fn store(
+    target: Target,
+    version: Version,
+    inputs: &Inputs,
+    work: &Path,
+    out: &Path,
+) -> Result<PathBuf> {
+    if version.is_beta() {
+        return Err("the Microsoft Store has the stable app only".into());
+    }
+    let stage = work.join("store");
+    fresh_dir(&stage)?;
+    for (name, path) in [
+        (target.exe(APP), &inputs.app),
+        (target.exe(WORKER), &inputs.worker),
+        (target.exe(phone::EXECUTABLE), &inputs.phone),
+        ("pdfium.dll".into(), &inputs.pdfium),
+    ] {
+        copy(path, &stage.join(name))?;
+    }
+    write(&stage.join("THIRD_PARTY_NOTICES.md"), &inputs.notices)?;
+    let images = root().join("assets/app/windows-store");
+    for entry in
+        std::fs::read_dir(&images).map_err(|error| format!("{}: {error}", images.display()))?
+    {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        copy(&path, &stage.join("Assets").join(path.file_name().unwrap()))?;
+    }
+    write(
+        &stage.join("AppxManifest.xml"),
+        store_manifest(target, version, &read_text(&store_identity_path())?)?,
+    )?;
+    let sdk = windows_sdk_tools()?;
+    // Indexes the scaled images so Windows picks the right size for each use.
+    let config = work.join("priconfig.xml");
+    exec(
+        command(sdk.join("makepri.exe"))
+            .args(["createconfig", "/cf"])
+            .arg(&config)
+            .args(["/dq", "en-US", "/o"]),
+    )?;
+    // One index for every scale: split resource packs are for app bundles.
+    let pri_config = read_text(&config)?;
+    if let (Some(start), Some(end)) = (
+        pri_config.find("<packaging>"),
+        pri_config.find("</packaging>"),
+    ) {
+        let unsplit = format!(
+            "{}{}",
+            &pri_config[..start],
+            &pri_config[end + "</packaging>".len()..]
+        );
+        write(&config, unsplit)?;
+    }
+    exec(
+        command(sdk.join("makepri.exe"))
+            .args(["new", "/pr"])
+            .arg(&stage)
+            .arg("/cf")
+            .arg(&config)
+            .arg("/of")
+            .arg(stage.join("resources.pri"))
+            .arg("/o"),
+    )?;
+    create_dir(out)?;
+    let path = out.join(target.store_asset_name());
+    exec(
+        command(sdk.join("makeappx.exe"))
+            .args(["pack", "/o", "/d"])
+            .arg(&stage)
+            .arg("/p")
+            .arg(&path),
+    )?;
+    Ok(path)
+}
+
+fn store_identity_path() -> PathBuf {
+    root().join("xtask/templates/windows/store-identity.json")
+}
+
+/// AppxManifest.xml for `target`, with the identity from Partner Center.
+fn store_manifest(target: Target, version: Version, identity: &str) -> Result<String> {
+    let identity: serde_json::Value =
+        serde_json::from_str(identity).map_err(|error| format!("store-identity.json: {error}"))?;
+    let field = |name: &str| {
+        identity[name]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .replace('&', "&amp;")
+                    .replace('"', "&quot;")
+                    .replace('<', "&lt;")
+            })
+            .ok_or_else(|| format!("store-identity.json has no {name}"))
+    };
+    Ok(include_str!("../templates/windows/AppxManifest.xml")
+        .replace("@NAME@", &field("name")?)
+        .replace("@PUBLISHER@", &field("publisher")?)
+        .replace("@PUBLISHER_DISPLAY_NAME@", &field("publisherDisplayName")?)
+        .replace("@VERSION@", &version.to_string())
+        .replace(
+            "@ARCH@",
+            match target.arch {
+                Arch::Arm64 => "arm64",
+                Arch::X64 => "x64",
+            },
+        ))
+}
+
+/// The newest Windows SDK's tools for this machine.
+fn windows_sdk_tools() -> Result<PathBuf> {
+    let kits = PathBuf::from(
+        std::env::var_os("ProgramFiles(x86)").ok_or("the Windows SDK needs Windows")?,
+    )
+    .join("Windows Kits/10/bin");
+    let host = match Target::host()?.arch {
+        Arch::Arm64 => ["arm64", "x64"],
+        Arch::X64 => ["x64", "x64"],
+    };
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(&kits)
+        .map_err(|error| {
+            format!(
+                "the Windows SDK is not installed ({}: {error})",
+                kits.display()
+            )
+        })?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    versions.sort();
+    versions
+        .iter()
+        .rev()
+        .flat_map(|version| host.iter().map(move |arch| version.join(arch)))
+        .find(|tools| tools.join("makeappx.exe").is_file() && tools.join("makepri.exe").is_file())
+        .ok_or_else(|| {
+            format!(
+                "no Windows SDK in {} has makeappx and makepri",
+                kits.display()
+            )
+        })
 }
 
 fn linux(target: Target, version: Version, inputs: &Inputs, out: &Path) -> Result<PathBuf> {
@@ -770,6 +937,36 @@ pub fn check_elf(bytes: &[u8], target: Target, shared_object: bool) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_manifest_declares_the_partner_center_identity_and_pdfs() {
+        let identity = r#"{"name": "Example.ButterPaper", "publisher": "CN=1234", "publisherDisplayName": "A & B"}"#;
+        let target = Target::parse("aarch64-pc-windows-msvc").unwrap();
+        let manifest = store_manifest(target, Version::parse("0.1.9").unwrap(), identity).unwrap();
+        assert!(manifest.contains(r#"<Identity Name="Example.ButterPaper" Publisher="CN=1234" Version="0.1.9.0" ProcessorArchitecture="arm64" />"#));
+        assert!(manifest.contains("<PublisherDisplayName>A &amp; B</PublisherDisplayName>"));
+        assert!(
+            manifest.contains(
+                r#"<FileType ContentType="application/pdf">.pdf</uap:FileType>"#
+                    .replace("<FileType", "<uap:FileType")
+                    .as_str()
+            )
+        );
+        assert!(!manifest.contains('@'));
+        assert!(
+            store_manifest(target, Version::parse("0.1.9").unwrap(), r#"{"name": ""}"#).is_err()
+        );
+        // The app finds itself by this id (store_package::APPLICATION_ID).
+        assert!(
+            manifest.contains(r#"<Application Id="ButterPaper" Executable="butter-paper.exe""#)
+        );
+        let images = std::fs::read_dir(root().join("assets/app/windows-store"))
+            .unwrap()
+            .count();
+        assert!(images > 0);
+        let identity = read_text(&store_identity_path()).unwrap();
+        store_manifest(target, Version::parse("0.1.9").unwrap(), &identity).unwrap();
+    }
 
     #[test]
     fn app_display_names_do_not_include_package_identity() {

@@ -63,6 +63,8 @@ pub enum UpdateMenuStatus {
     /// Development builds and copies run outside an install update manually.
     #[default]
     Unavailable,
+    /// Microsoft Store copies, which the Store keeps up to date.
+    Store,
     Idle,
     Checking,
     Available(crate::native_updater::ReleaseVersion),

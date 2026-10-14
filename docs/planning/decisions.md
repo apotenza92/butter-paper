@@ -114,6 +114,10 @@ changes it; history is in git.
   attested Homebrew bundle; never edit a release, ship a new version.
 - PDFium is the approved chromium/7881 build, pinned by SHA-256 in
   `xtask/pdfium.json` and hosted on the `pdfium-7881` release.
+- Windows users install from the Microsoft Store; the download page links
+  there. Store copies are updated by the Store, so they show no update
+  controls and never check GitHub. The Windows zip stays on each release so
+  existing zip installs keep updating themselves.
 
 ## Blank document window
 

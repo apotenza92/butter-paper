@@ -3438,6 +3438,8 @@ mod updates {
         current: ReleaseVersion,
         /// `None` for development builds and copies run outside an install.
         installation: Option<Installation>,
+        /// Microsoft Store copies, which the Store updates.
+        microsoft_store: bool,
         feed_url: String,
         store: UpdateSettingsStore,
         settings: UpdateSettings,
@@ -3469,6 +3471,7 @@ mod updates {
             },
             current,
             installation,
+            microsoft_store: butter_paper::store_package::family_name().is_some(),
             feed_url: RELEASE_FEED_URL.to_owned(),
             store,
             settings,
@@ -3584,6 +3587,12 @@ mod updates {
         let Some(service) = cx.try_global::<UpdateService>() else {
             return UpdateMenuState::default();
         };
+        if service.microsoft_store {
+            return UpdateMenuState {
+                status: UpdateMenuStatus::Store,
+                frequency: None,
+            };
+        }
         if service.installation.is_none() {
             return UpdateMenuState::default();
         }
@@ -3623,6 +3632,9 @@ mod updates {
 
     fn check(cx: &mut App, manual: bool) {
         let service = cx.global::<UpdateService>();
+        if service.microsoft_store {
+            return;
+        }
         if service.installation.is_none() {
             if manual {
                 cx.dispatch_action(&butter_paper::application_shell::OpenReleasePage);
@@ -3908,6 +3920,7 @@ mod review_driver {
                             "ready" => UpdateMenuStatus::Ready(version),
                             "checking" => UpdateMenuStatus::Checking,
                             "idle" => UpdateMenuStatus::Idle,
+                            "store" => UpdateMenuStatus::Store,
                             _ => panic!("unknown review update state"),
                         };
                         cx.update(|cx| cx.set_global(ApplicationUpdatePresentation {

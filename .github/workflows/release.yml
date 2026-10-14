@@ -9,6 +9,9 @@ name: Release
 #
 # Running it by hand (workflow_dispatch) from main is a dry run: every target
 # is built and packaged, unsigned, and nothing is published.
+#
+# Windows jobs also leave the Microsoft Store packages as microsoft-store-*
+# run artifacts, which are uploaded in Partner Center (docs/agents/releases.md).
 
 on:
   push:
@@ -241,7 +244,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo xtask package --target "${{ matrix.target }}" --channel "${{ matrix.channels }}" --out "$RUNNER_TEMP/assets"
+          store=()
+          # Windows also builds the Microsoft Store package, which is uploaded
+          # in Partner Center rather than published with the release.
+          if [[ "${{ matrix.os }}" == windows ]]; then store=(--store-out "$RUNNER_TEMP/store"); fi
+          cargo xtask package --target "${{ matrix.target }}" --channel "${{ matrix.channels }}" --out "$RUNNER_TEMP/assets" "${store[@]}"
       - name: Package, sign and notarise
         if: matrix.os == 'macos' && needs.validate.outputs.dry_run == 'false'
         shell: bash
@@ -296,6 +303,13 @@ jobs:
           path: ${{ runner.temp }}/assets
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: matrix.os == 'windows' && needs.validate.outputs.prerelease == 'false'
+        with:
+          name: microsoft-store-${{ matrix.label }}
+          path: ${{ runner.temp }}/store
+          if-no-files-found: error
+          retention-days: 90
 
   publish:
     needs: [validate, package]

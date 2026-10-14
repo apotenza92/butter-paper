@@ -31,9 +31,14 @@ pub fn set_as_default_pdf_app() -> Result<DefaultPdfAppResult, String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let executable = std::env::current_exe()
-            .map_err(|error| format!("Butter Paper could not find its own program: {error}"))?;
-        windows::register_and_open_settings(&executable)?;
+        // A Store package declares its PDF association in its manifest.
+        if let Some(family) = crate::store_package::family_name() {
+            windows::open_settings(&crate::store_package::default_apps_url(&family))?;
+        } else {
+            let executable = std::env::current_exe()
+                .map_err(|error| format!("Butter Paper could not find its own program: {error}"))?;
+            windows::register_and_open_settings(&executable)?;
+        }
         Ok(DefaultPdfAppResult {
             outcome: DefaultPdfAppOutcome::RequiresConfirmation,
             message: format!(
@@ -213,8 +218,12 @@ mod windows {
                 return Err("Butter Paper could not register itself for PDF files.".into());
             }
         }
+        open_settings(&super::windows_default_apps_url())
+    }
+
+    pub fn open_settings(url: &str) -> Result<(), String> {
         Command::new("explorer.exe")
-            .arg(super::windows_default_apps_url())
+            .arg(url)
             .spawn()
             .map_err(|error| format!("Windows Default Apps could not be opened: {error}"))?;
         Ok(())
