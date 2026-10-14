@@ -49,7 +49,6 @@ pub fn update_button(state: UpdateMenuStatus, cx: &App) -> Option<AnyElement> {
                     .outline()
                     .label("Update ready")
                     .icon(Icon::default().path(crate::application_assets::DOWNLOAD_ICON))
-                    .tooltip("The update is downloaded and ready to install")
                     .dropdown_menu(move |menu, _, _| {
                         menu.label(format!("Butter Paper {version} is ready"))
                             .item(PopupMenuItem::new("Restart to update").on_click(

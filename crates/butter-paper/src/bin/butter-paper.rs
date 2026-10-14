@@ -4231,7 +4231,7 @@ mod review_driver {
                         let index = number(1) as usize;
                         let at = point(px(number(2)), px(number(3)));
                         let delta = number(4);
-                        let _ = cx.update(|cx| {
+                        cx.update(|cx| {
                             if let Some(entry) = document_window_entries(cx).get(index).cloned() {
                                 let _ = entry.handle.update(cx, |_, window, cx| {
                                     for _ in 0..count {
