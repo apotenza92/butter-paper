@@ -621,6 +621,9 @@
       const releaseTags = { stable: "latest", beta: "latest" };
       const releaseAvailable = { stable: true, beta: true };
       const betaPlatforms = ["mac"];
+      // Windows installs from the Microsoft Store, which picks the
+      // architecture and keeps Butter Paper up to date.
+      const microsoftStoreUrl = "https://apps.microsoft.com/detail/9N4KN0XNRNHC";
       const detectedSystem = detectSystem();
       const state = {
         arch: detectedSystem.platform === "mac" && !detectedSystem.archKnown
@@ -711,6 +714,15 @@
         if (selection.channel === "beta" && !betaPlatforms.includes(selection.platform)) {
           return { available: false, label: "Butter Paper Beta is for macOS only" };
         }
+        if (selection.platform === "windows") {
+          return {
+            available: true,
+            detail: "Updates through the Microsoft Store",
+            label: `Get ${productName(selection.channel)} from the Microsoft Store`,
+            store: true,
+            url: microsoftStoreUrl
+          };
+        }
         if (!releaseAvailable[selection.channel]) {
           return {
             available: false,
@@ -749,7 +761,7 @@
         link.href = resolved.url;
         link.removeAttribute("aria-disabled");
         link.removeAttribute("tabindex");
-        const size = formatAssetSize(assetSizes[assetName(state)]);
+        const size = resolved.store ? "" : formatAssetSize(assetSizes[assetName(state)]);
         label.textContent = includeDetail || !size ? resolved.label : `${resolved.label} · ${size}`;
         if (detail) {
           detail.textContent = resolved.detail;
@@ -774,6 +786,7 @@
           button.disabled = state.channel === "beta" && !betaPlatforms.includes(button.id.replace("platform-", ""));
         });
         setActive(".arch-button", `arch-${state.arch}`);
+        document.querySelector(".arch-toggle").hidden = state.platform === "windows";
         setDownloadLink(
           document.getElementById("hero-download-button"),
           document.getElementById("hero-download-label"),
