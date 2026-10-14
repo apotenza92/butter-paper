@@ -4,9 +4,15 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.9]
+
 ### Windows
 
 - Install Butter Paper from the Microsoft Store, which keeps it up to date.
+
+### Updates
+
+- Keep the Update ready button's tooltip from covering its menu.
 
 ## [0.1.8]
 
