@@ -2,6 +2,7 @@
 
 mod archive;
 mod check;
+mod corpus;
 mod dev;
 mod homebrew;
 mod notices;
@@ -27,6 +28,8 @@ pub type Result<T = ()> = std::result::Result<T, String>;
 const USAGE: &str = "usage: cargo xtask <command>
 
   check                       repository, version and workflow checks
+  pdf-corpus [--pages N] [--edits N] [--jobs N] [--limit N] [--out DIR] DIR...
+                              check Edit Text against local PDFs (reads them only)
   dev [--release] [--data DIR] [PDF...]
                               run the app, rebuilding and restarting it on changes
   version X.Y.Z[-beta.N]      set the app version and start its CHANGELOG section
@@ -50,6 +53,7 @@ fn main() -> ExitCode {
     let result = match command.as_str() {
         "check" => args.finish().and_then(|()| check::run()),
         "dev" => dev::run(&mut args),
+        "pdf-corpus" => corpus::run(&mut args),
         "version" => version::run(&mut args),
         "pdfium" => pdfium::run(&mut args),
         "phone-helper" => phone::run(&mut args),

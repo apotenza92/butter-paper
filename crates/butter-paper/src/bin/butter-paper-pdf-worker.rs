@@ -2369,3 +2369,7 @@ mod tests {
         assert!(pixels.iter().any(|value| *value != 0));
     }
 }
+
+#[cfg(test)]
+#[path = "butter-paper-pdf-worker/corpus.rs"]
+mod corpus;

@@ -29,6 +29,14 @@ not prove that LaunchServices delivered it.
   This development command does not replace the uniquely named review bundle
   required for live GUI review.
 - Real-PDFium tests: `BP_PDFIUM_LIBRARY=<approved-library> cargo test <test-filter> -- --ignored`.
+- `cargo xtask pdf-corpus [--pages N] [--edits N] [--jobs N] [--limit N] DIR...`
+  checks Edit Text against a local folder of PDFs: its text against PDFium's
+  characters, its outlines against rendered ink, no-op and typed edit
+  round-trips, and timings. It reads the PDFs only, skips online-only cloud
+  files and duplicates, and writes `report.md`, crops and an edited copy of
+  each failed edit (`failures/`) under `target/pdf-corpus`. Reproduce a
+  finding with a synthetic fixture before fixing it; never add the user's
+  documents to the repository.
 
 ## Review and handoff
 
