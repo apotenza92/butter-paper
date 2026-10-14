@@ -2619,7 +2619,6 @@ pub struct DocumentWorkspace {
         Entity<crate::edit_text_property_inspector::EditTextPropertyInspector>,
         Subscription,
     )>,
-    edit_text_property_inspector_open: bool,
     text_box_commit_error: Option<String>,
     annotation_statuses: HashMap<DocumentId, String>,
     last_file_error: Option<String>,
@@ -4144,7 +4143,6 @@ impl DocumentWorkspace {
             page_text_hover: None,
             page_text_signed_confirmed: HashSet::new(),
             edit_text_property_inspector: None,
-            edit_text_property_inspector_open: true,
             text_box_commit_error: None,
             annotation_statuses: HashMap::new(),
             last_file_error: None,
@@ -25352,7 +25350,7 @@ impl Render for DocumentWorkspace {
                                 workspace.set_dimension_property_inspector_open(false, window, cx);
                             }
                             ActiveInspectorKind::EditText => {
-                                workspace.edit_text_property_inspector_open = false;
+                                workspace.right_rail_actions_open = false;
                                 cx.notify();
                             }
                         }

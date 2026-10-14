@@ -13,7 +13,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::pdf_text_blocks::{PageTextBlock, TextBlockAlignment, TextList, item_marker};
+use crate::pdf_text_blocks::{PageTextBlock, TextBlockAlignment, TextList, list_item_marker};
 use crate::pdf_text_edit::{
     ExtraLine, LineFit, PageTextEdit, PageTextLayer, PageTextLine, ParagraphFormat, TextEditError,
     TextEditLayout, TextEditRun, TextLineAnchor, TextLineLayout, TextRunStyle, extra_line_base,
@@ -51,6 +51,9 @@ pub struct Paragraph {
     list: Option<TextList>,
     /// A single line grows rather than wraps.
     grows: bool,
+    /// How far along the lines a growing line may run: to the page's edge,
+    /// keeping the margin it has on its other side, up to an em.
+    grow_limit: f64,
     /// Baseline to baseline below the last line, in its text space.
     pitch: f64,
     /// The paragraph's font size, in the last line's text space.
@@ -154,6 +157,52 @@ fn largest_size(chars: &[StyledChar], floor: f64) -> f64 {
         .fold(floor, f64::max)
 }
 
+/// A space's width, as a fraction of the font size, when judging whether
+/// a line ended early.
+const EARLY_BREAK_SPACE_EM: f64 = 0.25;
+const EARLY_BREAK_TOLERANCE_EM: f64 = 0.1;
+/// How far short of text beside it on its baseline a line stops: further
+/// than words of one line are apart (`MAX_MERGE_GAP_EM`), so the two still
+/// read as separate lines once saved.
+const NEIGHBOUR_GAP_EM: f64 = 1.2;
+
+/// Where a line's visible characters start and end, in its text space.
+fn visible_span_x(line: &PageTextLine) -> Option<(f64, f64)> {
+    let first = line
+        .chars
+        .iter()
+        .find(|character| !character.character.is_whitespace())?;
+    let last = line
+        .chars
+        .iter()
+        .rfind(|character| !character.character.is_whitespace())?;
+    Some((first.x, last.x + last.advance))
+}
+
+/// A line's visible width and its first word's width, in page units.
+fn visible_widths(line: &PageTextLine) -> Option<(f64, f64)> {
+    let scale = line.matrix[0].hypot(line.matrix[1]);
+    let start = line
+        .chars
+        .iter()
+        .position(|character| !character.character.is_whitespace())?;
+    let end = line
+        .chars
+        .iter()
+        .rposition(|character| !character.character.is_whitespace())?;
+    let first = &line.chars[start];
+    let last = &line.chars[end];
+    let word_end = line.chars[start..]
+        .iter()
+        .take_while(|character| !character.character.is_whitespace())
+        .last()
+        .map_or(first.x, |character| character.x + character.advance);
+    Some((
+        (last.x + last.advance - first.x) * scale,
+        (word_end - first.x) * scale,
+    ))
+}
+
 impl Paragraph {
     /// The paragraph `block` names in `layer`.
     pub fn new(layer: Arc<PageTextLayer>, block: &PageTextBlock) -> Option<Self> {
@@ -169,7 +218,7 @@ impl Paragraph {
             (m[0] / length, m[1] / length)
         };
         let normal = (-direction.1, direction.0);
-        let page_edges = (0..lines.len())
+        let mut page_edges = (0..lines.len())
             .map(|index| block.edges_of(index))
             .collect::<Vec<_>>();
         // A new column starts where a line is higher on the page than the
@@ -206,12 +255,108 @@ impl Paragraph {
             .iter()
             .map(|line| !line.text.ends_with(char::is_whitespace))
             .collect();
+        // A line that ended early was broken by the writer (Shift+Enter, a
+        // label before its text): the next line's first word would have
+        // fitted within the widest line. In a list, a break precedes each
+        // item.
+        let widths = lines.iter().map(visible_widths).collect::<Vec<_>>();
+        // The text column: it reaches as far right as any line on the page
+        // that starts within this paragraph's span (indented lines too).
+        let span = |line: &PageTextLine| {
+            let (start, end) = visible_span_x(line)?;
+            let at = |x: f64| {
+                let (px, py) = (
+                    line.matrix[0] * x + line.matrix[4],
+                    line.matrix[1] * x + line.matrix[5],
+                );
+                px * direction.0 + py * direction.1
+            };
+            Some((at(start), at(end)))
+        };
+        let size = em * last.matrix[3].hypot(last.matrix[2]);
+        let tolerance = (EARLY_BREAK_TOLERANCE_EM * size).max(1.);
+        let left = lines
+            .iter()
+            .filter_map(span)
+            .map(|(left, _)| left)
+            .fold(f64::MAX, f64::min);
+        let own_widest = widths
+            .iter()
+            .flatten()
+            .map(|(width, _)| *width)
+            .fold(0., f64::max);
+        let widest = layer
+            .lines
+            .iter()
+            .filter(|line| {
+                let m = line.matrix;
+                let length = m[0].hypot(m[1]);
+                (m[0] * direction.0 + m[1] * direction.1) / length > 0.999
+            })
+            .filter_map(span)
+            .filter(|(start, _)| *start >= left - tolerance && *start < left + own_widest)
+            .map(|(_, end)| end - left)
+            .fold(own_widest, f64::max);
+        // Left-aligned text may run on to the column's edge, as it does in
+        // the writer's app, not just to its own longest line.
+        // Never past other text on the line's own baseline (a table's next
+        // cell).
+        // Where the next text on `line`'s baseline starts, after `end`.
+        let neighbour = |line: &PageTextLine, end: f64| {
+            layer
+                .lines
+                .iter()
+                .filter(|other| {
+                    !block.lines.contains(&other.anchor)
+                        && (baseline(other) - baseline(line)).abs() <= 0.5 * size
+                })
+                .filter_map(span)
+                .map(|(start, _)| start)
+                .filter(|start| *start > end)
+                .fold(f64::MAX, f64::min)
+        };
+        if block.alignment == TextBlockAlignment::Left && columns.len() == 1 {
+            for (line, edges) in lines.iter().zip(&mut page_edges) {
+                let Some((_, end)) = span(line) else {
+                    continue;
+                };
+                let neighbour = neighbour(line, end);
+                edges.1 = edges
+                    .1
+                    .max((left + widest).min(neighbour - NEIGHBOUR_GAP_EM * size));
+            }
+        }
+        let own_end = span(first).map_or(left, |(_, end)| end);
+        let page_limit = layer.page_box.map_or(f64::INFINITY, |[x0, y0, x1, y1]| {
+            let along = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)]
+                .map(|(x, y)| x * direction.0 + y * direction.1);
+            let start = along.into_iter().fold(f64::MAX, f64::min);
+            let end = along.into_iter().fold(f64::MIN, f64::max);
+            end - (left - start).clamp(0., size)
+        });
+        let grow_limit = page_limit
+            .min(neighbour(first, own_end) - NEIGHBOUR_GAP_EM * size)
+            .max(own_end);
         let breaks = (0..lines.len())
             .map(|index| {
-                block.list.is_some()
-                    && lines.get(index + 1).is_some_and(|next| {
-                        item_marker(&next.text.trim_start().chars().collect::<Vec<_>>()).is_some()
-                    })
+                let Some(next) = lines.get(index + 1) else {
+                    return false;
+                };
+                if block.list.is_some()
+                    && list_item_marker(
+                        &next.text.trim_start().chars().collect::<Vec<_>>(),
+                        block.list.as_ref(),
+                    )
+                    .is_some()
+                {
+                    return true;
+                }
+                let (Some((_, right)), Some((_, first_word))) =
+                    (span(&lines[index]), widths[index + 1])
+                else {
+                    return false;
+                };
+                right + EARLY_BREAK_SPACE_EM * size + first_word < left + widest - tolerance
             })
             .collect();
         Some(Self {
@@ -223,6 +368,7 @@ impl Paragraph {
             list: block.list,
             lines,
             grows,
+            grow_limit,
             pitch,
             em,
             joined_by_space,
@@ -460,11 +606,12 @@ impl Paragraph {
         };
         if let Some(list) = self.list
             && item
-            && let Some((_, marker)) = item_marker(
+            && let Some((_, marker)) = list_item_marker(
                 &chars
                     .iter()
                     .map(|(character, _)| *character)
                     .collect::<Vec<_>>(),
+                Some(&list),
             )
             && marker < chars.len()
         {
@@ -816,7 +963,11 @@ impl Paragraph {
         text: &[StyledChar],
         start: usize,
     ) -> Result<(usize, usize, bool), TextEditError> {
-        let right = if self.grows { f64::INFINITY } else { right };
+        let right = if self.grows {
+            self.to_text(line, self.grow_limit)
+        } else {
+            right
+        };
         let tolerance = if self.alignment() == TextBlockAlignment::Justified {
             WIDTH_TOLERANCE
         } else {
@@ -827,7 +978,7 @@ impl Paragraph {
                 .iter()
                 .map(|(character, _)| *character)
                 .collect::<Vec<_>>();
-            item_marker(&chars).map(|(_, length)| (list, length))
+            list_item_marker(&chars, Some(&list)).map(|(_, length)| (list, length))
         });
         // Where the text ends once placed, from its layout.
         let placed_end = |layout: &TextLineLayout| {

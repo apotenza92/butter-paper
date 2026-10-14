@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::pdf_text_edit::{PageTextLayer, PageTextLine, TextLineAnchor};
+use crate::pdf_text_edit::{PageTextLayer, PageTextLine, TextLineAnchor, TextLineChar};
 
 /// Lines further apart than this many ems start a new block: line pitch is
 /// usually 1–1.6 em, and paragraph spacing adds to it.
@@ -20,6 +20,8 @@ const PITCH_TOLERANCE: f64 = 0.12;
 const EDGE_TOLERANCE_EM: f64 = 0.15;
 /// Characters that begin a list item.
 const BULLETS: [char; 8] = ['•', '◦', '‣', '▪', '–', '—', '-', '*'];
+/// Letters that are bullets only when drawn in a font of their own.
+const GLYPH_BULLETS: [char; 2] = ['o', '§'];
 /// A column's last line continues in the next column when it ends this
 /// close to the column's right edge, as a fraction of its width.
 const FULL_LINE: f64 = 0.85;
@@ -168,6 +170,17 @@ fn list_marker(line: &PageTextLine) -> Option<(ListMarker, usize)> {
     if BULLETS.contains(&first) {
         return separated(1).then_some((ListMarker::Bullet(first), start + 1));
     }
+    // A letter drawn as a bullet in its own font, as Word's second-level
+    // "o" in Courier New.
+    if GLYPH_BULLETS.contains(&first) && separated(1) {
+        let font = |character: &TextLineChar| &line.styles[character.style].font;
+        let text = chars[1..]
+            .iter()
+            .find(|character| !character.character.is_whitespace());
+        if text.is_some_and(|text| font(text) != font(&chars[0])) {
+            return Some((ListMarker::Bullet(first), start + 1));
+        }
+    }
     let digits = chars
         .iter()
         .take_while(|character| character.character.is_ascii_digit())
@@ -178,6 +191,26 @@ fn list_marker(line: &PageTextLine) -> Option<(ListMarker, usize)> {
     let suffix = chars.get(digits)?.character;
     (matches!(suffix, '.' | ')') && chars.get(digits + 1).is_some() && separated(digits + 1))
         .then_some((ListMarker::Number { suffix }, start + digits + 1))
+}
+
+/// [`item_marker`], also accepting `list`'s own bullet (a letter drawn as
+/// one, which plain text cannot tell from a word).
+pub fn list_item_marker(text: &[char], list: Option<&TextList>) -> Option<(ListMarker, usize)> {
+    if let Some(TextList {
+        marker: ListMarker::Bullet(bullet),
+        ..
+    }) = list
+        && text.first() == Some(bullet)
+    {
+        let gap = text[1..]
+            .iter()
+            .take_while(|character| **character == ' ' || **character == '\u{a0}')
+            .count();
+        if gap > 0 {
+            return Some((ListMarker::Bullet(*bullet), 1 + gap));
+        }
+    }
+    item_marker(text)
 }
 
 /// The marker a list item begins with in `text`, and its length in
@@ -210,6 +243,8 @@ pub fn item_marker(text: &[char]) -> Option<(ListMarker, usize)> {
 struct Building<'a> {
     lines: Vec<&'a Placed<'a>>,
     pitch: Option<f64>,
+    /// `pitch` was measured between a list item's wrapped lines.
+    wrapped_pitch: bool,
     alignment: Option<TextBlockAlignment>,
     /// A list: its marker, the items' marker edge and their text indent.
     list: Option<ListBuilding>,
@@ -243,11 +278,20 @@ fn continues(block: &Building<'_>, line: &Placed<'_>) -> Option<TextBlockAlignme
         return None;
     }
     let pitch = previous.baseline - line.baseline;
-    if !(MIN_PITCH_EM * line.em..=MAX_PITCH_EM * line.em).contains(&pitch)
-        || block
-            .pitch
-            .is_some_and(|expected| (pitch - expected).abs() > PITCH_TOLERANCE * expected + 0.5)
-    {
+    let matches = |expected: f64| (pitch - expected).abs() <= PITCH_TOLERANCE * expected + 0.5;
+    // A list's items may be spaced apart further than an item's wrapped
+    // lines.
+    let item = block.list.is_some() && line.marker.is_some();
+    let spaced = match block.pitch {
+        Some(expected) if item => pitch >= expected * (1. - PITCH_TOLERANCE) - 0.5,
+        // The first wrapped line after items measured only their spacing.
+        Some(expected) if block.list.is_some() && !block.wrapped_pitch => {
+            pitch <= expected * (1. + PITCH_TOLERANCE) + 0.5
+        }
+        Some(expected) => matches(expected),
+        None => true,
+    };
+    if !(MIN_PITCH_EM * line.em..=MAX_PITCH_EM * line.em).contains(&pitch) || !spaced {
         return None;
     }
     if previous.right.min(line.right) <= previous.left.max(line.left) {
@@ -450,7 +494,16 @@ pub fn paragraph_blocks(layer: &PageTextLayer) -> Vec<PageTextBlock> {
         match best {
             Some((index, alignment, pitch)) => {
                 let block = &mut blocks[index];
-                block.pitch.get_or_insert(pitch);
+                // A list's line pitch is its wrapped lines' when it has
+                // them; an item may follow further below.
+                if block.list.is_some() && line.marker.is_none() {
+                    if !block.wrapped_pitch {
+                        block.pitch = Some(pitch);
+                        block.wrapped_pitch = true;
+                    }
+                } else {
+                    block.pitch.get_or_insert(pitch);
+                }
                 block.alignment = Some(alignment);
                 if let Some(list) = &mut block.list
                     && line.marker.is_none()
@@ -462,6 +515,7 @@ pub fn paragraph_blocks(layer: &PageTextLayer) -> Vec<PageTextBlock> {
             None => blocks.push(Building {
                 lines: vec![line],
                 pitch: None,
+                wrapped_pitch: false,
                 alignment: None,
                 list: line.marker.map(|(marker, text_left)| ListBuilding {
                     marker,

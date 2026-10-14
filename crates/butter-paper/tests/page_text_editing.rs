@@ -945,12 +945,18 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     cx.simulate_keystrokes("shift-right shift-right shift-right shift-right shift-right");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
+    // Editing text does not open the properties; the properties button does,
+    // as for other tools.
+    assert!(cx.debug_bounds(EDIT_TEXT_PROPERTY_INSPECTOR_ID).is_none());
+    click_selector(cx, "document-workspace-rail-actions");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
     let snapshot = workspace.read_with(cx, |workspace, cx| {
         workspace
             .edit_text_property_inspector()
             .and_then(|inspector| inspector.read(cx).snapshot().cloned())
     });
-    let snapshot = snapshot.expect("the inspector shows while editing");
+    let snapshot = snapshot.expect("the opened inspector shows the edited text");
     assert_eq!(snapshot.family, None);
     assert_eq!(snapshot.size, 12.);
     assert!(!snapshot.bold && snapshot.selection);
@@ -1014,7 +1020,13 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    assert!(cx.debug_bounds(EDIT_TEXT_PROPERTY_INSPECTOR_ID).is_none());
+    // The properties stay open, asking for text to edit.
+    assert!(cx.debug_bounds(EDIT_TEXT_PROPERTY_INSPECTOR_ID).is_some());
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .edit_text_property_inspector()
+            .is_some_and(|inspector| inspector.read(cx).snapshot().is_none())
+    }));
     let saved = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_snapshot(document_id, cx).unwrap()
     });

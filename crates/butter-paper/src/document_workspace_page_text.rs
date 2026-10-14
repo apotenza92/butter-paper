@@ -51,6 +51,9 @@ pub(super) struct PageTextDocumentState {
     rejected: Option<Vec<PageTextEdit>>,
     /// The last hovered point, tested again when its page's text arrives.
     hover_probe: Option<(PageInteraction, PdfPoint)>,
+    /// Each page's paragraph outlines, a quad per line keyed by the
+    /// paragraph's first line, for the edits they were drawn with.
+    outlines: HashMap<u32, (Vec<PageTextEdit>, Arc<Vec<(TextLineAnchor, Vec<Quad>)>>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -78,6 +81,9 @@ pub(super) struct PageTextHover {
 #[derive(Clone)]
 pub(super) struct PageTextOverlay {
     pub page_index: u32,
+    /// Every editable paragraph on the page, a quad per line, while Edit
+    /// Text is active.
+    pub paragraphs: Vec<Quad>,
     /// The hovered paragraph, a quad per line.
     pub hover: Vec<Quad>,
     /// The edited paragraph, a quad per line.
@@ -88,6 +94,10 @@ pub(super) struct PageTextOverlay {
     pub caret: Option<[(f64, f64); 2]>,
     /// Underlines under text an input method is composing.
     pub marked: Vec<[(f64, f64); 2]>,
+    /// Return marks after the edited paragraph's hard line breaks.
+    pub breaks: Vec<Vec<(f64, f64)>>,
+    /// Fainter marks after its lines that wrap into the next.
+    pub wraps: Vec<Vec<(f64, f64)>>,
     pub input: Option<(Entity<PageTextInput>, FocusHandle)>,
 }
 
@@ -207,11 +217,141 @@ impl DocumentWorkspace {
                 .map(|plan| plan.visible_pages.to_vec())
                 .unwrap_or_default()
         };
-        for page in pages {
-            if let Ok(page) = u32::try_from(page) {
-                self.page_text_layer(document_id, page, cx);
+        // Text far from the view is read again if it comes back, so a long
+        // document keeps only the pages around the view.
+        let editing = self
+            .page_text_editing
+            .filter(|editing| editing.document_id == document_id)
+            .map(|editing| editing.page_index);
+        if !pages.is_empty()
+            && let Some(state) = self.page_text.get_mut(&document_id)
+        {
+            let near = |page: &u32| {
+                Some(*page) == editing
+                    || pages.iter().any(|visible| {
+                        (*visible as i64 - i64::from(*page)).abs() <= KEPT_PAGES_AROUND_VIEW
+                    })
+            };
+            state
+                .layers
+                .retain(|page, layer| near(page) || matches!(layer, PageTextLayerState::Pending));
+            state.outlines.retain(|page, _| near(page));
+        }
+        // Reading text shares the worker with rendering, so one page is read
+        // at a time, always one in view now: pages flown past while
+        // scrolling are never queued. Each read's arrival redraws and picks
+        // the next.
+        let reading = self.page_text.get(&document_id).is_some_and(|state| {
+            state
+                .layers
+                .values()
+                .any(|layer| matches!(layer, PageTextLayerState::Pending))
+        });
+        if reading {
+            return;
+        }
+        let next = pages
+            .into_iter()
+            .filter_map(|page| u32::try_from(page).ok())
+            .find(|page| {
+                self.page_text
+                    .get(&document_id)
+                    .is_none_or(|state| !state.layers.contains_key(page))
+            });
+        if let Some(page) = next {
+            self.page_text_layer(document_id, page, cx);
+        }
+    }
+
+    /// The outlines of every editable paragraph on a loaded page, kept
+    /// until the page's edits change.
+    fn page_paragraph_outlines(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<Vec<(TextLineAnchor, Vec<Quad>)>>> {
+        // Only text already read: drawing never asks the worker.
+        let (layer, blocks) = match self.page_text.get(&document_id)?.layers.get(&page_index)? {
+            PageTextLayerState::Ready(layer, blocks) => (layer.clone(), blocks.clone()),
+            _ => return None,
+        };
+        let edits = self
+            .page_text_edits_of(document_id, cx)
+            .into_iter()
+            .filter(|edit| edit.page_index == page_index)
+            .collect::<Vec<_>>();
+        if let Some((drawn, outlines)) = self
+            .page_text
+            .get(&document_id)
+            .and_then(|state| state.outlines.get(&page_index))
+            && *drawn == edits
+        {
+            return Some(outlines.clone());
+        }
+        // Text placed outside the page's visible area (printers' notes)
+        // shows no outline.
+        let view_box = self
+            .session(document_id, cx)
+            .and_then(|session| session.read(cx).source_page_coordinate_space(page_index))
+            .map(|space| space.view_box());
+        let visible = |quad: &Quad| {
+            view_box.is_none_or(|view| {
+                let xs = quad.iter().map(|(x, _)| *x);
+                let ys = quad.iter().map(|(_, y)| *y);
+                xs.clone().fold(f64::MAX, f64::min) < view.right()
+                    && xs.fold(f64::MIN, f64::max) > view.x
+                    && ys.clone().fold(f64::MAX, f64::min) < view.top()
+                    && ys.fold(f64::MIN, f64::max) > view.y
+            })
+        };
+        let outlines = Arc::new(
+            blocks
+                .iter()
+                .map(|block| {
+                    let mut quads =
+                        self.paragraph_line_quads(document_id, page_index, &layer, block, cx);
+                    quads.retain(visible);
+                    (block.lines[0], quads)
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.page_text
+            .get_mut(&document_id)?
+            .outlines
+            .insert(page_index, (edits, outlines.clone()));
+        Some(outlines)
+    }
+
+    /// A paragraph's lines as the page shows them, a quad each, with the
+    /// lines earlier edits added below it.
+    fn paragraph_line_quads(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        layer: &PageTextLayer,
+        block: &PageTextBlock,
+        cx: &App,
+    ) -> Vec<Quad> {
+        let mut quads = Vec::new();
+        for anchor in &block.lines {
+            let Some(line) = layer.line(anchor) else {
+                continue;
+            };
+            let edit = self.page_text_line_edit(document_id, page_index, *anchor, cx);
+            if let Some((x0, x1)) = visible_span(layer, line, edit.as_ref()) {
+                quads.push(line.quad(x0, x1));
+            }
+            for extra in edit.iter().flat_map(|edit| &edit.layout.extra_lines) {
+                let base = extra_line_base(line, extra.below);
+                if let Ok(layout) = layout_text_edit_fitted(layer, &base, &extra.runs, extra.fit)
+                    && let (Some(first), Some(last)) = (layout.chars.first(), layout.chars.last())
+                {
+                    quads.push(base.quad(first.x, last.x + last.advance));
+                }
             }
         }
+        quads
     }
 
     fn page_text_layer(
@@ -720,7 +860,6 @@ impl DocumentWorkspace {
         let input = self.page_text_input_entity(window, cx);
         if !continuing {
             self.commit_page_text_editing(cx);
-            self.edit_text_property_inspector_open = true;
             let Some(paragraph) = Paragraph::new(hit.layer.clone(), &block) else {
                 return true;
             };
@@ -898,15 +1037,11 @@ impl DocumentWorkspace {
         inspector
     }
 
-    /// Whether the Edit Text properties show: while a paragraph is edited,
-    /// unless they were closed.
-    pub(super) fn edit_text_properties_visible(&self, cx: &App) -> bool {
-        self.edit_text_property_inspector_open
-            && self.page_text_editing.is_some()
-            && self
-                .page_text_input
-                .as_ref()
-                .is_some_and(|(input, _)| input.read(cx).state.is_some())
+    /// Whether the Edit Text properties show: when the tool's properties
+    /// are open, as other tools' are (a double-click on the tool, or the
+    /// properties button); editing text never opens them.
+    pub(super) fn edit_text_properties_visible(&self, _cx: &App) -> bool {
+        self.right_rail_actions_open
     }
 
     /// Shows the edited paragraph's text properties in the inspector.
@@ -1267,31 +1402,43 @@ impl DocumentWorkspace {
                 .then(|| state.caret_segment())
                 .flatten();
             let frame = state.frame_quads();
-            // Lines added past the paragraph never move other text; the
-            // frame warns when they overlap it.
+            // Edited text never moves other text; the frame warns when a
+            // line runs into it (added below, or grown into a table's next
+            // cell).
             let anchors = state.paragraph().anchors();
             let overlaps = editing_layer.as_ref().is_some_and(|layer| {
+                // Text the paragraph already overlapped does not count.
+                let original = layer
+                    .lines
+                    .iter()
+                    .filter(|line| anchors.contains(&line.anchor))
+                    .map(|line| line.quad(0., line.end_x))
+                    .collect::<Vec<_>>();
+                let others = layer
+                    .lines
+                    .iter()
+                    .filter(|line| !anchors.contains(&line.anchor) && !line.text.trim().is_empty())
+                    .map(|line| line.quad(0., line.end_x))
+                    .filter(|other| !original.iter().any(|quad| quads_overlap(quad, other)))
+                    .collect::<Vec<_>>();
                 state
                     .wrapped()
                     .iter()
                     .zip(&frame)
-                    .filter(|(line, _)| line.added)
-                    .any(|(_, quad)| {
-                        layer.lines.iter().any(|line| {
-                            !anchors.contains(&line.anchor)
-                                && !line.text.trim().is_empty()
-                                && quads_overlap(quad, &line.quad(0., line.end_x))
-                        })
-                    })
+                    .filter(|(line, _)| !line.unchanged)
+                    .any(|(_, quad)| others.iter().any(|other| quads_overlap(quad, other)))
             });
             overlays.push(PageTextOverlay {
                 page_index: editing.page_index,
+                paragraphs: Vec::new(),
                 hover: Vec::new(),
                 frame,
                 frame_color: overlaps.then_some(warning),
                 selection,
                 caret,
                 marked: state.marked_segments(),
+                breaks: state.break_marks(),
+                wraps: state.wrap_marks(),
                 input: Some((input.clone(), input.read(cx).focus_handle(cx))),
             });
         }
@@ -1305,26 +1452,7 @@ impl DocumentWorkspace {
             && let Some((layer, blocks)) = self.page_text_blocks(document_id, hover.page_index, cx)
             && let Some(block) = blocks.iter().find(|block| block.lines[0] == hover.anchor)
         {
-            let mut quads = Vec::new();
-            for anchor in &block.lines {
-                let Some(line) = layer.line(anchor) else {
-                    continue;
-                };
-                let edit = self.page_text_line_edit(document_id, hover.page_index, *anchor, cx);
-                if let Some((x0, x1)) = visible_span(&layer, line, edit.as_ref()) {
-                    quads.push(line.quad(x0, x1));
-                }
-                for extra in edit.iter().flat_map(|edit| &edit.layout.extra_lines) {
-                    let base = extra_line_base(line, extra.below);
-                    if let Ok(layout) =
-                        layout_text_edit_fitted(&layer, &base, &extra.runs, extra.fit)
-                        && let (Some(first), Some(last)) =
-                            (layout.chars.first(), layout.chars.last())
-                    {
-                        quads.push(base.quad(first.x, last.x + last.advance));
-                    }
-                }
-            }
+            let quads = self.paragraph_line_quads(document_id, hover.page_index, &layer, block, cx);
             match overlays
                 .iter_mut()
                 .find(|overlay| overlay.page_index == hover.page_index)
@@ -1332,12 +1460,64 @@ impl DocumentWorkspace {
                 Some(overlay) => overlay.hover = quads,
                 None => overlays.push(PageTextOverlay {
                     page_index: hover.page_index,
+                    paragraphs: Vec::new(),
                     hover: quads,
                     frame: Vec::new(),
                     frame_color: None,
                     selection: Vec::new(),
                     caret: None,
                     marked: Vec::new(),
+                    breaks: Vec::new(),
+                    wraps: Vec::new(),
+                    input: None,
+                }),
+            }
+        }
+        // With Edit Text active, every paragraph on the visible pages is
+        // outlined faintly, except the one being edited.
+        let tool_active = self.annotation_tool(document_id, cx) == Some(AnnotationTool::EditText);
+        let visible = self
+            .session(document_id, cx)
+            .and_then(|session| {
+                session
+                    .read(cx)
+                    .viewer
+                    .plan_snapshot()
+                    .map(|plan| plan.visible_pages.to_vec())
+            })
+            .unwrap_or_default();
+        for page in visible.into_iter().filter(|_| tool_active) {
+            let Ok(page) = u32::try_from(page) else {
+                continue;
+            };
+            let Some(outlines) = self.page_paragraph_outlines(document_id, page, cx) else {
+                continue;
+            };
+            let paragraphs = outlines
+                .iter()
+                .filter(|(anchor, _)| {
+                    editing.is_none_or(|editing| {
+                        (editing.page_index, editing.anchor) != (page, *anchor)
+                    })
+                })
+                .flat_map(|(_, quads)| quads.iter().copied())
+                .collect::<Vec<_>>();
+            match overlays
+                .iter_mut()
+                .find(|overlay| overlay.page_index == page)
+            {
+                Some(overlay) => overlay.paragraphs = paragraphs,
+                None => overlays.push(PageTextOverlay {
+                    page_index: page,
+                    paragraphs,
+                    hover: Vec::new(),
+                    frame: Vec::new(),
+                    frame_color: None,
+                    selection: Vec::new(),
+                    caret: None,
+                    marked: Vec::new(),
+                    breaks: Vec::new(),
+                    wraps: Vec::new(),
                     input: None,
                 }),
             }
@@ -1345,6 +1525,9 @@ impl DocumentWorkspace {
         overlays
     }
 }
+
+/// How many pages either side of the visible ones keep their text.
+const KEPT_PAGES_AROUND_VIEW: i64 = 8;
 
 /// Whether two page-space quads' bounding boxes overlap.
 fn quads_overlap(a: &Quad, b: &Quad) -> bool {
@@ -1358,7 +1541,12 @@ fn quads_overlap(a: &Quad, b: &Quad) -> bool {
             ys.fold(f64::NEG_INFINITY, f64::max),
         )
     };
-    let (a, b) = (bounds(a), bounds(b));
+    // The middle of each box: tightly set lines' full boxes touch.
+    let core = |(x0, y0, x1, y1): (f64, f64, f64, f64)| {
+        let inset = (y1 - y0) * 0.25;
+        (x0, y0 + inset, x1, y1 - inset)
+    };
+    let (a, b) = (core(bounds(a)), core(bounds(b)));
     a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
 }
 
@@ -1422,6 +1610,9 @@ pub(super) fn page_text_overlay_element(
                         window.paint_path(path, color);
                     }
                 };
+                for quad in &painted.paragraphs {
+                    stroke_quad(quad, accent.opacity(0.35), window);
+                }
                 for quad in &painted.hover {
                     fill_quad(quad, accent.opacity(0.08), window);
                     stroke_quad(quad, accent.opacity(0.6), window);
@@ -1431,6 +1622,27 @@ pub(super) fn page_text_overlay_element(
                 }
                 for quad in &painted.selection {
                     fill_quad(quad, accent.opacity(0.3), window);
+                }
+                let mark_color = painted.frame_color.unwrap_or(accent);
+                let marks = painted
+                    .breaks
+                    .iter()
+                    .map(|stroke| (stroke, mark_color))
+                    .chain(
+                        painted
+                            .wraps
+                            .iter()
+                            .map(|stroke| (stroke, mark_color.opacity(0.45))),
+                    );
+                for (stroke, color) in marks {
+                    let mut builder = PathBuilder::stroke(px(1.));
+                    builder.move_to(project(stroke[0]));
+                    for point in &stroke[1..] {
+                        builder.line_to(project(*point));
+                    }
+                    if let Ok(path) = builder.build() {
+                        window.paint_path(path, color);
+                    }
                 }
                 for [start, end] in &painted.marked {
                     // Composing text is underlined, as in other text fields.

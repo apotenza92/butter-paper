@@ -39,6 +39,61 @@ fn prepare_pdfium_display_bytes(
     })
 }
 
+/// A copy of `source` to apply edits to, whose new objects take numbers the
+/// file has never used: its own cross-reference stream's, which the parser
+/// drops, included. An update reusing that number is ignored by PDFium.
+fn editable_copy(source: &PdfMetadataDocument) -> PdfMetadataDocument {
+    let mut copy = source.clone();
+    if let Ok(size) = copy.trailer.get(b"Size").and_then(lopdf::Object::as_i64)
+        && let Ok(size) = u32::try_from(size)
+    {
+        copy.max_id = copy.max_id.max(size.saturating_sub(1));
+    }
+    copy
+}
+
+/// `source_bytes` followed by an incremental update holding the objects
+/// `edited` adds to or changes in `source`. `None` when the source has no
+/// cross-reference to continue from, is still encrypted, or lost objects.
+fn incremental_update(
+    source: &PdfMetadataDocument,
+    source_bytes: &[u8],
+    edited: &PdfMetadataDocument,
+) -> Option<Vec<u8>> {
+    if source.xref_start == 0
+        || source.trailer.has(b"Encrypt")
+        || source
+            .objects
+            .keys()
+            .any(|id| !edited.objects.contains_key(id))
+    {
+        return None;
+    }
+    // The update needs only the source's trailer and cross-reference type,
+    // not its objects.
+    let mut previous = PdfMetadataDocument::new();
+    previous.version = source.version.clone();
+    previous.max_id = source.max_id;
+    previous.xref_start = source.xref_start;
+    previous.reference_table.cross_reference_type = source.reference_table.cross_reference_type;
+    previous.encryption_state = source.encryption_state.clone();
+    for key in [b"Root".as_slice(), b"Info", b"ID"] {
+        if let Ok(value) = source.trailer.get(key) {
+            previous.trailer.set(key, value.clone());
+        }
+    }
+    let mut update = lopdf::IncrementalDocument::create_from(source_bytes.to_vec(), previous);
+    for (id, object) in &edited.objects {
+        if source.objects.get(id) != Some(object) {
+            update.new_document.objects.insert(*id, object.clone());
+        }
+    }
+    update.new_document.max_id = edited.max_id;
+    let mut bytes = Vec::with_capacity(source_bytes.len() + 64 * 1024);
+    update.save_to(&mut bytes).ok()?;
+    Some(bytes)
+}
+
 struct PdfiumDocument {
     document: PdfDocument<'static>,
     /// The displayed document: the source with any page-text edits.
@@ -245,24 +300,32 @@ impl PdfBackend for PdfiumBackend {
         let (metadata, bytes) = if edits.is_empty() {
             (document.source.clone(), document.source_bytes.clone())
         } else {
-            let mut edited = document.source.clone();
+            let mut edited = editable_copy(&document.source);
             apply_text_edits(&mut edited, edits, &TextEditLimits::default())
                 .map_err(map_text_edit_error)?;
-            let mut bytes = Vec::with_capacity(document.source_bytes.len());
-            edited.save_to(&mut bytes).map_err(|error| {
-                WorkerError::with_detail(
-                    WorkerErrorCode::MalformedDocument,
-                    format!("edited PDF cannot be written: {error}"),
-                )
-            })?;
-            // Reparse so the display metadata matches what PDFium reads.
-            let edited = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
-                WorkerError::with_detail(
-                    WorkerErrorCode::MalformedDocument,
-                    format!("edited PDF cannot be read: {error}"),
-                )
-            })?;
-            (edited, bytes)
+            // Only the changed objects are written, after the source's
+            // bytes: a whole large file is not serialised for each edit.
+            if let Some(bytes) =
+                incremental_update(&document.source, &document.source_bytes, &edited)
+            {
+                (edited, bytes)
+            } else {
+                let mut bytes = Vec::with_capacity(document.source_bytes.len());
+                edited.save_to(&mut bytes).map_err(|error| {
+                    WorkerError::with_detail(
+                        WorkerErrorCode::MalformedDocument,
+                        format!("edited PDF cannot be written: {error}"),
+                    )
+                })?;
+                // Reparse so the display metadata matches what PDFium reads.
+                let edited = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
+                    WorkerError::with_detail(
+                        WorkerErrorCode::MalformedDocument,
+                        format!("edited PDF cannot be read: {error}"),
+                    )
+                })?;
+                (edited, bytes)
+            }
         };
         document.document =
             self.load_display_document(&metadata, bytes, document.password.as_deref())?;
@@ -581,7 +644,7 @@ mod tests {
     };
 
     /// The inherited-source id a worker receives for `file` on this platform.
-    fn source_handle(file: &File) -> SourceHandleId {
+    pub(super) fn source_handle(file: &File) -> SourceHandleId {
         #[cfg(unix)]
         let raw = std::os::fd::AsRawFd::as_raw_fd(file) as u64;
         #[cfg(windows)]
@@ -673,7 +736,9 @@ mod tests {
         );
     }
 
-    fn test_backend(library: &Path) -> (std::sync::MutexGuard<'static, ()>, PdfiumBackend) {
+    pub(super) fn test_backend(
+        library: &Path,
+    ) -> (std::sync::MutexGuard<'static, ()>, PdfiumBackend) {
         // The pinned supplier binds once per process. Serialize native calls and
         // reuse that exact binding across independently reported real-pixel tests.
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1198,6 +1263,161 @@ mod tests {
         }
     }
 
+    /// PDFium maps the crop box's top-left corner to the bitmap origin before
+    /// the request's matrix: a page whose boxes start away from (0, 0) needs
+    /// no offset in that matrix.
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn a_page_whose_box_starts_away_from_the_origin_renders_from_its_corner() {
+        use lopdf::{Document, Object, Stream, dictionary};
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        // A black square in the box's top-left corner, as a printed book's
+        // pages often start at (36, 45).
+        let content_id = document.add_object(Stream::new(
+            dictionary! {},
+            b"0 g 36 185 20 20 re f".to_vec(),
+        ));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![36.into(), 45.into(), 196.into(), 205.into()],
+            "CropBox" => vec![36.into(), 45.into(), 196.into(), 205.into()],
+            "Contents" => content_id,
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog_id =
+            document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        document.trailer.set("Root", catalog_id);
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        let path = env::temp_dir().join(format!("bp-offset-box-{}.pdf", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let request = retained_test_request(AnnotationRenderMode::None, 160);
+        let mut pixels = vec![0; request.surface.byte_len as usize];
+        backend
+            .render_crop(
+                &mut document,
+                &request,
+                &mut pixels,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let pixel = |x: usize, y: usize| pixels[(y * 160 + x) * 4];
+        assert!(
+            pixel(5, 5) < 64,
+            "the corner square is at the bitmap's corner"
+        );
+        assert!(pixel(40, 40) > 192, "and nowhere else");
+    }
+
+    /// A page drawing `text` in a TrueType subset embedded as Word does:
+    /// WinAnsi codes, no ToUnicode map.
+    fn truetype_subset_fixture(text: &str) -> Vec<u8> {
+        use lopdf::{Document, Object, Stream, dictionary};
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let program = include_bytes!("../../assets/fonts/Arimo-Regular.ttf").to_vec();
+        let file = document.add_object(Stream::new(dictionary! {}, program));
+        let descriptor = document.add_object(dictionary! {
+            "Type" => "FontDescriptor", "FontName" => "ABCDEF+Arimo", "Flags" => 32,
+            "Ascent" => 905, "Descent" => -212, "FontFile2" => file,
+        });
+        let font_id = document.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "TrueType", "BaseFont" => "ABCDEF+Arimo",
+            "Encoding" => "WinAnsiEncoding", "FirstChar" => 32, "LastChar" => 126,
+            "Widths" => (32..=126).map(|_| Object::Integer(556)).collect::<Vec<_>>(),
+            "FontDescriptor" => descriptor,
+        });
+        let content_id = document.add_object(Stream::new(
+            dictionary! {},
+            format!("BT /F1 24 Tf 10 60 Td ({text}) Tj ET").into_bytes(),
+        ));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 160.into(), 160.into()],
+            "Contents" => content_id,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font_id } },
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = document.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        document.trailer.set("Root", catalog_id);
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn text_typed_in_a_truetype_subset_draws_its_own_glyphs() {
+        use butter_paper::pdf_text_edit::TextEditRun;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let mut open = |text: &str| {
+            let path = env::temp_dir().join(format!(
+                "bp-truetype-subset-{}-{}.pdf",
+                std::process::id(),
+                text.len()
+            ));
+            std::fs::write(&path, truetype_subset_fixture(text)).unwrap();
+            let source = File::open(&path).unwrap();
+            let (document, _) = backend.open(source_handle(&source), None).unwrap();
+            std::fs::remove_file(path).unwrap();
+            document
+        };
+        let mut edited = open("Hi");
+        let mut expected = open("Hi Wow");
+        let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+            let request = retained_test_request(AnnotationRenderMode::RetainedOnly, 160);
+            let mut pixels = vec![0; request.surface.byte_len as usize];
+            backend
+                .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                .unwrap();
+            pixels
+        };
+        let layer = backend.page_text(&mut edited, 0).unwrap();
+        let line = &layer.lines[0];
+        let edit = PageTextEdit {
+            page_index: 0,
+            anchor: line.anchor,
+            original: line.original_runs(),
+            runs: vec![TextEditRun {
+                style: line.styles[0].clone(),
+                text: "Hi Wow".into(),
+            }],
+            layout: Default::default(),
+        };
+        backend
+            .set_text_edits(&mut edited, std::slice::from_ref(&edit))
+            .unwrap();
+        // Drawn with the subset's own glyphs, exactly as the source would be.
+        assert!(
+            render(&mut backend, &mut edited) == render(&mut backend, &mut expected),
+            "the typed text draws other glyphs"
+        );
+    }
+
     fn page_text_fixture() -> Vec<u8> {
         use lopdf::{Document, Object, Stream, dictionary};
         let mut document = Document::with_version("1.7");
@@ -1235,6 +1455,76 @@ mod tests {
         let mut bytes = Vec::new();
         document.save_to(&mut bytes).unwrap();
         bytes
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn text_edits_append_an_update_pdfium_and_lopdf_read() {
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, backend) = test_backend(Path::new(&library));
+        let table = page_text_fixture();
+        // The same page with a cross-reference stream and object streams.
+        let mut stream = Vec::new();
+        PdfMetadataDocument::load_mem(&table)
+            .unwrap()
+            .save_modern(&mut stream)
+            .unwrap();
+        for bytes in [table, stream] {
+            let source = PdfMetadataDocument::load_mem(&bytes).unwrap();
+            let layer = extract_page_text(&source, 0, &TextEditLimits::default()).unwrap();
+            let line = &layer.lines[0];
+            let mut runs = line.original_runs();
+            runs[0].text.push_str(" zqx");
+            let edit = PageTextEdit {
+                page_index: 0,
+                anchor: line.anchor,
+                original: line.original_runs(),
+                runs,
+                layout: Default::default(),
+            };
+            let mut edited = editable_copy(&source);
+            apply_text_edits(&mut edited, &[edit], &TextEditLimits::default()).unwrap();
+            // New objects never reuse a number the file used (the
+            // cross-reference stream's).
+            let size = source.trailer.get(b"Size").unwrap().as_i64().unwrap() as u32;
+            assert!(
+                edited
+                    .objects
+                    .keys()
+                    .filter(|id| !source.objects.contains_key(id))
+                    .all(|(number, _)| *number >= size)
+            );
+            let updated = incremental_update(&source, &bytes, &edited).expect("an update");
+            assert!(updated.starts_with(&bytes), "the source bytes are kept");
+            assert!(
+                updated.len() < bytes.len() + 2048,
+                "only changed objects follow"
+            );
+            let reread = PdfMetadataDocument::load_mem(&updated).unwrap();
+            assert_eq!(
+                extract_page_text(&reread, 0, &TextEditLimits::default())
+                    .unwrap()
+                    .lines[0]
+                    .text,
+                "Hello zqx"
+            );
+            let pdfium = backend
+                .pdfium
+                .load_pdf_from_byte_vec(updated, None)
+                .unwrap();
+            // Every character: the typed text runs past the small page.
+            let text = pdfium
+                .pages()
+                .get(0)
+                .unwrap()
+                .text()
+                .unwrap()
+                .chars()
+                .iter()
+                .filter_map(|character| character.unicode_char())
+                .collect::<String>();
+            assert!(text.contains("Hello zqx"), "{text:?}");
+        }
     }
 
     #[test]

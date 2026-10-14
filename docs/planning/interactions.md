@@ -107,7 +107,17 @@ time, as Acrobat does; it is a separate tool, not part of Select.
   one edge, with their wrapped lines at the items' text) is one paragraph.
   A paragraph that runs to the foot of a column without ending a sentence
   and continues at the top of the next column of the same width is one
-  paragraph over both. Hovering outlines the paragraph.
+  paragraph over both. With Edit Text active, every editable paragraph on
+  the visible pages is outlined faintly (not text outside the page's visible
+  area); hovering outlines one strongly. A page's text is read once the view
+  settles on it and dropped when the view moves far away, so scrolling a long
+  document never queues pages it passes.
+- A line is everything drawn on one baseline, however the producer split it
+  (Word draws each run in its own clip and graphics state, and its bullets a
+  tab before their text; a letter bullet such as Word's "o" counts when its
+  font differs from the item's). A line that ends where the next line's
+  first word would still fit in the text column ended at a hard break
+  (Shift+Enter, one entry per line); other lines wrap.
 - A click places the caret, dragging selects across its lines, a
   double-click selects a word, a triple-click the line and a quadruple-click
   the paragraph. Shift-click extends the selection.
@@ -115,17 +125,26 @@ time, as Acrobat does; it is a separate tool, not part of Select.
   underline, and the committed text replaces it.
 - Typing, Backspace/Delete (with Option/Ctrl for words), arrows, Up/Down
   between lines, Home/End (the line), Cut/Copy/Paste (line breaks kept) and
-  Select All work in the paragraph. Enter starts a new line; in a list it
+  Select All work in the paragraph. While editing, a return mark (↵) follows
+  each line that ends at a hard break, and a fainter wrap mark (⤵) each line
+  whose text continues on the next.
+  Enter starts a new line; in a list it
   starts the next item with the same bullet or the next number, and in an
   empty item it removes the item's marker, ending the list there. Numbers
   count on from the first item whenever items are added or removed. Undo and Redo
   step through the editing session while it is open.
 - The page shows the edited text as it will be saved: PDFium re-renders the
   page after each change while the previous tiles stay on screen. Text
-  rewraps at the paragraph's width from the changed line on, keeping its
+  rewraps at the paragraph's width (left-aligned text out to the text
+  column's edge, short of other text on the same baseline) from the changed
+  line on, keeping its
   alignment (justified lines stay justified); lines before the change, and
   lines the text wraps back onto, keep their bytes. A single line (a
-  heading, a label) grows instead of wrapping, as in Revu. A list item's
+  heading, a label) grows instead of wrapping, as in Revu, until it would
+  pass the page's edge (keeping the margin it has on its other side, up to
+  an em) or come within an em of other text on its baseline; there it
+  wraps. Text kept more than an em from text beside it still reads as its
+  own line once saved. A list item's
   wrapped lines start at the items' text, and its text after the marker
   starts there too. A paragraph over two columns wraps through the first
   column's lines into the next column's.
@@ -142,22 +161,25 @@ time, as Acrobat does; it is a separate tool, not part of Select.
   any installed font that has the character (in the line's weight and
   slant first). Only a character no available font draws is refused, with a
   status message.
-- While a paragraph is edited, the Edit Text properties show its font
+- The Edit Text properties open as other tools' do (a double-click on the
+  tool, or the properties button), never by editing text; without a
+  paragraph being edited they say to click text. While one is, they show its font
   (the document font, the bundled families or any installed family), size,
   bold, italic and colour, applied to the selection or, with none, the whole
   paragraph; and its alignment and line spacing (a multiple of the font
   size), applied to the paragraph. A note names any font drawing characters
   the chosen one lacks. Each change is a step of the session's undo; buttons,
-  the font list and Enter in a field return typing to the text. The X hides
-  the properties until another paragraph is edited.
+  the font list and Enter in a field return typing to the text. The X closes
+  them.
 - Escape, a click elsewhere, changing tool or document, saving and closing
   all finish editing. One finished paragraph edit is one undo step.
 - Text inside Form XObjects (stamped, imported or flattened content) edits
   like page text.
 - Text that cannot be edited (Type3 fonts, vertical text, CMaps other than
   Identity-H and Adobe's horizontal Unicode CMaps, invisible OCR text,
-  glyphs without Unicode, a form drawn more than once on the page, or a file
-  whose permissions forbid changing content) is shown with a not-allowed
+  glyphs without Unicode, right-to-left text, a form drawn more than once on
+  the page, or a file whose permissions forbid changing content) is shown
+  with a not-allowed
   cursor; a click explains why.
 - In a digitally signed PDF the first press asks "Edit text in a signed
   PDF?" (saving invalidates the signatures); Cancel leaves the text alone

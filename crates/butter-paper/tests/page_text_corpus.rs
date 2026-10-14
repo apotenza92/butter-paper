@@ -492,6 +492,140 @@ fn fallback_letters_embed_a_small_subset_that_later_edits_extend() {
     assert!(saved(&mut document).len() - before < 40_000);
 }
 
+/// Word embeds TrueType subsets with WinAnsi and no ToUnicode map: their
+/// program, not a map, says which characters new text can use.
+#[test]
+fn a_truetype_subset_without_a_unicode_map_encodes_the_glyphs_it_kept() {
+    let program = include_bytes!("../assets/fonts/Arimo-Regular.ttf").to_vec();
+    let mut document = Document::with_version("1.7");
+    let pages_id = document.new_object_id();
+    let file = document.add_object(Stream::new(Dictionary::new(), program));
+    let descriptor = document.add_object(dictionary! {
+        "Type" => "FontDescriptor", "FontName" => "ABCDEF+Arimo", "Flags" => 32,
+        "Ascent" => 905, "Descent" => -212, "FontFile2" => file,
+    });
+    let font = document.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "TrueType", "BaseFont" => "ABCDEF+Arimo",
+        "Encoding" => "WinAnsiEncoding", "FirstChar" => 32, "LastChar" => 126,
+        "Widths" => (32..=126).map(|_| Object::Integer(556)).collect::<Vec<_>>(),
+        "FontDescriptor" => descriptor,
+    });
+    let contents = document.add_object(Stream::new(
+        Dictionary::new(),
+        b"BT /F1 12 Tf 72 700 Td (Hello) Tj ET".to_vec(),
+    ));
+    let page_id = document.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Contents" => contents,
+        "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+    });
+    document.objects.insert(
+        pages_id,
+        Object::Dictionary(
+            dictionary! { "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1 },
+        ),
+    );
+    let catalog_id = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    document.trailer.set("Root", catalog_id);
+    let layer = layer(&reload(&mut document));
+    let fonts = &layer.fonts[0];
+    for character in ['H', 'W', 'd', ',', ' '] {
+        assert!(
+            fonts.advances.iter().any(|(drawn, _)| *drawn == character),
+            "{character:?} is not encodable"
+        );
+    }
+}
+
+/// A Type 1 program whose CharStrings has glyphs named `names`, eexec
+/// encrypted as a font file stores them.
+fn type1_program(names: &[&str]) -> Vec<u8> {
+    let mut private = b"dup /Private 8 dict dup begin /RD{string currentfile exch readstring pop}executeonly def end\n2 index /CharStrings ".to_vec();
+    private.extend(format!("{} dict dup begin\n", names.len()).bytes());
+    for name in names {
+        // A charstring's bytes are binary: include the bytes of a name.
+        let charstring = b"/x ND\x00\xff";
+        private.extend(format!("/{name} {} RD ", charstring.len()).bytes());
+        private.extend(charstring);
+        private.extend(b" ND\n");
+    }
+    private.extend(b"end\nend\nmark currentfile closefile\n");
+    let mut plain = b"\0\0\0\0".to_vec();
+    plain.extend(private);
+    let mut key: u16 = 55665;
+    let cipher = plain.iter().map(|&byte| {
+        let cipher = byte ^ (key >> 8) as u8;
+        key = u16::from(cipher)
+            .wrapping_add(key)
+            .wrapping_mul(52845)
+            .wrapping_add(22719);
+        cipher
+    });
+    let mut program =
+        b"%!PS-AdobeFont-1.0: ABCDEF+Sans\n/FontName /ABCDEF+Sans def\ncurrentfile eexec\n"
+            .to_vec();
+    program.extend(cipher);
+    program
+}
+
+#[test]
+fn a_type1_subset_encodes_only_the_glyphs_its_program_kept() {
+    // pdfTeX lists every letter in Differences, but the subset keeps the
+    // glyphs the page drew; another producer maps unused codes to .notdef.
+    let mut document = Document::with_version("1.7");
+    let pages_id = document.new_object_id();
+    let file = document.add_object(Stream::new(
+        Dictionary::new(),
+        type1_program(&[".notdef", "space", "H", "e", "l", "o", "x"]),
+    ));
+    let descriptor = document.add_object(dictionary! {
+        "Type" => "FontDescriptor", "FontName" => "ABCDEF+Sans", "Flags" => 32,
+        "Ascent" => 700, "Descent" => -200, "FontFile" => file,
+    });
+    let mut differences = vec![Object::Integer(32), "space".into()];
+    differences.push(Object::Integer(65));
+    differences.extend(('A'..='Z').map(|letter| Object::Name(vec![letter as u8])));
+    differences.push(Object::Integer(97));
+    differences.extend(('a'..='w').map(|letter| Object::Name(vec![letter as u8])));
+    differences.extend([".notdef".into(), ".notdef".into(), ".notdef".into()]);
+    let font = document.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "ABCDEF+Sans",
+        "FirstChar" => 32, "LastChar" => 126,
+        "Widths" => (32..=126).map(|_| Object::Integer(500)).collect::<Vec<_>>(),
+        "Encoding" => dictionary! { "Type" => "Encoding", "Differences" => differences },
+        "FontDescriptor" => descriptor,
+    });
+    let contents = document.add_object(Stream::new(
+        Dictionary::new(),
+        b"BT /F1 12 Tf 72 700 Td (Hello) Tj ET".to_vec(),
+    ));
+    let page_id = document.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Contents" => contents,
+        "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+    });
+    document.objects.insert(
+        pages_id,
+        Object::Dictionary(
+            dictionary! { "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1 },
+        ),
+    );
+    let catalog_id = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    document.trailer.set("Root", catalog_id);
+    let layer = layer(&reload(&mut document));
+    assert_eq!(layer.lines[0].text, "Hello");
+    let mut encodable = layer.fonts[0]
+        .advances
+        .iter()
+        .map(|(character, _)| *character)
+        .collect::<Vec<_>>();
+    encodable.sort_unstable();
+    // "x" is in the program but its code maps to .notdef.
+    assert_eq!(encodable, [' ', 'H', 'e', 'l', 'o']);
+}
+
 /// Each producer's paragraph blocks: alignment and the start of each line.
 #[test]
 fn producer_lines_group_into_their_paragraphs() {
@@ -673,6 +807,173 @@ mod paragraphs {
         let mut edited = document.clone();
         apply_text_edits(&mut edited, &edits, &TextEditLimits::default()).unwrap();
         layer(&reload(&mut edited))
+    }
+
+    /// Word's output: each run of a line in its own `q`, page-sized clip
+    /// and `BT`, a neutral `gs` before some, bullets a tab from their text,
+    /// Shift+Enter breaks, items spaced wider than their wrapped lines, and
+    /// a second-level "o" bullet in a font of its own.
+    fn word_like_page() -> Document {
+        // Courier: every character is 6 pt wide at 10 pt.
+        const CHAR: f64 = 6.;
+        fn piece(content: &mut String, font: &str, x: f64, y: f64, text: &str, gs: bool) {
+            content.push_str(&format!(
+                "q 0 0 612 792 re W* n BT /{font} 10 Tf 1 0 0 1 {x} {y} Tm {}0 g ({text}) Tj ET Q\n",
+                if gs { "/GS0 gs " } else { "" }
+            ));
+        }
+        // A line drawn as pieces split after `splits` characters.
+        fn line(content: &mut String, x: f64, y: f64, text: &str, splits: &[usize]) {
+            let mut start = 0;
+            for end in splits.iter().copied().chain([text.len()]) {
+                let x = x + start as f64 * CHAR;
+                piece(content, "F1", x, y, &text[start..end], start == 0);
+                start = end;
+            }
+        }
+        // A bullet (WinAnsi 0x95 or a letter, in Helvetica) a tab before
+        // its text.
+        fn item(content: &mut String, bullet: &str, x: f64, y: f64, text: &str) {
+            piece(content, "F3", x, y, bullet, false);
+            line(content, x + 18., y, text, &[]);
+        }
+        let mut content = String::new();
+        let c = &mut content;
+        line(
+            c,
+            72.,
+            700.,
+            "Alpha beta gamma delta epsilon zeta eta theta iota kappa",
+            &[11, 30],
+        );
+        line(
+            c,
+            72.,
+            688.,
+            "lambda mu nu xi omicron pi rho sigma tau upsilon phi chi",
+            &[20],
+        );
+        line(c, 72., 676., "psi omega.", &[4]);
+        // One paragraph of Shift+Enter lines.
+        line(c, 72., 640., "Strategy", &[]);
+        line(c, 72., 628., "Governance and reporting", &[10]);
+        line(c, 72., 616., "Testing", &[]);
+        item(
+            c,
+            "\\225",
+            90.,
+            580.,
+            "First item that is long enough to wrap onto the",
+        );
+        line(c, 108., 568., "second line.", &[]);
+        item(
+            c,
+            "\\225",
+            90.,
+            552.,
+            "Second item, spaced below the first.",
+        );
+        item(
+            c,
+            "o",
+            108.,
+            520.,
+            "Sub item drawn with a letter bullet that also",
+        );
+        line(c, 126., 508., "wraps.", &[]);
+        item(c, "o", 108., 496., "Another sub item.");
+        let font = |base: &str| -> Object {
+            dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base,
+                "Encoding" => "WinAnsiEncoding",
+            }
+            .into()
+        };
+        let mut document = Document::with_version("1.7");
+        let pages_id = document.new_object_id();
+        let f1 = document.add_object(font("Courier"));
+        let f3 = document.add_object(font("Helvetica"));
+        let contents = document.add_object(Stream::new(Dictionary::new(), content.into_bytes()));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Contents" => contents,
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => f1, "F3" => f3 },
+                "ExtGState" => dictionary! {
+                    "GS0" => dictionary! { "Type" => "ExtGState", "BM" => "Normal", "ca" => 1 },
+                },
+            },
+        });
+        document.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1,
+            }),
+        );
+        let catalog_id =
+            document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        document.trailer.set("Root", catalog_id);
+        reload(&mut document)
+    }
+
+    #[test]
+    fn word_pieces_join_into_lines_paragraphs_and_lists() {
+        let layer = Arc::new(layer(&word_like_page()));
+        let texts = layer
+            .lines
+            .iter()
+            .map(|line| line.text.trim_end().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            [
+                "Alpha beta gamma delta epsilon zeta eta theta iota kappa",
+                "lambda mu nu xi omicron pi rho sigma tau upsilon phi chi",
+                "psi omega.",
+                "Strategy",
+                "Governance and reporting",
+                "Testing",
+                "• First item that is long enough to wrap onto the",
+                "second line.",
+                "• Second item, spaced below the first.",
+                "o Sub item drawn with a letter bullet that also",
+                "wraps.",
+                "o Another sub item.",
+            ]
+        );
+        let paragraphs = paragraph_blocks(&layer)
+            .iter()
+            .map(|block| {
+                let paragraph = Paragraph::new(layer.clone(), block).unwrap();
+                let current = block
+                    .lines
+                    .iter()
+                    .map(|anchor| layer.line(anchor).unwrap().original_runs())
+                    .collect::<Vec<_>>();
+                normalise_lines(&joined(&paragraph.text(&current, &[])))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paragraphs,
+            [
+                "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
+                 omicron pi rho sigma tau upsilon phi chi psi omega.",
+                "Strategy\nGovernance and reporting\nTesting",
+                "• First item that is long enough to wrap onto the second line.\n\
+                 • Second item, spaced below the first.",
+                "o Sub item drawn with a letter bullet that also wraps.\no Another sub item.",
+            ]
+        );
+    }
+
+    /// `normalise` within each hard-broken line.
+    fn normalise_lines(text: &str) -> String {
+        text.split('\n')
+            .map(normalise)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn normalise(text: &str) -> String {
@@ -879,7 +1180,7 @@ mod paragraphs {
         let first_break = state.text().find('\n').unwrap();
         state.move_to(state.text()[..first_break].chars().count(), false);
         assert!(state.insert_newline());
-        assert!(state.insert("Weld inspection to the approved procedure for all site joints"));
+        assert!(state.insert("Weld inspection to the approved procedure for all site joints, recorded and signed off by the engineer before any coating is applied"));
         let text = state.text();
         let edits = state.edits();
 
@@ -926,12 +1227,20 @@ mod paragraphs {
             .collect::<Vec<_>>();
         // Four items; the new one wraps onto a line at the items' text.
         assert_eq!(items.len(), 5, "{items:?}");
-        assert_eq!(
-            items[1].trim(),
-            "• Weld inspection to the approved procedure for",
+        // It wraps at the text column, not the longest item.
+        assert!(
+            items[1].starts_with("• Weld inspection to the approved procedure for all site"),
             "{items:?}"
         );
-        assert_eq!(items[2].trim(), "all site joints", "{items:?}");
+        assert!(!items[2].starts_with('•'), "{items:?}");
+        assert_eq!(
+            format!("{} {}", items[1].trim(), items[2].trim()),
+            format!(
+                "• {}",
+                "Weld inspection to the approved procedure for all site joints, recorded and signed off by the engineer before any coating is applied"
+            ),
+            "{items:?}"
+        );
         assert_eq!(items.iter().filter(|item| item.starts_with('•')).count(), 4);
         let text_start = |anchor| {
             let line = after.line(anchor).unwrap();
@@ -1015,6 +1324,121 @@ mod paragraphs {
                 (320., 660.)
             ]
         );
+    }
+
+    /// The page's lines after typing `typed` at the end of the one-line
+    /// paragraph starting with `start`.
+    fn typed_after(document: &Document, start: &str, typed: &str) -> PageTextLayer {
+        let before = Arc::new(layer(document));
+        let block = paragraph_blocks(&before)
+            .into_iter()
+            .find(|block| {
+                before
+                    .line(&block.lines[0])
+                    .unwrap()
+                    .text
+                    .starts_with(start)
+            })
+            .unwrap();
+        let paragraph = Paragraph::new(before.clone(), &block).unwrap();
+        let mut text = paragraph.text(&[], &[]);
+        let style = text.last().unwrap().1.clone();
+        text.extend(typed.chars().map(|character| (character, style.clone())));
+        reflow(document, &paragraph, &text)
+    }
+
+    /// Where each line's last visible character ends on the page.
+    fn line_ends(layer: &PageTextLayer) -> Vec<(String, f64, f64)> {
+        layer
+            .lines
+            .iter()
+            .filter_map(|line| {
+                let last = line.chars.iter().rfind(|c| !c.character.is_whitespace())?;
+                let (x, y) = line.quad(last.x + last.advance, last.x + last.advance)[0];
+                Some((line.text.trim().to_owned(), x, y))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_growing_heading_wraps_before_the_page_edge() {
+        let document = built(
+            &[b"BT /F1 24 Tf 400 700 Td (Heading) Tj ET"],
+            Dictionary::new(),
+        );
+        let after = typed_after(&document, "Heading", " with several more words");
+        let ends = line_ends(&after);
+        let joined = ends
+            .iter()
+            .map(|(text, ..)| text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            normalise(&joined.join(" ")),
+            "Heading with several more words"
+        );
+        assert!(ends.len() > 1, "{ends:?}");
+        // The page is 612 wide; the heading keeps an em from the edge.
+        assert!(
+            ends.iter().all(|(_, x, _)| *x <= 612. - 24. + 0.5),
+            "{ends:?}"
+        );
+    }
+
+    #[test]
+    fn a_growing_label_stops_short_of_the_text_beside_it_on_a_flipped_page() {
+        // A y-down page (as some HTML printers write), drawn upright with a
+        // negative font size and horizontal scaling: "below" is towards the
+        // page's bottom all the same.
+        let document = built(
+            &[
+                b"1 0 0 -1 0 792 cm BT -100 Tz /F1 -12 Tf 72 100 Td (Label) Tj ET \
+                BT -100 Tz /F1 -12 Tf 200 100 Td (Beside) Tj ET",
+            ],
+            Dictionary::new(),
+        );
+        let before = line_ends(&layer(&document));
+        // Words drawn apart join into their line.
+        let words = built(
+            &[b"1 0 0 -1 0 792 cm BT -100 Tz /F1 -12 Tf 72 100 Td (Two) Tj 27 0 Td (words) Tj ET"],
+            Dictionary::new(),
+        );
+        assert_eq!(
+            layer(&words)
+                .lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Two words"]
+        );
+        let after = typed_after(&document, "Label", " grows into more words");
+        let ends = line_ends(&after);
+        assert!(
+            before.contains(
+                &ends
+                    .iter()
+                    .find(|(text, ..)| text == "Beside")
+                    .unwrap()
+                    .clone()
+            )
+        );
+        let label = ends
+            .iter()
+            .filter(|(text, ..)| text != "Beside")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            normalise(
+                &label
+                    .iter()
+                    .map(|(text, ..)| text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            "Label grows into more words"
+        );
+        assert!(label.iter().all(|(_, x, _)| *x < 200.), "{label:?}");
+        // Added lines go down the page: lower y in default user space.
+        let first_y = label[0].2;
+        assert!(label[1..].iter().all(|(_, _, y)| *y < first_y), "{label:?}");
     }
 
     #[test]

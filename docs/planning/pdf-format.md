@@ -147,7 +147,14 @@ and always applies to the unedited file.
   the line's other operators become text-matrix moves of their original
   width, so following content stays where it was.
 - New characters use the line's font when its program has the glyph
-  (ToUnicode, Differences, or a code learned from `/ActualText`). Others use
+  (ToUnicode, Differences, or a code learned from `/ActualText`; in a
+  TrueType subset without either, as Word writes, a code whose glyph the
+  program draws and the font gives a width, looked up by code when the font
+  is symbolic and by character otherwise). A Type 1 or CFF subset lists its
+  whole encoding (pdfTeX's Differences) but keeps only the glyphs it drew,
+  so a code counts only when the program has a glyph of its name; a code
+  mapped to `.notdef` never does. A subset with a ToUnicode map types only
+  the codes the map lists, as viewers read no other. Others use
   a bundled Type0 font (Identity-H with ToUnicode) added to the page's
   `/Resources /Font` as `BPEdit<n>`. Glyphs readable only through
   `/ActualText` are redrawn inside their own `/ActualText` span.
@@ -218,6 +225,22 @@ and always applies to the unedited file.
   end of the line, or beside other whitespace).
 - A span's `/ActualText` takes precedence over the font's ToUnicode, which
   some producers (LibreOffice) fill from a ligature's first use.
+- ToUnicode maps lopdf rejects (a bare word for the CMapName, AutoCAD's
+  bracketed values) are read directly. A glyph mapped to one character
+  outside the Basic Multilingual Plane repeated (Office's maths letters,
+  "𝑥𝑥" for 𝑥) reads as that character once, and a glyph mapped to a tab
+  reads as a space when the font maps nothing else to one.
+- The standard Symbol font, not embedded and without an `/Encoding`, reads
+  by its built-in encoding and Adobe's widths; its serif and sans ©, ® and
+  ™ read as those characters.
+- With a negative font size (y-down pages, with `-100 Tz`), added lines are
+  placed away from the glyphs' tops, down the page.
+- The worker previews edits as an incremental update: the file's bytes
+  followed by only the objects the edits change, in the file's own
+  cross-reference form. New objects are numbered from the file's `/Size`,
+  never reusing its cross-reference stream's number. It writes the whole file when the source has no
+  cross-reference to continue or is still encrypted. Saving writes the
+  whole file as before.
 - Saving checks every edited line in the reopened file. After a save the
   undo history is rebased onto the saved text.
 

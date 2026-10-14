@@ -14,7 +14,7 @@ use gpui::{
     KeyBinding, Pixels, UTF16Selection, Window, actions, point, px, size,
 };
 
-use crate::pdf_text_blocks::{ListMarker, item_marker};
+use crate::pdf_text_blocks::{ListMarker, item_marker, list_item_marker};
 use crate::pdf_text_edit::{
     ExtraLine, PageTextEdit, ParagraphFormat, TextEditError, TextEditRun, TextRunStyle,
 };
@@ -370,6 +370,65 @@ impl PageTextEditState {
             .collect()
     }
 
+    /// A return mark (↵) after each line that ends in a hard break, as
+    /// strokes in page space.
+    pub fn break_marks(&self) -> Vec<Vec<(f64, f64)>> {
+        self.line_end_marks(true, |at| {
+            vec![
+                vec![at(0.85, 0.7), at(0.85, 0.35), at(0.15, 0.35)],
+                vec![at(0.4, 0.5), at(0.15, 0.35), at(0.4, 0.2)],
+            ]
+        })
+    }
+
+    /// A wrap mark (⤵) after each line whose text continues on the next.
+    pub fn wrap_marks(&self) -> Vec<Vec<(f64, f64)>> {
+        self.line_end_marks(false, |at| {
+            vec![
+                vec![
+                    at(0.1, 0.75),
+                    at(0.35, 0.73),
+                    at(0.52, 0.62),
+                    at(0.6, 0.45),
+                    at(0.6, 0.2),
+                ],
+                vec![at(0.42, 0.36), at(0.6, 0.18), at(0.78, 0.36)],
+            ]
+        })
+    }
+
+    /// `strokes` in a unit square after the end of each line that ends in a
+    /// hard break (`hard`) or wraps into the next line.
+    fn line_end_marks(
+        &self,
+        hard: bool,
+        strokes: impl Fn(&dyn Fn(f64, f64) -> (f64, f64)) -> Vec<Vec<(f64, f64)>>,
+    ) -> Vec<Vec<(f64, f64)>> {
+        (0..self.wrapped.len())
+            .filter(|index| {
+                let broken = self.chars.get(self.wrapped[*index].range.end) == Some(&'\n');
+                if hard {
+                    broken
+                } else {
+                    !broken && index + 1 < self.wrapped.len()
+                }
+            })
+            .flat_map(|index| {
+                let line = &self.wrapped[index].line;
+                let height = (line.ascent - line.descent).abs();
+                let end = self.x_on(index, self.wrapped[index].range.end);
+                // Unit square from the box's bottom left to its top right.
+                let quad = self.quad_on(index, end + 0.15 * height, end + 0.65 * height);
+                let at = |u: f64, v: f64| {
+                    let bottom = lerp(quad[0], quad[1], u);
+                    let top = lerp(quad[3], quad[2], u);
+                    lerp(bottom, top, v)
+                };
+                strokes(&at)
+            })
+            .collect()
+    }
+
     /// The bounds of `range`, in page space, for the input method.
     pub fn range_quad(&self, range: Range<usize>) -> Option<PageQuad> {
         let line = self.line_of(range.start);
@@ -683,7 +742,9 @@ impl PageTextEditState {
             .iter()
             .rposition(|character| *character == '\n')
             .map_or(0, |index| index + 1);
-        let Some((marker, length)) = item_marker(&self.chars[item_start..]) else {
+        let list = self.paragraph().list();
+        let Some((marker, length)) = list_item_marker(&self.chars[item_start..], list.as_ref())
+        else {
             return self.replace(range, "\n");
         };
         let item_end = self.chars[item_start..]
@@ -1369,6 +1430,10 @@ impl EntityInputHandler for PageTextInput {
     }
 }
 
+fn lerp(a: (f64, f64), b: (f64, f64), t: f64) -> (f64, f64) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,6 +1507,7 @@ mod tests {
             page_index: 0,
             fonts: vec![font(b"F1"), font(b"F2")],
             lines,
+            page_box: None,
         })
     }
 
@@ -1490,6 +1556,65 @@ mod tests {
             .find(|character| !character.character.is_whitespace())
             .unwrap()
             .x
+    }
+
+    #[test]
+    fn a_line_that_wraps_shows_a_wrap_mark_not_a_return_mark() {
+        // Two lines of a wrapped paragraph: "beta" did not fit after "alpha".
+        let state = block_editor(
+            vec![
+                line("alpha alpha alpha", 600., usize::MAX),
+                line("beta", 586., usize::MAX),
+            ],
+            0,
+        );
+        assert_eq!(state.text(), "alpha alpha alpha beta");
+        assert!(state.break_marks().is_empty());
+        // One mark of two strokes, after the first line only.
+        let marks = state.wrap_marks();
+        assert_eq!(marks.len(), 2);
+        assert!(
+            marks[0].iter().all(|(_, y)| (598.0..610.).contains(y)),
+            "{marks:?}"
+        );
+    }
+
+    #[test]
+    fn lines_the_writer_broke_stay_broken_and_show_return_marks() {
+        // The wide line sets the text column; the three short lines below
+        // it are one paragraph of Shift+Enter lines.
+        let mut state = block_editor(
+            vec![
+                line("Strategy", 600., usize::MAX),
+                line("Governance", 586., usize::MAX),
+                line("Testing", 572., usize::MAX),
+                line(
+                    "A wide line that sets how far the text column reaches",
+                    700.,
+                    usize::MAX,
+                ),
+            ],
+            8,
+        );
+        assert_eq!(state.text(), "Strategy\nGovernance\nTesting");
+        // Two marks of two strokes each: after Strategy and Governance.
+        let marks = state.break_marks();
+        assert_eq!(marks.len(), 4);
+        assert!(state.wrap_marks().is_empty());
+        let after_strategy = marks[0].iter().map(|(x, _)| *x).fold(f64::MIN, f64::max);
+        assert!(after_strategy > 72. + 8. * 5., "{marks:?}");
+        assert!(
+            marks[0].iter().all(|(_, y)| (598.0..610.).contains(y)),
+            "{marks:?}"
+        );
+        state.replace(8..8, " and planning");
+        assert_eq!(state.text(), "Strategy and planning\nGovernance\nTesting");
+        let lines = state
+            .wrapped()
+            .iter()
+            .map(|line| state.text()[line.range.clone()].to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(lines, ["Strategy and planning", "Governance", "Testing"]);
     }
 
     fn single() -> PageTextEditState {

@@ -796,7 +796,6 @@ impl PdfiumWorkerResource {
         let job_id = JobId(self.next_job.fetch_add(1, Ordering::Relaxed));
         let pdf_scale_x = width as f32 / page_width * coordinate_space.user_unit() as f32;
         let pdf_scale_y = height as f32 / page_height * coordinate_space.user_unit() as f32;
-        let view_box = coordinate_space.view_box();
         let response = client
             .exchange(&WorkerRequest::RenderCrop {
                 request_id: self.request_id(),
@@ -805,14 +804,9 @@ impl PdfiumWorkerResource {
                     session_id: self.session_id,
                     page_index,
                     annotation_mode,
-                    transform: [
-                        pdf_scale_x,
-                        0.,
-                        0.,
-                        pdf_scale_y,
-                        -(view_box.x as f32) * pdf_scale_x,
-                        -(view_box.y as f32) * pdf_scale_y,
-                    ],
+                    // PDFium draws the crop box from the bitmap's corner
+                    // already; the box's origin needs no offset here.
+                    transform: [pdf_scale_x, 0., 0., pdf_scale_y, 0., 0.],
                     clip: ClipRect {
                         x: 0,
                         y: 0,
@@ -1084,7 +1078,6 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         }
         let pdf_scale_x = scale * coordinate_space.user_unit() as f32;
         let pdf_scale_y = scale * coordinate_space.user_unit() as f32;
-        let view_box = coordinate_space.view_box();
         let byte_len = u64::from(width) * u64::from(height) * 4;
         let surface_id = SurfaceId(self.next_surface.fetch_add(1, Ordering::Relaxed));
         let descriptor = SurfaceDescriptor {
@@ -1117,8 +1110,8 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                         0.,
                         0.,
                         pdf_scale_y,
-                        -(view_box.x as f32) * pdf_scale_x - request.crop.x as f32,
-                        -(view_box.y as f32) * pdf_scale_y - request.crop.y as f32,
+                        -(request.crop.x as f32),
+                        -(request.crop.y as f32),
                     ],
                     clip: ClipRect {
                         // The worker protocol defines the clip in output-surface

@@ -38,6 +38,12 @@ const SYNTHETIC_SPACE_GAP_EM: f64 = 0.15;
 /// Operators further apart than this (in ems) start a new line.
 const MAX_MERGE_GAP_EM: f64 = 1.0;
 const MIN_MERGE_GAP_EM: f64 = -0.3;
+/// The tallest a line's box reaches above and below its baseline.
+const MAX_ASCENT_EM: f64 = 1.1;
+const MAX_DESCENT_EM: f64 = 0.4;
+/// After a list marker (a bullet or `1.`), Word and others tab to the
+/// item's text.
+const MAX_MARKER_GAP_EM: f64 = 5.0;
 const BASELINE_TOLERANCE_EM: f64 = 0.1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -263,6 +269,9 @@ pub struct PageTextLayer {
     pub page_index: u32,
     pub fonts: Vec<TextFontMetrics>,
     pub lines: Vec<PageTextLine>,
+    /// The page's visible area (its crop box): left, bottom, right, top.
+    #[serde(default)]
+    pub page_box: Option<[f64; 4]>,
 }
 
 impl PageTextLayer {
@@ -684,6 +693,16 @@ pub fn layout_extra_line(
     )
 }
 
+/// The text-space y offset of a baseline `below` `line`'s: away from its
+/// glyphs' tops, which a negative font size turns upside down.
+fn text_y_below(line: &PageTextLine, below: f64) -> f64 {
+    let flipped = line
+        .styles
+        .first()
+        .is_some_and(|style| style.font_size < 0.);
+    if flipped { below } else { -below }
+}
+
 /// An empty line `below` `line`, in its text space and state, to lay out new
 /// text on.
 pub fn extra_line_base(line: &PageTextLine, below: f64) -> PageTextLine {
@@ -691,7 +710,7 @@ pub fn extra_line_base(line: &PageTextLine, below: f64) -> PageTextLine {
     base.text.clear();
     base.chars.clear();
     base.end_x = 0.;
-    base.matrix = multiply([1., 0., 0., 1., 0., -below], line.matrix);
+    base.matrix = multiply([1., 0., 0., 1., 0., text_y_below(line, below)], line.matrix);
     base.read_only = None;
     base
 }
@@ -951,9 +970,57 @@ enum Operand {
     Other,
 }
 
-#[derive(Clone, Debug)]
+/// A content operator's name, held inline: operators are a few bytes.
+#[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
+struct Operator {
+    bytes: [u8; 15],
+    len: u8,
+}
+
+impl Operator {
+    /// `word`, or an unknown operator when longer than any PDF operator.
+    fn new(word: &[u8]) -> Self {
+        let mut bytes = [0; 15];
+        let word = if word.len() <= bytes.len() {
+            word
+        } else {
+            b"?"
+        };
+        bytes[..word.len()].copy_from_slice(word);
+        Self {
+            bytes,
+            len: word.len() as u8,
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}
+
+impl std::ops::Deref for Operator {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for Operator {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl fmt::Debug for Operator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{:?}", String::from_utf8_lossy(self.as_slice()))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 struct ContentOp {
-    operator: Vec<u8>,
+    operator: Operator,
     operands: Vec<Operand>,
     /// Byte range of operands and operator in `stream`.
     stream: usize,
@@ -980,7 +1047,7 @@ fn is_regular(byte: u8) -> bool {
 
 enum Token {
     Operand(Operand),
-    Operator(Vec<u8>),
+    Operator(Operator),
     ArrayEnd,
     DictEnd,
 }
@@ -1121,7 +1188,7 @@ impl<'a> Lexer<'a> {
                 let word = &self.bytes[start..self.position];
                 match parse_number(word) {
                     Some(number) => Token::Operand(Operand::Number(number)),
-                    None => Token::Operator(word.to_vec()),
+                    None => Token::Operator(Operator::new(word)),
                 }
             }
         };
@@ -1240,8 +1307,44 @@ impl<'a> Lexer<'a> {
 }
 
 fn parse_number(word: &[u8]) -> Option<f64> {
-    let text = std::str::from_utf8(word).ok()?;
     let first = *word.first()?;
+    if !(first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.')) {
+        return None;
+    }
+    // Most numbers are short decimals: read them directly.
+    if word.len() <= 15 {
+        let (negative, digits) = match first {
+            b'-' => (true, &word[1..]),
+            b'+' => (false, &word[1..]),
+            _ => (false, word),
+        };
+        let mut whole = 0u64;
+        let mut fraction_digits = None;
+        let mut simple = !digits.is_empty();
+        for &byte in digits {
+            match byte {
+                b'0'..=b'9' => {
+                    whole = whole * 10 + u64::from(byte - b'0');
+                    if let Some(count) = fraction_digits.as_mut() {
+                        *count += 1;
+                    }
+                }
+                b'.' if fraction_digits.is_none() => fraction_digits = Some(0),
+                _ => {
+                    simple = false;
+                    break;
+                }
+            }
+        }
+        if simple {
+            const SCALE: [f64; 16] = [
+                1., 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+            ];
+            let value = whole as f64 / SCALE[fraction_digits.unwrap_or(0)];
+            return Some(if negative { -value } else { value });
+        }
+    }
+    let text = std::str::from_utf8(word).ok()?;
     if !(first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.')) {
         return None;
     }
@@ -1546,13 +1649,7 @@ fn embedded_font_style(
                 .as_stream()
                 .ok()
         })?;
-    let bytes = if program.dict.get(b"Filter").is_ok() {
-        program
-            .decompressed_content_with_limit(MAX_FONT_PROGRAM_BYTES)
-            .ok()?
-    } else {
-        program.content.clone()
-    };
+    let bytes = decoded_cached(program, MAX_FONT_PROGRAM_BYTES).ok()?;
     let face = ttf_parser::RawFace::parse(&bytes, 0).ok()?;
     let os2 = face.table(ttf_parser::Tag::from_bytes(b"OS/2"))?;
     let weight = u16::from_be_bytes([*os2.get(4)?, *os2.get(5)?]);
@@ -1717,39 +1814,213 @@ fn to_unicode_map(
         "Type" => "Font",
         "ToUnicode" => to_unicode.clone(),
     };
-    let Ok(lopdf::Encoding::UnicodeMapEncoding(cmap)) =
+    let mut entries = Vec::new();
+    if let Ok(lopdf::Encoding::UnicodeMapEncoding(cmap)) =
         probe.get_font_encoding_with_limit(document, limits.max_decoded_bytes_per_page)
-    else {
-        return Ok(HashMap::new());
-    };
-    let mut map = HashMap::new();
-    let ranges = &cmap.bf_ranges[code_length - 1];
-    for (range, _) in ranges.iter() {
-        let mut code = *range.start();
-        loop {
-            if map.len() >= limits.max_cmap_entries {
-                return Ok(map);
-            }
-            if let Some(units) = cmap.get(code, code_length as u8) {
-                let text = char::decode_utf16(units)
-                    .collect::<Result<String, _>>()
-                    .unwrap_or_default();
-                if !text.is_empty() && !text.contains('\u{fffd}') {
-                    map.insert(code, text);
+    {
+        let ranges = &cmap.bf_ranges[code_length - 1];
+        'ranges: for (range, _) in ranges.iter() {
+            let mut code = *range.start();
+            loop {
+                if entries.len() >= limits.max_cmap_entries {
+                    break 'ranges;
                 }
+                if let Some(units) = cmap.get(code, code_length as u8) {
+                    entries.push((code, units));
+                }
+                if code == *range.end() {
+                    break;
+                }
+                code += 1;
             }
-            if code == *range.end() {
-                break;
-            }
-            code += 1;
+        }
+    }
+    // lopdf rejects some producers' maps outright (a bare word for the
+    // CMapName): read their mappings directly.
+    if entries.is_empty()
+        && let Ok(stream) = resolve(document, to_unicode).and_then(|object| {
+            object
+                .as_stream()
+                .map_err(|error| TextEditError::Malformed(error.to_string()))
+        })
+    {
+        let bytes = if stream.dict.get(b"Filter").is_ok() {
+            stream
+                .decompressed_content_with_limit(limits.max_decoded_bytes_per_page)
+                .unwrap_or_default()
+        } else {
+            stream.content.clone()
+        };
+        entries = parse_to_unicode(&bytes, code_length, limits.max_cmap_entries);
+    }
+    let mut map = HashMap::new();
+    for (code, units) in entries {
+        let mut text = char::decode_utf16(units)
+            .collect::<Result<String, _>>()
+            .unwrap_or_default();
+        // Office maps each maths letter to it twice ("𝑥𝑥" for 𝑥): a
+        // glyph is one character outside the Basic Multilingual
+        // Plane, never a repeat of one.
+        let mut characters = text.chars();
+        if let Some(first) = characters.next()
+            && u32::from(first) > 0xFFFF
+            && characters.all(|character| character == first)
+        {
+            text = first.to_string();
+        }
+        if !text.is_empty() && !text.contains('\u{fffd}') {
+            map.insert(code, text);
+        }
+    }
+    // A glyph mapped to a tab is a space (LibreOffice's exports): PDF text
+    // has no tab stops.
+    if !map.values().any(|text| text == " ") {
+        for text in map.values_mut().filter(|text| *text == "\t") {
+            *text = " ".into();
         }
     }
     Ok(map)
 }
 
+/// The `bfchar` and `bfrange` mappings of a ToUnicode CMap for codes of
+/// `code_length` bytes, as UTF-16.
+fn parse_to_unicode(bytes: &[u8], code_length: usize, max: usize) -> Vec<(u32, Vec<u16>)> {
+    enum Token {
+        Hex(Vec<u8>),
+        Open,
+        Close,
+        Word(Vec<u8>),
+    }
+    let mut tokens = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'%' => {
+                while at < bytes.len() && !matches!(bytes[at], b'\r' | b'\n') {
+                    at += 1;
+                }
+            }
+            // Dictionary brackets.
+            b'<' if bytes.get(at + 1) == Some(&b'<') => at += 2,
+            b'>' => at += 1,
+            b'<' => {
+                let end = bytes[at..]
+                    .iter()
+                    .position(|byte| *byte == b'>')
+                    .map_or(bytes.len(), |offset| at + offset);
+                let digits = bytes[at + 1..end]
+                    .iter()
+                    .filter_map(|byte| (*byte as char).to_digit(16))
+                    .map(|digit| digit as u8)
+                    .collect::<Vec<_>>();
+                let mut hex = digits
+                    .chunks(2)
+                    .map(|pair| pair[0] << 4 | pair.get(1).copied().unwrap_or(0))
+                    .collect::<Vec<_>>();
+                hex.truncate(digits.len().div_ceil(2));
+                tokens.push(Token::Hex(hex));
+                at = end + 1;
+            }
+            b'[' => {
+                tokens.push(Token::Open);
+                at += 1;
+            }
+            b']' => {
+                tokens.push(Token::Close);
+                at += 1;
+            }
+            byte if byte.is_ascii_whitespace() => at += 1,
+            _ => {
+                let start = at;
+                while at < bytes.len()
+                    && !bytes[at].is_ascii_whitespace()
+                    && !matches!(bytes[at], b'<' | b'>' | b'[' | b']' | b'%' | b'(' | b'/')
+                    || at == start
+                {
+                    at += 1;
+                }
+                tokens.push(Token::Word(bytes[start..at].to_vec()));
+            }
+        }
+    }
+    let number = |hex: &[u8]| {
+        hex.iter()
+            .fold(0u32, |value, byte| value << 8 | u32::from(*byte))
+    };
+    let units = |hex: &[u8]| {
+        hex.chunks(2)
+            .map(|pair| u16::from(pair[0]) << 8 | u16::from(pair.get(1).copied().unwrap_or(0)))
+            .collect::<Vec<_>>()
+    };
+    let mut entries = Vec::new();
+    let mut index = 0;
+    let mut section = None;
+    while index < tokens.len() && entries.len() < max {
+        match (&tokens[index], section) {
+            (Token::Word(word), _) if word == b"beginbfchar" => section = Some(false),
+            (Token::Word(word), _) if word == b"beginbfrange" => section = Some(true),
+            (Token::Word(word), _) if word.starts_with(b"end") => section = None,
+            (Token::Hex(source), Some(false)) => {
+                if let Some(Token::Hex(destination)) = tokens.get(index + 1) {
+                    if source.len() == code_length {
+                        entries.push((number(source), units(destination)));
+                    }
+                    index += 1;
+                }
+            }
+            (Token::Hex(low), Some(true)) => {
+                let Some(Token::Hex(high)) = tokens.get(index + 1) else {
+                    index += 1;
+                    continue;
+                };
+                let (low_code, high_code) = (number(low), number(high));
+                let in_range = low.len() == code_length && low_code <= high_code;
+                match tokens.get(index + 2) {
+                    Some(Token::Hex(destination)) => {
+                        let base = units(destination);
+                        if in_range && let Some(last) = base.last().copied() {
+                            for (offset, code) in (low_code..=high_code).enumerate() {
+                                if entries.len() >= max {
+                                    break;
+                                }
+                                let mut text = base.clone();
+                                *text.last_mut().expect("not empty") =
+                                    last.wrapping_add(offset as u16);
+                                entries.push((code, text));
+                            }
+                        }
+                        index += 2;
+                    }
+                    Some(Token::Open) => {
+                        let mut code = low_code;
+                        index += 3;
+                        while let Some(Token::Hex(destination)) = tokens.get(index) {
+                            if in_range && code <= high_code && entries.len() < max {
+                                entries.push((code, units(destination)));
+                            }
+                            code += 1;
+                            index += 1;
+                        }
+                    }
+                    _ => index += 1,
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    entries
+}
+
 /// Codes listed explicitly in an `/Encoding /Differences` array.
 fn difference_codes(document: &Document, font: &Dictionary) -> BTreeSet<u32> {
-    let mut codes = BTreeSet::new();
+    difference_names(document, font).into_keys().collect()
+}
+
+/// The glyph name a simple font's Differences give each code, but
+/// `.notdef`.
+fn difference_names(document: &Document, font: &Dictionary) -> BTreeMap<u32, Vec<u8>> {
+    let mut codes = BTreeMap::new();
     let Some(encoding) = get_dict(document, font, b"Encoding") else {
         return codes;
     };
@@ -1765,9 +2036,12 @@ fn difference_codes(document: &Document, font: &Dictionary) -> BTreeSet<u32> {
     for item in differences {
         match resolve(document, item) {
             Ok(Object::Integer(start)) => code = *start,
-            Ok(Object::Name(_)) => {
-                if let Ok(value) = u32::try_from(code) {
-                    codes.insert(value);
+            Ok(Object::Name(name)) => {
+                // `.notdef` is the absence of a glyph.
+                if let Ok(value) = u32::try_from(code)
+                    && name != b".notdef"
+                {
+                    codes.insert(value, name.clone());
                 }
                 code += 1;
             }
@@ -1841,7 +2115,7 @@ fn try_load_font(
 }
 
 /// A descriptor's embedded font program, decompressed.
-fn font_program(document: &Document, descriptor: &Dictionary) -> Option<Vec<u8>> {
+fn font_program(document: &Document, descriptor: &Dictionary) -> Option<std::sync::Arc<[u8]>> {
     const MAX_FONT_PROGRAM_BYTES: usize = 32 * 1024 * 1024;
     let program = [b"FontFile2".as_slice(), b"FontFile3", b"FontFile"]
         .iter()
@@ -1851,13 +2125,270 @@ fn font_program(document: &Document, descriptor: &Dictionary) -> Option<Vec<u8>>
                 .as_stream()
                 .ok()
         })?;
-    if program.dict.get(b"Filter").is_ok() {
-        program
-            .decompressed_content_with_limit(MAX_FONT_PROGRAM_BYTES)
-            .ok()
-    } else {
-        Some(program.content.clone())
+    decoded_cached(program, MAX_FONT_PROGRAM_BYTES).ok()
+}
+
+/// The codes of `decode` whose glyph a TrueType program draws, looked up as
+/// a viewer does: a symbolic font's by code, another's by character.
+/// Whitespace needs no outline.
+fn program_codes(program: &[u8], decode: &HashMap<u32, String>, symbolic: bool) -> BTreeSet<u32> {
+    struct Any(bool);
+    impl ttf_parser::OutlineBuilder for Any {
+        fn move_to(&mut self, _: f32, _: f32) {
+            self.0 = true;
+        }
+        fn line_to(&mut self, _: f32, _: f32) {}
+        fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {}
+        fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {}
+        fn close(&mut self) {}
     }
+    let Ok(face) = ttf_parser::Face::parse(program, 0) else {
+        return BTreeSet::new();
+    };
+    let symbolic_font = symbolic;
+    let symbolic = |code: u32| {
+        face.tables()
+            .cmap?
+            .subtables
+            .into_iter()
+            .find_map(
+                |subtable| match (subtable.platform_id, subtable.encoding_id) {
+                    (ttf_parser::PlatformId::Windows, 0) => subtable.glyph_index(0xF000 + code),
+                    (ttf_parser::PlatformId::Macintosh, 0) => subtable.glyph_index(code),
+                    _ => None,
+                },
+            )
+    };
+    decode
+        .iter()
+        .filter(|(code, text)| {
+            let mut characters = text.chars();
+            let (Some(character), None) = (characters.next(), characters.next()) else {
+                return false;
+            };
+            let glyph = if symbolic_font {
+                symbolic(**code)
+            } else {
+                face.glyph_index(character)
+            };
+            let Some(glyph) = glyph.filter(|glyph| glyph.0 != 0) else {
+                return false;
+            };
+            character.is_whitespace() || {
+                let mut any = Any(false);
+                face.outline_glyph(glyph, &mut any);
+                any.0
+            }
+        })
+        .map(|(code, _)| *code)
+        .collect()
+}
+
+/// The glyph names a Type 1 or CFF program has; `None` for another kind
+/// of program.
+fn program_glyph_names(program: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
+    let names = if let Some(table) = ttf_parser::cff::Table::parse(program) {
+        (0..table.number_of_glyphs())
+            .filter_map(|glyph| table.glyph_name(ttf_parser::GlyphId(glyph)))
+            .map(|name| name.as_bytes().to_vec())
+            .collect()
+    } else {
+        type1_glyph_names(program)?
+    };
+    Some(names)
+}
+
+/// The names a font may give `character`'s glyph: the standard Latin
+/// names of printable ASCII.
+fn ascii_glyph_names(character: char) -> &'static [&'static str] {
+    const NAMES: [&[&str]; 95] = [
+        &["space"],
+        &["exclam"],
+        &["quotedbl"],
+        &["numbersign"],
+        &["dollar"],
+        &["percent"],
+        &["ampersand"],
+        &["quotesingle", "quoteright"],
+        &["parenleft"],
+        &["parenright"],
+        &["asterisk"],
+        &["plus"],
+        &["comma"],
+        &["hyphen", "minus"],
+        &["period"],
+        &["slash"],
+        &["zero"],
+        &["one"],
+        &["two"],
+        &["three"],
+        &["four"],
+        &["five"],
+        &["six"],
+        &["seven"],
+        &["eight"],
+        &["nine"],
+        &["colon"],
+        &["semicolon"],
+        &["less"],
+        &["equal"],
+        &["greater"],
+        &["question"],
+        &["at"],
+        &["A"],
+        &["B"],
+        &["C"],
+        &["D"],
+        &["E"],
+        &["F"],
+        &["G"],
+        &["H"],
+        &["I"],
+        &["J"],
+        &["K"],
+        &["L"],
+        &["M"],
+        &["N"],
+        &["O"],
+        &["P"],
+        &["Q"],
+        &["R"],
+        &["S"],
+        &["T"],
+        &["U"],
+        &["V"],
+        &["W"],
+        &["X"],
+        &["Y"],
+        &["Z"],
+        &["bracketleft"],
+        &["backslash"],
+        &["bracketright"],
+        &["asciicircum"],
+        &["underscore"],
+        &["grave", "quoteleft"],
+        &["a"],
+        &["b"],
+        &["c"],
+        &["d"],
+        &["e"],
+        &["f"],
+        &["g"],
+        &["h"],
+        &["i"],
+        &["j"],
+        &["k"],
+        &["l"],
+        &["m"],
+        &["n"],
+        &["o"],
+        &["p"],
+        &["q"],
+        &["r"],
+        &["s"],
+        &["t"],
+        &["u"],
+        &["v"],
+        &["w"],
+        &["x"],
+        &["y"],
+        &["z"],
+        &["braceleft"],
+        &["bar"],
+        &["braceright"],
+        &["asciitilde"],
+    ];
+    match character {
+        ' '..='~' => NAMES[character as usize - 32],
+        _ => &[],
+    }
+}
+
+/// The glyph names in a Type 1 program's encrypted CharStrings.
+fn type1_glyph_names(program: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
+    let find = |haystack: &[u8], needle: &[u8]| {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+    };
+    let mut rest = &program[find(program, b"eexec")? + 5..];
+    while let [first, tail @ ..] = rest
+        && first.is_ascii_whitespace()
+    {
+        rest = tail;
+    }
+    // The encrypted part is binary, or hexadecimal text.
+    let cipher = if rest.len() >= 4 && rest[..4].iter().all(u8::is_ascii_hexdigit) {
+        let digits = rest
+            .iter()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .take_while(|byte| byte.is_ascii_hexdigit())
+            .map(|byte| (*byte as char).to_digit(16).unwrap_or(0) as u8)
+            .collect::<Vec<_>>();
+        digits
+            .chunks_exact(2)
+            .map(|pair| pair[0] << 4 | pair[1])
+            .collect()
+    } else {
+        rest.to_vec()
+    };
+    let mut key: u16 = 55665;
+    let plain = cipher
+        .iter()
+        .map(|&byte| {
+            let plain = byte ^ (key >> 8) as u8;
+            key = (u16::from(byte).wrapping_add(key))
+                .wrapping_mul(52845)
+                .wrapping_add(22719);
+            plain
+        })
+        .collect::<Vec<_>>();
+    let start = find(&plain, b"/CharStrings")?;
+    let mut at = start + find(&plain[start..], b"begin")? + 5;
+    let skip_space = |at: &mut usize| {
+        while plain.get(*at).is_some_and(u8::is_ascii_whitespace) {
+            *at += 1;
+        }
+    };
+    let token = |at: &mut usize| {
+        let start = *at;
+        while plain
+            .get(*at)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && (*at == start || *byte != b'/'))
+        {
+            *at += 1;
+        }
+        &plain[start..*at]
+    };
+    let mut names = BTreeSet::new();
+    loop {
+        skip_space(&mut at);
+        if plain.get(at) != Some(&b'/') {
+            break;
+        }
+        let name = token(&mut at);
+        names.insert(name[1..].to_vec());
+        skip_space(&mut at);
+        let length = std::str::from_utf8(token(&mut at))
+            .ok()?
+            .parse::<usize>()
+            .ok()?;
+        skip_space(&mut at);
+        token(&mut at); // RD or -|
+        at += 1 + length;
+        // ND, |- or "noaccess def" up to the next name.
+        loop {
+            skip_space(&mut at);
+            match plain.get(at) {
+                Some(b'/') | None => break,
+                _ if plain[at..].starts_with(b"end") => break,
+                _ => {
+                    token(&mut at);
+                }
+            }
+        }
+    }
+    Some(names)
 }
 
 /// Whether a font program's letters have serifs, judged by the outline of
@@ -1948,6 +2479,68 @@ fn is_embedded(document: &Document, descriptor: Option<&Dictionary>) -> bool {
     })
 }
 
+/// The standard Symbol font's built-in encoding: each code's width
+/// (Adobe's metrics) and character. Its serif and sans ©, ® and ™ read as
+/// those characters; its bracket and integral pieces keep Adobe's private
+/// code points.
+#[rustfmt::skip]
+const SYMBOL: [(u8, u16, char); 189] = [
+    (32, 250, '\u{20}'), (33, 333, '\u{21}'), (34, 713, '\u{2200}'), (35, 500, '\u{23}'),
+    (36, 549, '\u{2203}'), (37, 833, '\u{25}'), (38, 778, '\u{26}'), (39, 439, '\u{220b}'),
+    (40, 333, '\u{28}'), (41, 333, '\u{29}'), (42, 500, '\u{2217}'), (43, 549, '\u{2b}'),
+    (44, 250, '\u{2c}'), (45, 549, '\u{2212}'), (46, 250, '\u{2e}'), (47, 278, '\u{2f}'),
+    (48, 500, '\u{30}'), (49, 500, '\u{31}'), (50, 500, '\u{32}'), (51, 500, '\u{33}'),
+    (52, 500, '\u{34}'), (53, 500, '\u{35}'), (54, 500, '\u{36}'), (55, 500, '\u{37}'),
+    (56, 500, '\u{38}'), (57, 500, '\u{39}'), (58, 278, '\u{3a}'), (59, 278, '\u{3b}'),
+    (60, 549, '\u{3c}'), (61, 549, '\u{3d}'), (62, 549, '\u{3e}'), (63, 444, '\u{3f}'),
+    (64, 549, '\u{2245}'), (65, 722, '\u{391}'), (66, 667, '\u{392}'), (67, 722, '\u{3a7}'),
+    (68, 612, '\u{394}'), (69, 611, '\u{395}'), (70, 763, '\u{3a6}'), (71, 603, '\u{393}'),
+    (72, 722, '\u{397}'), (73, 333, '\u{399}'), (74, 631, '\u{3d1}'), (75, 722, '\u{39a}'),
+    (76, 686, '\u{39b}'), (77, 889, '\u{39c}'), (78, 722, '\u{39d}'), (79, 722, '\u{39f}'),
+    (80, 768, '\u{3a0}'), (81, 741, '\u{398}'), (82, 556, '\u{3a1}'), (83, 592, '\u{3a3}'),
+    (84, 611, '\u{3a4}'), (85, 690, '\u{3a5}'), (86, 439, '\u{3c2}'), (87, 768, '\u{3a9}'),
+    (88, 645, '\u{39e}'), (89, 795, '\u{3a8}'), (90, 611, '\u{396}'), (91, 333, '\u{5b}'),
+    (92, 863, '\u{2234}'), (93, 333, '\u{5d}'), (94, 658, '\u{22a5}'), (95, 500, '\u{5f}'),
+    (96, 500, '\u{f8e5}'), (97, 631, '\u{3b1}'), (98, 549, '\u{3b2}'), (99, 549, '\u{3c7}'),
+    (100, 494, '\u{3b4}'), (101, 439, '\u{3b5}'), (102, 521, '\u{3c6}'), (103, 411, '\u{3b3}'),
+    (104, 603, '\u{3b7}'), (105, 329, '\u{3b9}'), (106, 603, '\u{3d5}'), (107, 549, '\u{3ba}'),
+    (108, 549, '\u{3bb}'), (109, 576, '\u{3bc}'), (110, 521, '\u{3bd}'), (111, 549, '\u{3bf}'),
+    (112, 549, '\u{3c0}'), (113, 521, '\u{3b8}'), (114, 549, '\u{3c1}'), (115, 603, '\u{3c3}'),
+    (116, 439, '\u{3c4}'), (117, 576, '\u{3c5}'), (118, 713, '\u{3d6}'), (119, 686, '\u{3c9}'),
+    (120, 493, '\u{3be}'), (121, 686, '\u{3c8}'), (122, 494, '\u{3b6}'), (123, 480, '\u{7b}'),
+    (124, 200, '\u{7c}'), (125, 480, '\u{7d}'), (126, 549, '\u{223c}'), (160, 750, '\u{20ac}'),
+    (161, 620, '\u{3d2}'), (162, 247, '\u{2032}'), (163, 549, '\u{2264}'),
+    (164, 167, '\u{2044}'), (165, 713, '\u{221e}'), (166, 500, '\u{192}'),
+    (167, 753, '\u{2663}'), (168, 753, '\u{2666}'), (169, 753, '\u{2665}'),
+    (170, 753, '\u{2660}'), (171, 1042, '\u{2194}'), (172, 987, '\u{2190}'),
+    (173, 603, '\u{2191}'), (174, 987, '\u{2192}'), (175, 603, '\u{2193}'),
+    (176, 400, '\u{b0}'), (177, 549, '\u{b1}'), (178, 411, '\u{2033}'), (179, 549, '\u{2265}'),
+    (180, 549, '\u{d7}'), (181, 713, '\u{221d}'), (182, 494, '\u{2202}'),
+    (183, 460, '\u{2022}'), (184, 549, '\u{f7}'), (185, 549, '\u{2260}'),
+    (186, 549, '\u{2261}'), (187, 549, '\u{2248}'), (188, 1000, '\u{2026}'),
+    (189, 603, '\u{f8e6}'), (190, 1000, '\u{f8e7}'), (191, 658, '\u{21b5}'),
+    (192, 823, '\u{2135}'), (193, 686, '\u{2111}'), (194, 795, '\u{211c}'),
+    (195, 987, '\u{2118}'), (196, 768, '\u{2297}'), (197, 768, '\u{2295}'),
+    (198, 823, '\u{2205}'), (199, 768, '\u{2229}'), (200, 768, '\u{222a}'),
+    (201, 713, '\u{2283}'), (202, 713, '\u{2287}'), (203, 713, '\u{2284}'),
+    (204, 713, '\u{2282}'), (205, 713, '\u{2286}'), (206, 713, '\u{2208}'),
+    (207, 713, '\u{2209}'), (208, 768, '\u{2220}'), (209, 713, '\u{2207}'),
+    (210, 790, '\u{ae}'), (211, 790, '\u{a9}'), (212, 890, '\u{2122}'), (213, 823, '\u{220f}'),
+    (214, 549, '\u{221a}'), (215, 250, '\u{22c5}'), (216, 713, '\u{ac}'),
+    (217, 603, '\u{2227}'), (218, 603, '\u{2228}'), (219, 1042, '\u{21d4}'),
+    (220, 987, '\u{21d0}'), (221, 603, '\u{21d1}'), (222, 987, '\u{21d2}'),
+    (223, 603, '\u{21d3}'), (224, 494, '\u{25ca}'), (225, 329, '\u{2329}'),
+    (226, 790, '\u{ae}'), (227, 790, '\u{a9}'), (228, 786, '\u{2122}'), (229, 713, '\u{2211}'),
+    (230, 384, '\u{f8eb}'), (231, 384, '\u{f8ec}'), (232, 384, '\u{f8ed}'),
+    (233, 384, '\u{f8ee}'), (234, 384, '\u{f8ef}'), (235, 384, '\u{f8f0}'),
+    (236, 494, '\u{f8f1}'), (237, 494, '\u{f8f2}'), (238, 494, '\u{f8f3}'),
+    (239, 494, '\u{f8f4}'), (241, 329, '\u{232a}'), (242, 274, '\u{222b}'),
+    (243, 686, '\u{2320}'), (244, 686, '\u{f8f5}'), (245, 686, '\u{2321}'),
+    (246, 384, '\u{f8f6}'), (247, 384, '\u{f8f7}'), (248, 384, '\u{f8f8}'),
+    (249, 384, '\u{f8f9}'), (250, 384, '\u{f8fa}'), (251, 384, '\u{f8fb}'),
+    (252, 494, '\u{f8fc}'), (253, 494, '\u{f8fd}'), (254, 494, '\u{f8fe}'),
+];
+
 fn load_simple_font(
     document: &Document,
     name: &[u8],
@@ -1978,6 +2571,17 @@ fn load_simple_font(
             }
         }
     }
+    // The standard Symbol font a viewer supplies: its own encoding.
+    let symbol = base.split(',').next() == Some("Symbol")
+        && !is_embedded(document, descriptor)
+        && font.get(b"Encoding").is_err();
+    if symbol {
+        for (code, _, character) in SYMBOL {
+            if !to_unicode_codes.contains(&u32::from(code)) {
+                decode.insert(u32::from(code), character.to_string());
+            }
+        }
+    }
     let first_char = get_number(document, font, b"FirstChar").unwrap_or(0.) as i64;
     let widths_array = font
         .get(b"Widths")
@@ -1997,6 +2601,10 @@ fn load_simple_font(
             if let Ok(code) = u32::try_from(first_char + offset as i64) {
                 widths.insert(code, width);
             }
+        }
+    } else if symbol {
+        for (code, width, _) in SYMBOL {
+            widths.insert(u32::from(code), f64::from(width));
         }
     } else if !embedded {
         // A font without /Widths that the viewer supplies: the bundled faces
@@ -2026,10 +2634,56 @@ fn load_simple_font(
     // Which codes a font program certainly contains: a subset keeps only the
     // glyphs it lists; a complete or system font draws its whole encoding.
     let subset = is_subset_name(base_font);
-    let listed = to_unicode_codes
+    let mut listed = to_unicode_codes
         .union(&difference_codes(document, font))
         .copied()
         .collect::<BTreeSet<_>>();
+    // A subset without a ToUnicode map or Differences (Word's TrueType
+    // fonts): its program says which glyphs it kept.
+    if subset
+        && let Some(program) = descriptor.and_then(|descriptor| font_program(document, descriptor))
+    {
+        // Flag bit 3: symbolic, its codes looked up directly.
+        let symbolic = descriptor
+            .and_then(|descriptor| get_number(document, descriptor, b"Flags"))
+            .is_some_and(|flags| flags as i64 & 4 != 0);
+        // Word gives the characters it did not use no width.
+        listed.extend(
+            program_codes(&program, &decode, symbolic)
+                .into_iter()
+                .filter(|code| widths.get(code).is_some_and(|width| *width > 0.)),
+        );
+        // A Type 1 or CFF subset lists every code of its encoding (pdfTeX's
+        // Differences) but keeps only the glyphs it drew.
+        if let Some(names) = program_glyph_names(&program) {
+            let differences = difference_names(document, font);
+            listed.retain(|code| {
+                if let Some(name) = differences.get(code) {
+                    return names.contains(name);
+                }
+                let mut text = decode
+                    .get(code)
+                    .map(|text| text.chars())
+                    .into_iter()
+                    .flatten();
+                match (text.next(), text.next()) {
+                    (Some(character), None) if !character.is_whitespace() => {
+                        let candidates = ascii_glyph_names(character);
+                        candidates.is_empty()
+                            || candidates
+                                .iter()
+                                .any(|name| names.contains(name.as_bytes()))
+                    }
+                    _ => true,
+                }
+            });
+        }
+    }
+    // Viewers read a code a ToUnicode map leaves out as nothing: when a
+    // subset has one, only its codes are typed.
+    if subset && !to_unicode_codes.is_empty() {
+        listed.retain(|code| to_unicode_codes.contains(code));
+    }
     let mut encode = BTreeMap::new();
     let mut codes = decode.keys().copied().collect::<Vec<_>>();
     codes.sort_unstable();
@@ -2295,7 +2949,9 @@ struct ColorState {
 #[derive(Clone, Debug)]
 struct GraphicsState {
     ctm: Matrix,
-    clip: u32,
+    /// The clip's geometry as a key: equal clips (the same paths under the
+    /// same matrices) share it, so text clipped alike can join one line.
+    clip: u64,
     font: Option<Vec<u8>>,
     font_size: f64,
     char_spacing: f64,
@@ -2410,29 +3066,110 @@ struct ExtractedPage {
 }
 
 /// Decodes one content stream, counting its bytes against the page limit.
+/// Decoded content streams and font programs, by their encoded bytes and
+/// filters: a page is read again for each edit made to it.
+static DECODED_STREAMS: std::sync::Mutex<DecodedStreams> = std::sync::Mutex::new(DecodedStreams {
+    entries: None,
+    bytes: 0,
+});
+
+/// Compressed streams smaller than this decode about as fast as they hash.
+const MIN_CACHED_STREAM_BYTES: usize = 16 * 1024;
+/// The most inflated bytes kept; the cache empties when it would exceed it.
+const MAX_CACHED_DECODED_BYTES: usize = 256 * 1024 * 1024;
+
+struct DecodedStreams {
+    entries: Option<HashMap<(u64, u64, usize), std::sync::Arc<[u8]>>>,
+    bytes: usize,
+}
+
+impl DecodedStreams {
+    fn insert(&mut self, key: (u64, u64, usize), bytes: std::sync::Arc<[u8]>) {
+        if bytes.len() > MAX_CACHED_DECODED_BYTES {
+            return;
+        }
+        if self.bytes + bytes.len() > MAX_CACHED_DECODED_BYTES {
+            self.entries = None;
+            self.bytes = 0;
+        }
+        self.bytes += bytes.len();
+        self.entries
+            .get_or_insert_with(HashMap::new)
+            .insert(key, bytes);
+    }
+}
+
+impl DecodedStreams {
+    fn get(&self, key: &(u64, u64, usize)) -> Option<&std::sync::Arc<[u8]>> {
+        self.entries.as_ref()?.get(key)
+    }
+}
+
+/// A large compressed stream's cache key: two independent hashes of its
+/// filters and bytes, and its length.
+fn decoded_cache_key(stream: &Stream) -> Option<(u64, u64, usize)> {
+    use std::hash::{Hash as _, Hasher as _};
+    if stream.content.len() < MIN_CACHED_STREAM_BYTES {
+        return None;
+    }
+    let filters = format!(
+        "{:?}{:?}",
+        stream.dict.get(b"Filter").ok(),
+        stream.dict.get(b"DecodeParms").ok()
+    );
+    let mut first = ClipHasher(0);
+    let mut second = std::collections::hash_map::DefaultHasher::new();
+    filters.hash(&mut first);
+    filters.hash(&mut second);
+    first.write(&stream.content);
+    // The second hash samples the stream: it guards against the first's
+    // collisions, not tampering.
+    for chunk in stream.content.chunks(4096) {
+        second.write(&chunk[..chunk.len().min(64)]);
+    }
+    Some((first.finish(), second.finish(), stream.content.len()))
+}
+
+/// `stream`'s decoded bytes, from the cache when a large stream was
+/// decoded before.
+fn decoded_cached(stream: &Stream, limit: usize) -> Result<std::sync::Arc<[u8]>, lopdf::Error> {
+    if stream.dict.get(b"Filter").is_err() {
+        return Ok(stream.content.as_slice().into());
+    }
+    let key = decoded_cache_key(stream);
+    if let Some(key) = key
+        && let Ok(cache) = DECODED_STREAMS.lock()
+        && let Some(bytes) = cache.get(&key)
+        && bytes.len() <= limit
+    {
+        return Ok(bytes.clone());
+    }
+    let bytes: std::sync::Arc<[u8]> = stream.decompressed_content_with_limit(limit)?.into();
+    if let Some(key) = key
+        && let Ok(mut cache) = DECODED_STREAMS.lock()
+    {
+        cache.insert(key, bytes.clone());
+    }
+    Ok(bytes)
+}
+
 fn decode_stream(
     stream: &Stream,
     total: &mut usize,
     limits: &TextEditLimits,
 ) -> Result<Vec<u8>, TextEditError> {
     let remaining = limits.max_decoded_bytes_per_page.saturating_sub(*total);
-    let bytes = if stream.dict.get(b"Filter").is_ok() {
-        stream
-            .decompressed_content_with_limit(remaining)
-            .map_err(|error| match error {
-                lopdf::Error::Decompress(lopdf::DecompressError::MemoryLimitExceeded {
-                    ..
-                }) => TextEditError::LimitExceeded(format!(
+    let bytes = decoded_cached(stream, remaining)
+        .map_err(|error| match error {
+            lopdf::Error::Decompress(lopdf::DecompressError::MemoryLimitExceeded { .. }) => {
+                TextEditError::LimitExceeded(format!(
                     "page content exceeds {} decoded bytes",
                     limits.max_decoded_bytes_per_page
-                )),
-                other => {
-                    TextEditError::Malformed(format!("content stream cannot be decoded: {other}"))
-                }
-            })?
-    } else {
-        stream.content.clone()
-    };
+                ))
+            }
+            other => TextEditError::Malformed(format!("content stream cannot be decoded: {other}")),
+        })?
+        .to_vec();
     *total = total.saturating_add(bytes.len());
     if *total > limits.max_decoded_bytes_per_page {
         return Err(TextEditError::LimitExceeded(format!(
@@ -2490,13 +3227,45 @@ struct Walk<'a> {
     streams: Vec<Vec<u8>>,
     owners: Vec<StreamOwner>,
     actual_texts: Vec<(String, std::ops::Range<usize>)>,
-    next_clip: u32,
+    next_clip: u64,
     decoded_bytes: usize,
     /// How often each Form XObject is drawn on the page.
     form_uses: HashMap<ObjectId, usize>,
 }
 
 impl Walk<'_> {
+    /// Whether ExtGState `name` sets only default values.
+    fn neutral_graphics_state(&self, scope: &Scope, name: &[u8]) -> bool {
+        let Some(states) = get_dict(self.document, &scope.resources, b"ExtGState") else {
+            return false;
+        };
+        let Some(state) = states
+            .get(name)
+            .ok()
+            .and_then(|object| resolve_dict(self.document, object))
+        else {
+            return false;
+        };
+        state.iter().all(|(key, value)| {
+            let value = resolve(self.document, value).ok();
+            match key.as_slice() {
+                b"Type" => true,
+                b"CA" | b"ca" => value.and_then(object_number) == Some(1.),
+                b"BM" => match value {
+                    Some(Object::Name(name)) => {
+                        matches!(name.as_slice(), b"Normal" | b"Compatible")
+                    }
+                    Some(Object::Array(names)) => names.first().is_some_and(
+                        |name| matches!(name, Object::Name(name) if name.as_slice() == b"Normal"),
+                    ),
+                    _ => false,
+                },
+                b"AIS" | b"OP" | b"op" => matches!(value, Some(Object::Boolean(false))),
+                _ => false,
+            }
+        })
+    }
+
     /// The key of font `name` in `scope`, loading it on first use.
     fn font(&mut self, scope: &Scope, name: &[u8]) -> Vec<u8> {
         let key = [scope.prefix.as_slice(), name].concat();
@@ -2587,7 +3356,7 @@ impl Walk<'_> {
         // A form clips to its bounding box: its text never joins a line
         // outside it.
         self.next_clip += 1;
-        inner_state.clip = self.next_clip;
+        inner_state.clip = clip_key(&(b"form", self.next_clip, state.clip));
         self.run(first..last, &inner, inner_state, depth + 1)
     }
 
@@ -2601,215 +3370,260 @@ impl Walk<'_> {
         let mut stack: Vec<GraphicsState> = Vec::new();
         let mut text_matrix = IDENTITY;
         let mut line_matrix = IDENTITY;
-        let mut pending_clip = false;
+        let mut pending_clip: Option<bool> = None;
+        // The current path's construction operators, hashed for the clip
+        // key.
+        let mut path = 0u64;
         // Marked content: each level's ActualText and the first show inside it.
         let mut marked: Vec<(Option<String>, usize)> = Vec::new();
         for op_index in operation_range {
-            let operation = self.operations[op_index].clone();
+            // Taken while it is read, as forms add operations; put back below.
+            let operation = std::mem::take(&mut self.operations[op_index]);
             let operands = &operation.operands;
-            if operation.operator == b"Do" {
-                if let Some(Operand::Name(name)) = operands.last() {
-                    self.form(scope, name, operation.stream, &state, depth)?;
-                }
-                continue;
-            }
-            match operation.operator.as_slice() {
-                b"q" => {
-                    if stack.len() < 1_024 {
-                        stack.push(state.clone());
+            'step: {
+                if operation.operator == b"Do" {
+                    if let Some(Operand::Name(name)) = operands.last() {
+                        self.form(scope, name, operation.stream, &state, depth)?;
                     }
+                    break 'step;
                 }
-                b"Q" => {
-                    if let Some(saved) = stack.pop() {
-                        state = saved;
-                    }
-                }
-                b"cm" => {
-                    if let Some(matrix) = numbers::<6>(operands) {
-                        state.ctm = multiply(matrix, state.ctm);
-                    }
-                }
-                b"W" | b"W*" => pending_clip = true,
-                b"n" | b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" => {
-                    if pending_clip {
-                        self.next_clip += 1;
-                        state.clip = self.next_clip;
-                        pending_clip = false;
-                    }
-                }
-                b"BT" => {
-                    text_matrix = IDENTITY;
-                    line_matrix = IDENTITY;
-                }
-                b"Tf" => {
-                    if let (Some(Operand::Name(name)), Some([size])) =
-                        (operands.first(), numbers::<1>(operands))
-                    {
-                        state.font = Some(self.font(scope, name));
-                        state.font_size = size;
-                    }
-                }
-                b"Tc" => {
-                    if let Some([value]) = numbers::<1>(operands) {
-                        state.char_spacing = value;
-                    }
-                }
-                b"Tw" => {
-                    if let Some([value]) = numbers::<1>(operands) {
-                        state.word_spacing = value;
-                    }
-                }
-                b"Tz" => {
-                    if let Some([value]) = numbers::<1>(operands) {
-                        state.horizontal_scale = value / 100.;
-                    }
-                }
-                b"TL" => {
-                    if let Some([value]) = numbers::<1>(operands) {
-                        state.leading = value;
-                    }
-                }
-                b"Ts" => {
-                    if let Some([value]) = numbers::<1>(operands) {
-                        state.rise = value;
-                    }
-                }
-                b"Tr" => {
-                    if let Some([value]) = numbers::<1>(operands) {
-                        state.render_mode = value as i64;
-                    }
-                }
-                b"Td" | b"TD" => {
-                    if let Some([x, y]) = numbers::<2>(operands) {
-                        if operation.operator == b"TD" {
-                            state.leading = -y;
+                match operation.operator.as_slice() {
+                    b"q" => {
+                        if stack.len() < 1_024 {
+                            stack.push(state.clone());
                         }
-                        line_matrix = multiply([1., 0., 0., 1., x, y], line_matrix);
-                        text_matrix = line_matrix;
                     }
-                }
-                b"Tm" => {
-                    if let Some(matrix) = numbers::<6>(operands) {
-                        line_matrix = matrix;
-                        text_matrix = matrix;
+                    b"Q" => {
+                        if let Some(saved) = stack.pop() {
+                            state = saved;
+                        }
                     }
-                }
-                b"T*" => {
-                    line_matrix = multiply([1., 0., 0., 1., 0., -state.leading], line_matrix);
-                    text_matrix = line_matrix;
-                }
-                b"g" | b"rg" | b"k" | b"sc" | b"scn" => {
-                    state.color.fill = Some(operation_text(operands, &operation.operator));
-                    if operation.operator != b"sc" && operation.operator != b"scn" {
-                        state.color.fill_space = None;
+                    b"cm" => {
+                        if let Some(matrix) = numbers::<6>(operands) {
+                            state.ctm = multiply(matrix, state.ctm);
+                        }
                     }
-                    state.color.device_fill = device_rgb(
-                        operands,
-                        &operation.operator,
-                        state.color.fill_space.as_deref(),
-                    )
-                    .map(|rgb| rgb.map(f64::to_bits));
-                }
-                b"cs" => {
-                    state.color.fill_space = Some(operation_text(operands, b"cs"));
-                    state.color.fill = None;
-                    state.color.device_fill = match operands.last() {
-                        Some(Operand::Name(name))
-                            if matches!(
-                                name.as_slice(),
-                                b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK"
-                            ) =>
+                    b"m" | b"l" | b"c" | b"v" | b"y" | b"h" | b"re" => {
+                        let numbers = operands.iter().filter_map(|operand| match operand {
+                            Operand::Number(value) => Some(value.to_bits()),
+                            _ => None,
+                        });
+                        path = clip_key(&(path, operation.operator, numbers.collect::<SmallKey>()));
+                    }
+                    b"W" => pending_clip = Some(false),
+                    b"W*" => pending_clip = Some(true),
+                    b"n" | b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" => {
+                        if let Some(even_odd) = pending_clip.take() {
+                            let ctm = state.ctm.map(f64::to_bits);
+                            state.clip = clip_key(&(state.clip, even_odd, ctm, path));
+                        }
+                        path = 0;
+                    }
+                    b"BT" => {
+                        text_matrix = IDENTITY;
+                        line_matrix = IDENTITY;
+                    }
+                    b"Tf" => {
+                        if let (Some(Operand::Name(name)), Some([size])) =
+                            (operands.first(), numbers::<1>(operands))
                         {
-                            Some([0f64; 3].map(f64::to_bits))
+                            state.font = Some(self.font(scope, name));
+                            state.font_size = size;
                         }
-                        _ => None,
-                    };
-                }
-                b"G" | b"RG" | b"K" | b"SC" | b"SCN" => {
-                    state.color.stroke = Some(format!("{operands:?}{:?}", operation.operator));
-                    if operation.operator != b"SC" && operation.operator != b"SCN" {
-                        state.color.stroke_space = None;
                     }
-                }
-                b"CS" => {
-                    state.color.stroke_space = Some(format!("{operands:?}"));
-                    state.color.stroke = None;
-                }
-                b"gs" => state.color.graphics_state = Some(format!("{operands:?}")),
-                b"BMC" => marked.push((None, self.shows.len())),
-                b"BDC" => {
-                    let actual_text = match operands.last() {
-                        Some(Operand::Dict(entries)) => {
-                            entries
-                                .iter()
-                                .find_map(|(key, value)| match (key.as_slice(), value) {
-                                    (b"ActualText", Operand::Str(bytes)) => {
-                                        Some(decode_text_string(bytes))
-                                    }
-                                    _ => None,
-                                })
+                    b"Tc" => {
+                        if let Some([value]) = numbers::<1>(operands) {
+                            state.char_spacing = value;
                         }
-                        _ => None,
-                    };
-                    marked.push((actual_text, self.shows.len()));
-                }
-                b"EMC" => {
-                    if let Some((Some(text), first_show)) = marked.pop() {
-                        self.actual_texts.push((text, first_show..self.shows.len()));
                     }
-                }
-                b"Tj" | b"TJ" | b"'" | b"\"" => {
-                    let kind = match operation.operator.as_slice() {
-                        b"Tj" => ShowKind::Show,
-                        b"TJ" => ShowKind::ShowArray,
-                        b"'" => ShowKind::NextLineShow,
-                        _ => {
-                            let Some([word, character]) = (operands.len() >= 3)
-                                .then(|| numbers::<2>(&operands[..2]))
-                                .flatten()
-                            else {
-                                continue;
-                            };
-                            ShowKind::SpacedNextLineShow { word, character }
+                    b"Tw" => {
+                        if let Some([value]) = numbers::<1>(operands) {
+                            state.word_spacing = value;
                         }
-                    };
-                    if let ShowKind::SpacedNextLineShow { word, character } = kind {
-                        state.word_spacing = word;
-                        state.char_spacing = character;
                     }
-                    if matches!(
-                        kind,
-                        ShowKind::NextLineShow | ShowKind::SpacedNextLineShow { .. }
-                    ) {
+                    b"Tz" => {
+                        if let Some([value]) = numbers::<1>(operands) {
+                            state.horizontal_scale = value / 100.;
+                        }
+                    }
+                    b"TL" => {
+                        if let Some([value]) = numbers::<1>(operands) {
+                            state.leading = value;
+                        }
+                    }
+                    b"Ts" => {
+                        if let Some([value]) = numbers::<1>(operands) {
+                            state.rise = value;
+                        }
+                    }
+                    b"Tr" => {
+                        if let Some([value]) = numbers::<1>(operands) {
+                            state.render_mode = value as i64;
+                        }
+                    }
+                    b"Td" | b"TD" => {
+                        if let Some([x, y]) = numbers::<2>(operands) {
+                            if operation.operator == b"TD" {
+                                state.leading = -y;
+                            }
+                            line_matrix = multiply([1., 0., 0., 1., x, y], line_matrix);
+                            text_matrix = line_matrix;
+                        }
+                    }
+                    b"Tm" => {
+                        if let Some(matrix) = numbers::<6>(operands) {
+                            line_matrix = matrix;
+                            text_matrix = matrix;
+                        }
+                    }
+                    b"T*" => {
                         line_matrix = multiply([1., 0., 0., 1., 0., -state.leading], line_matrix);
                         text_matrix = line_matrix;
                     }
-                    let space = multiply(text_matrix, state.ctm);
-                    let starting_text_matrix = text_matrix;
-                    let font = state.font.as_ref().and_then(|name| self.fonts.get(name));
-                    let (glyphs, has_string, advance) = shown_glyphs(operands, kind, &state, font);
-                    text_matrix = multiply([1., 0., 0., 1., advance, 0.], text_matrix);
-                    let actual_text_depth = marked
-                        .iter()
-                        .position(|(text, _)| text.is_some())
-                        .map_or(0, |outermost| marked.len() - outermost);
-                    self.shows.push(ShowOp {
-                        op_index,
-                        kind,
-                        state: state.clone(),
-                        text_matrix: starting_text_matrix,
-                        line_matrix,
-                        space,
-                        glyphs,
-                        has_string,
-                        advance,
-                        actual_text_depth,
-                    });
+                    b"g" | b"rg" | b"k" | b"sc" | b"scn" => {
+                        state.color.fill = Some(operation_text(operands, &operation.operator));
+                        if operation.operator != b"sc" && operation.operator != b"scn" {
+                            state.color.fill_space = None;
+                        }
+                        state.color.device_fill = device_rgb(
+                            operands,
+                            &operation.operator,
+                            state.color.fill_space.as_deref(),
+                        )
+                        .map(|rgb| rgb.map(f64::to_bits));
+                    }
+                    b"cs" => {
+                        state.color.fill_space = Some(operation_text(operands, b"cs"));
+                        state.color.fill = None;
+                        state.color.device_fill = match operands.last() {
+                            Some(Operand::Name(name))
+                                if matches!(
+                                    name.as_slice(),
+                                    b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK"
+                                ) =>
+                            {
+                                Some([0f64; 3].map(f64::to_bits))
+                            }
+                            _ => None,
+                        };
+                    }
+                    b"G" | b"RG" | b"K" | b"SC" | b"SCN" => {
+                        state.color.stroke = Some(format!("{operands:?}{:?}", operation.operator));
+                        if operation.operator != b"SC" && operation.operator != b"SCN" {
+                            state.color.stroke_space = None;
+                        }
+                    }
+                    b"CS" => {
+                        state.color.stroke_space = Some(format!("{operands:?}"));
+                        state.color.stroke = None;
+                    }
+                    b"gs" => {
+                        // A state that only restates the defaults (normal blend,
+                        // full opacity), as Word writes before text, changes
+                        // nothing.
+                        let neutral = state.color.graphics_state.is_none()
+                            && matches!(operands.first(), Some(Operand::Name(name))
+                            if self.neutral_graphics_state(scope, name));
+                        if !neutral {
+                            state.color.graphics_state = Some(format!("{operands:?}"));
+                        }
+                    }
+                    b"BMC" => marked.push((None, self.shows.len())),
+                    b"BDC" => {
+                        let actual_text = match operands.last() {
+                            Some(Operand::Dict(entries)) => {
+                                entries.iter().find_map(|(key, value)| {
+                                    match (key.as_slice(), value) {
+                                        (b"ActualText", Operand::Str(bytes)) => {
+                                            Some(decode_text_string(bytes))
+                                        }
+                                        _ => None,
+                                    }
+                                })
+                            }
+                            _ => None,
+                        };
+                        marked.push((actual_text, self.shows.len()));
+                    }
+                    b"EMC" => {
+                        if let Some((Some(text), first_show)) = marked.pop() {
+                            self.actual_texts.push((text, first_show..self.shows.len()));
+                        }
+                    }
+                    b"Tj" | b"TJ" | b"'" | b"\"" => {
+                        let kind = match operation.operator.as_slice() {
+                            b"Tj" => ShowKind::Show,
+                            b"TJ" => ShowKind::ShowArray,
+                            b"'" => ShowKind::NextLineShow,
+                            _ => {
+                                let Some([word, character]) = (operands.len() >= 3)
+                                    .then(|| numbers::<2>(&operands[..2]))
+                                    .flatten()
+                                else {
+                                    break 'step;
+                                };
+                                ShowKind::SpacedNextLineShow { word, character }
+                            }
+                        };
+                        if let ShowKind::SpacedNextLineShow { word, character } = kind {
+                            state.word_spacing = word;
+                            state.char_spacing = character;
+                        }
+                        if matches!(
+                            kind,
+                            ShowKind::NextLineShow | ShowKind::SpacedNextLineShow { .. }
+                        ) {
+                            line_matrix =
+                                multiply([1., 0., 0., 1., 0., -state.leading], line_matrix);
+                            text_matrix = line_matrix;
+                        }
+                        let space = multiply(text_matrix, state.ctm);
+                        let starting_text_matrix = text_matrix;
+                        let font = state.font.as_ref().and_then(|name| self.fonts.get(name));
+                        let (glyphs, has_string, advance) =
+                            shown_glyphs(operands, kind, &state, font);
+                        text_matrix = multiply([1., 0., 0., 1., advance, 0.], text_matrix);
+                        let actual_text_depth = marked
+                            .iter()
+                            .position(|(text, _)| text.is_some())
+                            .map_or(0, |outermost| marked.len() - outermost);
+                        self.shows.push(ShowOp {
+                            op_index,
+                            kind,
+                            state: state.clone(),
+                            text_matrix: starting_text_matrix,
+                            line_matrix,
+                            space,
+                            glyphs,
+                            has_string,
+                            advance,
+                            actual_text_depth,
+                        });
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            self.operations[op_index] = operation;
         }
         Ok(())
+    }
+}
+
+/// A path operator's numbers, hashed without allocating: operators have
+/// at most six.
+#[derive(Hash)]
+struct SmallKey([u64; 6], usize);
+
+impl FromIterator<u64> for SmallKey {
+    fn from_iter<I: IntoIterator<Item = u64>>(numbers: I) -> Self {
+        let mut key = Self([0; 6], 0);
+        for number in numbers {
+            if key.1 < key.0.len() {
+                key.0[key.1] = number;
+            }
+            key.1 += 1;
+        }
+        key
     }
 }
 
@@ -3165,7 +3979,73 @@ fn read_only_reason(
     if show.glyphs.iter().any(|glyph| glyph.unicode.is_none()) {
         return Some("the text has characters without a Unicode mapping".into());
     }
+    // Lines are laid out left to right.
+    if show
+        .glyphs
+        .iter()
+        .filter_map(|glyph| glyph.unicode.as_deref())
+        .flat_map(str::chars)
+        .any(right_to_left)
+    {
+        return Some("right-to-left text is not editable".into());
+    }
     None
+}
+
+/// Whether `character` is written right to left: Hebrew, Arabic, Syriac,
+/// Thaana, N'Ko and their presentation forms.
+fn right_to_left(character: char) -> bool {
+    matches!(
+        u32::from(character),
+        0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF
+    )
+}
+
+/// A key for a clip built from `parts` (the enclosing clip, the path, its
+/// matrix and fill rule).
+fn clip_key(parts: &impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher as _;
+    let mut hasher = ClipHasher(0);
+    parts.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// A fast multiplicative hash (FxHash's): clip keys only tell a page's
+/// clips apart, and a page has millions of path operators to hash.
+struct ClipHasher(u64);
+
+impl std::hash::Hasher for ClipHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.write_u64(u64::from(value));
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Whether `text` is only a list marker.
+fn is_list_marker(text: &str) -> bool {
+    let marker = text.trim();
+    let chars = format!("{marker} ").chars().collect::<Vec<_>>();
+    !marker.is_empty()
+        && crate::pdf_text_blocks::item_marker(&chars).is_some_and(|(_, end)| end == chars.len())
 }
 
 fn group_lines(
@@ -3180,7 +4060,15 @@ fn group_lines(
         /// End of the last member in the first member's text space.
         end_x: f64,
         inverse: Matrix,
+        /// Its text so far.
+        text: String,
     }
+    let shown_text = |show: &ShowOp| {
+        show.glyphs
+            .iter()
+            .filter_map(|glyph| glyph.unicode.as_deref())
+            .collect::<String>()
+    };
     let mut groups: Vec<Building> = Vec::new();
     let mut current: Option<Building> = None;
     for (show_index, show) in shows.iter().enumerate() {
@@ -3196,6 +4084,7 @@ fn group_lines(
                     members: vec![show_index],
                     end_x: 0.,
                     inverse: IDENTITY,
+                    text: String::new(),
                 });
             }
             continue;
@@ -3204,6 +4093,15 @@ fn group_lines(
             let first = &shows[building.first];
             let em = first.state.font_size.abs().max(show.state.font_size.abs());
             let (x, y) = apply(building.inverse, show.space[4], show.space[5]);
+            // A list marker is followed by a tab: its text may start further
+            // away than a word.
+            let glyph_bullet =
+                matches!(building.text.trim(), "o" | "§") && show.state.font != first.state.font;
+            let max_gap = if glyph_bullet || is_list_marker(&building.text) {
+                MAX_MARKER_GAP_EM
+            } else {
+                MAX_MERGE_GAP_EM
+            };
             let compatible = read_only_reason(operations, fonts, first).is_none()
                 && read_only_reason(operations, fonts, show).is_none()
                 && show.state.render_mode == first.state.render_mode
@@ -3217,11 +4115,12 @@ fn group_lines(
                 )
                 && same_linear(show.space, first.space)
                 && y.abs() <= BASELINE_TOLERANCE_EM * em
-                && x - building.end_x >= MIN_MERGE_GAP_EM * em * first.state.horizontal_scale
-                && x - building.end_x <= MAX_MERGE_GAP_EM * em * first.state.horizontal_scale;
+                && x - building.end_x >= MIN_MERGE_GAP_EM * em * first.state.horizontal_scale.abs()
+                && x - building.end_x <= max_gap * em * first.state.horizontal_scale.abs();
             if compatible {
                 building.members.push(show_index);
                 building.end_x = x + show.advance;
+                building.text.push_str(&shown_text(show));
                 continue;
             }
             groups.push(current.take().expect("current line exists"));
@@ -3232,6 +4131,7 @@ fn group_lines(
             members: vec![show_index],
             end_x: show.advance,
             inverse,
+            text: shown_text(show),
         });
     }
     if let Some(building) = current.take() {
@@ -3346,6 +4246,16 @@ fn group_lines(
             ascent = 0.8 * first.state.font_size.abs();
             descent = -0.2 * first.state.font_size.abs();
         }
+        // Some fonts declare extents far beyond their letters (Cambria
+        // Math: over two ems below the baseline); the line's box stays the
+        // height of text.
+        let size = group
+            .members
+            .iter()
+            .map(|member| shows[*member].state.font_size.abs())
+            .fold(0., f64::max);
+        ascent = ascent.min(MAX_ASCENT_EM * size);
+        descent = descent.max(-MAX_DESCENT_EM * size);
         let (origin_x, origin_y) = apply(first.space, 0., 0.);
         let key = (
             (origin_x * 100.).round() as i64,
@@ -3440,7 +4350,17 @@ pub fn extract_page_text(
             .map(|font| font.metrics.clone())
             .collect(),
         lines: page.lines.into_iter().map(|line| line.public).collect(),
+        page_box: visible_page_box(document, page_index),
     })
+}
+
+/// A page's crop box as left, bottom, right, top.
+fn visible_page_box(document: &Document, page_index: u32) -> Option<[f64; 4]> {
+    let page_id = page_id(document, page_index).ok()?;
+    let view = crate::page_geometry::PageCoordinateSpace::from_lopdf_page(document, page_id)
+        .ok()?
+        .view_box();
+    Some([view.x, view.y, view.right(), view.top()])
 }
 
 // ---------------------------------------------------------------------------
@@ -3605,6 +4525,7 @@ fn apply_page_edits(
             .map(|font| font.metrics.clone())
             .collect(),
         lines: page.lines.iter().map(|line| line.public.clone()).collect(),
+        page_box: visible_page_box(document, page_index),
     };
     let mut planned = Vec::new();
     let mut seen = BTreeSet::new();
@@ -4310,7 +5231,14 @@ fn first_operator_replacement(
         output.push_str(&format!(
             "{} Tm ",
             format_matrix(multiply(
-                [1., 0., 0., 1., extra.origin_shift, -extra.below],
+                [
+                    1.,
+                    0.,
+                    0.,
+                    1.,
+                    extra.origin_shift,
+                    text_y_below(&line.public, extra.below)
+                ],
                 first.text_matrix
             ))
         ));
@@ -4973,6 +5901,127 @@ mod tests {
         let change = edit(&before.lines[0], "spefics");
         apply_text_edits(&mut document, &[change], &TextEditLimits::default()).unwrap();
         assert_eq!(layer(&reload(&mut document)).lines[0].text, "spefics");
+    }
+
+    #[test]
+    fn a_unicode_map_lopdf_rejects_is_read_directly() {
+        // A bare word for the CMapName, lower-case hex, a range and an
+        // array range.
+        let map = b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+            /CMapName LiberationSerif-cmap def\n/CMapType 2 def\n\
+            /CIDSystemInfo <<\n/Registry (Adobe)\n/Ordering (UCS)\n/Supplement 0\n>> def\n\
+            1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n\
+            2 beginbfchar\n<0024> <0041>\n<000b> <0028>\nendbfchar\n\
+            2 beginbfrange\n<0044> <0046> <0061>\n<0050> <0051> [<0066006C> <00DF>]\nendbfrange\n\
+            endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n";
+        let mut entries = parse_to_unicode(map, 2, 100);
+        entries.sort();
+        let text = |units: &[u16]| String::from_utf16(units).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(code, units)| (*code, text(units)))
+                .collect::<Vec<_>>(),
+            [
+                (0x0b, "(".into()),
+                (0x24, "A".into()),
+                (0x44, "a".into()),
+                (0x45, "b".into()),
+                (0x46, "c".into()),
+                (0x50, "fl".into()),
+                (0x51, "ß".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_standard_symbol_font_reads_and_advances_by_its_own_encoding() {
+        // ProQuest's footer: "©" in the viewer's Symbol font, no /Widths.
+        let symbol = dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Symbol",
+        };
+        let document = document(
+            b"BT /F1 10 Tf 72 700 Td (Copyright ) Tj /F2 10 Tf <D3> Tj /F1 10 Tf ( 2023 a) Tj /F2 10 Tf (a) Tj ET",
+            vec![("F1", helvetica().into()), ("F2", symbol.into())],
+        );
+        let layer = layer(&document);
+        let line = &layer.lines[0];
+        assert_eq!(line.text, "Copyright \u{a9} 2023 a\u{3b1}");
+        assert_eq!(line.read_only, None);
+        // © is 790 units wide.
+        let copyright = char_x(line, '\u{a9}', 0);
+        assert!((char_x(line, ' ', 1) - copyright - 7.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn right_to_left_text_is_read_only() {
+        let to_unicode = Stream::new(
+            Dictionary::new(),
+            b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+              /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+              1 begincodespacerange\n<00> <FF>\nendcodespacerange\n\
+              2 beginbfchar\n<41> <0644>\n<42> <0627>\nendbfchar\n\
+              endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n"
+                .to_vec(),
+        );
+        let mut document = document(
+            b"BT /F1 12 Tf 72 700 Td (BA) Tj ET BT /F1 12 Tf 72 600 Td (cd) Tj ET",
+            vec![],
+        );
+        let to_unicode = document.add_object(to_unicode);
+        let mut font = helvetica();
+        font.set("ToUnicode", to_unicode);
+        let font = document.add_object(font);
+        let page = page_id(&document, 0).unwrap();
+        document
+            .get_object_mut(page)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "Resources",
+                dictionary! { "Font" => dictionary! { "F1" => font } },
+            );
+        let layer = layer(&document);
+        assert_eq!(
+            layer.lines[0].read_only.as_deref(),
+            Some("right-to-left text is not editable")
+        );
+        assert_eq!(layer.lines[1].read_only, None);
+    }
+
+    #[test]
+    fn office_maths_letters_and_tab_spaces_read_as_drawn() {
+        // PowerPoint's Cambria Math: <41> is 𝑥 (U+1D465) twice, <42> "ff"
+        // (a ligature, two letters) stays as it is; <43>, a tab, is a space.
+        let to_unicode = Stream::new(
+            Dictionary::new(),
+            b"/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+              /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+              /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+              1 begincodespacerange\n<00> <FF>\nendcodespacerange\n\
+              3 beginbfchar\n<41> <D835DC65D835DC65>\n<42> <00660066>\n<43> <0009>\nendbfchar\n\
+              endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n"
+                .to_vec(),
+        );
+        let mut document = document(b"BT /F1 12 Tf 72 700 Td (ABCB) Tj ET", vec![]);
+        let to_unicode = document.add_object(to_unicode);
+        let mut font = helvetica();
+        font.set("ToUnicode", to_unicode);
+        let font = document.add_object(font);
+        let page = page_id(&document, 0).unwrap();
+        document
+            .get_object_mut(page)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "Resources",
+                dictionary! { "Font" => dictionary! { "F1" => font } },
+            );
+        assert_eq!(layer(&document).lines[0].text, "\u{1D465}ff ff");
     }
 
     #[test]

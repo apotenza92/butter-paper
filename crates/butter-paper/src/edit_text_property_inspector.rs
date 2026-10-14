@@ -373,10 +373,19 @@ impl EventEmitter<EditTextPropertyEvent> for EditTextPropertyInspector {}
 impl Render for EditTextPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(snapshot) = self.snapshot.clone() else {
-            return div()
-                .id(EDIT_TEXT_PROPERTY_INSPECTOR_ID)
-                .hidden()
-                .into_any_element();
+            return PropertyInspectorPanel::new(
+                EDIT_TEXT_PROPERTY_INSPECTOR_ID,
+                EDIT_TEXT_INSPECTOR_HEADER_ID,
+                EDIT_TEXT_INSPECTOR_SCROLL_ID,
+                "Edit Text",
+            )
+            .child(
+                div()
+                    .p_3()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Click text on the page to edit it and see its properties."),
+            )
+            .into_any_element();
         };
         let bold = cx.entity().downgrade();
         let italic = cx.entity().downgrade();
