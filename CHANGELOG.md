@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.1.10]
+
 ### Forms
 
 - Fill in PDF forms with the Select tool: text fields (multi-line, password,
@@ -17,6 +19,12 @@ All notable Butter Paper changes are recorded here.
 ### Edit PDF Content
 
 - Rename Edit Text to Edit PDF Content, to set it apart from filling forms.
+
+### Windows
+
+- The download page sends Windows visitors to the Microsoft Store, for x64
+  and Arm PCs. The GitHub release still has Windows builds, which keep
+  updating themselves.
 
 ### Fixes
 
