@@ -17,6 +17,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::page_geometry::{PageCoordinateSpace, Rotation as CoordinateRotation};
+use crate::pdf_forms::{FormFieldEdit, rebase_form_edits};
 use crate::pdf_text_edit::{PageTextEdit, normalized_runs, rebase_text_edits};
 use crate::selection_geometry::{
     SelectionMarquee, SelectionPath, SelectionPoint, geometry_selected, selection_after,
@@ -5174,6 +5175,8 @@ pub struct AnnotationSnapshot {
     pub page_rotations: Vec<(u32, PageRotation)>,
     /// Edits to existing page text, keyed by page and line.
     pub page_text_edits: Vec<PageTextEdit>,
+    /// Filled form field values, keyed by field name.
+    pub form_field_edits: Vec<FormFieldEdit>,
     pub undo_depth: usize,
     pub redo_depth: usize,
 }
@@ -5729,6 +5732,7 @@ struct DocumentState {
     page_length_calibrations: BTreeMap<u32, LengthCalibration>,
     page_rotations: BTreeMap<u32, PageRotation>,
     page_text_edits: Vec<PageTextEdit>,
+    form_field_edits: Vec<FormFieldEdit>,
     revision: u64,
 }
 
@@ -5809,6 +5813,8 @@ struct RecoveryDocumentState {
     page_rotations: BTreeMap<u32, PageRotation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     page_text_edits: Vec<PageTextEdit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    form_field_edits: Vec<FormFieldEdit>,
     revision: u64,
 }
 
@@ -5904,6 +5910,7 @@ impl RecoveryDocumentState {
             page_length_calibrations: state.page_length_calibrations.clone(),
             page_rotations: state.page_rotations.clone(),
             page_text_edits: state.page_text_edits.clone(),
+            form_field_edits: state.form_field_edits.clone(),
             revision: state.revision,
         })
     }
@@ -5991,6 +5998,7 @@ impl RecoveryDocumentState {
             page_length_calibrations: self.page_length_calibrations,
             page_rotations: self.page_rotations,
             page_text_edits: self.page_text_edits,
+            form_field_edits: self.form_field_edits,
             revision: self.revision,
         };
         validate_recovery_state(&state)?;
@@ -6656,6 +6664,7 @@ impl AnnotationDocument {
                 page_length_calibrations: BTreeMap::new(),
                 page_rotations: BTreeMap::new(),
                 page_text_edits: Vec::new(),
+                form_field_edits: Vec::new(),
                 revision: 0,
             },
             selected_ids: Vec::new(),
@@ -7106,6 +7115,7 @@ impl AnnotationDocument {
             page_length_calibrations,
             page_rotations,
             page_text_edits: Vec::new(),
+            form_field_edits: Vec::new(),
             revision: 0,
         };
         self.selected_ids.clear();
@@ -7212,6 +7222,7 @@ impl AnnotationDocument {
                 .map(|(page_index, rotation)| (*page_index, *rotation))
                 .collect(),
             page_text_edits: self.state.page_text_edits.clone(),
+            form_field_edits: self.state.form_field_edits.clone(),
             undo_depth: self.past.len(),
             redo_depth: self.future.len(),
         }
@@ -7235,6 +7246,41 @@ impl AnnotationDocument {
 
     pub fn page_text_edits(&self) -> &[PageTextEdit] {
         &self.state.page_text_edits
+    }
+
+    pub fn form_field_edits(&self) -> &[FormFieldEdit] {
+        &self.state.form_field_edits
+    }
+
+    /// Records a form field's value as a single undoable change. A value
+    /// that restores the field's original removes its record. Returns
+    /// whether anything changed.
+    pub fn set_form_field_edit(&mut self, edit: FormFieldEdit) -> Result<bool, AnnotationError> {
+        self.require_no_gesture()?;
+        let current = self
+            .state
+            .form_field_edits
+            .iter()
+            .find(|existing| existing.name == edit.name);
+        let original = current.map_or(edit.original.clone(), |existing| existing.original.clone());
+        let replacement = FormFieldEdit { original, ..edit };
+        let unchanged = match current {
+            Some(existing) => *existing == replacement,
+            None => replacement.is_unchanged(),
+        };
+        if unchanged {
+            return Ok(false);
+        }
+        self.commit_state_change(|state| {
+            state
+                .form_field_edits
+                .retain(|existing| existing.name != replacement.name);
+            if !replacement.is_unchanged() {
+                state.form_field_edits.push(replacement);
+                state.form_field_edits.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+        });
+        Ok(true)
     }
 
     /// Records one line's edited text as a single undoable change. An edit
@@ -8121,6 +8167,17 @@ impl AnnotationDocument {
                         .chain(std::iter::once(&mut self.state))
                     {
                         state.page_text_edits = rebase_text_edits(&state.page_text_edits, &saved);
+                    }
+                }
+                let saved = self.state.form_field_edits.clone();
+                if !saved.is_empty() {
+                    for state in self
+                        .past
+                        .iter_mut()
+                        .chain(self.future.iter_mut())
+                        .chain(std::iter::once(&mut self.state))
+                    {
+                        state.form_field_edits = rebase_form_edits(&state.form_field_edits, &saved);
                     }
                 }
                 self.saved_revision = self.state.revision;
@@ -9953,6 +10010,10 @@ impl AnnotationDocument {
         if !self.state.page_text_edits.is_empty() {
             snapshot["page_text_edits"] = serde_json::to_value(&self.state.page_text_edits)
                 .expect("page text edits must serialize");
+        }
+        if !self.state.form_field_edits.is_empty() {
+            snapshot["form_field_edits"] = serde_json::to_value(&self.state.form_field_edits)
+                .expect("form field edits must serialize");
         }
         if !self.state.page_rotations.is_empty() {
             snapshot["page_rotations"] = Value::Array(
@@ -13681,6 +13742,41 @@ mod tests {
             restored.past.back().unwrap().page_text_edits,
             [edit("Final", "Draft")]
         );
+    }
+
+    #[test]
+    fn form_field_edits_undo_redo_and_rebase_when_saved() {
+        use crate::pdf_forms::FormValue;
+        let edit = |original: &str, value: &str| FormFieldEdit {
+            name: "Name".into(),
+            original: FormValue::Text(original.into()),
+            value: FormValue::Text(value.into()),
+        };
+        let mut document = AnnotationDocument::default();
+        assert!(!document.set_form_field_edit(edit("", "")).unwrap());
+        assert!(document.set_form_field_edit(edit("", "Ada")).unwrap());
+        assert!(document.snapshot().dirty);
+        // A second change keeps the document's original value.
+        assert!(document.set_form_field_edit(edit("Ada", "Grace")).unwrap());
+        assert_eq!(document.form_field_edits(), [edit("", "Grace")]);
+        document.undo().unwrap();
+        assert_eq!(document.form_field_edits(), [edit("", "Ada")]);
+        // Back to the original value: no edit.
+        assert!(document.set_form_field_edit(edit("Ada", "")).unwrap());
+        assert!(document.form_field_edits().is_empty());
+        document.undo().unwrap();
+
+        document
+            .apply_command(AnnotationCommand::MarkSaved)
+            .unwrap();
+        assert!(document.form_field_edits().is_empty());
+        assert!(!document.snapshot().dirty);
+        document.undo().unwrap();
+        assert_eq!(document.form_field_edits(), [edit("Ada", "")]);
+
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(restored.form_field_edits(), [edit("Ada", "")]);
     }
 
     #[test]

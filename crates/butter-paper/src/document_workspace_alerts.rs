@@ -18,6 +18,36 @@ pub(super) struct DocumentAlerts {
 }
 
 impl DocumentWorkspace {
+    /// The opening error, dismissed by the X in its top-right corner.
+    pub(super) fn document_open_failure_alert(
+        &self,
+        failure: &DocumentOpenFailure,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        gpui::div()
+            .id(DOCUMENT_OPEN_ERROR_ALERT_ID)
+            .debug_selector(|| DOCUMENT_OPEN_ERROR_ALERT_ID.into())
+            .relative()
+            .w_full()
+            .min_w_0()
+            .child(
+                Alert::error(
+                    "document-workspace-open-feedback-message",
+                    failure.presentation(),
+                )
+                .title("Some PDFs couldn’t be opened")
+                // Room for the X, which sits over the alert's corner.
+                .pr_10(),
+            )
+            .child(gpui::div().absolute().top_1().right_1().child(
+                close_icon_button(DOCUMENT_OPEN_ERROR_DISMISS_ID, "Close opening error").on_click(
+                    cx.listener(|workspace, _, _, cx| {
+                        workspace.dismiss_document_open_failure(cx);
+                    }),
+                ),
+            ))
+    }
+
     pub(super) fn render_document_alerts(
         &self,
         column: gpui::Div,
@@ -71,31 +101,10 @@ impl DocumentWorkspace {
         })
         .when_some(self.last_document_open_failure().cloned().filter(|_| !recovery_only), |root, failure| {
             root.child(
-                h_flex()
+                gpui::div()
                     .w_full()
-                    .gap_2()
                     .p_2()
-                    .child(
-                        gpui::div()
-                            .id(DOCUMENT_OPEN_ERROR_ALERT_ID)
-                            .debug_selector(|| DOCUMENT_OPEN_ERROR_ALERT_ID.into())
-                            .flex_1().min_w_0()
-                            .child(
-                                Alert::error(
-                                    "document-workspace-open-feedback-message",
-                                    failure.presentation(),
-                                )
-                                .title("Some PDFs couldn’t be opened"),
-                            ),
-                    )
-                    .child(
-                        close_icon_button(DOCUMENT_OPEN_ERROR_DISMISS_ID, "Close opening error")
-                            .debug_selector(|| DOCUMENT_OPEN_ERROR_DISMISS_ID.into())
-                            .accessibility_id(DOCUMENT_OPEN_ERROR_DISMISS_ID)
-                            .on_click(cx.listener(|workspace, _, _, cx| {
-                                workspace.dismiss_document_open_failure(cx);
-                            })),
-                    ),
+                    .child(self.document_open_failure_alert(&failure, cx)),
             )
         })
         .when_some(save_failure.filter(|_| recovery_only), |root, failure| {

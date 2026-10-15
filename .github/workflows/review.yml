@@ -1,7 +1,7 @@
 name: Review
 
 # On-screen review on Linux and Windows, run by hand: the review driver
-# (`--features review-driver`) plays crates/butter-paper/tests/review/edit-text.txt
+# (`--features review-driver`) plays crates/butter-paper/tests/review/edit-pdf-content.txt
 # against a copy of a test fixture, and the captures and log are kept as
 # artifacts for a person to inspect. It asserts nothing; CI runs the tests.
 
@@ -39,7 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build with the review driver
         run: cargo build --locked -p butter-paper --bins --features review-driver
-      - name: Run the Edit Text review
+      - name: Run the Edit PDF Content review
         run: |
           set -euo pipefail
           library="$(cargo xtask pdfium)"
@@ -49,7 +49,7 @@ jobs:
           export BP_NATIVE_DEVELOPMENT=1
           export BP_GPUI_DATA_DIR="$review/profile"
           export BP_PDFIUM_LIBRARY="$library"
-          export BP_REVIEW_SCRIPT="$PWD/crates/butter-paper/tests/review/edit-text.txt"
+          export BP_REVIEW_SCRIPT="$PWD/crates/butter-paper/tests/review/edit-pdf-content.txt"
           export BP_REVIEW_OUT="$review/captures"
           export BP_REVIEW_CAPTURE_CMD='import -window root {path}'
           # The script ends with quit; the timeout covers a hang.
@@ -76,7 +76,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build with the review driver
         run: cargo build --locked -p butter-paper --bins --features review-driver
-      - name: Run the Edit Text review
+      - name: Run the Edit PDF Content review
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -87,7 +87,7 @@ jobs:
           $env:BP_NATIVE_DEVELOPMENT = '1'
           $env:BP_GPUI_DATA_DIR = "$review\profile"
           $env:BP_PDFIUM_LIBRARY = $library
-          $env:BP_REVIEW_SCRIPT = Join-Path $PWD 'crates\butter-paper\tests\review\edit-text.txt'
+          $env:BP_REVIEW_SCRIPT = Join-Path $PWD 'crates\butter-paper\tests\review\edit-pdf-content.txt'
           $env:BP_REVIEW_OUT = "$review\captures"
           # The driver runs this with PowerShell for each shot.
           $env:BP_REVIEW_CAPTURE_CMD = "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; " +

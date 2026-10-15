@@ -18,11 +18,12 @@ use crate::{
     },
     pdf_content_geometry::PageSnapGeometry,
     pdf_engine::PdfPersistenceSession,
-    pdf_text_edit::{PageTextEdit, PageTextLayer},
+    pdf_forms::FormLayer,
+    pdf_text_edit::PageTextLayer,
     pdf_worker::{
-        AnnotationRenderMode, ClipRect, DocumentInfo, JobId, PageGeometry, RenderRequest,
-        RequestId, Rotation, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId, WorkerError,
-        WorkerErrorCode, WorkerProcessClient, WorkerRequest, WorkerResponse,
+        AnnotationRenderMode, ClipRect, DocumentEdits, DocumentInfo, JobId, PageGeometry,
+        RenderRequest, RequestId, Rotation, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId,
+        WorkerError, WorkerErrorCode, WorkerProcessClient, WorkerRequest, WorkerResponse,
     },
     semantic_snapping::PageGridDefinition,
     viewer::TileRequest,
@@ -273,13 +274,18 @@ pub trait NativeDocumentResource: Send + Sync {
     fn digitally_signed(&self) -> bool {
         false
     }
-    /// Replaces the page-text edits renders show.
-    fn set_text_edits(&self, edits: &[PageTextEdit]) -> Result<(), String> {
+    /// Replaces the edits renders show: edited page text and filled form
+    /// fields.
+    fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
         if edits.is_empty() {
             Ok(())
         } else {
-            Err("page text editing is unavailable for this document".into())
+            Err("editing is unavailable for this document".into())
         }
+    }
+    /// The document's form fields, read when it was opened.
+    fn form_layer(&self) -> Arc<FormLayer> {
+        Arc::default()
     }
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String>;
     fn close(&self) -> Result<(), String>;
@@ -477,6 +483,14 @@ impl OpenedNativeDocument {
         self.resource.page_snap_geometry(page_index)
     }
 
+    pub fn form_layer(&self) -> Arc<FormLayer> {
+        self.resource.form_layer()
+    }
+
+    pub fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
+        self.resource.set_document_edits(edits)
+    }
+
     pub fn close(&self) -> Result<(), String> {
         self.resource.close()
     }
@@ -532,18 +546,18 @@ pub struct DocumentRecoveryRequest {
 pub trait NativeDocumentOpener: Send + Sync {
     fn open(&self, request: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String>;
 
-    /// Opens a document whose page text is already edited (a recovered
+    /// Opens a document whose content is already edited (a recovered
     /// session), so its first renders show the edits.
-    fn open_with_text_edits(
+    fn open_with_edits(
         &self,
         request: &OpenDocumentRequest,
-        edits: &[PageTextEdit],
+        edits: &DocumentEdits,
     ) -> Result<OpenedNativeDocument, String> {
         let opened = self.open(request)?;
         if !edits.is_empty() {
-            // A failure leaves the source text; the session reports it when
-            // it shows its edits.
-            let _ = opened.resource.set_text_edits(edits);
+            // A failure leaves the source content; the session reports it
+            // when it shows its edits.
+            let _ = opened.resource.set_document_edits(edits);
         }
         Ok(opened)
     }
@@ -566,13 +580,13 @@ impl PdfiumWorkerBackend {
 
 impl NativeDocumentOpener for PdfiumWorkerBackend {
     fn open(&self, request: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String> {
-        self.open_with_text_edits(request, &[])
+        self.open_with_edits(request, &DocumentEdits::default())
     }
 
-    fn open_with_text_edits(
+    fn open_with_edits(
         &self,
         request: &OpenDocumentRequest,
-        edits: &[PageTextEdit],
+        edits: &DocumentEdits,
     ) -> Result<OpenedNativeDocument, String> {
         let source_sha256: [u8; 32] =
             Sha256::digest(fs::read(&request.path).map_err(|error| error.to_string())?).into();
@@ -598,10 +612,13 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
         resource
             .digitally_signed
             .store(persistence.is_digitally_signed(), Ordering::Release);
+        if let Ok(mut form_layer) = resource.form_layer.lock() {
+            *form_layer = Arc::new(persistence.form_layer());
+        }
         if !edits.is_empty() {
-            // Before the first renders. A failure leaves the source text; the
-            // session reports it when it shows its edits.
-            let _ = resource.set_text_edits(edits);
+            // Before the first renders. A failure leaves the source content;
+            // the session reports it when it shows its edits.
+            let _ = resource.set_document_edits(edits);
         }
         // Revu vector Snapshots: the worker draws each Form for the canvas.
         // A failure keeps the placeholder; the saved file keeps the Form.
@@ -666,6 +683,7 @@ struct PdfiumWorkerResource {
     next_surface: AtomicU64,
     released: AtomicBool,
     digitally_signed: AtomicBool,
+    form_layer: Mutex<Arc<FormLayer>>,
 }
 
 impl PdfiumWorkerResource {
@@ -748,6 +766,7 @@ impl PdfiumWorkerResource {
                 next_surface: AtomicU64::new(1),
                 released: AtomicBool::new(false),
                 digitally_signed: AtomicBool::new(false),
+                form_layer: Mutex::default(),
             }))
         })();
         if result.is_err() {
@@ -1001,7 +1020,14 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         self.digitally_signed.load(Ordering::Acquire)
     }
 
-    fn set_text_edits(&self, edits: &[PageTextEdit]) -> Result<(), String> {
+    fn form_layer(&self) -> Arc<FormLayer> {
+        self.form_layer
+            .lock()
+            .map(|layer| layer.clone())
+            .unwrap_or_default()
+    }
+
+    fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
         let mut guard = self
             .client
             .lock()
@@ -1010,18 +1036,20 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             .as_mut()
             .ok_or_else(|| "PDF worker resource is released".to_owned())?;
         match client
-            .exchange(&WorkerRequest::SetTextEdits {
+            .exchange(&WorkerRequest::SetDocumentEdits {
                 request_id: self.request_id(),
                 session_id: self.session_id,
-                edits: edits.to_vec(),
+                edits: edits.clone(),
             })
             .map_err(worker_error)?
         {
-            WorkerResponse::TextEditsSet { session_id, .. } if session_id == self.session_id => {
+            WorkerResponse::DocumentEditsSet { session_id, .. }
+                if session_id == self.session_id =>
+            {
                 Ok(())
             }
             WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
-            response => Err(unexpected_response("text edits", response)),
+            response => Err(unexpected_response("document edits", response)),
         }
     }
 

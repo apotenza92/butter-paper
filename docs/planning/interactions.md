@@ -9,7 +9,7 @@ reference; entries marked *native* are deliberate departures from it.
   `E`, Arc `Shift+C`, Line `L`, Arrow `A`, Dimension `Shift+L`, Length
   `Shift+Alt+L`, Polylength `Shift+Alt+Q`, Area `Shift+Alt+A`, Polyline
   `Shift+N`, Polygon `Shift+P`, Pen `P`, Highlight `H`, Cloud `C`, Cloud+
-  `K`, Callout `Q`, Image `I`, Snapshot `G`, Edit Text `Shift+T`. Tool
+  `K`, Callout `Q`, Image `I`, Snapshot `G`, Edit PDF Content `Shift+T`. Tool
   shortcuts ignore Cmd/Ctrl and editable or menu targets, including the Edit
   Text editor.
 - Holding Space pans and restores the previous tool on release; two Space
@@ -98,7 +98,7 @@ tooltip expands the instructions when the window truncates them.
 
 ## Editing page text
 
-Edit Text (the rail's Edit section) edits the PDF's own text a paragraph at a
+Edit PDF Content (the rail's Edit section) edits the PDF's own text a paragraph at a
 time, as Acrobat does; it is a separate tool, not part of Select.
 
 - Lines group into paragraphs: same font, size and line spacing, sharing a
@@ -107,7 +107,7 @@ time, as Acrobat does; it is a separate tool, not part of Select.
   one edge, with their wrapped lines at the items' text) is one paragraph.
   A paragraph that runs to the foot of a column without ending a sentence
   and continues at the top of the next column of the same width is one
-  paragraph over both. With Edit Text active, every editable paragraph on
+  paragraph over both. With Edit PDF Content active, every editable paragraph on
   the visible pages is outlined faintly (not text outside the page's visible
   area); hovering outlines one strongly. A page's text is read once the view
   settles on it and dropped when the view moves far away, so scrolling a long
@@ -161,7 +161,7 @@ time, as Acrobat does; it is a separate tool, not part of Select.
   any installed font that has the character (in the line's weight and
   slant first). Only a character no available font draws is refused, with a
   status message.
-- The Edit Text properties open as other tools' do (a double-click on the
+- The Edit PDF Content properties open as other tools' do (a double-click on the
   tool, or the properties button), never by editing text; without a
   paragraph being edited they say to click text. While one is, they show its font
   (the document font, the bundled families or any installed family), size,
@@ -181,9 +181,45 @@ time, as Acrobat does; it is a separate tool, not part of Select.
   the page, or a file whose permissions forbid changing content) is shown
   with a not-allowed
   cursor; a click explains why.
-- In a digitally signed PDF the first press asks "Edit text in a signed
+- In a digitally signed PDF the first press asks "Edit content in a signed
   PDF?" (saving invalidates the signatures); Cancel leaves the text alone
-  and asks again next time, Edit Text allows editing for that document.
+  and asks again next time, Edit PDF Content allows editing for that document.
+
+## Filling forms
+
+A PDF's form fields are filled with the Select tool, as in Acrobat and Revu.
+
+- With Select active, every fillable field on the visible pages is outlined
+  in the selection blue, as Edit PDF Content outlines paragraphs; hovering
+  a field fills it faintly, and the focused field is filled and outlined
+  strongly. Read-only fields are not outlined.
+- Markups sit above fields: a press on a markup or its handles selects it,
+  and hover shows a field only where no markup is. Elsewhere a press on a
+  field focuses and fills it, and clears any markup selection.
+- A text field opens an editor in place, in the field's text size (a fitted
+  size when it has none), on the paper. Multi-line fields wrap and take
+  Enter; password fields are masked; a maximum length stops typing at it.
+  Enter finishes a single-line field.
+- Check boxes and radio buttons toggle on a click, or Space when focused. A
+  radio group that cannot be turned off stays on its choice.
+- A combo or list box opens its options below the field on a click, or
+  Space or Enter when focused, with the current choices ticked; a pick sets
+  the field. A list box allowing several choices toggles the picked option.
+  An editable combo box also offers "Type a Value…".
+- Tab and Shift+Tab commit the field and move through the fillable fields
+  in the page's tab order (rows, columns or annotation order), page by page,
+  scrolling the next into view. Escape, a click elsewhere, changing tool or
+  document and saving commit and finish.
+- Each committed value is one undo step and marks the document unsaved.
+  The page shows the field as it will be saved: PDFium re-renders it with
+  its new appearance. Characters no available font can draw are refused
+  with a status message.
+- A click on a signature field or a form button says it is not supported;
+  on a read-only field, that it is read-only. A form described only in XFA
+  has no fields to fill; a click on its page says so.
+- In a digitally signed PDF the first fill asks "Fill in a signed PDF?";
+  Fill In allows filling and editing content for that document, as the
+  Edit PDF Content prompt does.
 
 ## Cursors
 
@@ -194,8 +230,10 @@ time, as Acrobat does; it is a separate tool, not part of Select.
 | Vertex or endpoint | crosshair |
 | Rotation knob | Butter Paper's rotate arrow |
 | Movable stroke, fill or content; either Rectangle move band, selected or not | open hand |
-| Editable page text with Edit Text, and while selecting it | I-beam |
-| Page text Edit Text cannot change | not allowed |
+| Editable page text with Edit PDF Content, and while selecting it | I-beam |
+| Page text Edit PDF Content cannot change | not allowed |
+| A fillable text field with Select | I-beam |
+| A fillable check box, radio button, combo or list box with Select | pointing hand |
 | Moving a markup | closed hand |
 | Pan tool | open hand; closed while dragging |
 | Elsewhere | arrow |

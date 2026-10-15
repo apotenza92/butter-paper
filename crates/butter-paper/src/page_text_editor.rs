@@ -1,4 +1,4 @@
-//! The inline editor for existing page text (the Edit Text tool).
+//! The inline editor for existing page text (the Edit PDF Content tool).
 //!
 //! [`PageTextEditState`] is the editing model: one line's characters, each
 //! with the run style it is drawn in, a caret and selection, and the layout

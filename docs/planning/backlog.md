@@ -39,7 +39,7 @@ alone do not establish these behaviours.
 - Undo after Save does nothing in the review build (Rectangles too): the
   Undo action reports no error. Check whether history should survive a save.
 
-## Edit Text
+## Edit PDF Content
 
 Paragraph editing works and is checked against real Chrome, LibreOffice
 and Quartz output (`tests/page_text_corpus.rs`; see [interactions.md](interactions.md#editing-page-text)
@@ -49,7 +49,7 @@ with `cargo test --workspace`, `cargo xtask check`, the real-PDFium
 `--ignored` worker tests and, for visible changes, a native review with
 inspected captures. Steps are in priority order.
 
-1. **Linux review workflow.** Edit Text, lists, columns and edge resize
+1. **Linux review workflow.** Edit PDF Content, lists, columns and edge resize
     pass the native review on Windows and on Linux under WSLg. The manual
     `Review` workflow (`.github/workflows/review.yml`) runs Linux under Xvfb
     with software Vulkan, which drew only black windows under WSL (with GL
@@ -81,5 +81,7 @@ inspected captures. Steps are in priority order.
 - Scriptable CLI sharing the app's document, annotation and export
   capabilities, possibly with an MCP interface (#37).
 - In-app agent chat with cloud and local models (#38).
-- Interactive PDF forms and popup notes: currently preserved and rendered
-  statically, not editable.
+- Popup notes: currently preserved and rendered statically, not editable.
+- Form filling follow-ups: form JavaScript (calculations, formatting,
+  validation), creating fields, signing signature fields, XFA forms, FDF and
+  XFDF import and export, and flattening.

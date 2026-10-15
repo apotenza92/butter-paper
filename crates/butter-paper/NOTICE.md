@@ -58,7 +58,7 @@ SC and Noto Emoji. The fonts are licensed under the SIL Open Font License
 
 ## Adobe CMaps
 
-Edit Text reads glyph widths through range tables packed from Adobe's
+Edit PDF Content reads glyph widths through range tables packed from Adobe's
 Unicode CMaps (`assets/cmaps`; https://github.com/adobe-type-tools/cmap-resources),
 BSD-3-Clause:
 

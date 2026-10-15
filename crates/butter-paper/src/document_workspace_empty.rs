@@ -39,10 +39,10 @@ impl DocumentWorkspace {
                     .unwrap_or(path.as_os_str())
                     .to_string_lossy()
                     .into_owned();
-                let full_path = path.to_string_lossy().into_owned();
+                let full_path = crate::recent_documents::display_path(path);
                 let folder = path
                     .parent()
-                    .map(|folder| folder.to_string_lossy().into_owned())
+                    .map(crate::recent_documents::display_path)
                     .unwrap_or_default();
                 let open_path = path.clone();
                 let reveal_path = path.clone();
@@ -377,30 +377,13 @@ impl DocumentWorkspace {
                                 .when_some(recent_documents, |view, list| view.child(list))
                                 .when_some(open_failure, |view, failure| {
                                     view.child(
-                            v_flex()
-                                .w(gpui::rems(32.)).max_w(window.viewport_size().width - px(32.)).min_w_0().whitespace_normal()
-                                .gap_2()
-                                .child(
-                                    gpui::div()
-                                        .id(DOCUMENT_OPEN_ERROR_ALERT_ID)
-                                        .debug_selector(|| DOCUMENT_OPEN_ERROR_ALERT_ID.into())
-                                        .child(
-                                            Alert::error(
-                                                "document-workspace-open-feedback-message",
-                                                failure.presentation(),
-                                            )
-                                            .title("Some PDFs couldn’t be opened"),
-                                        ),
-                                )
-                                .child(
-                                    close_icon_button(DOCUMENT_OPEN_ERROR_DISMISS_ID, "Close opening error")
-                                        .debug_selector(|| DOCUMENT_OPEN_ERROR_DISMISS_ID.into())
-                                        .accessibility_id(DOCUMENT_OPEN_ERROR_DISMISS_ID)
-                                        .on_click(cx.listener(|workspace, _, _, cx| {
-                                            workspace.dismiss_document_open_failure(cx);
-                                        })),
-                                ),
-                        )
+                                        gpui::div()
+                                            .w(gpui::rems(32.))
+                                            .max_w(window.viewport_size().width - px(32.))
+                                            .min_w_0()
+                                            .whitespace_normal()
+                                            .child(self.document_open_failure_alert(&failure, cx)),
+                                    )
                                 })
                                 .when_some(error, |view, error| {
                                     view.child(

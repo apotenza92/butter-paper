@@ -137,7 +137,7 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
 
 ## Edited page text
 
-Edit Text changes the page content stream, not an annotation
+Edit PDF Content changes the page content stream, not an annotation
 (`pdf_text_edit.rs`). An edit names a line by its origin and original text
 and always applies to the unedited file.
 
@@ -243,6 +243,46 @@ and always applies to the unedited file.
   whole file as before.
 - Saving checks every edited line in the reopened file. After a save the
   undo history is rebased onto the saved text.
+
+## Filled form fields
+
+Butter Paper fills the AcroForm fields a PDF already has (`pdf_forms.rs`).
+It does not create fields, run form JavaScript, sign signature fields or
+fill XFA forms.
+
+- A value is written as the field's `/V` on the node that names it: text as
+  a PDF text string (UTF-16 with a byte-order mark when it has non-ASCII
+  characters or line breaks); a check box or radio button as its on-state
+  name, or `/Off`, with each widget's `/AS` set to match; a choice as a
+  string or, for several choices, an array, with a list box's `/I` indices.
+- Each widget of a filled text or choice field gets a new normal appearance
+  (`/AP /N`): the `/MK` background and border colours, the `/BS` (or
+  `/Border`) width and style, and text in the `/DA` colour and size. A zero
+  size fits the text to the field (a multi-line field shrinks from 12 pt to
+  fit its lines). Comb fields centre a character in each cell, multi-line
+  fields wrap at words, a combo box shows the chosen option's display text,
+  and a list box lists its options from the top one shown, highlighting the
+  chosen ones. `/MK /R` rotation becomes the appearance's `/Matrix`.
+- The `/DA` font picks the family: Times names draw in Tinos, Courier names
+  in Roboto Mono, and others in the standard Helvetica (WinAnsi). Text
+  Helvetica cannot encode is set in Arimo, its metric twin, and characters
+  the family lacks fall back to Noto Sans SC and Noto Emoji, embedded as
+  subsets.
+- Check boxes and radio buttons keep the appearance states they have; one
+  without them gets ZapfDingbats on and off states (`/MK /CA` or a check
+  mark; a dot for radio buttons).
+- A form with both AcroForm fields and XFA loses its `/XFA` when filled, so
+  viewers that prefer XFA cannot show stale values. `/NeedAppearances` is
+  left as it is.
+- For display only, the worker draws fields with no appearance (all text
+  and choice fields when the form sets `/NeedAppearances`) from their
+  values, so they never show the missing-appearance marker. Saving changes
+  only the fields that were filled.
+- Saving checks each filled value in the reopened file. After a save the
+  undo history is rebased onto the saved values, as for page text.
+- Revu 21 reads the values Butter Paper writes (its `FormExport` lists
+  them, Unicode and line breaks included) and keeps them when it re-saves
+  the file.
 
 ## Known differences (follow-ups)
 

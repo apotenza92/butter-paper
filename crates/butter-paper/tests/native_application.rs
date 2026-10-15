@@ -1959,15 +1959,18 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
                 (select.left() + hand.right()) / 2.,
                 resized.center().x + px(0.5)
             );
-            // Edit Text has its own section between General and Review.
-            let edit_text = cx
-                .debug_bounds("document-workspace-edit-text-tool")
+            // Edit PDF Content has its own section between General and Review.
+            let edit_pdf_content = cx
+                .debug_bounds("document-workspace-edit-pdf-content-tool")
                 .unwrap();
             let text_box = cx
                 .debug_bounds(butter_paper::document_workspace::DOCUMENT_TEXT_BOX_TOOL_ID)
                 .unwrap();
-            assert!(edit_text.top() > hand.bottom() && edit_text.bottom() < text_box.top());
-            assert_eq!(edit_text.center().x, resized.center().x + px(0.5));
+            assert!(
+                edit_pdf_content.top() > hand.bottom()
+                    && edit_pdf_content.bottom() < text_box.top()
+            );
+            assert_eq!(edit_pdf_content.center().x, resized.center().x + px(0.5));
         }
     }
     let document_id =

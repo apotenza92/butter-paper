@@ -1,4 +1,4 @@
-//! The Edit Text tool on the canvas: hovering, clicking and dragging in
+//! The Edit PDF Content tool on the canvas: hovering, clicking and dragging in
 //! existing page text, the inline editor, and keeping the PDF worker's
 //! rendering in step with page-text edits.
 //!
@@ -22,6 +22,7 @@ use crate::pdf_text_edit::{
     layout_text_edit_fitted,
 };
 use crate::pdf_text_reflow::Paragraph;
+use crate::pdf_worker::DocumentEdits;
 use gpui::{AnyElement, ElementInputHandler};
 use std::collections::BTreeSet;
 
@@ -37,18 +38,18 @@ pub(super) enum PageTextLayerState {
     Failed(String),
 }
 
-/// Per document: the editable text of its pages and the edits the PDF
-/// worker currently renders.
+/// Per document: the editable text of its pages and the edits (page text
+/// and form fields) the PDF worker currently renders.
 #[derive(Default)]
 pub(super) struct PageTextDocumentState {
     epoch: u64,
     layers: HashMap<u32, PageTextLayerState>,
     /// The edits the worker renders.
-    shown: Vec<PageTextEdit>,
+    shown: DocumentEdits,
     /// Edits sent to the worker and not yet acknowledged.
-    sending: Option<Vec<PageTextEdit>>,
+    sending: Option<DocumentEdits>,
     /// Edits the worker rejected; not retried until they change.
-    rejected: Option<Vec<PageTextEdit>>,
+    rejected: Option<DocumentEdits>,
     /// The last hovered point, tested again when its page's text arrives.
     hover_probe: Option<(PageInteraction, PdfPoint)>,
     /// Each page's paragraph outlines, a quad per line keyed by the
@@ -76,7 +77,7 @@ pub(super) struct PageTextHover {
     pub editable: bool,
 }
 
-/// What the viewport draws over one page for the Edit Text tool, in page
+/// What the viewport draws over one page for the Edit PDF Content tool, in page
 /// user space.
 #[derive(Clone)]
 pub(super) struct PageTextOverlay {
@@ -111,8 +112,13 @@ struct PageTextHit {
 
 /// The text-space span of a line's visible characters as `runs` lay it
 /// out, without leading and trailing spaces.
-/// The pages whose edits differ between two sets of page-text edits.
-fn changed_text_pages(before: &[PageTextEdit], after: &[PageTextEdit]) -> BTreeSet<u32> {
+/// The pages whose content differs between two sets of edits: pages whose
+/// text edits differ, and the pages of form fields whose values differ.
+fn changed_pages(
+    before: &DocumentEdits,
+    after: &DocumentEdits,
+    form: &crate::pdf_forms::FormLayer,
+) -> BTreeSet<u32> {
     let on_page = |edits: &[PageTextEdit], page: u32| {
         edits
             .iter()
@@ -120,12 +126,28 @@ fn changed_text_pages(before: &[PageTextEdit], after: &[PageTextEdit]) -> BTreeS
             .cloned()
             .collect::<Vec<_>>()
     };
-    before
+    let mut pages = before
+        .text
         .iter()
-        .chain(after)
+        .chain(&after.text)
         .map(|edit| edit.page_index)
-        .filter(|page| on_page(before, *page) != on_page(after, *page))
-        .collect()
+        .filter(|page| on_page(&before.text, *page) != on_page(&after.text, *page))
+        .collect::<BTreeSet<_>>();
+    let value = |edits: &DocumentEdits, name: &str| {
+        edits
+            .forms
+            .iter()
+            .find(|edit| edit.name == name)
+            .map(|edit| edit.value.clone())
+    };
+    for edit in before.forms.iter().chain(&after.forms) {
+        if value(before, &edit.name) != value(after, &edit.name)
+            && let Some(field) = form.field(&edit.name)
+        {
+            pages.extend(field.widgets.iter().map(|widget| widget.page_index));
+        }
+    }
+    pages
 }
 
 fn visible_span(
@@ -200,7 +222,7 @@ impl DocumentWorkspace {
 
     /// The editable text of a page, requesting it from the worker when
     /// it has not been read.
-    /// With Edit Text active, loads the text of the visible pages, so the
+    /// With Edit PDF Content active, loads the text of the visible pages, so the
     /// first press on them finds their lines.
     pub(super) fn prefetch_page_text(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
         let Some(session) = self.session(document_id, cx).cloned() else {
@@ -399,7 +421,8 @@ impl DocumentWorkspace {
                     .hover_probe
                     .filter(|(interaction, _)| interaction.page_index == page_index);
                 if let Some((interaction, point)) = probe
-                    && workspace.annotation_tool(document_id, cx) == Some(AnnotationTool::EditText)
+                    && workspace.annotation_tool(document_id, cx)
+                        == Some(AnnotationTool::EditPdfContent)
                 {
                     workspace.update_page_text_hover(interaction, point, cx);
                 }
@@ -448,9 +471,27 @@ impl DocumentWorkspace {
         edits
     }
 
-    /// Sends the edits the page should show to the worker when they differ
-    /// from what it renders, one update at a time, then refreshes the view.
-    pub(super) fn sync_page_text_edits(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+    /// The form field values the pages should show: the document's.
+    fn form_field_edits_of(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Vec<crate::pdf_forms::FormFieldEdit> {
+        self.session(document_id, cx)
+            .map(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .document_form_field_edits(document_id.value())
+                    .to_vec()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Sends the edits the pages should show (page text and form fields) to
+    /// the worker when they differ from what it renders, one update at a
+    /// time, then refreshes the view.
+    pub(super) fn sync_document_edits(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
         let Some(session) = self.session(document_id, cx).cloned() else {
             self.page_text.remove(&document_id);
             return;
@@ -459,7 +500,14 @@ impl DocumentWorkspace {
             let session = session.read(cx);
             (session.resource_epoch, session.resource.clone())
         };
-        let desired = self.desired_page_text_edits(document_id, cx);
+        let desired = DocumentEdits {
+            text: self.desired_page_text_edits(document_id, cx),
+            forms: self.form_field_edits_of(document_id, cx),
+        };
+        let form = resource
+            .as_ref()
+            .map(|resource| resource.form_layer())
+            .unwrap_or_default();
         let state = self.page_text_state(document_id, epoch);
         if state.sending.is_some()
             || state.shown == desired
@@ -474,7 +522,7 @@ impl DocumentWorkspace {
         let sent = desired.clone();
         let task = cx
             .background_executor()
-            .spawn(async move { resource.set_text_edits(&sent) });
+            .spawn(async move { resource.set_document_edits(&sent) });
         cx.spawn(async move |owner, cx| {
             let result = task.await;
             let _ = owner.update(cx, |workspace, cx| {
@@ -487,7 +535,7 @@ impl DocumentWorkspace {
                 state.sending = None;
                 match result {
                     Ok(()) => {
-                        let changed_pages = changed_text_pages(&state.shown, &desired);
+                        let changed_pages = changed_pages(&state.shown, &desired, &form);
                         state.shown = desired;
                         state.rejected = None;
                         if let Some(session) = workspace.session(document_id, cx).cloned() {
@@ -516,11 +564,11 @@ impl DocumentWorkspace {
                         state.rejected = Some(desired);
                         workspace
                             .annotation_statuses
-                            .insert(document_id, format!("Edited text cannot be shown: {error}"));
+                            .insert(document_id, format!("Edits cannot be shown: {error}"));
                     }
                 }
                 // Catch up with changes made while this update ran.
-                workspace.sync_page_text_edits(document_id, cx);
+                workspace.sync_document_edits(document_id, cx);
                 cx.notify();
             });
         })
@@ -657,7 +705,7 @@ impl DocumentWorkspace {
             .map_or(hit.line.anchor, |block| block.lines[0])
     }
 
-    /// Hover feedback for the Edit Text tool. Hover and press share the
+    /// Hover feedback for the Edit PDF Content tool. Hover and press share the
     /// same hit test, so the I-beam always means a click edits there.
     pub(super) fn update_page_text_hover(
         &mut self,
@@ -716,7 +764,7 @@ impl DocumentWorkspace {
                 PageTextInputEvent::Changed => {
                     if let Some(editing) = workspace.page_text_editing {
                         workspace.annotation_statuses.remove(&editing.document_id);
-                        workspace.sync_page_text_edits(editing.document_id, cx);
+                        workspace.sync_document_edits(editing.document_id, cx);
                     }
                     cx.notify();
                 }
@@ -742,7 +790,7 @@ impl DocumentWorkspace {
         input
     }
 
-    /// A press with the Edit Text tool: place the caret in editable text
+    /// A press with the Edit PDF Content tool: place the caret in editable text
     /// (selecting a word or the line on double and triple click), or finish
     /// editing when the press is elsewhere.
     /// Asks before the first text edit of a signed document: saving changed
@@ -757,7 +805,7 @@ impl DocumentWorkspace {
             let owner = owner.clone();
             alert
                 .close_button(false)
-                .title("Edit text in a signed PDF?")
+                .title("Edit content in a signed PDF?")
                 .description(
                     "This PDF is digitally signed. Saving changes to its text invalidates its signatures.",
                 )
@@ -774,7 +822,7 @@ impl DocumentWorkspace {
                             Button::new(DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID)
                                 .debug_selector(|| DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID.into())
                                 .danger()
-                                .label("Edit Text"),
+                                .label("Edit PDF Content"),
                         )),
                 )
                 .on_ok(move |_, _, cx| {
@@ -999,31 +1047,32 @@ impl DocumentWorkspace {
         }
     }
 
-    pub fn edit_text_property_inspector(
+    pub fn edit_pdf_content_property_inspector(
         &self,
-    ) -> Option<Entity<crate::edit_text_property_inspector::EditTextPropertyInspector>> {
-        self.edit_text_property_inspector
+    ) -> Option<Entity<crate::edit_pdf_content_property_inspector::EditPdfContentPropertyInspector>>
+    {
+        self.edit_pdf_content_property_inspector
             .as_ref()
             .map(|(inspector, _)| inspector.clone())
     }
 
-    pub(super) fn ensure_edit_text_property_inspector(
+    pub(super) fn ensure_edit_pdf_content_property_inspector(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<crate::edit_text_property_inspector::EditTextPropertyInspector> {
-        use crate::edit_text_property_inspector::{
-            EditTextPropertyEvent, EditTextPropertyInspector,
+    ) -> Entity<crate::edit_pdf_content_property_inspector::EditPdfContentPropertyInspector> {
+        use crate::edit_pdf_content_property_inspector::{
+            EditPdfContentPropertyEvent, EditPdfContentPropertyInspector,
         };
-        if let Some((inspector, _)) = &self.edit_text_property_inspector {
+        if let Some((inspector, _)) = &self.edit_pdf_content_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|cx| EditTextPropertyInspector::new(window, cx));
+        let inspector = cx.new(|cx| EditPdfContentPropertyInspector::new(window, cx));
         let subscription = cx.subscribe_in(
             &inspector,
             window,
-            |workspace, _, event: &EditTextPropertyEvent, window, cx| {
-                workspace.apply_edit_text_property_patch(event.patch.clone(), cx);
+            |workspace, _, event: &EditPdfContentPropertyEvent, window, cx| {
+                workspace.apply_edit_pdf_content_property_patch(event.patch.clone(), cx);
                 // Typing continues in the text, as after a toolbar command.
                 if event.return_focus
                     && let Some((input, _)) = &workspace.page_text_input
@@ -1033,25 +1082,25 @@ impl DocumentWorkspace {
                 }
             },
         );
-        self.edit_text_property_inspector = Some((inspector.clone(), subscription));
+        self.edit_pdf_content_property_inspector = Some((inspector.clone(), subscription));
         inspector
     }
 
-    /// Whether the Edit Text properties show: when the tool's properties
+    /// Whether the Edit PDF Content properties show: when the tool's properties
     /// are open, as other tools' are (a double-click on the tool, or the
     /// properties button); editing text never opens them.
-    pub(super) fn edit_text_properties_visible(&self, _cx: &App) -> bool {
+    pub(super) fn edit_pdf_content_properties_visible(&self, _cx: &App) -> bool {
         self.right_rail_actions_open
     }
 
     /// Shows the edited paragraph's text properties in the inspector.
-    pub(super) fn sync_edit_text_property_inspector(
+    pub(super) fn sync_edit_pdf_content_property_inspector(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let snapshot = self.edit_text_property_snapshot(cx);
-        let inspector = self.ensure_edit_text_property_inspector(window, cx);
+        let snapshot = self.edit_pdf_content_property_snapshot(cx);
+        let inspector = self.ensure_edit_pdf_content_property_inspector(window, cx);
         match snapshot {
             Some(snapshot) => {
                 if inspector.read(cx).snapshot() != Some(&snapshot) {
@@ -1062,10 +1111,10 @@ impl DocumentWorkspace {
         }
     }
 
-    fn edit_text_property_snapshot(
+    fn edit_pdf_content_property_snapshot(
         &self,
         cx: &App,
-    ) -> Option<crate::edit_text_property_inspector::EditTextPropertySnapshot> {
+    ) -> Option<crate::edit_pdf_content_property_inspector::EditPdfContentPropertySnapshot> {
         let (input, _) = self.page_text_input.as_ref()?;
         let state = input.read(cx).state.as_ref()?;
         let style = state.current_style()?.clone();
@@ -1082,7 +1131,7 @@ impl DocumentWorkspace {
         };
         let line_fill = paragraph.lines()[0].fill;
         Some(
-            crate::edit_text_property_inspector::EditTextPropertySnapshot {
+            crate::edit_pdf_content_property_inspector::EditPdfContentPropertySnapshot {
                 family,
                 size: style.font_size,
                 fill: style.fill.or(line_fill).unwrap_or([0.; 3]),
@@ -1097,12 +1146,12 @@ impl DocumentWorkspace {
     }
 
     /// Applies a text property to the selection, or the whole paragraph.
-    fn apply_edit_text_property_patch(
+    fn apply_edit_pdf_content_property_patch(
         &mut self,
-        patch: crate::edit_text_property_inspector::EditTextPropertyPatch,
+        patch: crate::edit_pdf_content_property_inspector::EditPdfContentPropertyPatch,
         cx: &mut Context<Self>,
     ) {
-        use crate::edit_text_property_inspector::EditTextPropertyPatch;
+        use crate::edit_pdf_content_property_inspector::EditPdfContentPropertyPatch;
         use crate::pdf_text_edit::TextRunStyle;
         let Some(input) = self
             .page_text_input
@@ -1155,7 +1204,7 @@ impl DocumentWorkspace {
             style
         };
         match patch {
-            EditTextPropertyPatch::Family(family) => input.update(cx, |input, cx| {
+            EditPdfContentPropertyPatch::Family(family) => input.update(cx, |input, cx| {
                 input.restyle(
                     |style| match &family {
                         None => TextRunStyle {
@@ -1177,7 +1226,7 @@ impl DocumentWorkspace {
                     cx,
                 )
             }),
-            EditTextPropertyPatch::Bold(bold) => input.update(cx, |input, cx| {
+            EditPdfContentPropertyPatch::Bold(bold) => input.update(cx, |input, cx| {
                 input.restyle(
                     |style| {
                         let (family, _, italic) = current(style);
@@ -1186,7 +1235,7 @@ impl DocumentWorkspace {
                     cx,
                 )
             }),
-            EditTextPropertyPatch::Italic(italic) => input.update(cx, |input, cx| {
+            EditPdfContentPropertyPatch::Italic(italic) => input.update(cx, |input, cx| {
                 input.restyle(
                     |style| {
                         let (family, bold, _) = current(style);
@@ -1195,7 +1244,7 @@ impl DocumentWorkspace {
                     cx,
                 )
             }),
-            EditTextPropertyPatch::Size(size) => input.update(cx, |input, cx| {
+            EditPdfContentPropertyPatch::Size(size) => input.update(cx, |input, cx| {
                 input.restyle(
                     |style| TextRunStyle {
                         font_size: size,
@@ -1204,7 +1253,7 @@ impl DocumentWorkspace {
                     cx,
                 )
             }),
-            EditTextPropertyPatch::Fill(fill) => input.update(cx, |input, cx| {
+            EditPdfContentPropertyPatch::Fill(fill) => input.update(cx, |input, cx| {
                 input.restyle(
                     |style| TextRunStyle {
                         fill: Some(fill),
@@ -1213,7 +1262,7 @@ impl DocumentWorkspace {
                     cx,
                 )
             }),
-            EditTextPropertyPatch::Alignment(alignment) => input.update(cx, |input, cx| {
+            EditPdfContentPropertyPatch::Alignment(alignment) => input.update(cx, |input, cx| {
                 let Some(mut format) = input.state.as_ref().map(|state| state.paragraph().format())
                 else {
                     return;
@@ -1221,7 +1270,7 @@ impl DocumentWorkspace {
                 format.alignment = Some(alignment);
                 input.set_format(format, cx);
             }),
-            EditTextPropertyPatch::LineSpacing(spacing) => input.update(cx, |input, cx| {
+            EditPdfContentPropertyPatch::LineSpacing(spacing) => input.update(cx, |input, cx| {
                 let Some(mut format) = input.state.as_ref().map(|state| state.paragraph().format())
                 else {
                     return;
@@ -1255,7 +1304,7 @@ impl DocumentWorkspace {
                 editing.document_id,
                 "The edited text was discarded because the document was reloaded".into(),
             );
-            self.sync_page_text_edits(editing.document_id, cx);
+            self.sync_document_edits(editing.document_id, cx);
             return;
         }
         let edits = state.edits();
@@ -1274,7 +1323,7 @@ impl DocumentWorkspace {
                 format!("Edited text was not kept: {error}"),
             );
         }
-        self.sync_page_text_edits(editing.document_id, cx);
+        self.sync_document_edits(editing.document_id, cx);
         cx.notify();
     }
 
@@ -1285,14 +1334,15 @@ impl DocumentWorkspace {
             return;
         };
         let still_editing = self.active_document_id == Some(editing.document_id)
-            && self.annotation_tool(editing.document_id, cx) == Some(AnnotationTool::EditText)
+            && self.annotation_tool(editing.document_id, cx)
+                == Some(AnnotationTool::EditPdfContent)
             && !self.pan_tool_active;
         if !still_editing {
             self.commit_page_text_editing(cx);
         }
     }
 
-    /// What the viewport draws for the Edit Text tool on each page.
+    /// What the viewport draws for the Edit PDF Content tool on each page.
     /// Delivers input-method text to the page-text editor the way the
     /// platform's text input does: `compose` replaces the marked (composing)
     /// text and keeps it marked, otherwise `text` replaces it and commits.
@@ -1333,8 +1383,19 @@ impl DocumentWorkspace {
         let Some(state) = self.page_text.get(&document_id) else {
             return "no page text state".into();
         };
-        let texts =
-            |edits: &[PageTextEdit]| edits.iter().map(PageTextEdit::text).collect::<Vec<_>>();
+        let texts = |edits: &DocumentEdits| {
+            edits
+                .text
+                .iter()
+                .map(PageTextEdit::text)
+                .chain(
+                    edits
+                        .forms
+                        .iter()
+                        .map(|edit| format!("{}={:?}", edit.name, edit.value)),
+                )
+                .collect::<Vec<_>>()
+        };
         let mut layers = state
             .layers
             .iter()
@@ -1353,8 +1414,8 @@ impl DocumentWorkspace {
             state.hover_probe.map(|(_, point)| (point.x, point.y)),
             self.page_text_hover,
             texts(&state.shown),
-            state.sending.as_deref().map(texts),
-            state.rejected.as_deref().map(texts)
+            state.sending.as_ref().map(texts),
+            state.rejected.as_ref().map(texts)
         )
     }
 
@@ -1473,9 +1534,10 @@ impl DocumentWorkspace {
                 }),
             }
         }
-        // With Edit Text active, every paragraph on the visible pages is
+        // With Edit PDF Content active, every paragraph on the visible pages is
         // outlined faintly, except the one being edited.
-        let tool_active = self.annotation_tool(document_id, cx) == Some(AnnotationTool::EditText);
+        let tool_active =
+            self.annotation_tool(document_id, cx) == Some(AnnotationTool::EditPdfContent);
         let visible = self
             .session(document_id, cx)
             .and_then(|session| {
@@ -1563,7 +1625,7 @@ macro_rules! forward_actions {
     }};
 }
 
-/// Draws a page's Edit Text overlay: the hovered line, and the edited
+/// Draws a page's Edit PDF Content overlay: the hovered line, and the edited
 /// line's frame, selection and caret.
 pub(super) fn page_text_overlay_element(
     overlay: PageTextOverlay,

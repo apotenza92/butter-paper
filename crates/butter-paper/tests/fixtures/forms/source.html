@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Site inspection request</title>
+<style>body{font-family:Liberation Sans, Arial, sans-serif;font-size:11pt}</style></head>
+<body>
+<h2>Site inspection request</h2>
+<form>
+<p>Applicant name<br><input type="text" name="ApplicantName" size="40" value=""></p>
+<p>Email<br><input type="text" name="Email" size="40" value=""></p>
+<p>Postcode<br><input type="text" name="Postcode" size="8" maxlength="4" value=""></p>
+<p>Access notes<br><textarea name="AccessNotes" rows="4" cols="50"></textarea></p>
+<p>Inspection type<br>
+<input type="radio" name="InspectionType" value="Footings"> Footings
+<input type="radio" name="InspectionType" value="Frame" checked> Frame
+<input type="radio" name="InspectionType" value="Final"> Final</p>
+<p><input type="checkbox" name="SiteReady" value="Yes"> The site is ready for inspection</p>
+<p>Building class<br><select name="BuildingClass"><option>Class 1a</option><option>Class 2</option><option>Class 5</option><option>Class 10a</option></select></p>
+<p>Trades on site<br><select name="Trades" multiple size="4"><option>Carpenter</option><option>Electrician</option><option>Plumber</option><option>Roofer</option></select></p>
+<p>Reference (office use)<br><input type="text" name="Reference" size="20" value="REF-2041" readonly></p>
+</form>
+</body></html>

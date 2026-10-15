@@ -1,4 +1,4 @@
-//! Text properties for the paragraph being edited with the Edit Text tool.
+//! Text properties for the paragraph being edited with the Edit PDF Content tool.
 //!
 //! The inspector owns only component state and colour preview. The workspace
 //! owns the editor, which applies each change to the selection (or, with
@@ -27,46 +27,50 @@ use gpui_component::{
     v_flex,
 };
 
-pub const EDIT_TEXT_PROPERTY_INSPECTOR_ID: &str = "edit-text-property-inspector";
-pub const EDIT_TEXT_INSPECTOR_FONT_ID: &str = "edit-text-property-font";
-pub const EDIT_TEXT_INSPECTOR_SIZE_ID: &str = "edit-text-property-size";
-pub const EDIT_TEXT_INSPECTOR_BOLD_ID: &str = "edit-text-property-bold";
-pub const EDIT_TEXT_INSPECTOR_ITALIC_ID: &str = "edit-text-property-italic";
-pub const EDIT_TEXT_INSPECTOR_COLOR_TRIGGER_ID: &str = "edit-text-property-color-trigger";
-pub const EDIT_TEXT_INSPECTOR_APPLY_COLOR_ID: &str = "edit-text-property-apply-color";
-pub const EDIT_TEXT_INSPECTOR_ALIGNMENT_ID: &str = "edit-text-property-alignment";
-pub const EDIT_TEXT_INSPECTOR_LINE_SPACING_ID: &str = "edit-text-property-line-spacing";
-pub const EDIT_TEXT_INSPECTOR_SCOPE_ID: &str = "edit-text-property-scope";
-pub const EDIT_TEXT_INSPECTOR_SUBSTITUTES_ID: &str = "edit-text-property-substitutes";
-const EDIT_TEXT_INSPECTOR_HEADER_ID: &str = "edit-text-property-inspector-header";
-const EDIT_TEXT_INSPECTOR_SCROLL_ID: &str = "edit-text-property-inspector-scroll";
+pub const EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID: &str = "edit-pdf-content-property-inspector";
+pub const EDIT_PDF_CONTENT_INSPECTOR_FONT_ID: &str = "edit-pdf-content-property-font";
+pub const EDIT_PDF_CONTENT_INSPECTOR_SIZE_ID: &str = "edit-pdf-content-property-size";
+pub const EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID: &str = "edit-pdf-content-property-bold";
+pub const EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID: &str = "edit-pdf-content-property-italic";
+pub const EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID: &str =
+    "edit-pdf-content-property-color-trigger";
+pub const EDIT_PDF_CONTENT_INSPECTOR_APPLY_COLOR_ID: &str = "edit-pdf-content-property-apply-color";
+pub const EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID: &str = "edit-pdf-content-property-alignment";
+pub const EDIT_PDF_CONTENT_INSPECTOR_LINE_SPACING_ID: &str =
+    "edit-pdf-content-property-line-spacing";
+pub const EDIT_PDF_CONTENT_INSPECTOR_SCOPE_ID: &str = "edit-pdf-content-property-scope";
+pub const EDIT_PDF_CONTENT_INSPECTOR_SUBSTITUTES_ID: &str = "edit-pdf-content-property-substitutes";
+const EDIT_PDF_CONTENT_INSPECTOR_HEADER_ID: &str = "edit-pdf-content-property-inspector-header";
+const EDIT_PDF_CONTENT_INSPECTOR_SCROLL_ID: &str = "edit-pdf-content-property-inspector-scroll";
 
 /// The font choice that keeps a run in its own page font.
 pub const DOCUMENT_FONT_LABEL: &str = "Document font";
-pub const EDIT_TEXT_INSPECTOR_ALIGN_LEFT_ID: &str = "edit-text-property-align-left";
-pub const EDIT_TEXT_INSPECTOR_ALIGN_CENTER_ID: &str = "edit-text-property-align-center";
-pub const EDIT_TEXT_INSPECTOR_ALIGN_RIGHT_ID: &str = "edit-text-property-align-right";
-pub const EDIT_TEXT_INSPECTOR_ALIGN_JUSTIFY_ID: &str = "edit-text-property-align-justify";
+pub const EDIT_PDF_CONTENT_INSPECTOR_ALIGN_LEFT_ID: &str = "edit-pdf-content-property-align-left";
+pub const EDIT_PDF_CONTENT_INSPECTOR_ALIGN_CENTER_ID: &str =
+    "edit-pdf-content-property-align-center";
+pub const EDIT_PDF_CONTENT_INSPECTOR_ALIGN_RIGHT_ID: &str = "edit-pdf-content-property-align-right";
+pub const EDIT_PDF_CONTENT_INSPECTOR_ALIGN_JUSTIFY_ID: &str =
+    "edit-pdf-content-property-align-justify";
 const ALIGNMENTS: [(TextBlockAlignment, &str, &str); 4] = [
     (
         TextBlockAlignment::Left,
         "Left",
-        EDIT_TEXT_INSPECTOR_ALIGN_LEFT_ID,
+        EDIT_PDF_CONTENT_INSPECTOR_ALIGN_LEFT_ID,
     ),
     (
         TextBlockAlignment::Center,
         "Center",
-        EDIT_TEXT_INSPECTOR_ALIGN_CENTER_ID,
+        EDIT_PDF_CONTENT_INSPECTOR_ALIGN_CENTER_ID,
     ),
     (
         TextBlockAlignment::Right,
         "Right",
-        EDIT_TEXT_INSPECTOR_ALIGN_RIGHT_ID,
+        EDIT_PDF_CONTENT_INSPECTOR_ALIGN_RIGHT_ID,
     ),
     (
         TextBlockAlignment::Justified,
         "Justify",
-        EDIT_TEXT_INSPECTOR_ALIGN_JUSTIFY_ID,
+        EDIT_PDF_CONTENT_INSPECTOR_ALIGN_JUSTIFY_ID,
     ),
 ];
 pub const MIN_FONT_SIZE: f64 = 1.;
@@ -77,13 +81,13 @@ pub const MAX_LINE_SPACING: f64 = 5.;
 /// A change from the inspector, and whether typing should return to the
 /// text afterwards (not when the change came from leaving a field).
 #[derive(Clone, Debug, PartialEq)]
-pub struct EditTextPropertyEvent {
-    pub patch: EditTextPropertyPatch,
+pub struct EditPdfContentPropertyEvent {
+    pub patch: EditPdfContentPropertyPatch,
     pub return_focus: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct EditTextPropertySnapshot {
+pub struct EditPdfContentPropertySnapshot {
     /// The family the text is set in; `None` for its document font.
     pub family: Option<String>,
     pub size: f64,
@@ -101,7 +105,7 @@ pub struct EditTextPropertySnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum EditTextPropertyPatch {
+pub enum EditPdfContentPropertyPatch {
     /// `None` returns the text to its document font.
     Family(Option<String>),
     Size(f64),
@@ -112,8 +116,8 @@ pub enum EditTextPropertyPatch {
     LineSpacing(f64),
 }
 
-pub struct EditTextPropertyInspector {
-    snapshot: Option<EditTextPropertySnapshot>,
+pub struct EditPdfContentPropertyInspector {
+    snapshot: Option<EditPdfContentPropertySnapshot>,
     syncing: bool,
     open_sections: [bool; 2],
     families: Vec<SharedString>,
@@ -139,7 +143,7 @@ fn color_rgb(color: gpui::Hsla) -> [f64; 3] {
     [rgb.r, rgb.g, rgb.b].map(|component| (f64::from(component) * 255.).round() / 255.)
 }
 
-impl EditTextPropertyInspector {
+impl EditPdfContentPropertyInspector {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let families: Vec<SharedString> = vec![DOCUMENT_FONT_LABEL.into()];
         let font = cx.new(|cx| {
@@ -176,7 +180,7 @@ impl EditTextPropertyInspector {
                         return;
                     };
                     let family = (value.as_ref() != DOCUMENT_FONT_LABEL).then(|| value.to_string());
-                    this.emit_patch(EditTextPropertyPatch::Family(family), true, cx);
+                    this.emit_patch(EditPdfContentPropertyPatch::Family(family), true, cx);
                 },
             ),
             cx.subscribe_in(&size, window, |this, input, event: &InputEvent, _, cx| {
@@ -187,7 +191,7 @@ impl EditTextPropertyInspector {
                     && (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&value)
                 {
                     let enter = matches!(event, InputEvent::PressEnter { .. });
-                    this.emit_patch(EditTextPropertyPatch::Size(value), enter, cx);
+                    this.emit_patch(EditPdfContentPropertyPatch::Size(value), enter, cx);
                 }
             }),
             cx.subscribe_in(
@@ -201,7 +205,7 @@ impl EditTextPropertyInspector {
                         && (MIN_LINE_SPACING..=MAX_LINE_SPACING).contains(&value)
                     {
                         let enter = matches!(event, InputEvent::PressEnter { .. });
-                        this.emit_patch(EditTextPropertyPatch::LineSpacing(value), enter, cx);
+                        this.emit_patch(EditPdfContentPropertyPatch::LineSpacing(value), enter, cx);
                     }
                 },
             ),
@@ -268,7 +272,7 @@ impl EditTextPropertyInspector {
         });
     }
 
-    pub fn snapshot(&self) -> Option<&EditTextPropertySnapshot> {
+    pub fn snapshot(&self) -> Option<&EditPdfContentPropertySnapshot> {
         self.snapshot.as_ref()
     }
 
@@ -280,7 +284,7 @@ impl EditTextPropertyInspector {
 
     pub fn sync(
         &mut self,
-        snapshot: EditTextPropertySnapshot,
+        snapshot: EditPdfContentPropertySnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -335,12 +339,16 @@ impl EditTextPropertyInspector {
         let Some(color) = self.color.read(cx).value() else {
             return;
         };
-        self.emit_patch(EditTextPropertyPatch::Fill(color_rgb(color)), true, cx);
+        self.emit_patch(
+            EditPdfContentPropertyPatch::Fill(color_rgb(color)),
+            true,
+            cx,
+        );
     }
 
     fn emit_patch(
         &mut self,
-        patch: EditTextPropertyPatch,
+        patch: EditPdfContentPropertyPatch,
         return_focus: bool,
         cx: &mut Context<Self>,
     ) {
@@ -348,36 +356,36 @@ impl EditTextPropertyInspector {
             return;
         };
         let unchanged = match &patch {
-            EditTextPropertyPatch::Family(family) => family == &snapshot.family,
-            EditTextPropertyPatch::Size(size) => (size - snapshot.size).abs() < 1e-6,
-            EditTextPropertyPatch::Fill(fill) => fill == &snapshot.fill,
-            EditTextPropertyPatch::Bold(bold) => *bold == snapshot.bold,
-            EditTextPropertyPatch::Italic(italic) => *italic == snapshot.italic,
-            EditTextPropertyPatch::Alignment(alignment) => *alignment == snapshot.alignment,
-            EditTextPropertyPatch::LineSpacing(spacing) => {
+            EditPdfContentPropertyPatch::Family(family) => family == &snapshot.family,
+            EditPdfContentPropertyPatch::Size(size) => (size - snapshot.size).abs() < 1e-6,
+            EditPdfContentPropertyPatch::Fill(fill) => fill == &snapshot.fill,
+            EditPdfContentPropertyPatch::Bold(bold) => *bold == snapshot.bold,
+            EditPdfContentPropertyPatch::Italic(italic) => *italic == snapshot.italic,
+            EditPdfContentPropertyPatch::Alignment(alignment) => *alignment == snapshot.alignment,
+            EditPdfContentPropertyPatch::LineSpacing(spacing) => {
                 (spacing - snapshot.line_spacing).abs() < 1e-6
             }
         };
         if self.syncing || unchanged {
             return;
         }
-        cx.emit(EditTextPropertyEvent {
+        cx.emit(EditPdfContentPropertyEvent {
             patch,
             return_focus,
         });
     }
 }
 
-impl EventEmitter<EditTextPropertyEvent> for EditTextPropertyInspector {}
+impl EventEmitter<EditPdfContentPropertyEvent> for EditPdfContentPropertyInspector {}
 
-impl Render for EditTextPropertyInspector {
+impl Render for EditPdfContentPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(snapshot) = self.snapshot.clone() else {
             return PropertyInspectorPanel::new(
-                EDIT_TEXT_PROPERTY_INSPECTOR_ID,
-                EDIT_TEXT_INSPECTOR_HEADER_ID,
-                EDIT_TEXT_INSPECTOR_SCROLL_ID,
-                "Edit Text",
+                EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID,
+                EDIT_PDF_CONTENT_INSPECTOR_HEADER_ID,
+                EDIT_PDF_CONTENT_INSPECTOR_SCROLL_ID,
+                "Edit PDF Content",
             )
             .child(
                 div()
@@ -403,29 +411,33 @@ impl Render for EditTextPropertyInspector {
             .child(
                 Field::new().label("Font").child(
                     div()
-                        .id(EDIT_TEXT_INSPECTOR_FONT_ID)
-                        .debug_selector(|| EDIT_TEXT_INSPECTOR_FONT_ID.into())
+                        .id(EDIT_PDF_CONTENT_INSPECTOR_FONT_ID)
+                        .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_FONT_ID.into())
                         .child(Select::new(&self.font).search_placeholder("Search fonts")),
                 ),
             )
             .child(property_pair(
                 Field::new().label("Font size").child(
-                    PropertyNumericInput::new(EDIT_TEXT_INSPECTOR_SIZE_ID, "Font size", &self.size)
-                        .suffix("pt"),
+                    PropertyNumericInput::new(
+                        EDIT_PDF_CONTENT_INSPECTOR_SIZE_ID,
+                        "Font size",
+                        &self.size,
+                    )
+                    .suffix("pt"),
                 ),
                 Field::new().label("Style").child(
                     h_flex()
                         .gap_3()
                         .h_full()
                         .child(
-                            Checkbox::new(EDIT_TEXT_INSPECTOR_BOLD_ID)
-                                .debug_selector(|| EDIT_TEXT_INSPECTOR_BOLD_ID.into())
+                            Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID)
+                                .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID.into())
                                 .label("Bold")
                                 .checked(snapshot.bold)
                                 .on_click(move |value, _, cx| {
                                     let _ = bold.update(cx, |this, cx| {
                                         this.emit_patch(
-                                            EditTextPropertyPatch::Bold(*value),
+                                            EditPdfContentPropertyPatch::Bold(*value),
                                             true,
                                             cx,
                                         )
@@ -433,14 +445,14 @@ impl Render for EditTextPropertyInspector {
                                 }),
                         )
                         .child(
-                            Checkbox::new(EDIT_TEXT_INSPECTOR_ITALIC_ID)
-                                .debug_selector(|| EDIT_TEXT_INSPECTOR_ITALIC_ID.into())
+                            Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID)
+                                .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID.into())
                                 .label("Italic")
                                 .checked(snapshot.italic)
                                 .on_click(move |value, _, cx| {
                                     let _ = italic.update(cx, |this, cx| {
                                         this.emit_patch(
-                                            EditTextPropertyPatch::Italic(*value),
+                                            EditPdfContentPropertyPatch::Italic(*value),
                                             true,
                                             cx,
                                         )
@@ -455,13 +467,15 @@ impl Render for EditTextPropertyInspector {
                         .gap_2()
                         .child(
                             div()
-                                .id(EDIT_TEXT_INSPECTOR_COLOR_TRIGGER_ID)
-                                .debug_selector(|| EDIT_TEXT_INSPECTOR_COLOR_TRIGGER_ID.into())
+                                .id(EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID)
+                                .debug_selector(|| {
+                                    EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID.into()
+                                })
                                 .child(property_color_picker(&self.color, "Colour")),
                         )
                         .child(
-                            Button::new(EDIT_TEXT_INSPECTOR_APPLY_COLOR_ID)
-                                .debug_selector(|| EDIT_TEXT_INSPECTOR_APPLY_COLOR_ID.into())
+                            Button::new(EDIT_PDF_CONTENT_INSPECTOR_APPLY_COLOR_ID)
+                                .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_APPLY_COLOR_ID.into())
                                 .label("Apply colour")
                                 .on_click(move |_, _, cx| {
                                     let _ =
@@ -472,8 +486,8 @@ impl Render for EditTextPropertyInspector {
             )
             .child(
                 div()
-                    .id(EDIT_TEXT_INSPECTOR_SCOPE_ID)
-                    .debug_selector(|| EDIT_TEXT_INSPECTOR_SCOPE_ID.into())
+                    .id(EDIT_PDF_CONTENT_INSPECTOR_SCOPE_ID)
+                    .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_SCOPE_ID.into())
                     .text_sm()
                     .text_color(muted)
                     .child(scope),
@@ -481,8 +495,8 @@ impl Render for EditTextPropertyInspector {
             .when(!snapshot.substitutes.is_empty(), |text| {
                 text.child(
                     div()
-                        .id(EDIT_TEXT_INSPECTOR_SUBSTITUTES_ID)
-                        .debug_selector(|| EDIT_TEXT_INSPECTOR_SUBSTITUTES_ID.into())
+                        .id(EDIT_PDF_CONTENT_INSPECTOR_SUBSTITUTES_ID)
+                        .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_SUBSTITUTES_ID.into())
                         .text_sm()
                         .text_color(muted)
                         .child(format!(
@@ -496,10 +510,10 @@ impl Render for EditTextPropertyInspector {
             .child(
                 Field::new().label("Alignment").child(
                     div()
-                        .id(EDIT_TEXT_INSPECTOR_ALIGNMENT_ID)
-                        .debug_selector(|| EDIT_TEXT_INSPECTOR_ALIGNMENT_ID.into())
+                        .id(EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID)
+                        .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID.into())
                         .child(
-                            ButtonGroup::new("edit-text-property-alignment-group").children(
+                            ButtonGroup::new("edit-pdf-content-property-alignment-group").children(
                                 ALIGNMENTS.iter().map(|(value, label, id)| {
                                     let alignment = alignment.clone();
                                     let value = *value;
@@ -510,7 +524,7 @@ impl Render for EditTextPropertyInspector {
                                         .on_click(move |_, _, cx| {
                                             let _ = alignment.update(cx, |this, cx| {
                                                 this.emit_patch(
-                                                    EditTextPropertyPatch::Alignment(value),
+                                                    EditPdfContentPropertyPatch::Alignment(value),
                                                     true,
                                                     cx,
                                                 )
@@ -524,7 +538,7 @@ impl Render for EditTextPropertyInspector {
             .child(
                 Field::new().label("Line spacing").child(
                     PropertyNumericInput::new(
-                        EDIT_TEXT_INSPECTOR_LINE_SPACING_ID,
+                        EDIT_PDF_CONTENT_INSPECTOR_LINE_SPACING_ID,
                         "Line spacing",
                         &self.line_spacing,
                     )
@@ -532,7 +546,7 @@ impl Render for EditTextPropertyInspector {
                 ),
             );
         let open = self.open_sections;
-        let accordion = Accordion::new("edit-text-property-sections")
+        let accordion = Accordion::new("edit-pdf-content-property-sections")
             .bordered(false)
             .multiple(true)
             .item(|item| item.open(open[0]).title("Text").child(text))
@@ -544,10 +558,10 @@ impl Render for EditTextPropertyInspector {
                 });
             });
         PropertyInspectorPanel::new(
-            EDIT_TEXT_PROPERTY_INSPECTOR_ID,
-            EDIT_TEXT_INSPECTOR_HEADER_ID,
-            EDIT_TEXT_INSPECTOR_SCROLL_ID,
-            "Edit Text",
+            EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID,
+            EDIT_PDF_CONTENT_INSPECTOR_HEADER_ID,
+            EDIT_PDF_CONTENT_INSPECTOR_SCROLL_ID,
+            "Edit PDF Content",
         )
         .child(accordion)
         .into_any_element()

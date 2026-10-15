@@ -65,7 +65,7 @@ changes it; history is in git.
 - Page text editing takes the best of Revu, Acrobat and OnlyOffice rather
   than matching Revu alone (Revu's Edit Text is line-only, for minor
   changes). The target:
-  - A separate Edit Text tool (`Shift+T`), not part of Select, as in all
+  - A separate Edit PDF Content tool (`Shift+T`), not part of Select, as in all
     three.
   - Revu's fidelity: edits are drawn in place by PDFium, untouched lines
     keep their exact bytes, and the original embedded font is used.
@@ -83,6 +83,12 @@ changes it; history is in git.
     paragraphs that flow between columns (OnlyOffice).
   - Signed PDFs: warn that saving invalidates the signatures, then allow
     editing (Revu refuses).
+- Form fields are filled with the Select tool, as in Acrobat and Revu; Edit
+  PDF Content edits only the page's own content. Fillable fields are
+  outlined in the selection blue whenever Select is active (a choice made
+  for Butter Paper), filled faintly on hover and strongly when focused,
+  matching Edit PDF Content's paragraph outlines.
+  Markups sit above fields: a press on a markup selects it.
 
 - About Butter Paper and Settings are available in both application menus.
   Settings is a dedicated reusable window with edge-to-edge navigation,

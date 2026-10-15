@@ -3933,8 +3933,23 @@ mod review_driver {
                     "wait" => pause(cx, number(1) as u64).await,
                     "shot" => {
                         // A background window presents a frame only for
-                        // input; draw the latest state (finished tiles)
-                        // before capturing.
+                        // input: plan the tiles a frame would have, then
+                        // draw the latest state (finished tiles) before
+                        // capturing.
+                        for _ in 0..2 {
+                            cx.update(|cx| {
+                                for entry in document_window_entries(cx) {
+                                    if let Some(workspace) = entry.workspace.upgrade() {
+                                        let _ = entry.handle.update(cx, |_, window, cx| {
+                                            workspace.update(cx, |workspace, cx| {
+                                                workspace.run_scheduled_viewport_refresh(window, cx)
+                                            })
+                                        });
+                                    }
+                                }
+                            });
+                            pause(cx, 700).await;
+                        }
                         cx.update(|cx| {
                             for entry in document_window_entries(cx) {
                                 let _ = entry.handle.update(cx, |_, window, _| window.refresh());
@@ -4359,6 +4374,30 @@ mod review_driver {
                                     workspace
                                         .active_document_id()
                                         .map(|id| workspace.page_text_sync_summary(id))
+                                        .unwrap_or_default()
+                                )
+                                .unwrap();
+                            }
+                        });
+                    }
+                    "log-form" => {
+                        // log-form W: the focused form field, every field's
+                        // value and the status.
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(window)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                let workspace = workspace.read(cx);
+                                writeln!(
+                                    log,
+                                    "form focus {:?} status {:?} values {:?}",
+                                    workspace.form_field_focus_summary(cx),
+                                    workspace.annotation_status(),
+                                    workspace
+                                        .active_document_id()
+                                        .map(|id| workspace.form_field_values(id, cx))
                                         .unwrap_or_default()
                                 )
                                 .unwrap();

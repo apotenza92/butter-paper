@@ -164,7 +164,9 @@ impl ToolProperties {
             }
             AnnotationTool::TextBox => TEXT_BOX_FIELDS,
             AnnotationTool::Snapshot | AnnotationTool::Image => OPACITY_FIELDS,
-            AnnotationTool::Select | AnnotationTool::Redact | AnnotationTool::EditText => NO_FIELDS,
+            AnnotationTool::Select | AnnotationTool::Redact | AnnotationTool::EditPdfContent => {
+                NO_FIELDS
+            }
         }
     }
 

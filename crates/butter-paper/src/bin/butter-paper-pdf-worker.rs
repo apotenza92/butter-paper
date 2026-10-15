@@ -6,12 +6,13 @@ use butter_paper::pdf_engine::{
     RetainedAnnotationRender, pdfium_display_render_bytes, retained_annotation_render,
     vector_snapshot_layer,
 };
+use butter_paper::pdf_forms::{apply_form_edits, needs_appearances, regenerate_appearances};
 use butter_paper::pdf_text_edit::{
-    PageTextEdit, PageTextLayer, TextEditError, TextEditLimits, apply_text_edits, extract_page_text,
+    PageTextLayer, TextEditError, TextEditLimits, apply_text_edits, extract_page_text,
 };
 use butter_paper::pdf_worker::{
-    AnnotationRenderMode, CancellationRegistry, DocumentInfo, FileSurfaceStore, PageGeometry,
-    PdfBackend, RenderRequest, Rotation, SourceHandleId, SurfaceLimits, WorkerError,
+    AnnotationRenderMode, CancellationRegistry, DocumentEdits, DocumentInfo, FileSurfaceStore,
+    PageGeometry, PdfBackend, RenderRequest, Rotation, SourceHandleId, SurfaceLimits, WorkerError,
     WorkerErrorCode, WorkerLifecycleReporter, WorkerState, run_worker_protocol,
 };
 use pdfium_render::prelude::*;
@@ -94,6 +95,57 @@ fn incremental_update(
     Some(bytes)
 }
 
+/// The document as renders show it: the source with page-text edits and
+/// filled form fields applied, and appearances drawn for form fields that
+/// lack them. `None` when that is the source itself.
+fn edited_display(
+    source: &PdfMetadataDocument,
+    source_bytes: &[u8],
+    edits: &DocumentEdits,
+) -> Result<Option<(PdfMetadataDocument, Vec<u8>)>, WorkerError> {
+    let draw_fields = needs_appearances(source);
+    if edits.is_empty() && !draw_fields {
+        return Ok(None);
+    }
+    let mut edited = editable_copy(source);
+    apply_text_edits(&mut edited, &edits.text, &TextEditLimits::default())
+        .map_err(map_text_edit_error)?;
+    if draw_fields {
+        regenerate_appearances(&mut edited).map_err(|error| {
+            WorkerError::with_detail(
+                WorkerErrorCode::MalformedDocument,
+                format!("form fields cannot be drawn: {error}"),
+            )
+        })?;
+    }
+    apply_form_edits(&mut edited, &edits.forms).map_err(|error| {
+        WorkerError::with_detail(
+            WorkerErrorCode::InvalidRequest,
+            format!("form fields cannot be filled: {error}"),
+        )
+    })?;
+    // Only the changed objects are written, after the source's bytes: a
+    // whole large file is not serialised for each edit.
+    if let Some(bytes) = incremental_update(source, source_bytes, &edited) {
+        return Ok(Some((edited, bytes)));
+    }
+    let mut bytes = Vec::with_capacity(source_bytes.len());
+    edited.save_to(&mut bytes).map_err(|error| {
+        WorkerError::with_detail(
+            WorkerErrorCode::MalformedDocument,
+            format!("edited PDF cannot be written: {error}"),
+        )
+    })?;
+    // Reparse so the display metadata matches what PDFium reads.
+    let edited = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
+        WorkerError::with_detail(
+            WorkerErrorCode::MalformedDocument,
+            format!("edited PDF cannot be read: {error}"),
+        )
+    })?;
+    Ok(Some((edited, bytes)))
+}
+
 struct PdfiumDocument {
     document: PdfDocument<'static>,
     /// The displayed document: the source with any page-text edits.
@@ -102,7 +154,7 @@ struct PdfiumDocument {
     source: PdfMetadataDocument,
     source_bytes: Vec<u8>,
     password: Option<String>,
-    edits: Vec<PageTextEdit>,
+    edits: DocumentEdits,
     retained: RetainedPdfiumDocument,
     vector_snapshots: Option<Result<PdfDocument<'static>, WorkerError>>,
 }
@@ -156,8 +208,14 @@ impl PdfBackend for PdfiumBackend {
             )
         })?;
         let source_bytes = metadata_bytes.clone();
+        // A form whose fields lack appearances shows them drawn.
+        let (display, display_bytes) =
+            match edited_display(&metadata, &source_bytes, &DocumentEdits::default()) {
+                Ok(Some(display)) => display,
+                _ => (metadata.clone(), metadata_bytes),
+            };
         let document = self
-            .load_display_document(&metadata, metadata_bytes, password)
+            .load_display_document(&display, display_bytes, password)
             .map_err(|error| {
                 if password.is_none() && error.code == WorkerErrorCode::BadPassword {
                     WorkerError::with_detail(
@@ -175,11 +233,11 @@ impl PdfBackend for PdfiumBackend {
         Ok((
             PdfiumDocument {
                 document,
-                source: metadata.clone(),
-                metadata,
+                source: metadata,
+                metadata: display,
                 source_bytes,
                 password: password.map(str::to_owned),
-                edits: Vec::new(),
+                edits: DocumentEdits::default(),
                 retained: RetainedPdfiumDocument::Unprepared,
                 vector_snapshots: None,
             },
@@ -289,49 +347,21 @@ impl PdfBackend for PdfiumBackend {
             .map_err(map_text_edit_error)
     }
 
-    fn set_text_edits(
+    fn set_document_edits(
         &mut self,
         document: &mut Self::Document,
-        edits: &[PageTextEdit],
+        edits: &DocumentEdits,
     ) -> Result<(), WorkerError> {
-        if document.edits == edits {
+        if document.edits == *edits {
             return Ok(());
         }
-        let (metadata, bytes) = if edits.is_empty() {
-            (document.source.clone(), document.source_bytes.clone())
-        } else {
-            let mut edited = editable_copy(&document.source);
-            apply_text_edits(&mut edited, edits, &TextEditLimits::default())
-                .map_err(map_text_edit_error)?;
-            // Only the changed objects are written, after the source's
-            // bytes: a whole large file is not serialised for each edit.
-            if let Some(bytes) =
-                incremental_update(&document.source, &document.source_bytes, &edited)
-            {
-                (edited, bytes)
-            } else {
-                let mut bytes = Vec::with_capacity(document.source_bytes.len());
-                edited.save_to(&mut bytes).map_err(|error| {
-                    WorkerError::with_detail(
-                        WorkerErrorCode::MalformedDocument,
-                        format!("edited PDF cannot be written: {error}"),
-                    )
-                })?;
-                // Reparse so the display metadata matches what PDFium reads.
-                let edited = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
-                    WorkerError::with_detail(
-                        WorkerErrorCode::MalformedDocument,
-                        format!("edited PDF cannot be read: {error}"),
-                    )
-                })?;
-                (edited, bytes)
-            }
-        };
+        let (metadata, bytes) = edited_display(&document.source, &document.source_bytes, edits)?
+            .unwrap_or_else(|| (document.source.clone(), document.source_bytes.clone()));
         document.document =
             self.load_display_document(&metadata, bytes, document.password.as_deref())?;
         document.metadata = metadata;
         document.retained = RetainedPdfiumDocument::Unprepared;
-        document.edits = edits.to_vec();
+        document.edits = edits.clone();
         Ok(())
     }
 
@@ -639,6 +669,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use butter_paper::pdf_text_edit::PageTextEdit;
     use butter_paper::pdf_worker::{
         ClipRect, JobId, RenderRequest, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId,
     };
@@ -1161,7 +1192,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
-    fn retained_annotations_review_widget_fixture_pixels_at_two_scales_and_crop() {
+    fn retained_apless_form_field_draws_its_value_at_two_scales_and_crop() {
         let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
         let (_guard, mut backend) = test_backend(Path::new(&library));
         for rotation in [0, 90] {
@@ -1191,23 +1222,35 @@ mod tests {
                         &AtomicBool::new(false),
                     )
                     .unwrap();
-                let red_points = (0..height as usize)
+                // A form field without an appearance draws its value, as a
+                // viewer asked to regenerate appearances does, not the
+                // missing-appearance marker.
+                let pixel_at = |x: usize, y: usize| &pixels[(y * width as usize + x) * 4..][..4];
+                let red = (0..height as usize)
                     .flat_map(|y| (0..width as usize).map(move |x| (x, y)))
                     .filter(|(x, y)| {
-                        let pixel = &pixels[(*y * width as usize + *x) * 4..][..4];
+                        let pixel = pixel_at(*x, *y);
                         pixel[2] > 180 && pixel[1] < 150 && pixel[0] < 150
+                    })
+                    .count();
+                assert_eq!(red, 0, "no marker at scale {scale}, rotation {rotation}");
+                let value_points = (0..height as usize)
+                    .flat_map(|y| (0..width as usize).map(move |x| (x, y)))
+                    .filter(|(x, y)| {
+                        let pixel = pixel_at(*x, *y);
+                        pixel[3] > 128 && pixel[0] < 100 && pixel[1] < 100 && pixel[2] < 100
                     })
                     .collect::<Vec<_>>();
                 assert!(
-                    red_points.len() > (20. * scale) as usize,
-                    "AP-less Widget fallback at scale {scale}, rotation {rotation}: {} red pixels",
-                    red_points.len()
+                    value_points.len() > (20. * scale) as usize,
+                    "the field's value at scale {scale}, rotation {rotation}: {} dark pixels",
+                    value_points.len()
                 );
                 let margin = (5. * scale) as usize;
-                let min_x = red_points.iter().map(|(x, _)| *x).min().unwrap();
-                let max_x = red_points.iter().map(|(x, _)| *x).max().unwrap();
-                let min_y = red_points.iter().map(|(_, y)| *y).min().unwrap();
-                let max_y = red_points.iter().map(|(_, y)| *y).max().unwrap();
+                let min_x = value_points.iter().map(|(x, _)| *x).min().unwrap();
+                let max_x = value_points.iter().map(|(x, _)| *x).max().unwrap();
+                let min_y = value_points.iter().map(|(_, y)| *y).min().unwrap();
+                let max_y = value_points.iter().map(|(_, y)| *y).max().unwrap();
                 let crop_x = min_x.saturating_sub(margin);
                 let crop_y = min_y.saturating_sub(margin);
                 let crop_right = (max_x + margin + 1).min(width as usize);
@@ -1409,7 +1452,10 @@ mod tests {
             layout: Default::default(),
         };
         backend
-            .set_text_edits(&mut edited, std::slice::from_ref(&edit))
+            .set_document_edits(
+                &mut edited,
+                &DocumentEdits::from_text(std::slice::from_ref(&edit)),
+            )
             .unwrap();
         // Drawn with the subset's own glyphs, exactly as the source would be.
         assert!(
@@ -1563,7 +1609,10 @@ mod tests {
             layout: Default::default(),
         };
         backend
-            .set_text_edits(&mut document, std::slice::from_ref(&emptied))
+            .set_document_edits(
+                &mut document,
+                &DocumentEdits::from_text(std::slice::from_ref(&emptied)),
+            )
             .unwrap();
         assert_eq!(render(&mut backend, &mut document), 0, "the edit renders");
         // Page text and later edits still address the unedited source.
@@ -1572,8 +1621,95 @@ mod tests {
             "Hello"
         );
 
-        backend.set_text_edits(&mut document, &[]).unwrap();
+        backend
+            .set_document_edits(&mut document, &DocumentEdits::from_text(&[]))
+            .unwrap();
         assert_eq!(render(&mut backend, &mut document), original);
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn filled_form_fields_render_and_unfilled_ones_draw_without_appearances() {
+        use butter_paper::pdf_forms::{FormFieldEdit, FormValue, extract_form_layer};
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let bytes = include_bytes!("../../tests/fixtures/forms/libreoffice.pdf");
+        let form = extract_form_layer(&PdfMetadataDocument::load_mem(bytes).unwrap());
+        let path = env::temp_dir().join(format!("bp-form-{}.pdf", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        // The whole page at one pixel per point.
+        let (width, height) = (595_u32, 842_u32);
+        let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+            let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, width);
+            request.clip.height = height;
+            request.surface.height = height;
+            request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+            let mut pixels = vec![0; request.surface.byte_len as usize];
+            backend
+                .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                .unwrap();
+            pixels
+        };
+        let dark_in = |pixels: &[u8], name: &str| {
+            let rect = form.field(name).unwrap().widgets[0].rect;
+            let mut count = 0;
+            for y in (height as f64 - rect[3]).max(0.) as u32..(height as f64 - rect[1]) as u32 {
+                for x in rect[0] as u32..rect[2] as u32 {
+                    let pixel = &pixels[((y * width + x) * 4) as usize..][..4];
+                    if pixel[0] < 100 && pixel[1] < 100 && pixel[2] < 100 && pixel[3] > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        let before = render(&mut backend, &mut document);
+        // Fields without appearances are drawn, not marked as missing ones.
+        let red = before
+            .chunks(4)
+            .filter(|pixel| pixel[2] > 200 && pixel[1] < 120 && pixel[0] < 120)
+            .count();
+        assert_eq!(red, 0, "no missing-appearance markers");
+        assert!(
+            dark_in(&before, "Reference") > 20,
+            "the prefilled value is drawn"
+        );
+        let empty_name = dark_in(&before, "ApplicantName");
+
+        let check = form.field("SiteReady").unwrap();
+        let edits = DocumentEdits {
+            text: Vec::new(),
+            forms: vec![
+                FormFieldEdit {
+                    name: "ApplicantName".into(),
+                    original: FormValue::Text(String::new()),
+                    value: FormValue::Text("Ada Lovelace".into()),
+                },
+                FormFieldEdit {
+                    name: "SiteReady".into(),
+                    original: check.value.clone(),
+                    value: FormValue::Button(check.widgets[0].on_state.clone()),
+                },
+            ],
+        };
+        backend.set_document_edits(&mut document, &edits).unwrap();
+        let filled = render(&mut backend, &mut document);
+        assert!(
+            dark_in(&filled, "ApplicantName") > empty_name + 30,
+            "the filled name renders"
+        );
+        assert!(
+            dark_in(&filled, "SiteReady") > dark_in(&before, "SiteReady"),
+            "the check box shows checked"
+        );
+
+        backend
+            .set_document_edits(&mut document, &DocumentEdits::default())
+            .unwrap();
+        assert_eq!(render(&mut backend, &mut document), before);
     }
 
     #[test]
@@ -1739,7 +1875,9 @@ mod tests {
                 layout: Default::default(),
             };
             let started = std::time::Instant::now();
-            backend.set_text_edits(&mut document, &[edit]).unwrap();
+            backend
+                .set_document_edits(&mut document, &DocumentEdits::from_text(&[edit]))
+                .unwrap();
             backend
                 .render_crop(
                     &mut document,
@@ -1832,7 +1970,9 @@ mod tests {
             }],
             layout: Default::default(),
         };
-        backend.set_text_edits(&mut opened, &[edit]).unwrap();
+        backend
+            .set_document_edits(&mut opened, &DocumentEdits::from_text(&[edit]))
+            .unwrap();
         let text = |opened: &PdfiumDocument, page: i32| {
             opened
                 .document
@@ -1900,7 +2040,9 @@ mod tests {
             );
             let wrapped = paragraph.wrap(&text).unwrap();
             let edits = paragraph.edits(&text, &wrapped);
-            backend.set_text_edits(&mut document, &edits).unwrap();
+            backend
+                .set_document_edits(&mut document, &DocumentEdits::from_text(&edits))
+                .unwrap();
             let after = render(&mut backend, &mut document);
 
             // PDFium reads the paragraph as edited.
@@ -1964,7 +2106,7 @@ mod tests {
         assert!(state.insert_newline());
         assert!(state.insert("Weld inspection"));
         backend
-            .set_text_edits(&mut document, &state.edits())
+            .set_document_edits(&mut document, &DocumentEdits::from_text(&state.edits()))
             .unwrap();
 
         let normalise = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2057,7 +2199,9 @@ mod tests {
             }
             let wrapped = paragraph.wrap(&text).unwrap();
             let edits = paragraph.edits(&text, &wrapped);
-            backend.set_text_edits(&mut document, &edits).unwrap();
+            backend
+                .set_document_edits(&mut document, &DocumentEdits::from_text(&edits))
+                .unwrap();
             let after = render(&mut backend, &mut document);
 
             let normalise = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2185,7 +2329,9 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert!(edits.len() >= 2, "{name}");
-            backend.set_text_edits(&mut document, &edits).unwrap();
+            backend
+                .set_document_edits(&mut document, &DocumentEdits::from_text(&edits))
+                .unwrap();
             let after = render(&mut backend, &mut document);
 
             // Pixels may change only inside the edited lines' boxes (the

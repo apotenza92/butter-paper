@@ -1,7 +1,7 @@
-# Edit Text corpus
+# Edit PDF Content corpus
 
 Real producer output for `tests/page_text_corpus.rs` and the worker's
-real-PDFium Edit Text test. All three are made from files in this folder:
+real-PDFium Edit PDF Content test. All three are made from files in this folder:
 
 - `chrome.pdf`: `source.html` printed by headless Google Chrome
   (`--headless=new --no-pdf-header-footer --print-to-pdf`). Subset TrueType

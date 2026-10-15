@@ -4,6 +4,28 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Forms
+
+- Fill in PDF forms with the Select tool: text fields (multi-line, password,
+  maximum length and comb), check boxes, radio buttons, and combo and list
+  boxes. Fields are outlined while Select is active, Tab and Shift+Tab move
+  between them, and each value is one undoable change.
+- Save filled values with appearances other PDF apps show, including text
+  in other scripts, and draw fields that have no appearance from their
+  values.
+
+### Edit PDF Content
+
+- Rename Edit Text to Edit PDF Content, to set it apart from filling forms.
+
+### Fixes
+
+- Draw Chinese, Japanese and Korean text in Text Boxes, form fields and
+  edited text at the regular weight; the bundled fallback font was the thin
+  one.
+- Show Windows paths in Recent Files without the `\\?\` prefix.
+- Put the X that closes an opening error in the error's corner.
+
 ## [0.1.9]
 
 ### Windows

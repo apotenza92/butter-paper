@@ -1,5 +1,7 @@
 #[path = "document_workspace_alerts.rs"]
 mod alerts;
+#[path = "document_workspace_forms.rs"]
+mod forms;
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
 #[path = "document_workspace_page_text.rs"]
@@ -12,6 +14,11 @@ mod space_pan;
 mod thumbnail_sidebar;
 #[path = "document_workspace_viewport.rs"]
 mod viewport;
+pub use forms::{
+    DOCUMENT_FORM_CHOICE_MENU_ID, DOCUMENT_FORM_FIELD_EDITOR_ID, DOCUMENT_FORM_FIELD_FOCUS_ID,
+    DOCUMENT_SIGNED_FORM_FILL_CANCEL_ID, DOCUMENT_SIGNED_FORM_FILL_CONFIRM_ID,
+};
+use forms::{FormChoiceMenu, FormFieldEditor, FormOverlay, FormWidgetRef};
 use page_text::{PageTextDocumentState, PageTextEditing, PageTextHover, PageTextOverlay};
 use thumbnail_sidebar::ThumbnailSidebarInputs;
 #[path = "document_workspace_empty.rs"]
@@ -251,7 +258,7 @@ gpui::actions!(
         SelectHighlightTool,
         SelectImageTool,
         SelectSnapshotTool,
-        SelectEditTextTool,
+        SelectEditPdfContentTool,
         SelectLengthTool,
         FinishVertexPath
     ]
@@ -394,7 +401,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         ),
         KeyBinding::new(
             "shift-t",
-            SelectEditTextTool,
+            SelectEditPdfContentTool,
             Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
         #[cfg(target_os = "macos")]
@@ -427,6 +434,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         KeyBinding::new("escape", Escape, Some(DOCUMENT_WORKSPACE_CONTEXT)),
     ]);
     crate::page_text_editor::init_page_text_editor_actions(cx);
+    forms::init_form_field_actions(cx);
 }
 
 pub fn register_document_workspace_global_actions(
@@ -602,7 +610,7 @@ pub const DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID: &str =
     "document-workspace-text-box-commit-error-alert";
 pub const DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID: &str = "document-workspace-text-box-return-focus";
 pub const DOCUMENT_SELECT_TOOL_ID: &str = "document-workspace-select-tool";
-pub const DOCUMENT_EDIT_TEXT_TOOL_ID: &str = "document-workspace-edit-text-tool";
+pub const DOCUMENT_EDIT_PDF_CONTENT_TOOL_ID: &str = "document-workspace-edit-pdf-content-tool";
 pub const DOCUMENT_ANNOTATION_UNDO_ID: &str = "document-workspace-annotation-undo";
 pub const DOCUMENT_ANNOTATION_REDO_ID: &str = "document-workspace-annotation-redo";
 pub const DOCUMENT_ANNOTATION_DELETE_ID: &str = "document-workspace-annotation-delete";
@@ -693,7 +701,10 @@ pub fn document_viewport_cursor_style(
         }
     } else if tool.uses_crosshair() {
         CursorStyle::Crosshair
-    } else if matches!(tool, AnnotationTool::Select | AnnotationTool::EditText) {
+    } else if matches!(
+        tool,
+        AnnotationTool::Select | AnnotationTool::EditPdfContent
+    ) {
         select_hover_cursor.unwrap_or(CursorStyle::Arrow)
     } else {
         CursorStyle::Arrow
@@ -1250,6 +1261,9 @@ impl PdfDocumentSaver {
         persistence
             .apply_page_text_edits(&request.annotations.page_text_edits)
             .map_err(|error| format!("could not save edited page text: {error}"))?;
+        persistence
+            .apply_form_field_edits(&request.annotations.form_field_edits)
+            .map_err(|error| format!("could not save filled form fields: {error}"))?;
         let deleted_snapshot_ids = persistence
             .snapshots()
             .iter()
@@ -1854,6 +1868,18 @@ impl PdfDocumentSaver {
                 return Err(format!(
                     "saved PDF page text failed independent reopen validation: expected {text:?}, reopened {saved:?}"
                 ));
+            }
+        }
+        if !request.annotations.form_field_edits.is_empty() {
+            let form = reopened.form_layer();
+            for edit in &request.annotations.form_field_edits {
+                let saved = form.field(&edit.name).map(|field| &field.value);
+                if saved != Some(&edit.value) {
+                    return Err(format!(
+                        "saved PDF form field {:?} failed independent reopen validation: expected {:?}, reopened {saved:?}",
+                        edit.name, edit.value
+                    ));
+                }
             }
         }
         if !request.annotations.annotation_order.is_empty()
@@ -2500,7 +2526,7 @@ enum ActiveInspectorKind {
     TextBox,
     Measurement,
     Dimension,
-    EditText,
+    EditPdfContent,
 }
 
 struct ActiveInspector {
@@ -2605,18 +2631,31 @@ pub struct DocumentWorkspace {
     text_box_return_focus: FocusHandle,
     pending_text_box_editor: Option<PendingTextBoxEditor>,
     pending_text_box_subscriptions: Vec<Subscription>,
-    /// Edit Text: each document's page text and rendered edits, the line
+    /// Edit PDF Content: each document's page text and rendered edits, the line
     /// being edited, its input and the line under the pointer.
     page_text: HashMap<DocumentId, PageTextDocumentState>,
     page_text_input: Option<(Entity<crate::page_text_editor::PageTextInput>, Subscription)>,
     page_text_editing: Option<PageTextEditing>,
     page_text_hover: Option<PageTextHover>,
-    /// Signed documents whose text the user chose to edit anyway.
+    /// Signed documents whose content the user chose to edit (or whose
+    /// fields to fill) anyway.
     page_text_signed_confirmed: HashSet<DocumentId>,
+    /// Form filling with the Select tool: the field widget under the
+    /// pointer, the focused one, its text editor and its choice menu, and
+    /// the focus that takes keys for a focused check box or choice field.
+    form_field_hover: Option<FormWidgetRef>,
+    form_field_focus: Option<FormWidgetRef>,
+    form_field_editor: Option<FormFieldEditor>,
+    form_choice_menu: Option<FormChoiceMenu>,
+    /// Each painted page's transform, kept across renders (unlike
+    /// `page_interactions`) so the form editor and menu are sized for the
+    /// page as last painted.
+    form_page_transforms: HashMap<(DocumentId, u32), PageTransform>,
+    form_focus: FocusHandle,
     /// Text properties of the paragraph being edited, and whether they show
     /// (closing them hides them until another paragraph is edited).
-    edit_text_property_inspector: Option<(
-        Entity<crate::edit_text_property_inspector::EditTextPropertyInspector>,
+    edit_pdf_content_property_inspector: Option<(
+        Entity<crate::edit_pdf_content_property_inspector::EditPdfContentPropertyInspector>,
         Subscription,
     )>,
     text_box_commit_error: Option<String>,
@@ -4142,7 +4181,13 @@ impl DocumentWorkspace {
             page_text_editing: None,
             page_text_hover: None,
             page_text_signed_confirmed: HashSet::new(),
-            edit_text_property_inspector: None,
+            form_field_hover: None,
+            form_field_focus: None,
+            form_field_editor: None,
+            form_choice_menu: None,
+            form_page_transforms: HashMap::new(),
+            form_focus: cx.focus_handle(),
+            edit_pdf_content_property_inspector: None,
             text_box_commit_error: None,
             annotation_statuses: HashMap::new(),
             last_file_error: None,
@@ -4555,8 +4600,8 @@ impl DocumentWorkspace {
                 return;
             };
             let open = background.spawn(async move {
-                let edits = recovered_page_text_edits(&recovered.timeline);
-                let result = opener.open_with_text_edits(&request, &edits);
+                let edits = recovered_document_edits(&recovered.timeline);
+                let result = opener.open_with_edits(&request, &edits);
                 (request, recovered, result)
             });
             let (request, recovered, result) = open.await;
@@ -4821,8 +4866,8 @@ impl DocumentWorkspace {
                 return;
             };
             let open = background.spawn(async move {
-                let edits = recovered_page_text_edits(&recovered.timeline);
-                let result = opener.open_with_text_edits(&request, &edits);
+                let edits = recovered_document_edits(&recovered.timeline);
+                let result = opener.open_with_edits(&request, &edits);
                 (request, recovered, result)
             });
             let (request, recovered, result) = open.await;
@@ -5775,6 +5820,8 @@ impl DocumentWorkspace {
         }
         let session = self.sessions.remove(index);
         self.page_interactions
+            .retain(|(owner, _), _| *owner != document_id);
+        self.form_page_transforms
             .retain(|(owner, _), _| *owner != document_id);
         self.last_painted_page_evidence
             .retain(|(owner, _), _| *owner != document_id);
@@ -11623,19 +11670,41 @@ impl DocumentWorkspace {
             return;
         }
         self.viewport_refresh_scheduled = Some(document_id);
-        cx.on_next_frame(window, move |workspace, window, cx| {
-            if workspace.viewport_refresh_scheduled != Some(document_id) {
-                return;
-            }
-            workspace.viewport_refresh_scheduled = None;
-            let _ = workspace.refresh_viewport_async(
-                document_id,
-                viewport_width,
-                viewport_height,
-                window.scale_factor(),
-                cx,
-            );
+        // Weak: a window that is never given another frame (a hidden or
+        // headless one) must not keep the workspace alive past quit.
+        let workspace = cx.weak_entity();
+        window.on_next_frame(move |window, cx| {
+            let _ = workspace.update(cx, |workspace, cx| {
+                if workspace.viewport_refresh_scheduled != Some(document_id) {
+                    return;
+                }
+                workspace.viewport_refresh_scheduled = None;
+                let _ = workspace.refresh_viewport_async(
+                    document_id,
+                    viewport_width,
+                    viewport_height,
+                    window.scale_factor(),
+                    cx,
+                );
+            });
         });
+    }
+
+    /// A background window is given frames only for input, so the review
+    /// driver runs a viewport refresh still waiting for one before it
+    /// captures.
+    #[cfg(feature = "review-driver")]
+    pub fn run_scheduled_viewport_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(document_id) = self.viewport_refresh_scheduled.take() else {
+            return;
+        };
+        let Some((width, height)) = self
+            .session(document_id, cx)
+            .and_then(|session| session.read(cx).viewport_size)
+        else {
+            return;
+        };
+        let _ = self.refresh_viewport_async(document_id, width, height, window.scale_factor(), cx);
     }
 
     fn dispatch_viewer_jobs(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
@@ -12868,6 +12937,12 @@ impl DocumentWorkspace {
             .is_some_and(|editing| editing.document_id == document_id)
         {
             self.commit_page_text_editing(cx);
+        }
+        if self
+            .form_field_focus
+            .is_some_and(|focus| focus.document_id == document_id)
+        {
+            self.finish_form_filling(cx);
         }
         let Some(session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
@@ -16402,13 +16477,13 @@ impl DocumentWorkspace {
         self.select_available_annotation_tool(AnnotationTool::Snapshot, window, cx);
     }
 
-    fn select_edit_text_tool_from_action(
+    fn select_edit_pdf_content_tool_from_action(
         &mut self,
-        _: &SelectEditTextTool,
+        _: &SelectEditPdfContentTool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::EditText, window, cx);
+        self.select_available_annotation_tool(AnnotationTool::EditPdfContent, window, cx);
     }
 
     fn select_all_annotations_from_action(
@@ -16852,7 +16927,7 @@ impl DocumentWorkspace {
             return false;
         }
         let tool = session.read(cx).annotations.tool();
-        if tool == AnnotationTool::EditText {
+        if tool == AnnotationTool::EditPdfContent {
             return self.begin_page_text_press(
                 interaction,
                 point,
@@ -16861,6 +16936,12 @@ impl DocumentWorkspace {
                 window,
                 cx,
             );
+        }
+        // Markups take a press first; a form field beneath none fills.
+        if tool == AnnotationTool::Select
+            && self.begin_form_field_press(interaction, point, window, cx)
+        {
+            return true;
         }
         if matches!(tool, AnnotationTool::Polylength | AnnotationTool::Area)
             && click_count >= 2
@@ -17778,7 +17859,7 @@ impl DocumentWorkspace {
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
             return self.clear_hover_candidate(cx);
         };
-        if session.read(cx).annotations.tool() == AnnotationTool::EditText {
+        if session.read(cx).annotations.tool() == AnnotationTool::EditPdfContent {
             return self.update_page_text_hover(interaction, point, cx);
         }
         let length_pending = session
@@ -18013,6 +18094,9 @@ impl DocumentWorkspace {
                 .as_ref()
                 .map(|(document, page, id, _)| (*document, *page, id.clone()))
         });
+        // Form fields are hovered only where no markup is.
+        let form_point = (candidate.is_none() && select_hit.is_none()).then_some(point);
+        let form_hover_changed = self.update_form_field_hover(interaction, form_point, cx);
         if self.hovered_annotation != candidate
             || self.hot_annotation_handle != hot_handle
             || self.select_hover_hit != select_hit
@@ -18025,7 +18109,7 @@ impl DocumentWorkspace {
             cx.notify();
             true
         } else {
-            false
+            form_hover_changed
         }
     }
 
@@ -18035,11 +18119,13 @@ impl DocumentWorkspace {
         let select_hit = self.select_hover_hit.take();
         let image_hover = self.pending_image_hover.take();
         let page_text_hover = self.page_text_hover.take();
+        let form_field_hover = self.form_field_hover.take();
         if hovered.is_some()
             || hot_handle.is_some()
             || select_hit.is_some()
             || image_hover.is_some()
             || page_text_hover.is_some()
+            || form_field_hover.is_some()
         {
             cx.notify();
             true
@@ -18368,6 +18454,12 @@ impl DocumentWorkspace {
         {
             self.commit_page_text_editing(cx);
         }
+        if self
+            .form_field_focus
+            .is_some_and(|focus| focus.document_id == document_id)
+        {
+            self.finish_form_filling(cx);
+        }
         let Some(session) = self.session(document_id, cx) else {
             return CloseRequestDisposition::NotFound;
         };
@@ -18404,6 +18496,7 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         self.commit_page_text_editing(cx);
+        self.finish_form_filling(cx);
         if self.pending_text_box_editor.is_some()
             && let Err(error) = self.commit_pending_text_box(cx)
         {
@@ -18610,6 +18703,8 @@ impl DocumentWorkspace {
         }
         let session = self.sessions.remove(index);
         self.page_interactions
+            .retain(|(owner, _), _| *owner != document_id);
+        self.form_page_transforms
             .retain(|(owner, _), _| *owner != document_id);
         self.last_painted_page_evidence
             .retain(|(owner, _), _| *owner != document_id);
@@ -20720,6 +20815,14 @@ fn annotation_layer(
                                 pdf_page_size,
                                 painted_viewer,
                             );
+                            if workspace.record_form_page_transform(
+                                document_id,
+                                page_index,
+                                transform,
+                                cx,
+                            ) {
+                                cx.notify();
+                            }
                             if geometry_changed
                                 && workspace.pending_text_box_editor.as_ref().is_some_and(
                                     |editor| {
@@ -22687,11 +22790,14 @@ fn rail_overflow_hint(
         .into_any_element()
 }
 
-/// The page-text edits of a recovered session's current state, so its
+/// The content edits of a recovered session's current state, so its
 /// document opens with them shown.
-fn recovered_page_text_edits(timeline: &[u8]) -> Vec<crate::pdf_text_edit::PageTextEdit> {
+fn recovered_document_edits(timeline: &[u8]) -> crate::pdf_worker::DocumentEdits {
     crate::annotation_model::AnnotationDocument::hydrate_recovery_timeline(timeline)
-        .map(|document| document.page_text_edits().to_vec())
+        .map(|document| crate::pdf_worker::DocumentEdits {
+            text: document.page_text_edits().to_vec(),
+            forms: document.form_field_edits().to_vec(),
+        })
         .unwrap_or_default()
 }
 
@@ -23422,22 +23528,26 @@ fn annotation_tool_group(
         .child(rail_tool_section(
             "Edit",
             vec![
-                rail_tool_button(DOCUMENT_EDIT_TEXT_TOOL_ID, "Edit Text", "text-cursor-input")
-                    .disabled(save_busy)
-                    .tooltip(AnnotationTool::EditText.tooltip_label())
-                    .selected(annotation_tool == AnnotationTool::EditText && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::EditText && !pan_active)
-                    .on_click(cx.listener(move |workspace, event, _, cx| {
-                        if rail_tool_secondary_click(workspace, event, cx) {
-                            return;
-                        }
-                        let _ = workspace.set_annotation_tool(
-                            document_id,
-                            AnnotationTool::EditText,
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
+                rail_tool_button(
+                    DOCUMENT_EDIT_PDF_CONTENT_TOOL_ID,
+                    "Edit PDF Content",
+                    "text-cursor-input",
+                )
+                .disabled(save_busy)
+                .tooltip(AnnotationTool::EditPdfContent.tooltip_label())
+                .selected(annotation_tool == AnnotationTool::EditPdfContent && !pan_active)
+                .toggled(annotation_tool == AnnotationTool::EditPdfContent && !pan_active)
+                .on_click(cx.listener(move |workspace, event, _, cx| {
+                    if rail_tool_secondary_click(workspace, event, cx) {
+                        return;
+                    }
+                    let _ = workspace.set_annotation_tool(
+                        document_id,
+                        AnnotationTool::EditPdfContent,
+                        cx,
+                    );
+                }))
+                .into_any_element(),
             ],
             columns,
             cx,
@@ -23875,8 +23985,9 @@ impl Render for DocumentWorkspace {
             self.session_tab_reveal = self.active_document_id;
         }
         self.reconcile_page_text_editing(cx);
+        self.reconcile_form_filling(cx);
         if let Some(document_id) = self.active_document_id {
-            self.sync_page_text_edits(document_id, cx);
+            self.sync_document_edits(document_id, cx);
             self.prefetch_page_text(document_id, cx);
         }
         // An existing Text Box editor follows its page's latest painted
@@ -24462,12 +24573,13 @@ impl Render for DocumentWorkspace {
             .filter(|active| active.document_id == document_id)
             .and(self.gesture_cursor)
             .or(select_hover_cursor);
-        let select_hover_cursor = if annotation_tool == AnnotationTool::EditText {
+        let select_hover_cursor = if annotation_tool == AnnotationTool::EditPdfContent {
             self.page_text_cursor(document_id)
         } else {
-            select_hover_cursor
+            select_hover_cursor.or_else(|| self.form_field_cursor(document_id, cx))
         };
-        let page_text_overlays = if annotation_tool == AnnotationTool::EditText
+        let form_overlays = self.form_overlays(document_id, cx);
+        let page_text_overlays = if annotation_tool == AnnotationTool::EditPdfContent
             || self
                 .page_text_editing
                 .is_some_and(|editing| editing.document_id == document_id)
@@ -25147,14 +25259,14 @@ impl Render for DocumentWorkspace {
         let inspector_range = window.rem_size() * 13.75..window.rem_size() * 26.25;
         let inline_selection =
             self.right_rail_actions_open && annotation_tool == AnnotationTool::Select;
-        let edit_text_properties =
-            annotation_tool == AnnotationTool::EditText && self.edit_text_properties_visible(cx);
-        if edit_text_properties {
-            self.sync_edit_text_property_inspector(window, cx);
+        let edit_pdf_content_properties = annotation_tool == AnnotationTool::EditPdfContent
+            && self.edit_pdf_content_properties_visible(cx);
+        if edit_pdf_content_properties {
+            self.sync_edit_pdf_content_property_inspector(window, cx);
         }
-        let active_inspector = if edit_text_properties {
+        let active_inspector = if edit_pdf_content_properties {
             Some(ActiveInspector {
-                kind: ActiveInspectorKind::EditText,
+                kind: ActiveInspectorKind::EditPdfContent,
                 initial_width: inspector_width,
                 width_range: inspector_range.clone(),
             })
@@ -25301,9 +25413,9 @@ impl Render for DocumentWorkspace {
                     .expect("the ensured Dimension inspector must be retained")
                     .clone(),
             ),
-            Some(ActiveInspectorKind::EditText) => active_inspector_shell().child(
-                self.edit_text_property_inspector()
-                    .expect("the synced Edit Text inspector must be retained"),
+            Some(ActiveInspectorKind::EditPdfContent) => active_inspector_shell().child(
+                self.edit_pdf_content_property_inspector()
+                    .expect("the synced Edit PDF Content inspector must be retained"),
             ),
             None => active_inspector_shell(),
         }
@@ -25349,7 +25461,7 @@ impl Render for DocumentWorkspace {
                             ActiveInspectorKind::Dimension => {
                                 workspace.set_dimension_property_inspector_open(false, window, cx);
                             }
-                            ActiveInspectorKind::EditText => {
+                            ActiveInspectorKind::EditPdfContent => {
                                 workspace.right_rail_actions_open = false;
                                 cx.notify();
                             }
@@ -25834,6 +25946,7 @@ impl Render for DocumentWorkspace {
                 pending_image_preview,
                 pending_text_box_presentation,
                 page_text_overlays,
+                form_overlays,
                 relationship_snap_guides,
                 selection_color,
                 semantic_snap_decision,

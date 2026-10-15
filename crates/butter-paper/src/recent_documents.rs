@@ -66,6 +66,13 @@ impl RecentDocuments {
     }
 }
 
+/// A path as people read it: Windows' `\\?\` verbatim prefix, which
+/// opened documents keep for their canonical identity, is left off where
+/// the plain form names the same file.
+pub fn display_path(path: &std::path::Path) -> String {
+    dunce::simplified(path).to_string_lossy().into_owned()
+}
+
 /// Stable identity across ordering changes, including non-Unicode paths.
 pub fn recent_document_id(path: &std::path::Path) -> String {
     use std::hash::{Hash, Hasher};
@@ -78,6 +85,26 @@ pub fn recent_document_id(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use gpui::AppContext;
+
+    #[test]
+    fn display_paths_leave_off_the_windows_verbatim_prefix() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                display_path(std::path::Path::new(r"\\?\C:\Users\a\code\plan.pdf")),
+                r"C:\Users\a\code\plan.pdf"
+            );
+            assert_eq!(
+                display_path(std::path::Path::new(r"\\?\UNC\server\share\plan.pdf")),
+                r"\\server\share\plan.pdf"
+            );
+        }
+        assert_eq!(
+            display_path(std::path::Path::new("/Users/a/code/plan.pdf")),
+            "/Users/a/code/plan.pdf"
+        );
+    }
+
     #[gpui::test]
     fn recent_files_deduplicate_order_bound_and_persist(cx: &mut gpui::TestAppContext) {
         let root =

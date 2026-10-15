@@ -1,0 +1,60 @@
+# Form filling review against a copy of tests/fixtures/forms/libreoffice.pdf,
+# run by hand on macOS (see docs/planning/ux-review.md). Coordinates are
+# window content points below the title bar for a 1300 x 900 window, measured
+# on macOS; the captures are for a person to inspect, and review.log records
+# each step.
+wait 1500
+place 0 120 120 1300 900
+wait 2000
+shot opened
+move 0 373 312
+wait 500
+shot hover
+# Type a name with characters Helvetica cannot draw, then Tab through.
+click 0 373 312
+wait 600
+type 0 Zoë Ng 吴
+wait 400
+shot typing
+key 0 tab
+wait 400
+type 0 zoe@example.com
+key 0 tab
+wait 400
+type 0 30519
+key 0 tab
+wait 400
+type 0 Gate code 4410
+key 0 enter
+type 0 Dog in the yard
+wait 400
+shot notes
+key 0 escape
+wait 1500
+shot committed
+# A radio button, the check box and a choice from the combo box.
+click 0 402 672
+wait 600
+click 0 216 710
+wait 1500
+shot toggled
+click 0 260 780
+wait 800
+shot menu
+key 0 down
+key 0 down
+key 0 enter
+wait 1500
+shot chosen
+log-form 0
+key 0 secondary-z
+wait 1500
+shot undone
+key 0 secondary-shift-z
+wait 1500
+log-form 0
+key 0 secondary-s
+wait 6000
+shot saved
+log-form 0
+quit

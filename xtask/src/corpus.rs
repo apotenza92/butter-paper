@@ -1,4 +1,4 @@
-//! `cargo xtask pdf-corpus DIR...`: checks Edit Text against a local folder
+//! `cargo xtask pdf-corpus DIR...`: checks Edit PDF Content against a local folder
 //! of PDFs (alignment with PDFium, outlines on ink, edit round-trips, speed)
 //! and writes a ranked report. PDFs are only read; online-only cloud files
 //! and duplicates are skipped. Nothing here runs in CI.

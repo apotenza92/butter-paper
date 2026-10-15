@@ -29,7 +29,7 @@ const USAGE: &str = "usage: cargo xtask <command>
 
   check                       repository, version and workflow checks
   pdf-corpus [--pages N] [--edits N] [--jobs N] [--limit N] [--out DIR] DIR...
-                              check Edit Text against local PDFs (reads them only)
+                              check Edit PDF Content against local PDFs (reads them only)
   dev [--release] [--data DIR] [PDF...]
                               run the app, rebuilding and restarting it on changes
   version X.Y.Z[-beta.N]      set the app version and start its CHANGELOG section

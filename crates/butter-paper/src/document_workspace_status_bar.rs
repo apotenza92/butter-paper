@@ -12,13 +12,13 @@ impl DocumentWorkspace {
             .and_then(|id| self.session(id, cx))
             .map(|session| session.read(cx).annotations.tool());
         let context = if self.pending_text_box_editor.is_some() {
-            "Edit text · Click away to finish".to_owned()
+            "Edit PDF Content · Click away to finish".to_owned()
         } else if self.pan_tool_active {
             "Pan · Drag to move the page".to_owned()
         } else if let Some(tool) = tool {
             let help = match tool {
                 AnnotationTool::Select => "Click to select · Drag empty space to select several",
-                AnnotationTool::EditText => {
+                AnnotationTool::EditPdfContent => {
                     "Click text to edit it · Drag to select · Esc or click away to finish"
                 }
                 AnnotationTool::Polyline

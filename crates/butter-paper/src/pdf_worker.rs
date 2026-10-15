@@ -20,6 +20,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::pdf_content_geometry::PageSnapGeometry;
+use crate::pdf_forms::FormFieldEdit;
 use crate::pdf_text_edit::{PageTextEdit, PageTextLayer};
 
 pub const MAX_PROTOCOL_LINE_BYTES: usize = 32 * 1024 * 1024;
@@ -315,6 +316,29 @@ impl RenderRequest {
     }
 }
 
+/// Changes to a document's content that renders show before it is saved:
+/// edited page text and filled form fields.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct DocumentEdits {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub text: Vec<PageTextEdit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forms: Vec<FormFieldEdit>,
+}
+
+impl DocumentEdits {
+    pub fn from_text(text: &[PageTextEdit]) -> Self {
+        Self {
+            text: text.to_vec(),
+            forms: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.forms.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerRequest {
@@ -341,12 +365,12 @@ pub enum WorkerRequest {
         session_id: SessionId,
         page_index: u32,
     },
-    /// Replaces the page-text edits renders show. Edits always apply to the
-    /// unedited document, so an empty list restores it.
-    SetTextEdits {
+    /// Replaces the edits renders show. Edits always apply to the unedited
+    /// document, so no edits restore it.
+    SetDocumentEdits {
         request_id: RequestId,
         session_id: SessionId,
-        edits: Vec<PageTextEdit>,
+        edits: DocumentEdits,
     },
     RenderCrop {
         request_id: RequestId,
@@ -370,7 +394,7 @@ impl WorkerRequest {
             | Self::PageGeometry { request_id, .. }
             | Self::PageSnapGeometry { request_id, .. }
             | Self::PageText { request_id, .. }
-            | Self::SetTextEdits { request_id, .. }
+            | Self::SetDocumentEdits { request_id, .. }
             | Self::RenderCrop { request_id, .. }
             | Self::Cancel { request_id, .. }
             | Self::Close { request_id, .. } => *request_id,
@@ -403,7 +427,7 @@ pub enum WorkerResponse {
         session_id: SessionId,
         layer: PageTextLayer,
     },
-    TextEditsSet {
+    DocumentEditsSet {
         request_id: RequestId,
         session_id: SessionId,
     },
@@ -435,7 +459,7 @@ impl WorkerResponse {
             | Self::PageGeometry { request_id, .. }
             | Self::PageSnapGeometry { request_id, .. }
             | Self::PageText { request_id, .. }
-            | Self::TextEditsSet { request_id, .. }
+            | Self::DocumentEditsSet { request_id, .. }
             | Self::Rendered { request_id, .. }
             | Self::Cancelled { request_id, .. }
             | Self::Closed { request_id, .. }
@@ -473,10 +497,10 @@ pub trait PdfBackend {
         Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
     }
 
-    fn set_text_edits(
+    fn set_document_edits(
         &mut self,
         _document: &mut Self::Document,
-        _edits: &[PageTextEdit],
+        _edits: &DocumentEdits,
     ) -> Result<(), WorkerError> {
         Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
     }
@@ -808,7 +832,7 @@ where
                     Err(error) => failed(request_id, None, error),
                 }
             }
-            WorkerRequest::SetTextEdits {
+            WorkerRequest::SetDocumentEdits {
                 session_id, edits, ..
             } => {
                 let Some(document) = self.documents.get_mut(&session_id) else {
@@ -821,8 +845,8 @@ where
                         ),
                     );
                 };
-                match self.backend.set_text_edits(document, &edits) {
-                    Ok(()) => WorkerResponse::TextEditsSet {
+                match self.backend.set_document_edits(document, &edits) {
+                    Ok(()) => WorkerResponse::DocumentEditsSet {
                         request_id,
                         session_id,
                     },

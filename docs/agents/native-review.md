@@ -30,7 +30,7 @@ not prove that LaunchServices delivered it.
   required for live GUI review.
 - Real-PDFium tests: `BP_PDFIUM_LIBRARY=<approved-library> cargo test <test-filter> -- --ignored`.
 - `cargo xtask pdf-corpus [--pages N] [--edits N] [--jobs N] [--limit N] DIR...`
-  checks Edit Text against a local folder of PDFs: its text against PDFium's
+  checks Edit PDF Content against a local folder of PDFs: its text against PDFium's
   characters, its outlines against rendered ink, no-op and typed edit
   round-trips, and timings. It reads the PDFs only, skips online-only cloud
   files and duplicates, and writes `report.md`, crops and an edited copy of

@@ -1,4 +1,4 @@
-//! The Edit Text tool in the workspace: a press in page text starts the
+//! The Edit PDF Content tool in the workspace: a press in page text starts the
 //! inline editor, typing (including tool shortcut letters) edits the line,
 //! the worker is told what to render, and Enter records one undoable edit.
 
@@ -25,6 +25,7 @@ use butter_paper::page_view_control::PageViewMode;
 use butter_paper::pdf_text_edit::{
     PageTextEdit, PageTextLayer, TextEditLimits, TextEditRun, extract_page_text,
 };
+use butter_paper::pdf_worker::DocumentEdits;
 use gpui::{AppContext as _, Modifiers, TestAppContext, point, px};
 use gpui_component::Root;
 use lopdf::{Document, Object, Stream, dictionary};
@@ -125,8 +126,8 @@ impl NativeDocumentResource for PageTextResource {
         Ok(self.layer.clone())
     }
 
-    fn set_text_edits(&self, edits: &[PageTextEdit]) -> Result<(), String> {
-        self.shown.lock().unwrap().push(edits.to_vec());
+    fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
+        self.shown.lock().unwrap().push(edits.text.clone());
         Ok(())
     }
 
@@ -141,7 +142,7 @@ impl NativeDocumentResource for PageTextResource {
 }
 
 #[gpui::test]
-fn edit_text_types_shortcut_letters_into_the_line_and_commits_one_undoable_edit(
+fn edit_pdf_content_types_shortcut_letters_into_the_line_and_commits_one_undoable_edit(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
@@ -192,13 +193,13 @@ fn edit_text_types_shortcut_letters_into_the_line_and_commits_one_undoable_edit(
     cx.run_until_parked();
     workspace
         .update(cx, |workspace, cx| {
-            workspace.set_annotation_tool(document_id, AnnotationTool::EditText, cx)
+            workspace.set_annotation_tool(document_id, AnnotationTool::EditPdfContent, cx)
         })
         .unwrap();
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
-        Some(AnnotationTool::EditText)
+        Some(AnnotationTool::EditPdfContent)
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -232,7 +233,7 @@ fn edit_text_types_shortcut_letters_into_the_line_and_commits_one_undoable_edit(
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
-        Some(AnnotationTool::EditText),
+        Some(AnnotationTool::EditPdfContent),
         "typed letters must not switch tools"
     );
     let live = shown.lock().unwrap().last().cloned().unwrap();
@@ -286,10 +287,10 @@ fn edit_text_types_shortcut_letters_into_the_line_and_commits_one_undoable_edit(
     );
 }
 
-/// Opens one page of page text in Edit Text, with the page's coordinate
+/// Opens one page of page text in Edit PDF Content, with the page's coordinate
 /// space, and returns the workspace, the document and the edits the worker
 /// was asked to show.
-fn edit_text_workspace(
+fn edit_pdf_content_workspace(
     cx: &mut TestAppContext,
     layer: PageTextLayer,
     space: PageCoordinateSpace,
@@ -352,7 +353,7 @@ fn edit_text_workspace(
     cx.run_until_parked();
     workspace
         .update(cx, |workspace, cx| {
-            workspace.set_annotation_tool(document_id, AnnotationTool::EditText, cx)
+            workspace.set_annotation_tool(document_id, AnnotationTool::EditPdfContent, cx)
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -401,7 +402,7 @@ fn click_page_point(
     cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
-/// Edit Text on a page with `rotation`, a crop box and a user unit: a click
+/// Edit PDF Content on a page with `rotation`, a crop box and a user unit: a click
 /// just after "Hello" puts the caret there.
 fn caret_lands_on_the_clicked_glyph(cx: &mut TestAppContext, rotation: Rotation, user_unit: f64) {
     let crop = PdfRect::new(100., 120., 400., 560.).unwrap();
@@ -433,7 +434,7 @@ fn caret_lands_on_the_clicked_glyph(cx: &mut TestAppContext, rotation: Rotation,
         Rotation::Degrees270 => PageRotation::Degrees270,
     };
     let (workspace, document_id, shown, cx) =
-        edit_text_workspace(cx, layer, space, page_rotation, false);
+        edit_pdf_content_workspace(cx, layer, space, page_rotation, false);
     let hello_width = 0.556 * 3. + 0.222 * 2.;
     click_page_point(
         cx,
@@ -505,10 +506,14 @@ impl NativeDocumentResource for RecordingTextResource {
         Ok(self.layer.clone())
     }
 
-    fn set_text_edits(&self, edits: &[PageTextEdit]) -> Result<(), String> {
+    fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
         self.events.lock().unwrap().push(format!(
             "edits {:?}",
-            edits.iter().map(PageTextEdit::text).collect::<Vec<_>>()
+            edits
+                .text
+                .iter()
+                .map(PageTextEdit::text)
+                .collect::<Vec<_>>()
         ));
         Ok(())
     }
@@ -704,7 +709,7 @@ fn editing_a_signed_pdf_asks_first(cx: &mut TestAppContext) {
     )
     .unwrap();
     let (_workspace, document_id, shown, cx) =
-        edit_text_workspace(cx, layer, space, PageRotation::Degrees0, true);
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, true);
     let hello_width = 0.556 * 3. + 0.222 * 2.;
     let at = (50. + 40. * hello_width + 1., 410.);
     click_page_point(cx, document_id, space, Rotation::Degrees0, at);
@@ -779,7 +784,7 @@ fn input_methods_compose_then_commit_into_the_line(cx: &mut TestAppContext) {
     )
     .unwrap();
     let (workspace, document_id, shown, cx) =
-        edit_text_workspace(cx, layer, space, PageRotation::Degrees0, false);
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
     let hello_width = 0.556 * 3. + 0.222 * 2.;
     click_page_point(
         cx,
@@ -848,7 +853,7 @@ fn typing_in_a_paragraph_rewraps_its_lines_as_one_undo_step(cx: &mut TestAppCont
     )
     .unwrap();
     let (workspace, document_id, shown, cx) =
-        edit_text_workspace(cx, layer, space, PageRotation::Degrees0, false);
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
     // Just after "The", on the first line.
     click_page_point(
         cx,
@@ -915,9 +920,9 @@ fn click_selector(cx: &mut gpui::VisualTestContext, id: &'static str) {
 
 #[gpui::test]
 fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAppContext) {
-    use butter_paper::edit_text_property_inspector::{
-        EDIT_TEXT_INSPECTOR_ALIGN_RIGHT_ID, EDIT_TEXT_INSPECTOR_BOLD_ID,
-        EDIT_TEXT_INSPECTOR_SIZE_ID, EDIT_TEXT_PROPERTY_INSPECTOR_ID,
+    use butter_paper::edit_pdf_content_property_inspector::{
+        EDIT_PDF_CONTENT_INSPECTOR_ALIGN_RIGHT_ID, EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID,
+        EDIT_PDF_CONTENT_INSPECTOR_SIZE_ID, EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID,
     };
     use butter_paper::pdf_text_blocks::TextBlockAlignment;
     let layer = text_page(
@@ -932,8 +937,11 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     )
     .unwrap();
     let (workspace, document_id, shown, cx) =
-        edit_text_workspace(cx, layer, space, PageRotation::Degrees0, false);
-    assert!(cx.debug_bounds(EDIT_TEXT_PROPERTY_INSPECTOR_ID).is_none());
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    assert!(
+        cx.debug_bounds(EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID)
+            .is_none()
+    );
     // Just before "quick", then select it.
     click_page_point(
         cx,
@@ -947,13 +955,16 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     cx.run_until_parked();
     // Editing text does not open the properties; the properties button does,
     // as for other tools.
-    assert!(cx.debug_bounds(EDIT_TEXT_PROPERTY_INSPECTOR_ID).is_none());
+    assert!(
+        cx.debug_bounds(EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID)
+            .is_none()
+    );
     click_selector(cx, "document-workspace-rail-actions");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     let snapshot = workspace.read_with(cx, |workspace, cx| {
         workspace
-            .edit_text_property_inspector()
+            .edit_pdf_content_property_inspector()
             .and_then(|inspector| inspector.read(cx).snapshot().cloned())
     });
     let snapshot = snapshot.expect("the opened inspector shows the edited text");
@@ -963,7 +974,7 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     assert_eq!(snapshot.alignment, TextBlockAlignment::Left);
 
     // Bold applies to the selected word only, in the bundled Helvetica match.
-    click_selector(cx, EDIT_TEXT_INSPECTOR_BOLD_ID);
+    click_selector(cx, EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID);
     let live = shown.lock().unwrap().last().cloned().unwrap();
     let first = live
         .iter()
@@ -984,7 +995,7 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     );
 
     // A size typed into the inspector applies on Enter.
-    let size = cx.debug_bounds(EDIT_TEXT_INSPECTOR_SIZE_ID).unwrap();
+    let size = cx.debug_bounds(EDIT_PDF_CONTENT_INSPECTOR_SIZE_ID).unwrap();
     cx.simulate_click(size.center(), Modifiers::default());
     cx.simulate_keystrokes("secondary-a 1 8 enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -999,7 +1010,7 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     assert_eq!(sizes, vec![18.], "{live:#?}");
 
     // Alignment applies to the whole paragraph and is kept with it.
-    click_selector(cx, EDIT_TEXT_INSPECTOR_ALIGN_RIGHT_ID);
+    click_selector(cx, EDIT_PDF_CONTENT_INSPECTOR_ALIGN_RIGHT_ID);
     let live = shown.lock().unwrap().last().cloned().unwrap();
     let first = live
         .iter()
@@ -1021,10 +1032,13 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     // The properties stay open, asking for text to edit.
-    assert!(cx.debug_bounds(EDIT_TEXT_PROPERTY_INSPECTOR_ID).is_some());
+    assert!(
+        cx.debug_bounds(EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID)
+            .is_some()
+    );
     assert!(workspace.read_with(cx, |workspace, cx| {
         workspace
-            .edit_text_property_inspector()
+            .edit_pdf_content_property_inspector()
             .is_some_and(|inspector| inspector.read(cx).snapshot().is_none())
     }));
     let saved = workspace.read_with(cx, |workspace, cx| {

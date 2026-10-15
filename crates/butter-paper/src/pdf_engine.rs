@@ -1687,6 +1687,18 @@ impl PdfPersistenceSession {
         .map_err(|error| PdfPersistenceError::InvalidDocument(error.to_string()))
     }
 
+    /// Writes filled form field values, with their new appearances.
+    pub fn apply_form_field_edits(
+        &mut self,
+        edits: &[crate::pdf_forms::FormFieldEdit],
+    ) -> Result<(), PdfPersistenceError> {
+        crate::pdf_forms::apply_form_edits(&mut self.document, edits)
+    }
+
+    pub fn form_layer(&self) -> crate::pdf_forms::FormLayer {
+        crate::pdf_forms::extract_form_layer(&self.document)
+    }
+
     pub fn page_text(
         &self,
         page_index: u32,
@@ -5800,7 +5812,7 @@ impl EmbeddedTextFont {
             Self::TinosBold => "Tinos-Bold",
             Self::TinosItalic => "Tinos-Italic",
             Self::TinosBoldItalic => "Tinos-BoldItalic",
-            Self::Sans => "NotoSansSC-Thin",
+            Self::Sans => "NotoSansSC-Regular",
             Self::Emoji => "NotoEmoji-Regular",
         }
     }
@@ -6157,6 +6169,70 @@ fn unicode_text_lines(content: &str, font_family: &str) -> Result<Vec<UnicodeTex
         .split('\n')
         .map(|line| unicode_text_line(line, font_family))
         .collect()
+}
+
+/// The width in em of a line of form field text (see [`crate::pdf_forms`]),
+/// or `None` when no bundled font can draw one of its characters. `family`
+/// is a bundled family, or any other name for the standard Helvetica.
+pub(crate) fn field_text_width_em(
+    text: &str,
+    family: &str,
+    bold: bool,
+    italic: bool,
+) -> Option<f64> {
+    unicode_text_line_styled(text, field_text_family(text, family), bold, italic)
+        .ok()
+        .map(|line| line.width_em)
+}
+
+/// Text the standard Helvetica cannot encode is set in Arimo, which has
+/// Helvetica's metrics, so only characters neither has fall back further.
+fn field_text_family<'a>(text: &str, family: &'a str) -> &'a str {
+    if embedded_annotation_font(family).is_none() && !text_content_is_winansi(text) {
+        "Arimo"
+    } else {
+        family
+    }
+}
+
+/// The ascent and descent in em of form field text.
+pub(crate) fn field_text_vertical_metrics(family: &str, bold: bool, italic: bool) -> (f64, f64) {
+    appearance_font_vertical_metrics(family, bold, italic)
+}
+
+/// Draws lines of form field text, each from its baseline origin, as one
+/// `BT … ET` block, and returns it with the fonts it uses. Characters the
+/// standard font cannot encode fall back to the bundled fonts.
+pub(crate) fn field_text_content(
+    document: &mut Document,
+    lines: &[(String, f64, f64)],
+    family: &str,
+    bold: bool,
+    italic: bool,
+    font_size: f64,
+) -> Result<(Vec<u8>, Dictionary), PdfPersistenceError> {
+    let all = lines
+        .iter()
+        .map(|(text, _, _)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let family = field_text_family(&all, family);
+    let mut shaped = lines
+        .iter()
+        .map(|(text, _, _)| unicode_text_line_styled(text, family, bold, italic))
+        .collect::<Result<Vec<_>, ()>>()
+        .map_err(|()| {
+            PdfPersistenceError::InvalidDocument(
+                "no available font can draw a character of this field's text".into(),
+            )
+        })?;
+    let fonts = appearance_text_font_resources(document, &mut shaped)?;
+    let mut content = b"BT\n".to_vec();
+    for (line, (_, x, y)) in shaped.iter().zip(lines) {
+        append_appearance_text_line(&mut content, line, font_size, *x, *y);
+    }
+    content.extend_from_slice(b"ET\n");
+    Ok((content, fonts))
 }
 
 fn unicode_text_width_pt(line: &UnicodeTextLine, font_size_pt: f64) -> f64 {
@@ -10326,9 +10402,11 @@ pub fn retained_annotation_render(
 }
 
 /// PDFium's annotation pass excludes Widgets. Reuse a resolved existing normal
-/// appearance as a static render-only Stamp. When no appearance exists, mirror
-/// Electron's noninteractive imported-annotation marker instead of inventing a
-/// form value or mutating the AcroForm. Popup annotations remain omitted.
+/// appearance as a static render-only Stamp. The worker draws appearances for
+/// form fields that lack them first (`pdf_forms::regenerate_appearances`);
+/// a widget still without one (no form field owns it) shows Electron's
+/// noninteractive imported-annotation marker. Popup annotations remain
+/// omitted.
 fn retained_widget_surrogate(document: &Document, annotation: &Dictionary) -> Option<Dictionary> {
     if dictionary_name(annotation, b"Subtype").as_deref() != Some("Widget") {
         return None;
@@ -18341,19 +18419,19 @@ mod tests {
     #[test]
     fn unicode_shaping_uses_ligatures_kerning_variation_clusters_and_bidi_positions() {
         let ligature = unicode_text_line("ffi中", "Helvetica").unwrap();
-        assert!((ligature.width_em - 1.812).abs() < 0.000_001);
+        assert!((ligature.width_em - 1.918).abs() < 0.000_001);
         assert_eq!(ligature.glyphs.len(), 2);
         assert_eq!(ligature.glyphs[0].font, Some(EmbeddedTextFont::Sans));
-        assert_eq!(ligature.glyphs[0].glyph_id, 4259);
+        assert_eq!(ligature.glyphs[0].glyph_id, 4437);
         assert_eq!(ligature.glyphs[0].unicode.as_deref(), Some("ffi"));
-        assert_eq!(ligature.glyphs[1].glyph_id, 564);
+        assert_eq!(ligature.glyphs[1].glyph_id, 742);
         assert_eq!(ligature.glyphs[1].unicode.as_deref(), Some("中"));
 
         let kerned = unicode_text_line("AV中", "Helvetica").unwrap();
-        assert!((kerned.width_em - 2.095).abs() < 0.000_001);
+        assert!((kerned.width_em - 2.165).abs() < 0.000_001);
         assert_eq!(kerned.glyphs[0].glyph_id, 34);
         assert_eq!(kerned.glyphs[1].glyph_id, 55);
-        assert!((kerned.glyphs[1].x_em - 0.563).abs() < 0.000_001);
+        assert!((kerned.glyphs[1].x_em - 0.59).abs() < 0.000_001);
 
         let emoji = unicode_text_line("❤️中", "Helvetica").unwrap();
         assert_eq!(emoji.glyphs[0].font, Some(EmbeddedTextFont::Emoji));
@@ -18386,7 +18464,7 @@ mod tests {
             vec![0, 6, 5, 4, 10]
         );
         assert!(visible.windows(2).all(|pair| pair[0].x_em < pair[1].x_em));
-        assert!((bidi.width_em - 2.769).abs() < 0.000_001);
+        assert!((bidi.width_em - 2.93).abs() < 0.000_001);
         assert!(unicode_text_line("שלום", "Helvetica").is_err());
     }
 

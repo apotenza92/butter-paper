@@ -1,4 +1,4 @@
-//! Edit Text draws characters a page font lacks with an installed font of
+//! Edit PDF Content draws characters a page font lacks with an installed font of
 //! the same name, and edits fonts without widths through installed or
 //! bundled metrics. The installed fonts here are the bundled font folder
 //! (`BP_SYSTEM_FONT_DIRS`), so the test does not depend on the machine.

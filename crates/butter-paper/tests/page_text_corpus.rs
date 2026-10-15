@@ -1,4 +1,4 @@
-//! Edit Text against real producer output (`tests/fixtures/text-edit`) and
+//! Edit PDF Content against real producer output (`tests/fixtures/text-edit`) and
 //! built pages with less common text state. For every editable line: an
 //! unchanged edit keeps every content byte, and seeded random edits read back
 //! as written, drawn where the editor laid them out, without moving any other
@@ -421,7 +421,7 @@ fn saved(document: &mut Document) -> Vec<u8> {
     bytes
 }
 
-/// The embedded Type0 fonts Edit Text added, by base font name.
+/// The embedded Type0 fonts Edit PDF Content added, by base font name.
 fn fallback_fonts(document: &Document) -> Vec<String> {
     document
         .objects

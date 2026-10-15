@@ -408,7 +408,7 @@ pub enum AnnotationTool {
     Image,
     Snapshot,
     /// Edits existing page text in place (Revu's Edit Text).
-    EditText,
+    EditPdfContent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -443,7 +443,7 @@ impl AnnotationTool {
             Self::Length => "Length",
             Self::Image => "Insert Image",
             Self::Snapshot => "Snapshot",
-            Self::EditText => "Edit Text",
+            Self::EditPdfContent => "Edit PDF Content",
         }
     }
 
@@ -466,7 +466,7 @@ impl AnnotationTool {
             Self::Pen => Some("P"),
             Self::Highlight => Some("H"),
             Self::Snapshot => Some("G"),
-            Self::EditText => Some("Shift+T"),
+            Self::EditPdfContent => Some("Shift+T"),
             Self::Redact | Self::TextBox | Self::Length | Self::Image => None,
         }
     }
@@ -518,7 +518,7 @@ impl AnnotationTool {
             Self::Length => "measure-ruler-dimension-line",
             Self::Image => "markup-image",
             Self::Snapshot => "tool-snapshot",
-            Self::EditText => "tool-edit-text",
+            Self::EditPdfContent => "tool-edit-pdf-content",
         }
     }
 
@@ -545,18 +545,18 @@ impl AnnotationTool {
             "measure-ruler-dimension-line" => Some(Self::Length),
             "markup-image" => Some(Self::Image),
             "tool-snapshot" => Some(Self::Snapshot),
-            "tool-edit-text" => Some(Self::EditText),
+            "tool-edit-pdf-content" => Some(Self::EditPdfContent),
             _ => None,
         }
     }
 
     pub fn uses_crosshair(self) -> bool {
-        !matches!(self, Self::Select | Self::EditText)
+        !matches!(self, Self::Select | Self::EditPdfContent)
     }
 
     /// Whether the tool edits page content rather than drawing a markup.
     pub fn edits_page_text(self) -> bool {
-        self == Self::EditText
+        self == Self::EditPdfContent
     }
 }
 
@@ -1564,6 +1564,26 @@ impl AnnotationAdapter {
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
             .set_page_text_edits(page_index, anchors, edits)
+    }
+
+    pub fn document_form_field_edits(
+        &self,
+        document_id: u64,
+    ) -> &[crate::pdf_forms::FormFieldEdit] {
+        self.documents
+            .get(&document_id)
+            .map_or(&[], |document| document.form_field_edits())
+    }
+
+    pub fn set_document_form_field_edit(
+        &mut self,
+        document_id: u64,
+        edit: crate::pdf_forms::FormFieldEdit,
+    ) -> Result<bool, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .set_form_field_edit(edit)
     }
 
     pub fn load_density_fixture(
@@ -6971,8 +6991,8 @@ impl AnnotationAdapter {
                 .clear_selection();
             return Ok(PointerPhaseOutcome::SelectionChanged(None));
         }
-        // Edit Text changes page content; the workspace owns its presses.
-        if self.tool == AnnotationTool::EditText {
+        // Edit PDF Content changes page content; the workspace owns its presses.
+        if self.tool == AnnotationTool::EditPdfContent {
             self.documents
                 .entry(document_id)
                 .or_default()
@@ -8254,7 +8274,7 @@ impl AnnotationAdapter {
                 "dimension creation requires the two-click placement interface".into(),
             )),
             // Returned before an identifier is allocated.
-            AnnotationTool::EditText => Ok(PointerPhaseOutcome::SelectionChanged(None)),
+            AnnotationTool::EditPdfContent => Ok(PointerPhaseOutcome::SelectionChanged(None)),
             AnnotationTool::Image => {
                 let id = id.expect("drawing tools allocate an annotation ID");
                 let pending = self.image_asset.clone().ok_or_else(|| {
@@ -13424,7 +13444,7 @@ impl AnnotationAdapter {
             AnnotationTool::Dimension => "dimension",
             AnnotationTool::Image => "image",
             AnnotationTool::Snapshot => "snapshot",
-            AnnotationTool::EditText => "edit-text",
+            AnnotationTool::EditPdfContent => "edit-pdf-content",
         };
         MarkupId::new(format!("comparison:{family}:{}", self.next_sequence))
     }

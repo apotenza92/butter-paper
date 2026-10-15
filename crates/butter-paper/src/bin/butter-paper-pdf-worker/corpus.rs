@@ -1,6 +1,6 @@
 //! A local PDF corpus check, run by `cargo xtask pdf-corpus`: for each listed
 //! PDF it compares the editable text with PDFium's characters, checks that
-//! the outlines Edit Text draws sit on rendered ink, round-trips edits, and
+//! the outlines Edit PDF Content draws sit on rendered ink, round-trips edits, and
 //! times each step. It reads the PDFs and writes only under its output
 //! folder; it never runs in CI.
 
@@ -10,7 +10,7 @@ use butter_paper::annotation_model::{PageTransform, PdfPoint};
 use butter_paper::page_geometry::{PdfRect, Rotation as SpaceRotation};
 use butter_paper::page_text_editor::PageTextEditState;
 use butter_paper::pdf_text_blocks::{PageTextBlock, paragraph_blocks};
-use butter_paper::pdf_text_edit::{PageTextLayer, PageTextLine};
+use butter_paper::pdf_text_edit::{PageTextEdit, PageTextLayer, PageTextLine};
 use butter_paper::pdf_text_reflow::Paragraph;
 use butter_paper::pdf_worker::{
     ClipRect, JobId, RenderRequest, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId,
@@ -281,7 +281,7 @@ fn check_document(
         .filter_map(|page| page.layer.as_ref().ok().map(|layer| (page, layer)))
         .flat_map(|(page, layer)| page.blocks.iter().map(move |block| (layer, block)))
         .filter(|(_, block)| !block.lines.is_empty())
-        // Edit Text offers only what the page shows.
+        // Edit PDF Content offers only what the page shows.
         .filter(|(layer, block)| {
             let Some([x0, y0, x1, y1]) = layer.page_box else {
                 return true;
@@ -345,7 +345,7 @@ fn check_document(
                         .unwrap_or_default()
                 };
                 let before = typed_count(&pdfium);
-                match backend.set_text_edits(&mut pdfium, &edits) {
+                match backend.set_document_edits(&mut pdfium, &DocumentEdits::from_text(&edits)) {
                     Ok(()) => {
                         report.worker_edit_ms = Some(ms(started));
                         let after = typed_count(&pdfium);
@@ -361,7 +361,7 @@ fn check_document(
                             ));
                             keep_failure(&document, &edits, path, layer.page_index, crops_dir);
                         }
-                        let _ = backend.set_text_edits(&mut pdfium, &[]);
+                        let _ = backend.set_document_edits(&mut pdfium, &DocumentEdits::default());
                     }
                     Err(error) => report.edit_failures.push(format!(
                         "page {}: worker edit failed: {error:?}",

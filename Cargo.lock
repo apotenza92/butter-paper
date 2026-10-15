@@ -857,6 +857,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
  "cosmic-text",
+ "dunce",
  "getrandom 0.3.4",
  "gpui",
  "gpui-component",

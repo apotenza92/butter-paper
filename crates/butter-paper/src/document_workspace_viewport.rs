@@ -44,6 +44,7 @@ pub(super) struct ViewportInputs {
     pub pending_image_preview: Option<PendingImagePreview>,
     pub pending_text_box_presentation: Option<PendingTextBoxPresentation>,
     pub page_text_overlays: Vec<PageTextOverlay>,
+    pub form_overlays: Vec<FormOverlay>,
     pub relationship_snap_guides: Vec<RelationshipSnapGuide>,
     pub selection_color: Hsla,
     pub semantic_snap_decision: Option<SemanticSnapDecision>,
@@ -83,6 +84,7 @@ impl DocumentWorkspace {
             pending_image_preview,
             pending_text_box_presentation,
             page_text_overlays,
+            form_overlays,
             relationship_snap_guides,
             selection_color,
             semantic_snap_decision,
@@ -97,12 +99,16 @@ impl DocumentWorkspace {
             .iter()
             .find_map(|overlay| overlay.input.clone())
             .map(|(input, focus)| page_text::page_text_input_element(input, focus));
+        let form_focus =
+            forms::form_focus_element(self.form_focus.clone(), cx.entity().downgrade());
+        let form_owner = cx.entity().downgrade();
         gpui::div()
                                 .id(DOCUMENT_VIEWPORT_ID)
                                 .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
                                 .relative()
                                 .size_full()
                                 .children(page_text_input)
+                                .child(form_focus)
                                 .cursor(viewport_cursor_style)
                                 .overflow_scroll()
                                 .track_scroll(&viewer_scroll)
@@ -362,6 +368,21 @@ impl DocumentWorkspace {
                                                                     )
                                                                 }),
                                                         )
+                                                        .children(
+                                                            form_overlays
+                                                                .iter()
+                                                                .find(|overlay| overlay.page_index == page_index)
+                                                                .cloned()
+                                                                .map(|overlay| {
+                                                                    forms::form_overlay_element(
+                                                                        overlay,
+                                                                        page_size,
+                                                                        coordinate_space,
+                                                                        selection_color,
+                                                                        form_owner.clone(),
+                                                                    )
+                                                                }),
+                                                        )
                                                         .children(render_error_surface)
                                                 },
                                             )),
@@ -412,7 +433,22 @@ impl DocumentWorkspace {
                                                         .map(|(_, marquee)| marquee.clone()),
                                                     Some(cx.entity().downgrade()),
                                                     None,
-                                                )),
+                                                ))
+                                                .children(
+                                                    form_overlays
+                                                        .iter()
+                                                        .find(|overlay| overlay.page_index == current_page)
+                                                        .cloned()
+                                                        .map(|overlay| {
+                                                            forms::form_overlay_element(
+                                                                overlay,
+                                                                current_page_size,
+                                                                current_coordinate_space,
+                                                                selection_color,
+                                                                form_owner.clone(),
+                                                            )
+                                                        }),
+                                                ),
                                         )
                                     })
                                 })
