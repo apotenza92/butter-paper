@@ -33514,7 +33514,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
     let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
     cx.simulate_event(ScrollWheelEvent {
         position: viewport.center(),
-        delta: ScrollDelta::Lines(point(0., 79. / 16.)),
+        delta: ScrollDelta::Lines(point(0., 15. / 16.)),
         ..Default::default()
     });
     assert_eq!(
@@ -33543,6 +33543,31 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
         }),
         1
     );
+
+    let current_page = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .session(request.document_id, cx)
+                .unwrap()
+                .read(cx)
+                .current_page()
+        })
+    };
+    let notch = |cx: &mut gpui::VisualTestContext, lines: f32| {
+        cx.simulate_event(ScrollWheelEvent {
+            position: viewport.center(),
+            delta: ScrollDelta::Lines(point(0., lines)),
+            ..Default::default()
+        });
+    };
+    notch(cx, -1.);
+    cx.run_until_parked();
+    assert_eq!(current_page(cx), 0, "one notch turns one page");
+    // Two quick notches go two pages, though the first is still rendering.
+    notch(cx, 1.);
+    notch(cx, 1.);
+    cx.run_until_parked();
+    assert_eq!(current_page(cx), 2, "quick notches flick through the pages");
 
     let before_zoom = workspace
         .read_with(cx, |workspace, cx| {

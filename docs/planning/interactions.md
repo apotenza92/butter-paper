@@ -88,13 +88,31 @@ tooltip expands the instructions when the window truncates them.
   is underneath, selected or not.
 - Double-clicking a rotation knob only turns the markup back to 0°; it never
   opens properties, including when the rotation is already 0°.
-- Click selects; Shift-click toggles. Dragging on empty canvas draws a
+- Click selects; Shift-click toggles. Dragging away from page text draws a
   selection box: left to right selects what is fully inside (blue), right to
   left what it touches (green, dashed). Shift adds, Alt removes.
 - Double-clicking a text box edits it in place (*native*: no properties
   panel). Double-clicking other markups opens properties.
 - Select All works on the current page. Locked markups cannot be moved,
   resized or deleted.
+
+## Selecting page text
+
+The Select tool also selects the page's own text to copy it, as Acrobat's
+does; nothing about the PDF changes.
+
+- Markups and fillable fields take a press first. Elsewhere a press in
+  text places the start of a selection and dragging extends it, in reading
+  order, to the nearest place in the page's text, including across lines
+  and paragraphs. A press away from text clears it and draws a selection
+  box as before.
+- Double-click selects a word, triple-click its paragraph (Edit PDF
+  Content's paragraphs); Shift-click extends the selection.
+- Copy puts the selected text on the clipboard, a line break between lines.
+  Selecting text clears a markup selection, and selecting a markup clears
+  the text selection; Escape and changing tool clear it too.
+- The text is what Edit PDF Content reads, as the page shows it after edits;
+  a selection stays on the page it began on.
 
 ## Editing page text
 
@@ -233,6 +251,7 @@ A PDF's form fields are filled with the Select tool, as in Acrobat and Revu.
 | Editable page text with Edit PDF Content, and while selecting it | I-beam |
 | Page text Edit PDF Content cannot change | not allowed |
 | A fillable text field with Select | I-beam |
+| Page text with Select, where no markup or field is, and while selecting it | I-beam |
 | A fillable check box, radio button, combo or list box with Select | pointing hand |
 | Moving a markup | closed hand |
 | Pan tool | open hand; closed while dragging |
@@ -256,6 +275,11 @@ is under the pointer.
   the pointer. Mouse-wheel dropdowns apply only to discrete mouse wheels;
   Ctrl+wheel reverses their Scroll/Zoom choice. CAD View always zooms with a
   discrete mouse wheel. Scrolling up zooms in; Reverse Scroll Zoom flips it.
+- In Single Page with the mouse wheel set to Scroll, each notch of a
+  discrete wheel turns one page. Turning it quickly flicks through the
+  pages: each shows as it renders and the view ends on the last page asked
+  for, without queueing a render per page. Page Up and Page Down do the
+  same.
 - A full-width bottom status bar explains the active tool and navigation
   shortcuts while a document is open. Empty windows omit it. Narrow windows
   show shorter guidance; full help remains in tooltips.

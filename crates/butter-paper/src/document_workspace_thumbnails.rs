@@ -27,7 +27,6 @@ pub(super) struct ThumbnailSidebarInputs {
     pub focused_annotation_id: Option<MarkupId>,
     pub image_assets: Arc<HashMap<String, Arc<RenderImage>>>,
     pub selection_color: Hsla,
-    pub page_scale_control: Entity<PageScaleControl>,
     pub ink_mutation_disabled: bool,
 }
 
@@ -48,7 +47,6 @@ impl DocumentWorkspace {
             focused_annotation_id,
             image_assets,
             selection_color,
-            page_scale_control,
             ink_mutation_disabled,
         } = inputs;
         resizable_panel()
@@ -64,7 +62,6 @@ impl DocumentWorkspace {
                             let thumbnail_focused = focused_annotation_id.clone();
                             let thumbnail_control = cx.entity().downgrade();
                             let thumbnail_images = image_assets.clone();
-                            let thumbnail_scale_control = page_scale_control.clone();
                             v_flex().id("document-left-sidebar")
                                 .on_prepaint(self.left_sidebar_sizing.measure())
                                 .debug_selector(|| "document-left-sidebar".into())
@@ -193,30 +190,15 @@ impl DocumentWorkspace {
                                                                             .child(gpui_component::tag::Tag::secondary().small().child(label))
                                                                     )
                                                                 )))
-                                                            .child(accessible_icon_button(
-                                                                Button::new(format!("thumbnail-{page_index}-scale"))
-                                                                    .debug_selector(move || format!("thumbnail-{page_index}-scale"))
-                                                                    .icon(gpui_component::Icon::default().path("icons/thumbnail-scale.svg"))
-                                                                    .ghost().disabled(ink_mutation_disabled)
-                                                                    .tooltip("Set page scale")
-                                                                    .on_click({
-                                                                        let control = thumbnail_scale_control.clone();
-                                                                        let owner = thumbnail_control.clone();
-                                                                        move |_, window, cx| {
-                                                                            let _ = owner.update(cx, |workspace, cx| workspace.activate_thumbnail_page(document_id, page_index, cx));
-                                                                            control.update(cx, |control, cx| control.open_for(document_id, page_index, window, cx));
-                                                                            cx.stop_propagation();
-                                                                        }
-                                                                    }), format!("Set scale for page {}", page_index + 1)))
                                                             .children([PageRotationDirection::Left, PageRotationDirection::Right].into_iter().map(|direction| {
                                                                 let control = thumbnail_control.clone();
                                                                 let left = direction == PageRotationDirection::Left;
-                                                                let label = format!("Rotate page {} {}", page_index + 1, if left { "left" } else { "right" });
+                                                                let label = if left { "Rotate left" } else { "Rotate right" };
                                                                 accessible_icon_button(
                                                                     Button::new(format!("thumbnail-{page_index}-rotate-{}", if left { "left" } else { "right" }))
                                                                         .debug_selector(move || format!("thumbnail-{page_index}-rotate-{}", if left { "left" } else { "right" }))
                                                                         .icon(gpui_component::Icon::default().path(if left { "icons/thumbnail-rotate-left.svg" } else { "icons/thumbnail-rotate-right.svg" }))
-                                                                        .ghost().disabled(ink_mutation_disabled).tooltip(label.clone())
+                                                                        .ghost().disabled(ink_mutation_disabled).tooltip(label)
                                                                         .on_click(move |_, _, cx| {
                                                                             let _ = control.update(cx, |workspace, cx| workspace.rotate_thumbnail_page_async(document_id, page_index, direction, cx));
                                                                             cx.stop_propagation();

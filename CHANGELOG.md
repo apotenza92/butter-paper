@@ -4,6 +4,23 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Viewing
+
+- Select page text with the Select tool to copy it: drag across it,
+  double-click a word or triple-click a paragraph. Markups and form fields
+  still take a click first.
+- In Single Page view, each mouse-wheel notch turns a page, so you can flick
+  through a document as fast as the wheel turns.
+- No more thin dark lines between parts of the page while zooming.
+- The mouse-wheel menus are only as wide as their choices.
+- Page thumbnails no longer have a Set Page Scale button, and their rotate
+  buttons are named Rotate Left and Rotate Right.
+
+### Windows
+
+- Set as Default PDF App opens Windows Default Apps instead of File
+  Explorer.
+
 ## [0.2.0]
 
 ### Recent files

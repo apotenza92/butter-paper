@@ -1059,3 +1059,134 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
             .is_empty()
     }));
 }
+
+#[gpui::test]
+fn select_tool_selects_page_text_by_dragging_and_double_click_and_copies_it(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let resource = Arc::new(PageTextResource {
+        layer: page_text_layer(),
+        shown: Arc::new(Mutex::new(Vec::new())),
+        thumbnail_renders: Arc::new(AtomicUsize::new(0)),
+        signed: false,
+        released: AtomicBool::new(false),
+    });
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("text.pdf"), cx)
+    });
+    let document_id = request.document_id;
+    workspace.update(cx, |workspace, cx| {
+        let opened = OpenedNativeDocument::new(
+            "text.pdf",
+            vec![(612., 792.)],
+            raster(32, 40),
+            vec![ThumbnailSurface::new(0, raster(8, 10))],
+            resource,
+        )
+        .unwrap();
+        workspace.apply_open_result(&request, Ok(opened), cx);
+        workspace.set_view_configuration(document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Select)
+    );
+
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + (layer.size.width - px(612. * scale)) / 2.,
+        layer.origin.y + (layer.size.height - px(792. * scale)) / 2.,
+    );
+    // "Hello world" in 40pt Helvetica from x = 50; page points to window.
+    let at = |x: f32| {
+        point(
+            origin.x + px(x * scale),
+            origin.y + px((792. - 410.) * scale),
+        )
+    };
+    let selected = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.selected_page_text(document_id, cx)
+        })
+    };
+    // The page's text is read when the pointer first reaches it.
+    cx.simulate_mouse_move(at(51.), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(at(51.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    // Drag from the start of "Hello" past the end of the line.
+    cx.simulate_mouse_down(at(51.), gpui::MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        at(300.),
+        Some(gpui::MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(at(300.), gpui::MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(selected(cx).as_deref(), Some("Hello world"));
+    assert!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .page_text_edits
+            .is_empty()),
+        "selecting text never edits it"
+    );
+
+    // Double-click inside "world" selects the word; Copy copies it.
+    let world = at(50. + 40. * 2.556 + 30.);
+    for click_count in [1, 2] {
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: world,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: world,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(selected(cx).as_deref(), Some("world"));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-c"
+    } else {
+        "ctrl-c"
+    });
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("world".to_owned())
+    );
+
+    // A press away from text clears the selection; Escape would too.
+    cx.simulate_click(at(300.), Modifiers::default());
+    assert_eq!(selected(cx), None);
+}

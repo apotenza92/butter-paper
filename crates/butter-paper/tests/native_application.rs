@@ -1545,38 +1545,9 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
         "preview must stay inside its card"
     );
     assert!(row.origin.x > header.origin.x, "cards have a leading inset");
-    let scale = cx
-        .debug_bounds("thumbnail-0-scale")
-        .expect("row scale button");
-    cx.simulate_click(scale.center(), gpui::Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        cx.debug_bounds("page-scale-dialog").is_some(),
-        "nested row action must receive pointer input"
-    );
-    // Stock dialogs animate for 250ms; measure/click the settled surface.
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(250));
-    cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds("page-scale-apply").unwrap();
-    cx.simulate_click(apply.center(), gpui::Modifiers::default());
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(250));
-    cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds("page-scale-dialog").is_none());
-    let badge = cx
-        .debug_bounds("thumbnail-0-scale-badge")
-        .expect("applied scale appears in sidebar");
-    assert!(
-        badge.right() <= scale.left(),
-        "badge must not overlap actions"
-    );
-    assert_eq!(
-        cx.debug_bounds("thumbnail-0-scale").unwrap(),
-        scale,
-        "badge must not move actions"
+        cx.debug_bounds("thumbnail-0-scale").is_none(),
+        "page scale is set from the Measure tools, not the thumbnails"
     );
     let rotation = observed.update(cx, |workspace, cx| {
         workspace
@@ -1595,18 +1566,10 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
             .unwrap()
             .revision
     });
-    for selector in [
-        "thumbnail-0-scale",
-        "thumbnail-0-rotate-left",
-        "thumbnail-0-rotate-right",
-    ] {
+    for selector in ["thumbnail-0-rotate-left", "thumbnail-0-rotate-right"] {
         let bounds = cx.debug_bounds(selector).unwrap();
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(
-            cx.debug_bounds("page-scale-dialog").is_none(),
-            "busy scale trigger is inert"
-        );
     }
     assert_eq!(
         observed.read_with(cx, |workspace, cx| workspace
@@ -1624,14 +1587,17 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
         );
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_click(scale.center(), gpui::Modifiers::default());
-    cx.run_until_parked();
+    let rotate_left = cx.debug_bounds("thumbnail-0-rotate-left").unwrap();
+    cx.simulate_click(rotate_left.center(), gpui::Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(
-        cx.debug_bounds("page-scale-dialog").is_some(),
-        "row actions recover after failure"
-    );
-    cx.simulate_keystrokes("escape");
+    let recovered = observed.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(rotation.document_id, cx)
+            .unwrap()
+            .revision
+    });
+    assert!(recovered > revision, "row actions recover after failure");
+    cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let save = observed.update(cx, |workspace, cx| {
         workspace.begin_save(rotation.document_id, cx).unwrap()
@@ -1643,18 +1609,10 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
             .revision
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    for selector in [
-        "thumbnail-0-scale",
-        "thumbnail-0-rotate-left",
-        "thumbnail-0-rotate-right",
-    ] {
+    for selector in ["thumbnail-0-rotate-left", "thumbnail-0-rotate-right"] {
         let bounds = cx.debug_bounds(selector).unwrap();
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(
-            cx.debug_bounds("page-scale-dialog").is_none(),
-            "save blocks mutation controls"
-        );
     }
     assert_eq!(
         observed.read_with(cx, |workspace, cx| workspace

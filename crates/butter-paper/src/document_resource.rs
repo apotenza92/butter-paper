@@ -222,6 +222,40 @@ impl RasterSurface {
         )
     }
 
+    /// A viewer tile's image: the raster inside a border of
+    /// [`TILE_IMAGE_PADDING`] pixels repeating its own edge. Images share a
+    /// texture atlas and are sampled with linear filtering, so a tile drawn
+    /// scaled (while zooming) would otherwise blend its edge with whatever
+    /// lies beside it in the atlas, showing dark seams between tiles. The
+    /// viewer clips the border away.
+    pub(crate) fn into_padded_render_image(self) -> Result<Arc<RenderImage>, String> {
+        let pad = TILE_IMAGE_PADDING as usize;
+        let (width, height) = (self.width as usize, self.height as usize);
+        if width == 0 || height == 0 {
+            return self.into_render_image();
+        }
+        let padded_width = width + 2 * pad;
+        let mut pixels = Vec::with_capacity(padded_width * (height + 2 * pad) * 4);
+        for y in 0..height + 2 * pad {
+            let row =
+                &self.pixels_bgra[y.saturating_sub(pad).min(height - 1) * width * 4..][..width * 4];
+            for _ in 0..pad {
+                pixels.extend_from_slice(&row[..4]);
+            }
+            pixels.extend_from_slice(row);
+            for _ in 0..pad {
+                pixels.extend_from_slice(&row[row.len() - 4..]);
+            }
+        }
+        let pixels = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(
+            padded_width as u32,
+            (height + 2 * pad) as u32,
+            pixels,
+        )
+        .ok_or_else(|| "GPUI rejected the document raster buffer".to_owned())?;
+        Ok(Arc::new(RenderImage::new(smallvec![Frame::new(pixels)])))
+    }
+
     pub(crate) fn into_render_image(self) -> Result<Arc<RenderImage>, String> {
         let pixels =
             ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(self.width, self.height, self.pixels_bgra)
@@ -229,6 +263,9 @@ impl RasterSurface {
         Ok(Arc::new(RenderImage::new(smallvec![Frame::new(pixels)])))
     }
 }
+
+/// The border of repeated edge pixels around each viewer tile image.
+pub const TILE_IMAGE_PADDING: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThumbnailSurface {
@@ -1406,6 +1443,26 @@ mod raster_colour_tests {
                     128
                 ]
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tile_images_repeat_their_edge_pixels_around_the_raster() {
+        // Two pixels, red then blue, in BGRA.
+        let raster = RasterSurface::new(2, 1, vec![0, 0, 255, 255, 255, 0, 0, 255]).unwrap();
+        let image = raster.into_padded_render_image().unwrap();
+        let size = image.size(0);
+        assert_eq!((size.width.0, size.height.0), (4, 3));
+        let bytes = image.as_bytes(0).unwrap();
+        let red = [0, 0, 255, 255];
+        let blue = [255, 0, 0, 255];
+        for row in bytes.chunks_exact(16) {
+            assert_eq!(row, [red, red, blue, blue].concat());
         }
     }
 }

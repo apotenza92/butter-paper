@@ -433,7 +433,11 @@ impl DocumentWorkspace {
         None
     }
 
-    fn page_text_edits_of(&self, document_id: DocumentId, cx: &App) -> Vec<PageTextEdit> {
+    pub(super) fn page_text_edits_of(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Vec<PageTextEdit> {
         self.session(document_id, cx)
             .map(|session| {
                 session
@@ -594,7 +598,7 @@ impl DocumentWorkspace {
         })
     }
 
-    fn page_text_blocks(
+    pub(super) fn page_text_blocks(
         &mut self,
         document_id: DocumentId,
         page_index: u32,

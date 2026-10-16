@@ -10,6 +10,8 @@ mod page_text;
 mod recovery_notifications;
 #[path = "space_pan.rs"]
 mod space_pan;
+#[path = "document_workspace_text_selection.rs"]
+mod text_selection;
 #[path = "document_workspace_thumbnails.rs"]
 mod thumbnail_sidebar;
 #[path = "document_workspace_viewport.rs"]
@@ -2640,6 +2642,15 @@ pub struct DocumentWorkspace {
     /// Signed documents whose content the user chose to edit (or whose
     /// fields to fill) anyway.
     page_text_signed_confirmed: HashSet<DocumentId>,
+    /// Documents with a page render for navigation in flight. Navigation
+    /// requested meanwhile only moves `requested_page`; the next render
+    /// starts from there when this one is shown.
+    navigation_in_flight: HashSet<DocumentId>,
+    /// Page text selected with the Select tool.
+    text_selection: Option<text_selection::TextSelection>,
+    /// The document whose page text is under the pointer, with Select.
+    text_selection_hover: Option<DocumentId>,
+    selectable_text: text_selection::SelectableTextCache,
     /// Form filling with the Select tool: the field widget under the
     /// pointer, the focused one, its text editor and its choice menu, and
     /// the focus that takes keys for a focused check box or choice field.
@@ -4181,6 +4192,10 @@ impl DocumentWorkspace {
             page_text_editing: None,
             page_text_hover: None,
             page_text_signed_confirmed: HashSet::new(),
+            navigation_in_flight: HashSet::new(),
+            text_selection: None,
+            text_selection_hover: None,
+            selectable_text: HashMap::new(),
             form_field_hover: None,
             form_field_focus: None,
             form_field_editor: None,
@@ -11297,9 +11312,11 @@ impl DocumentWorkspace {
                     reverse_zoom,
                 );
             }
+            // From the page last asked for, so a quick run of notches
+            // keeps going while pages render.
             session.view_state.wheel(
                 session.page_sizes.len(),
-                session.current_page as usize,
+                session.requested_page as usize,
                 f32::from(delta.x),
                 f32::from(delta.y),
                 event.modifiers.control,
@@ -11407,7 +11424,7 @@ impl DocumentWorkspace {
             session.view_state.keyboard(
                 action,
                 session.page_sizes.len(),
-                session.current_page as usize,
+                session.requested_page as usize,
                 viewport_height,
             )
         };
@@ -11768,7 +11785,7 @@ impl DocumentWorkspace {
                     (raster, highlight_pixels)
                 };
                 let bytes = raster.pixels_bgra().len();
-                let image = raster.into_render_image()?;
+                let image = raster.into_padded_render_image()?;
                 Ok::<_, String>((image, bytes, highlight_pixels))
             });
             cx.spawn(async move |entity, cx| {
@@ -11963,7 +11980,7 @@ impl DocumentWorkspace {
                     non_uniform_tiles += 1;
                 }
                 let bytes = raster.pixels_bgra().len();
-                let image = raster.into_render_image()?;
+                let image = raster.into_padded_render_image()?;
                 if !session.viewer.insert_direct(*request, image, bytes) {
                     return Err("viewer tile exceeds the byte-accounted cache limit".into());
                 }
@@ -12268,6 +12285,20 @@ impl DocumentWorkspace {
     }
 
     fn navigate_async(&mut self, document_id: DocumentId, page_index: u32, cx: &mut Context<Self>) {
+        // One render at a time, so flicking through pages shows each render
+        // as it arrives and ends on the last page asked for, rather than
+        // queueing a render per page.
+        if self.navigation_in_flight.contains(&document_id) {
+            if let Some(session) = self.session(document_id, cx).cloned()
+                && (page_index as usize) < session.read(cx).page_sizes.len()
+            {
+                session.update(cx, |session, cx| {
+                    session.requested_page = page_index;
+                    cx.notify();
+                });
+            }
+            return;
+        }
         let Ok(request) = self.begin_page_navigation(document_id, page_index, cx) else {
             return;
         };
@@ -12290,18 +12321,30 @@ impl DocumentWorkspace {
                 })?;
             Ok::<_, String>((page, thumbnail))
         });
+        self.navigation_in_flight.insert(document_id);
         cx.spawn(async move |entity, cx| {
             let result = task.await;
-            let _ = entity.update(cx, |workspace, cx| match result {
-                Ok((page, thumbnail)) => {
-                    if workspace.apply_page_result(&request, Ok(page), cx)
-                        == ApplyDisposition::Applied
-                    {
-                        workspace.apply_navigation_thumbnail(&request, thumbnail, cx);
+            let _ = entity.update(cx, |workspace, cx| {
+                workspace.navigation_in_flight.remove(&document_id);
+                let disposition = match result {
+                    Ok((page, thumbnail)) => {
+                        let disposition = workspace.apply_page_result(&request, Ok(page), cx);
+                        if disposition == ApplyDisposition::Applied {
+                            workspace.apply_navigation_thumbnail(&request, thumbnail, cx);
+                        }
+                        disposition
                     }
-                }
-                Err(error) => {
-                    workspace.apply_page_result(&request, Err(error), cx);
+                    Err(error) => workspace.apply_page_result(&request, Err(error), cx),
+                };
+                // Pages asked for while this one rendered.
+                if disposition == ApplyDisposition::Applied
+                    && let Some(session) = workspace.session(document_id, cx)
+                {
+                    let session = session.read(cx);
+                    let next = session.requested_page;
+                    if next != request.page_index && next != session.current_page {
+                        workspace.navigate_async(document_id, next, cx);
+                    }
                 }
             });
         })
@@ -15128,6 +15171,7 @@ impl DocumentWorkspace {
         self.pan_tool_active = false;
         self.pan_drag = None;
         self.clear_hover_candidate(cx);
+        self.clear_text_selection(cx);
         // Every explicit tool change clears a hold-Space stash, mirroring
         // `handleToolChange`. Hold/restore flows call this funnel first and
         // record their own stash afterwards.
@@ -16516,7 +16560,9 @@ impl DocumentWorkspace {
         if window.has_focused_input(cx) {
             return;
         }
-        if let Some(document_id) = self.active_document_id {
+        if let Some(document_id) = self.active_document_id
+            && !self.copy_selected_page_text(document_id, cx)
+        {
             self.copy_selected_annotations(document_id, cx);
         }
     }
@@ -16940,6 +16986,12 @@ impl DocumentWorkspace {
         // Markups take a press first; a form field beneath none fills.
         if tool == AnnotationTool::Select
             && self.begin_form_field_press(interaction, point, window, cx)
+        {
+            return true;
+        }
+        // Then page text; a press away from text still selects markups.
+        if tool == AnnotationTool::Select
+            && self.begin_text_selection_press(interaction, point, click_count, modifiers, cx)
         {
             return true;
         }
@@ -18097,6 +18149,13 @@ impl DocumentWorkspace {
         // Form fields are hovered only where no markup is.
         let form_point = (candidate.is_none() && select_hit.is_none()).then_some(point);
         let form_hover_changed = self.update_form_field_hover(interaction, form_point, cx);
+        // Text is hovered where no markup or field is.
+        let text_point = form_point.filter(|_| {
+            self.form_field_hover.is_none()
+                && session.read(cx).annotations.tool() == AnnotationTool::Select
+        });
+        let text_hover_changed = self.update_text_selection_hover(interaction, text_point, cx);
+        let form_hover_changed = form_hover_changed || text_hover_changed;
         if self.hovered_annotation != candidate
             || self.hot_annotation_handle != hot_handle
             || self.select_hover_hit != select_hit
@@ -18120,7 +18179,9 @@ impl DocumentWorkspace {
         let image_hover = self.pending_image_hover.take();
         let page_text_hover = self.page_text_hover.take();
         let form_field_hover = self.form_field_hover.take();
+        let text_hover = self.text_selection_hover.take();
         if hovered.is_some()
+            || text_hover.is_some()
             || hot_handle.is_some()
             || select_hit.is_some()
             || image_hover.is_some()
@@ -18154,7 +18215,8 @@ impl DocumentWorkspace {
             self.pan_drag = None;
             return false;
         }
-        if self.update_page_text_drag(position, cx) {
+        if self.update_page_text_drag(position, cx) || self.update_text_selection_drag(position, cx)
+        {
             return true;
         }
         let Some(active) = self.active_annotation_pointer else {
@@ -18211,7 +18273,7 @@ impl DocumentWorkspace {
             self.pan_drag = None;
             return true;
         }
-        if self.finish_page_text_drag(cx) {
+        if self.finish_page_text_drag(cx) || self.finish_text_selection_drag(cx) {
             return true;
         }
         let Some(active) = self.active_annotation_pointer.take() else {
@@ -24575,8 +24637,20 @@ impl Render for DocumentWorkspace {
             .or(select_hover_cursor);
         let select_hover_cursor = if annotation_tool == AnnotationTool::EditPdfContent {
             self.page_text_cursor(document_id)
+        } else if self
+            .text_selection
+            .as_ref()
+            .is_some_and(|selection| selection.document_id == document_id && selection.dragging)
+        {
+            Some(CursorStyle::IBeam)
         } else {
-            select_hover_cursor.or_else(|| self.form_field_cursor(document_id, cx))
+            select_hover_cursor
+                .or_else(|| self.form_field_cursor(document_id, cx))
+                .or_else(|| {
+                    (annotation_tool == AnnotationTool::Select)
+                        .then(|| self.text_selection_cursor(document_id))
+                        .flatten()
+                })
         };
         let form_overlays = self.form_overlays(document_id, cx);
         let page_text_overlays = if annotation_tool == AnnotationTool::EditPdfContent
@@ -24586,7 +24660,7 @@ impl Render for DocumentWorkspace {
         {
             self.page_text_overlays(document_id, cx)
         } else {
-            Vec::new()
+            self.text_selection_overlays(document_id, cx)
         };
         let viewport_cursor_style = document_viewport_cursor_style(
             annotation_tool,
@@ -25499,7 +25573,6 @@ impl Render for DocumentWorkspace {
                 focused_annotation_id: focused_annotation_id.clone(),
                 image_assets: image_assets.clone(),
                 selection_color,
-                page_scale_control: page_scale_control.clone(),
                 ink_mutation_disabled,
             },
             window,

@@ -290,8 +290,6 @@ impl Render for PageViewControl {
                                         });
                                     }),
                             )
-                            .separator()
-                            .label("Hold Ctrl to do the opposite")
                     }),
             )
     }

@@ -66,6 +66,7 @@ pub mod pdf_forms;
 pub mod pdf_text_blocks;
 pub mod pdf_text_edit;
 pub mod pdf_text_reflow;
+pub mod pdf_text_selection;
 pub mod pdf_worker;
 pub mod perf_capture_signal;
 pub mod perf_protocol;

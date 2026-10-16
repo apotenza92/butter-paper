@@ -11,9 +11,6 @@ impl AssetSource for ApplicationAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let thumbnail: Option<&'static [u8]> = match path {
             DOWNLOAD_ICON => Some(include_bytes!("../assets/icons/download.svg")),
-            "icons/thumbnail-scale.svg" => {
-                Some(include_bytes!("../assets/icons/thumbnail-scale.svg"))
-            }
             "icons/thumbnail-rotate-left.svg" => {
                 Some(include_bytes!("../assets/icons/thumbnail-rotate-left.svg"))
             }
@@ -93,7 +90,6 @@ impl AssetSource for ApplicationAssets {
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut entries = gpui_component_assets::Assets.list(path)?;
         for icon in [
-            "icons/thumbnail-scale.svg",
             "icons/thumbnail-rotate-left.svg",
             "icons/thumbnail-rotate-right.svg",
         ] {

@@ -320,7 +320,12 @@ impl DocumentWorkspace {
 
     /// Whether a markup or one of its handles is under a point: those take
     /// a press before the form fields beneath them.
-    fn markup_under_point(&self, interaction: &PageInteraction, point: PdfPoint, cx: &App) -> bool {
+    pub(super) fn markup_under_point(
+        &self,
+        interaction: &PageInteraction,
+        point: PdfPoint,
+        cx: &App,
+    ) -> bool {
         let Some(session) = self.session(interaction.document_id, cx) else {
             return false;
         };

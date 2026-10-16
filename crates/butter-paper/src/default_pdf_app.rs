@@ -221,11 +221,29 @@ mod windows {
         open_settings(&super::windows_default_apps_url())
     }
 
+    /// Opens an `ms-settings:` URI as the shell opens links. Passing it to
+    /// explorer.exe instead can open a File Explorer window.
     pub fn open_settings(url: &str) -> Result<(), String> {
-        Command::new("explorer.exe")
-            .arg(url)
-            .spawn()
-            .map_err(|error| format!("Windows Default Apps could not be opened: {error}"))?;
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+        let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        let (verb, url) = (wide("open"), wide(url));
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        // Values above 32 mean success.
+        if result as isize <= 32 {
+            return Err(format!(
+                "Windows Default Apps could not be opened (error {}).",
+                result as isize
+            ));
+        }
         Ok(())
     }
 }

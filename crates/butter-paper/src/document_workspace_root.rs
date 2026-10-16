@@ -247,6 +247,7 @@ impl DocumentWorkspace {
                 }
                 workspace.pan_tool_active = false;
                 workspace.pan_drag = None;
+                workspace.text_selection = None;
                 workspace.space_pan_hold.clear_stash();
                 workspace.active_annotation_pointer = None;
                 if let Some(session) = workspace.session(document_id, cx).cloned() {

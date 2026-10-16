@@ -147,6 +147,10 @@ pub enum WheelOutcome {
     Consumed,
 }
 
+/// How far a discrete mouse wheel turns to change page in Single Page view:
+/// one line, a single notch.
+const SINGLE_PAGE_WHEEL_STEP: f32 = 16.;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeDocumentViewState {
     mode: PageViewMode,
@@ -335,8 +339,10 @@ impl NativeDocumentViewState {
             if !dominant.is_finite() || dominant.abs() <= f32::EPSILON {
                 return WheelOutcome::Consumed;
             }
+            // Each wheel notch (a line, 16px) turns a page, so pages can be
+            // flicked through as fast as the wheel turns.
             self.single_page_wheel_delta += dominant;
-            if self.single_page_wheel_delta.abs() < 80. {
+            if self.single_page_wheel_delta.abs() < SINGLE_PAGE_WHEEL_STEP {
                 return WheelOutcome::Consumed;
             }
             let direction = self.single_page_wheel_delta.signum() as isize;
@@ -487,15 +493,28 @@ mod tests {
         view.set_mode(PageViewMode::SinglePage);
         view.set_wheel_behavior(PageViewMode::SinglePage, WheelBehavior::Scroll);
         assert_eq!(
-            view.wheel(4, 1, 0., 79., false, false),
+            view.wheel(4, 1, 0., 15., false, false),
             WheelOutcome::Consumed
         );
         assert_eq!(
             view.wheel(4, 1, 0., 1., false, false),
             WheelOutcome::Page(2)
         );
+        // One notch turns one page, however hard the wheel is spun.
         assert_eq!(
-            view.wheel(4, 3, 0., 80., false, false),
+            view.wheel(4, 1, 0., 16., false, false),
+            WheelOutcome::Page(2)
+        );
+        assert_eq!(
+            view.wheel(4, 1, 0., 48., false, false),
+            WheelOutcome::Page(2)
+        );
+        assert_eq!(
+            view.wheel(4, 2, 0., -16., false, false),
+            WheelOutcome::Page(1)
+        );
+        assert_eq!(
+            view.wheel(4, 3, 0., 16., false, false),
             WheelOutcome::Consumed
         );
         assert!(matches!(

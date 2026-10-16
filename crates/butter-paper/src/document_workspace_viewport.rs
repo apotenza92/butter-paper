@@ -250,6 +250,19 @@ impl DocumentWorkspace {
                                                                 tile_index,
                                                             );
                                                             let tile_selector = tile_id.clone();
+                                                            let width = request.crop.width as f32 / scale;
+                                                            let height = request.crop.height as f32 / scale;
+                                                            // The image's border of repeated edge
+                                                            // pixels lies outside the tile and is
+                                                            // clipped away.
+                                                            let image_size = image.size(0);
+                                                            let pad = crate::document_resource::TILE_IMAGE_PADDING as f32;
+                                                            let border = |extent: f32, pixels: i32| {
+                                                                let inner = pixels as f32 - 2. * pad;
+                                                                if inner > 0. { extent * pad / inner } else { 0. }
+                                                            };
+                                                            let border_x = border(width, image_size.width.0);
+                                                            let border_y = border(height, image_size.height.0);
                                                             gpui::div()
                                                                 .id(tile_id)
                                                                 .debug_selector(move || {
@@ -262,17 +275,16 @@ impl DocumentWorkspace {
                                                                 .top(px(
                                                                     request.crop.y as f32 / scale,
                                                                 ))
-                                                                .w(px(
-                                                                    request.crop.width as f32
-                                                                        / scale,
-                                                                ))
-                                                                .h(px(
-                                                                    request.crop.height as f32
-                                                                        / scale,
-                                                                ))
+                                                                .w(px(width))
+                                                                .h(px(height))
+                                                                .overflow_hidden()
                                                                 .child(
                                                                     img(image)
-                                                                        .size_full()
+                                                                        .absolute()
+                                                                        .left(px(-border_x))
+                                                                        .top(px(-border_y))
+                                                                        .w(px(width + 2. * border_x))
+                                                                        .h(px(height + 2. * border_y))
                                                                         .object_fit(
                                                                             ObjectFit::Fill,
                                                                         ),
