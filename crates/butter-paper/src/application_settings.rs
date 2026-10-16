@@ -65,7 +65,10 @@ pub fn update_button(state: UpdateMenuStatus, cx: &App) -> Option<AnyElement> {
 }
 
 pub fn open_about(window: &mut Window, cx: &mut App) {
-    window.open_dialog(cx, |dialog, window, _| {
+    let store = cx
+        .try_global::<ApplicationUpdatePresentation>()
+        .is_some_and(|presentation| presentation.state.status == UpdateMenuStatus::Store);
+    window.open_dialog(cx, move |dialog, window, _| {
         dialog
             .title("About Butter Paper")
             .w(px(420.).min(window.viewport_size().width - px(32.)))
@@ -76,13 +79,26 @@ pub fn open_about(window: &mut Window, cx: &mut App) {
                     .gap_3()
                     .child(format!("Butter Paper {}", env!("CARGO_PKG_VERSION")))
                     .child("A native PDF workspace for viewing, drawing and marking up documents.")
-                    .child(
-                        Button::new("about-releases")
-                            .label("View releases")
-                            .on_click(|_, _, cx| cx.open_url(APPLICATION_RELEASES_URL)),
-                    ),
+                    .child(releases_button("about-releases", store)),
             )
     });
+}
+
+/// Store copies link to their Store page; other copies to the GitHub releases.
+fn releases_link(store: bool) -> (&'static str, &'static str) {
+    if store {
+        ("View in Microsoft Store", MICROSOFT_STORE_URL)
+    } else {
+        ("View releases", APPLICATION_RELEASES_URL)
+    }
+}
+
+fn releases_button(id: &'static str, store: bool) -> Button {
+    let (label, url) = releases_link(store);
+    Button::new(id)
+        .debug_selector(move || id.into())
+        .label(label)
+        .on_click(move |_, _, cx| cx.open_url(url))
 }
 
 pub fn open_settings(window: &mut Window, cx: &mut App) {
@@ -252,11 +268,7 @@ impl SettingsView {
                     .flex_wrap()
                     .gap_2()
                     .when(!store, |row| row.child(action))
-                    .child(
-                        Button::new("settings-releases")
-                            .label("View releases")
-                            .on_click(|_, _, cx| cx.open_url(APPLICATION_RELEASES_URL)),
-                    ),
+                    .child(releases_button("settings-releases", store)),
             )
             .into_any_element();
         // The Store updates its copies itself: no checks or downloads here.
@@ -582,6 +594,7 @@ mod tests {
         });
         assert!(cx.debug_bounds("settings-version-section").is_some());
         assert!(cx.debug_bounds("settings-update-action").is_none());
+        assert!(cx.debug_bounds("settings-releases").is_some());
         assert!(cx.debug_bounds("settings-automatic-section").is_none());
         assert!(cx.debug_bounds("settings-notes-section").is_none());
         assert!(cx.debug_bounds("settings-jump-0").is_some());
@@ -754,6 +767,18 @@ mod tests {
             assert_ne!(first, cx.global::<SettingsWindow>().handle);
             assert!(!window.has_active_dialog(cx));
         });
+    }
+
+    #[test]
+    fn store_copies_link_to_the_store_instead_of_github_releases() {
+        assert_eq!(
+            releases_link(true),
+            ("View in Microsoft Store", MICROSOFT_STORE_URL)
+        );
+        assert_eq!(
+            releases_link(false),
+            ("View releases", APPLICATION_RELEASES_URL)
+        );
     }
 
     #[gpui::test]

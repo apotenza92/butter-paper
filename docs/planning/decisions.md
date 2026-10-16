@@ -114,6 +114,8 @@ changes it; history is in git.
 - `cargo xtask version X.Y.Z`, write the changelog section, commit and push
   `main`, then `cargo xtask release`. Releasing runs no tests: test while
   working; CI tests each push to `main` and each pull request separately.
+- Versions count up a digit at a time: after X.Y.9 comes X.(Y+1).0, not
+  X.Y.10.
 - User-facing app names are Butter Paper (stable) and Butter Paper Beta
   (beta), without a version or architecture suffix on any platform.
 - Releases are immutable and published once, complete, with checksums and an
@@ -124,6 +126,10 @@ changes it; history is in git.
   there. Store copies are updated by the Store, so they show no update
   controls and never check GitHub. The Windows zip stays on each release so
   existing zip installs keep updating themselves.
+- macOS ships only from GitHub releases and Homebrew, signed with Developer ID
+  and notarised; there is no Mac App Store build. The Mac App Store's sandbox
+  would need security-scoped bookmarks for recents and recovery, moving storage
+  into the app container, sandboxed helpers and no built-in updater.
 
 ## Blank document window
 
@@ -132,5 +138,9 @@ changes it; history is in git.
   in the system file manager; long paths truncate in the middle with the full path on hover.
 - History is shared across windows and retained across launches. Only successful
   opens and saves enter it; generated blank/template sources enter after saving.
-  Missing files use the normal opening error, rather than disappearing silently.
+  The list only offers files that exist: it is checked at launch, when a window
+  activates and when an entry is clicked. On macOS and Windows a PDF moved or
+  renamed within its volume keeps its place at the new path, found by file
+  identity (bookmark, file ID) rather than by searching; one deleted, moved
+  to the Trash or Recycle Bin, or otherwise not found leaves the list.
 - On macOS, ⌘W closes the active tab; with no tabs, it closes the window.

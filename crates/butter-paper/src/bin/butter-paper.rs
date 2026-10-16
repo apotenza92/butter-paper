@@ -353,6 +353,12 @@ impl ComponentStory {
             story.last_native_menu_state = None;
             story.last_in_window_menu_state = None;
             story.last_native_menu_shell_state = None;
+            // Files may have moved or been deleted while the app was in the background.
+            if cx.has_global::<DocumentWindows>() {
+                shared_application(cx)
+                    .recent_documents
+                    .update(cx, |history, cx| history.refresh(cx));
+            }
             if let Some(manager) = story.template_manager.clone()
                 && !window.has_active_dialog(cx)
             {
@@ -2253,6 +2259,7 @@ fn main() {
                 Default::default()
             })
         });
+        recent_documents.update(cx, |history, cx| history.refresh(cx));
         let multi_window = perf.is_none();
         cx.set_global(DocumentWindows {
             shared: Rc::new(SharedApplication {

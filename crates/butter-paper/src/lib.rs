@@ -37,6 +37,7 @@ mod system_fonts;
 pub use annotation_adapter::tool_properties;
 pub mod application_settings;
 pub mod default_pdf_app;
+pub mod file_locator;
 pub mod image_asset_decode;
 pub mod ink_property_inspector;
 pub mod local_signature;

@@ -45877,7 +45877,12 @@ fn blank_workspace_recent_files_reopen_through_the_normal_open_route(cx: &mut Te
     let workspace = slot.borrow_mut().take().unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("recent-documents-list").is_none());
-    let path = PathBuf::from("project/drawings/coordination.pdf");
+    // Recent history only keeps files that exist.
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/test-scratch/blank-workspace-recent-files");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("coordination.pdf");
+    std::fs::write(&path, b"%PDF-1.7").unwrap();
     workspace.update(cx, |workspace, cx| {
         workspace.open_documents(
             DocumentOpenBatchRequest::new(
@@ -45923,6 +45928,7 @@ fn blank_workspace_recent_files_reopen_through_the_normal_open_route(cx: &mut Te
             .to_owned()),
         path
     );
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[cfg(target_os = "macos")]

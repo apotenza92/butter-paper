@@ -20,6 +20,8 @@ pub const APPLICATION_UI_ZOOM_MIN_LEVEL: i8 = -3;
 pub const APPLICATION_UI_ZOOM_MAX_LEVEL: i8 = 3;
 pub const APPLICATION_UI_ZOOM_DEFAULT_LEVEL: i8 = 0;
 pub const APPLICATION_RELEASES_URL: &str = "https://github.com/apotenza92/butter-paper/releases";
+/// Opens Butter Paper's page in the Microsoft Store app.
+pub const MICROSOFT_STORE_URL: &str = "ms-windows-store://pdp/?ProductId=9N4KN0XNRNHC";
 
 /// Establishes the document command target before the first menu or dialog opens.
 /// Stock menus restore their previous focus; without an initial target, Edit

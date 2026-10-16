@@ -4,6 +4,22 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Recent files
+
+- Recent Files only lists PDFs that are still there. A PDF you move or rename
+  on the same drive stays in the list at its new location on macOS and
+  Windows; one you delete or move to the Trash or Recycle Bin leaves it.
+
+### Windows
+
+- Show the Butter Paper icon on the taskbar and title bar of the GitHub
+  build, and make the Store icons fill their space on the taskbar, Start and
+  in File Explorer.
+- In the Store version, Settings and About link to Butter Paper in the
+  Microsoft Store instead of the GitHub releases.
+
 ## [0.1.10]
 
 ### Forms

@@ -79,6 +79,10 @@ impl DocumentWorkspace {
                                     ),
                             )
                             .on_click(cx.listener(move |workspace, _, _, cx| {
+                                // A file moved or deleted since the list was checked updates it now.
+                                workspace
+                                    .recent_documents
+                                    .update(cx, |history, cx| history.refresh(cx));
                                 workspace.open_documents(
                                     DocumentOpenBatchRequest::new(
                                         DocumentOpenOrigin::Menu,

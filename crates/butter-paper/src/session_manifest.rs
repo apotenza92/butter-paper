@@ -891,14 +891,14 @@ pub(crate) fn normalized_path_key(path: &Path) -> Vec<u16> {
 }
 
 #[cfg(unix)]
-fn encode_path(path: &Path) -> (&'static str, String) {
+pub(crate) fn encode_path(path: &Path) -> (&'static str, String) {
     use std::os::unix::ffi::OsStrExt as _;
 
     ("unix-bytes", hex_encode(path.as_os_str().as_bytes()))
 }
 
 #[cfg(windows)]
-fn encode_path(path: &Path) -> (&'static str, String) {
+pub(crate) fn encode_path(path: &Path) -> (&'static str, String) {
     use std::os::windows::ffi::OsStrExt as _;
 
     let bytes = path
