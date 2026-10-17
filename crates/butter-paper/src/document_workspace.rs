@@ -11334,6 +11334,21 @@ impl DocumentWorkspace {
             .try_global::<crate::application_shell::ReverseScrollZoom>()
             .is_some_and(|reverse| reverse.0);
         let outcome = session.update(cx, |session, _| {
+            // A zoomed-in page scrolls until its edge is in view; the wheel
+            // turns the page only from there.
+            if matches!(event.delta, gpui::ScrollDelta::Lines(_))
+                && session
+                    .view_state
+                    .single_page_wheel_scrolls(event.modifiers.control)
+                && session.viewer.page_continues(
+                    session.requested_page as usize,
+                    f32::from(delta.x),
+                    f32::from(delta.y),
+                )
+            {
+                session.view_state.wheel_scrolled_within_page();
+                return WheelOutcome::NativeScroll;
+            }
             if matches!(event.delta, gpui::ScrollDelta::Pixels(_)) {
                 return session.view_state.precise_scroll(
                     f32::from(delta.y),
@@ -11365,6 +11380,12 @@ impl DocumentWorkspace {
             WheelOutcome::Consumed => true,
             WheelOutcome::Page(target) => {
                 if let Ok(target) = u32::try_from(target) {
+                    // Turned back from the top of a page: the previous one
+                    // shows from its bottom.
+                    session.update(cx, |session, _| {
+                        session.navigation_from_below =
+                            (target < session.requested_page).then_some(target);
+                    });
                     self.navigate_async(document_id, target, cx);
                 }
                 true
@@ -11485,13 +11506,35 @@ impl DocumentWorkspace {
                 }
             }
             DocumentNavigationOutcome::Scroll { x, y } => {
-                session.update(cx, |session, _| {
-                    let (current_x, current_y) = session.viewer.logical_scroll();
-                    let scroll_x = current_x + x;
-                    let scroll_y = current_y + y;
+                // Bounded as the wheel is, so keys never push the page out
+                // of view. In Single Page, a key that can scroll no further
+                // that way turns the page, as in Revu.
+                let turn = session.update(cx, |session, _| {
+                    let (scroll_x, scroll_y) = session.viewer.wheel_scroll_target(-x, -y);
+                    if session.view_state.mode() == PageViewMode::SinglePage
+                        && !session
+                            .viewer
+                            .page_continues(session.requested_page as usize, -x, -y)
+                    {
+                        let page_count = session.page_sizes.len();
+                        let page = session.requested_page as usize;
+                        let target = if x + y > 0. {
+                            (page + 1 < page_count).then_some(page + 1)
+                        } else {
+                            page.checked_sub(1)
+                        };
+                        if let Some(target) = target.and_then(|target| u32::try_from(target).ok()) {
+                            session.navigation_from_below = (y < 0.).then_some(target);
+                        }
+                        return target;
+                    }
                     session.view_state.set_scroll(scroll_x, scroll_y);
                     session.viewer.set_scroll(scroll_x, scroll_y);
+                    None
                 });
+                if let Some(target) = turn.and_then(|target| u32::try_from(target).ok()) {
+                    self.navigate_async(document_id, target, cx);
+                }
             }
         }
         if let Some((width, height)) = session.read(cx).view_state.viewport_size() {
@@ -11585,7 +11628,27 @@ impl DocumentWorkspace {
                     .iter()
                     .find(|layout| layout.page == target as usize)
             {
-                scroll_y = layout.logical_rect.y.max(0.);
+                let rect = layout.logical_rect;
+                scroll_y = rect.y.max(0.);
+                if session.navigation_from_below.take() == Some(target) {
+                    // Its bottom edge at the bottom of the view, as its top
+                    // edge is at the top going forward.
+                    scroll_y = scroll_y.max(rect.y + rect.height - viewport_height);
+                }
+                if session.view_state.mode() == PageViewMode::SinglePage {
+                    // On the page and its margins, keeping the zoom and the
+                    // position across; centred when it fits, as Fit Page
+                    // frames it.
+                    let within = |scroll: f32, total: f32, viewport: f32| {
+                        if total > viewport {
+                            scroll.clamp(0., total - viewport)
+                        } else {
+                            (total - viewport) / 2.
+                        }
+                    };
+                    scroll_x = within(scroll_x, plan.total_width, viewport_width);
+                    scroll_y = within(scroll_y, plan.total_height, viewport_height);
+                }
                 if cad_layout.is_some() {
                     scroll_x = layout.logical_rect.x.max(0.);
                 }

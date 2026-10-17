@@ -275,11 +275,16 @@ is under the pointer.
   the pointer. Mouse-wheel dropdowns apply only to discrete mouse wheels;
   Ctrl+wheel reverses their Scroll/Zoom choice. CAD View always zooms with a
   discrete mouse wheel. Scrolling up zooms in; Reverse Scroll Zoom flips it.
-- In Single Page with the mouse wheel set to Scroll, each notch of a
-  discrete wheel turns one page. Turning it quickly flicks through the
-  pages: each shows at once from its thumbnail, if drawn, and the view ends
-  on the last page asked for, rendering only that one rather than a render
-  per page. Page Up and Page Down do the same.
+- In Single Page, the mouse wheel (set to Scroll), the arrow keys and Page
+  Up/Page Down scroll a page larger than the view until its edge is in
+  view, then turn the page: down to the next page, shown from its top edge,
+  up to the previous one, shown from its bottom edge, at the same zoom and
+  horizontal position. A page that fits turns with each notch or key, and
+  stays centred. Left and Right do the same across. Turning the wheel
+  quickly flicks through the pages: each shows at once from its thumbnail,
+  if drawn, and the view ends on the last page asked for, rendering only
+  that one rather than a render per page. Keys never scroll a page out of
+  view.
 - Going to a page (a thumbnail, the page buttons, the wheel) moves there at
   once: the page shows its thumbnail drawn up to size, if the sidebar has
   drawn it, until its own render replaces it. What is on screen renders

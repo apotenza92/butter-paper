@@ -3869,6 +3869,8 @@ mod review_driver {
             let mut log = std::fs::File::create(out.join("review.log")).unwrap();
             // Let the startup window restore and paint.
             pause(cx, 2500).await;
+            let script_started = std::time::Instant::now();
+            let mut frames_saved = 0usize;
             for line in script.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
                 writeln!(log, "> {line}").unwrap();
                 if let Ok(mut trace) = TRACE.lock() {
@@ -3893,6 +3895,7 @@ mod review_driver {
                 let words = line.split_whitespace().collect::<Vec<_>>();
                 // TEXT runs to the end of the line, spaces after the first separator included.
                 let text_argument = line.splitn(3, ' ').nth(2).unwrap_or_default().to_string();
+                let text_argument_all = line.split_once(' ').map_or("", |(_, text)| text).to_string();
                 let number = |index: usize| words[index].parse::<f32>().unwrap();
                 match words[0] {
                     "settings" => {
@@ -4261,6 +4264,118 @@ mod review_driver {
                             touch_phase: gpui::TouchPhase::Moved,
                             ..Default::default()
                         }));
+                        pause(cx, 600).await;
+                    }
+                    "wheel" => {
+                        // wheel W X Y LINES: one notch of a discrete mouse
+                        // wheel; negative LINES turns it down.
+                        dispatch(cx, number(1) as usize, PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                            position: point(px(number(2)), px(number(3))),
+                            delta: gpui::ScrollDelta::Lines(point(0., number(4))),
+                            touch_phase: gpui::TouchPhase::Moved,
+                            ..Default::default()
+                        }));
+                    }
+                    "frames" => {
+                        // frames W wheel LINES|key KEYSTROKE COUNT GAP_MS AFTER_MS NAME:
+                        // COUNT wheel notches (at the viewport, negative turns
+                        // down) or key presses GAP_MS apart, saving every frame
+                        // drawn until AFTER_MS after the last. Times are from
+                        // the script's start, for a video at true speed.
+                        let index = number(1) as usize;
+                        let count = number(4) as usize;
+                        let gap = Duration::from_millis(number(5) as u64);
+                        let after = Duration::from_millis(number(6) as u64);
+                        let name = words[7];
+                        let input = match words[2] {
+                            "wheel" => PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                                position: point(px(800.), px(450.)),
+                                delta: gpui::ScrollDelta::Lines(point(0., number(3))),
+                                touch_phase: gpui::TouchPhase::Moved,
+                                ..Default::default()
+                            }),
+                            _ => PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                keystroke: gpui::Keystroke::parse(words[3]).unwrap(),
+                                is_held: false,
+                                prefer_character_input: false,
+                            }),
+                        };
+                        for step in 0..count {
+                            writeln!(log, "input {name} {} {} at={}", words[2], words[3], script_started.elapsed().as_millis()).unwrap();
+                            dispatch(cx, index, input.clone());
+                            let until = std::time::Instant::now() + if step + 1 == count { after } else { gap };
+                            while std::time::Instant::now() < until {
+                                cx.update(|cx| {
+                                    let Some(entry) = document_window_entries(cx).get(index).cloned() else {
+                                        return;
+                                    };
+                                    let Some(workspace) = entry.workspace.upgrade() else {
+                                        return;
+                                    };
+                                    let _ = entry.handle.update(cx, |_, window, cx| {
+                                        workspace.update(cx, |workspace, cx| {
+                                            workspace.run_scheduled_viewport_refresh(window, cx)
+                                        });
+                                        window.draw(cx).clear(cx);
+                                        let probe = workspace.read(cx).thumbnail_bench_probe(cx);
+                                        let path = out.join(format!("frame-{:05}.png", frames_saved));
+                                        let at = script_started.elapsed().as_millis();
+                                        let saved = window.render_to_image().map(|image| image.save(&path).is_ok());
+                                        writeln!(
+                                            log,
+                                            "frame {frames_saved} at={at} {name} step={step} page={:?} zoom={:?} tiles drawn/sharp/planned={:?} saved={saved:?}",
+                                            probe.as_ref().map(|probe| probe.current_page + 1),
+                                            probe.as_ref().map(|probe| probe.zoom_percent),
+                                            probe.as_ref().map(|probe| (probe.current_tiles_drawn, probe.current_tiles_sharp, probe.current_tiles_planned)),
+                                        )
+                                        .unwrap();
+                                    });
+                                });
+                                frames_saved += 1;
+                                pause(cx, 16).await;
+                            }
+                        }
+                    }
+                    "caption" => {
+                        // caption TEXT: labels the frames that follow.
+                        writeln!(log, "caption at={} {text_argument_all}", script_started.elapsed().as_millis()).unwrap();
+                    }
+                    "set-zoom" => {
+                        // set-zoom W PERCENT: the active document's zoom.
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(number(1) as usize)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                workspace.update(cx, |workspace, cx| {
+                                    if let Some(id) = workspace.active_document_id()
+                                        && let Some(view) = workspace.document_view_state(id, cx)
+                                    {
+                                        workspace.set_view_configuration(id, view.mode(), number(2), cx);
+                                    }
+                                });
+                            }
+                        });
+                        pause(cx, 600).await;
+                    }
+                    "single-page-scroll" => {
+                        // single-page-scroll W: Single Page, Fit Page, and the
+                        // mouse wheel set to Scroll.
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(number(1) as usize)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                workspace.update(cx, |workspace, cx| {
+                                    use butter_paper::page_view_control::{PageViewMode, WheelBehavior};
+                                    if let Some(id) = workspace.active_document_id() {
+                                        workspace.set_page_view_mode(id, PageViewMode::SinglePage, cx);
+                                        workspace.set_fit_preset(id, butter_paper::document_workspace::ViewerFitPreset::Page, cx);
+                                        workspace.set_document_wheel_behavior(id, PageViewMode::SinglePage, WheelBehavior::Scroll, cx);
+                                    }
+                                });
+                            }
+                        });
                         pause(cx, 600).await;
                     }
                     "pinch" => {

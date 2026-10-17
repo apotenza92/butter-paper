@@ -318,6 +318,9 @@ pub struct NativeDocumentSession {
     pub(crate) current_page: u32,
     pub(crate) requested_page: u32,
     pub(crate) pending_navigation_scroll: Option<u32>,
+    /// A page gone back to from the top of the next: it shows from its
+    /// bottom, as scrolling up would reach it.
+    pub(crate) navigation_from_below: Option<u32>,
     pub(crate) pending_zoom_anchor: Option<crate::zoom_anchor::ZoomAnchor>,
     /// A page to frame once the new layout is planned: centred for Fit
     /// Page, centred across for Fit Width.
@@ -392,6 +395,7 @@ impl NativeDocumentSession {
             current_page: 0,
             requested_page: 0,
             pending_navigation_scroll: None,
+            navigation_from_below: None,
             pending_zoom_anchor: None,
             pending_page_frame: None,
             generation,

@@ -15,14 +15,15 @@ use std::{
 
 use butter_paper::document_workspace::{
     ActualSize, ContinuousView, DOCUMENT_VIEWPORT_ID, DocumentId, DocumentWorkspace, FitPage,
-    FitWidth, NativeDocumentOpener, NativeDocumentResource, NavigateEnd, NavigateHome,
-    NavigateNextPage, NavigatePageDown, NavigatePreviousPage, OpenDocumentRequest,
-    OpenedNativeDocument, RasterSurface, SinglePageView, ThumbnailSurface, ZoomIn, ZoomOut,
-    document_session_tab_id, document_viewer_page_id, init_document_workspace_actions,
+    FitWidth, NativeDocumentOpener, NativeDocumentResource, NavigateDown, NavigateEnd,
+    NavigateHome, NavigateNextPage, NavigatePageDown, NavigatePageUp, NavigatePreviousPage,
+    NavigateUp, OpenDocumentRequest, OpenedNativeDocument, RasterSurface, SinglePageView,
+    ThumbnailSurface, ZoomIn, ZoomOut, document_session_tab_id, document_viewer_page_id,
+    init_document_workspace_actions,
 };
 use butter_paper::native_document_view_state::ViewerZoomPreset;
 use butter_paper::page_view_control::{
-    CONTINUOUS_PRIMARY_ID, PageViewMode, SINGLE_PAGE_PRIMARY_ID,
+    CONTINUOUS_PRIMARY_ID, PageViewMode, SINGLE_PAGE_PRIMARY_ID, WheelBehavior,
 };
 use gpui::{
     AppContext as _, Bounds, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
@@ -472,6 +473,32 @@ impl Harness<'_> {
         self.settle();
     }
 
+    /// Notches of a discrete mouse wheel; negative turns it down.
+    fn notch(&mut self, lines: f32) {
+        self.settle();
+        let at = self.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+        self.cx.simulate_mouse_move(at, None, Modifiers::default());
+        self.cx.simulate_event(ScrollWheelEvent {
+            position: at,
+            delta: ScrollDelta::Lines(point(0., lines)),
+            ..Default::default()
+        });
+        self.settle();
+    }
+
+    fn single_page_wheel_scrolls(&mut self) {
+        let document = self.document;
+        self.workspace.update(self.cx, |workspace, cx| {
+            workspace.set_document_wheel_behavior(
+                document,
+                PageViewMode::SinglePage,
+                WheelBehavior::Scroll,
+                cx,
+            );
+        });
+        self.settle();
+    }
+
     fn set_zoom(&mut self, zoom: f32) {
         let document = self.document;
         self.workspace.update(self.cx, |workspace, cx| {
@@ -890,6 +917,135 @@ fn contextual_status_bar_spans_the_window_and_stays_below_the_viewport(cx: &mut 
         assert!(status.top() >= frame.viewport.bottom());
         assert_eq!(status.bottom(), frame.window.height);
         assert!(status.size.height < px(40.));
+    }
+}
+
+/// Scrolls a zoomed-in Single Page with `step` until the page turns,
+/// checking it reached its edge first, and returns the frames before and
+/// after the turn.
+fn scroll_until_the_page_turns(h: &mut Harness, step: impl Fn(&mut Harness)) -> (Frame, Frame) {
+    let mut before = h.frame();
+    for _ in 0..200 {
+        step(h);
+        let after = h.frame();
+        if after.current_page != before.current_page {
+            return (before, after);
+        }
+        before = after;
+    }
+    panic!("the page never turned: {before:?}");
+}
+
+fn single_page_scrolling_past_the_edge_turns_to_the_same_place_on_the_next_page(
+    cx: &mut TestAppContext,
+    down: impl Fn(&mut Harness),
+    up: impl Fn(&mut Harness),
+) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    h.single_page_wheel_scrolls();
+    h.go_to_page(1);
+    h.set_zoom(300.);
+    h.pan(-300., 0.);
+    let start = h.frame();
+
+    let (last, next) = scroll_until_the_page_turns(&mut h, &down);
+    let (left, bottom) = (last.page(1).unwrap().left(), last.page(1).unwrap().bottom());
+    assert!(
+        bottom <= last.viewport.bottom() + px(TOLERANCE),
+        "the page scrolls until its bottom is in view before turning: {last:?}"
+    );
+    assert_eq!(next.current_page, 2);
+    assert_eq!(next.zoom, start.zoom, "the zoom is kept");
+    let top = next.page(2).unwrap();
+    assert!(
+        (f32::from(top.top() - next.viewport.top())).abs() <= TOLERANCE,
+        "the next page shows from its top edge: {next:?}"
+    );
+    assert!(
+        (f32::from(top.left() - left)).abs() <= TOLERANCE,
+        "the next page keeps the horizontal position: {last:?} → {next:?}"
+    );
+
+    let (first, previous) = scroll_until_the_page_turns(&mut h, &up);
+    assert!(
+        first.page(2).unwrap().top() >= first.viewport.top() - px(TOLERANCE),
+        "the page scrolls back until its top is in view before turning: {first:?}"
+    );
+    assert_eq!(previous.current_page, 1);
+    let page = previous.page(1).unwrap();
+    assert!(
+        (f32::from(previous.viewport.bottom() - page.bottom())).abs() <= TOLERANCE,
+        "going back shows the previous page from its bottom edge: {previous:?}"
+    );
+    assert!(
+        (f32::from(page.left() - left)).abs() <= TOLERANCE,
+        "going back keeps the horizontal position: {previous:?}"
+    );
+}
+
+#[gpui::test]
+fn single_page_wheel_scrolls_a_zoomed_page_then_turns_to_the_same_place(cx: &mut TestAppContext) {
+    single_page_scrolling_past_the_edge_turns_to_the_same_place_on_the_next_page(
+        cx,
+        |h| h.notch(-3.),
+        |h| h.notch(3.),
+    );
+}
+
+#[gpui::test]
+fn single_page_arrow_keys_scroll_a_zoomed_page_then_turn_to_the_same_place(
+    cx: &mut TestAppContext,
+) {
+    single_page_scrolling_past_the_edge_turns_to_the_same_place_on_the_next_page(
+        cx,
+        |h| h.action(NavigateDown),
+        |h| h.action(NavigateUp),
+    );
+}
+
+#[gpui::test]
+fn single_page_page_keys_scroll_a_zoomed_page_then_turn_to_the_same_place(cx: &mut TestAppContext) {
+    single_page_scrolling_past_the_edge_turns_to_the_same_place_on_the_next_page(
+        cx,
+        |h| h.action(NavigatePageDown),
+        |h| h.action(NavigatePageUp),
+    );
+}
+
+#[gpui::test]
+fn single_page_fit_page_turns_a_page_per_notch_or_key_and_stays_framed(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &MIXED_PAGES);
+    h.action(SinglePageView);
+    h.single_page_wheel_scrolls();
+    h.action(FitPage);
+    let opened = h.frame();
+    assert_eq!(opened.current_page, 0);
+    let steps: [(&str, fn(&mut Harness), u32); 6] = [
+        ("wheel down", |h| h.notch(-1.), 1),
+        ("arrow down", |h| h.action(NavigateDown), 2),
+        ("page down", |h| h.action(NavigatePageDown), 3),
+        ("wheel up", |h| h.notch(1.), 2),
+        ("arrow up", |h| h.action(NavigateUp), 1),
+        ("page up", |h| h.action(NavigatePageUp), 0),
+    ];
+    for (name, step, page) in steps {
+        step(&mut h);
+        let frame = h.frame();
+        assert_eq!(frame.current_page, page, "{name} turns one page: {frame:?}");
+        assert!(
+            frame.whole_page_in_view(page),
+            "{name} keeps the whole page in view: {frame:?}"
+        );
+        let shown = frame.page(page).unwrap();
+        let (above, below) = (
+            f32::from(shown.top() - frame.viewport.top()),
+            f32::from(frame.viewport.bottom() - shown.bottom()),
+        );
+        assert!(
+            (above - below).abs() <= 2. * TOLERANCE || frame.zoom != opened.zoom,
+            "{name} keeps the page centred, without a jump: {frame:?}"
+        );
     }
 }
 

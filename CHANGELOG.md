@@ -4,6 +4,22 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.2.2]
+
+### Viewing
+
+- In Single Page view, turning the mouse wheel down now goes to the next
+  page and turning it up to the previous one; it was reversed.
+- In Single Page view, a page larger than the window scrolls with the mouse
+  wheel, arrow keys and Page Up/Page Down until its edge is in view, then
+  goes on to the next or previous page at the same zoom and position:
+  scrolling down shows the top of the next page, scrolling up the bottom
+  of the previous one. A page that fits the window turns with each notch
+  or key press.
+- Arrow keys and Page Up/Page Down no longer push the page out of view.
+- Fit Page keeps the page centred when you turn pages, instead of shifting
+  it down slightly.
+
 ## [0.2.1]
 
 ### Large documents

@@ -1151,6 +1151,34 @@ impl DocumentViewerState {
         self.scrollbar.clone()
     }
 
+    /// Whether `page` goes on past the view in the direction a scroll delta
+    /// would move it (its dominant axis; negative scrolls down or right).
+    /// The margins around a page do not count: once its edge is in view,
+    /// Single Page turns the page instead.
+    pub fn page_continues(&self, page: usize, delta_x: f32, delta_y: f32) -> bool {
+        let Some(rect) = self.plan.as_ref().and_then(|plan| {
+            plan.page_layouts
+                .iter()
+                .find(|layout| layout.page == page)
+                .map(|layout| layout.logical_rect)
+        }) else {
+            return false;
+        };
+        let (scroll_x, scroll_y) = self.wheel_scroll_target(0., 0.);
+        let (width, height) = self.viewport_size;
+        if delta_y.abs() >= delta_x.abs() {
+            if delta_y < 0. {
+                rect.y + rect.height > scroll_y + height + 0.5
+            } else {
+                rect.y < scroll_y - 0.5
+            }
+        } else if delta_x < 0. {
+            rect.x + rect.width > scroll_x + width + 0.5
+        } else {
+            rect.x < scroll_x - 0.5
+        }
+    }
+
     /// Where a wheel delta scrolls to, bounded before it paints so the view
     /// never shows the blank space it would be pulled back from. It starts
     /// from the last placed scroll: the scroll container has already moved

@@ -340,12 +340,18 @@ impl NativeDocumentViewState {
                 return WheelOutcome::Consumed;
             }
             // Each wheel notch (a line, 16px) turns a page, so pages can be
-            // flicked through as fast as the wheel turns.
+            // flicked through as fast as the wheel turns. A turn the other
+            // way starts afresh.
+            if self.single_page_wheel_delta.signum() != dominant.signum() {
+                self.single_page_wheel_delta = 0.;
+            }
             self.single_page_wheel_delta += dominant;
             if self.single_page_wheel_delta.abs() < SINGLE_PAGE_WHEEL_STEP {
                 return WheelOutcome::Consumed;
             }
-            let direction = self.single_page_wheel_delta.signum() as isize;
+            // Like the scroll it stands in for: a delta that would scroll
+            // down (negative) turns to the next page.
+            let direction = -(self.single_page_wheel_delta.signum() as isize);
             self.single_page_wheel_delta = 0.;
             let target = current_page
                 .saturating_add_signed(direction)
@@ -358,6 +364,22 @@ impl NativeDocumentViewState {
         }
 
         self.zoom_from_scroll(delta_y, reverse_zoom)
+    }
+
+    /// Whether a discrete wheel in Single Page scrolls (rather than zooms).
+    pub fn single_page_wheel_scrolls(&self, control: bool) -> bool {
+        self.mode == PageViewMode::SinglePage
+            && !self.cad_view_active
+            && match self.single_page_wheel {
+                WheelBehavior::Scroll => !control,
+                WheelBehavior::Zoom => control,
+            }
+    }
+
+    /// A Single Page wheel scrolled the page rather than turning it: a turn
+    /// starts afresh once the page's edge is reached.
+    pub fn wheel_scrolled_within_page(&mut self) {
+        self.single_page_wheel_delta = 0.;
     }
 
     /// Precise scrolling (trackpads and touch mice) pans in every view mode.
@@ -492,29 +514,44 @@ mod tests {
         );
         view.set_mode(PageViewMode::SinglePage);
         view.set_wheel_behavior(PageViewMode::SinglePage, WheelBehavior::Scroll);
+        // Turning the wheel down (a negative delta, as it scrolls down)
+        // goes to the next page.
         assert_eq!(
-            view.wheel(4, 1, 0., 15., false, false),
+            view.wheel(4, 1, 0., -15., false, false),
             WheelOutcome::Consumed
         );
         assert_eq!(
-            view.wheel(4, 1, 0., 1., false, false),
+            view.wheel(4, 1, 0., -1., false, false),
             WheelOutcome::Page(2)
         );
         // One notch turns one page, however hard the wheel is spun.
         assert_eq!(
-            view.wheel(4, 1, 0., 16., false, false),
+            view.wheel(4, 1, 0., -16., false, false),
             WheelOutcome::Page(2)
         );
         assert_eq!(
-            view.wheel(4, 1, 0., 48., false, false),
+            view.wheel(4, 1, 0., -48., false, false),
             WheelOutcome::Page(2)
         );
         assert_eq!(
-            view.wheel(4, 2, 0., -16., false, false),
+            view.wheel(4, 2, 0., 16., false, false),
+            WheelOutcome::Page(1)
+        );
+        // Part of a notch one way does not hold back a turn the other way.
+        assert_eq!(
+            view.wheel(4, 2, 0., -15., false, false),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(
+            view.wheel(4, 2, 0., 16., false, false),
             WheelOutcome::Page(1)
         );
         assert_eq!(
-            view.wheel(4, 3, 0., 16., false, false),
+            view.wheel(4, 3, 0., -16., false, false),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(
+            view.wheel(4, 0, 0., 16., false, false),
             WheelOutcome::Consumed
         );
         assert!(matches!(

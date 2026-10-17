@@ -33509,12 +33509,19 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
             WheelBehavior::Scroll,
             cx,
         ));
+        // The whole page in view, so each notch turns a page.
+        assert!(workspace.set_fit_preset(
+            request.document_id,
+            butter_paper::document_workspace::ViewerFitPreset::Page,
+            cx,
+        ));
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // Turning the wheel down (a negative delta) goes to the next page.
     let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
     cx.simulate_event(ScrollWheelEvent {
         position: viewport.center(),
-        delta: ScrollDelta::Lines(point(0., 15. / 16.)),
+        delta: ScrollDelta::Lines(point(0., -15. / 16.)),
         ..Default::default()
     });
     assert_eq!(
@@ -33529,7 +33536,7 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
     );
     cx.simulate_event(ScrollWheelEvent {
         position: viewport.center(),
-        delta: ScrollDelta::Lines(point(0., 1. / 16.)),
+        delta: ScrollDelta::Lines(point(0., -1. / 16.)),
         ..Default::default()
     });
     cx.run_until_parked();
@@ -33560,12 +33567,13 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
             ..Default::default()
         });
     };
-    notch(cx, -1.);
+    // Turning the wheel up goes back a page.
+    notch(cx, 1.);
     cx.run_until_parked();
     assert_eq!(current_page(cx), 0, "one notch turns one page");
     // Two quick notches go two pages, though the first is still rendering.
-    notch(cx, 1.);
-    notch(cx, 1.);
+    notch(cx, -1.);
+    notch(cx, -1.);
     cx.run_until_parked();
     assert_eq!(current_page(cx), 2, "quick notches flick through the pages");
 
