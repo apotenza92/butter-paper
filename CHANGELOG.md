@@ -4,6 +4,24 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.2.1]
+
+### Large documents
+
+- Clicking a page thumbnail goes to that page at once, showing its thumbnail
+  until the page renders, and a page you click is rendered before anything
+  else. In a large drawing set this takes under a second instead of up to
+  ten.
+- Scrolling far through the page thumbnails no longer slows the app down:
+  only the thumbnails you stop on are drawn, starting as soon as you stop.
+- Page thumbnails are sharper.
+- The page you are looking at no longer flashes while thumbnails load on
+  Windows and Linux, and no longer shows another page's image behind it
+  after scrolling in Continuous view.
+- Memory is released as you move through a document, instead of growing
+  with every page viewed.
+- Large PDFs open faster.
+
 ### Viewing
 
 - Select page text with the Select tool to copy it: drag across it,
