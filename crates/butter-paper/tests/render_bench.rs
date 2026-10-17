@@ -67,7 +67,7 @@ fn line(name: &str, value: &Value) -> String {
 
 #[test]
 #[ignore = "benchmark: needs BP_PDFIUM_LIBRARY, BP_BENCH_PDF and BP_BENCH_OUT"]
-fn render_bench() {
+fn bench_render() {
     let library = env_path("BP_PDFIUM_LIBRARY");
     let pdf = env_path("BP_BENCH_PDF");
     let out = env_path("BP_BENCH_OUT");

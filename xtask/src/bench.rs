@@ -42,7 +42,7 @@ pub fn run(args: &mut Args) -> Result {
                 "--ignored",
                 "--nocapture",
                 "--exact",
-                "render_bench",
+                "bench_render",
             ])
             .env("BP_PDFIUM_LIBRARY", &library)
             .env("BP_BENCH_PDF", &pdf)
