@@ -73,7 +73,20 @@ inspected captures. Steps are in priority order.
 - macOS 12 is unsupported (minimum 13.0); supporting it needs an older Go
   toolchain for the phone helper and a real macOS 12 run.
 - Performance qualification (startup, memory, rendering latency, leaks) has
-  no maintained protocol yet.
+  no maintained protocol yet beyond the large-document benchmarks
+  (`cargo xtask render-bench`, `cargo xtask thumb-bench`; see
+  [native-review.md](../agents/native-review.md)).
+- Large documents: a document's one PDF worker draws one page at a time, so
+  a heavy page's first draw (up to about a second) still holds up the next
+  request. A second worker for thumbnails would remove that, but each worker
+  holds about five times the file in memory (1.5 GB for a 290 MB file: the
+  bytes twice and two parsed copies), which should shrink first. Opening also
+  loads every page in PDFium to check its boxes against the parsed page
+  dictionary (0.45 s for 66 heavy pages), and thumbnails are drawn again on
+  every open rather than cached.
+- Snapshot cuts from the whole-page image of the page last navigated to; on
+  another page (Continuous view after scrolling) it now reports the image
+  unavailable instead of cutting the wrong page, and should render one.
 
 ## Product requests
 

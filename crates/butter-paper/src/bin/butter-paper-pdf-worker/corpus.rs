@@ -658,6 +658,7 @@ fn check_page_pdfium(
             byte_len: u64::from(width) * u64::from(height) * 4,
             format: SurfaceFormat::Bgra8Premultiplied,
         },
+        draft: false,
     };
     let mut pixels = vec![0u8; request.surface.byte_len as usize];
     backend

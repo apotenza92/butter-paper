@@ -146,7 +146,55 @@ fn edited_display(
     Ok(Some((edited, bytes)))
 }
 
+/// Which of a document's PDFium documents a page was loaded from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RasterSource {
+    Display,
+    Retained,
+    VectorSnapshots,
+}
+
+/// Pages most recently drawn, kept loaded: drawing the same page again
+/// (the next viewer tile, or its thumbnail after its page) then neither
+/// parses its content nor decodes its images again.
+#[derive(Default)]
+struct LoadedPages(Vec<(RasterSource, i32, PdfPage<'static>)>);
+
+impl LoadedPages {
+    const CAPACITY: usize = 3;
+
+    fn get(
+        &mut self,
+        source: RasterSource,
+        index: i32,
+        document: &PdfDocument<'static>,
+    ) -> Result<&PdfPage<'static>, WorkerError> {
+        if let Some(position) = self
+            .0
+            .iter()
+            .position(|(loaded, page, _)| *loaded == source && *page == index)
+        {
+            let entry = self.0.remove(position);
+            self.0.push(entry);
+        } else {
+            let page = document.pages().get(index).map_err(map_pdfium_error)?;
+            if self.0.len() == Self::CAPACITY {
+                self.0.remove(0);
+            }
+            self.0.push((source, index, page));
+        }
+        Ok(&self.0.last().expect("a page was just loaded").2)
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 struct PdfiumDocument {
+    /// Declared first, so its pages close before the documents they
+    /// belong to. Cleared whenever one of those documents is replaced.
+    loaded_pages: LoadedPages,
     document: PdfDocument<'static>,
     /// The displayed document: the source with any page-text edits.
     metadata: PdfMetadataDocument,
@@ -232,6 +280,7 @@ impl PdfBackend for PdfiumBackend {
             .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
         Ok((
             PdfiumDocument {
+                loaded_pages: LoadedPages::default(),
                 document,
                 source: metadata,
                 metadata: display,
@@ -357,6 +406,7 @@ impl PdfBackend for PdfiumBackend {
         }
         let (metadata, bytes) = edited_display(&document.source, &document.source_bytes, edits)?
             .unwrap_or_else(|| (document.source.clone(), document.source_bytes.clone()));
+        document.loaded_pages.clear();
         document.document =
             self.load_display_document(&metadata, bytes, document.password.as_deref())?;
         document.metadata = metadata;
@@ -403,6 +453,7 @@ impl PdfBackend for PdfiumBackend {
                             .map(RetainedPdfiumDocument::Filtered)
                     }
                 });
+            document.loaded_pages.clear();
             document.retained = prepared.unwrap_or_else(RetainedPdfiumDocument::Failed);
         }
         if request.annotation_mode == AnnotationRenderMode::VectorSnapshots
@@ -430,30 +481,34 @@ impl PdfBackend for PdfiumBackend {
                     })?;
                     self.load_display_document(&metadata, bytes, None)
                 });
+            document.loaded_pages.clear();
             document.vector_snapshots = Some(prepared);
         }
-        let (raster_document, render_annotations) = match request.annotation_mode {
+        let (raster_document, source, render_annotations) = match request.annotation_mode {
             AnnotationRenderMode::VectorSnapshots => match &document.vector_snapshots {
-                Some(Ok(layer)) => (layer, false),
+                Some(Ok(layer)) => (layer, RasterSource::VectorSnapshots, false),
                 Some(Err(error)) => return Err(error.clone()),
                 None => unreachable!("vector Snapshot layer prepared above"),
             },
-            AnnotationRenderMode::None => (&document.document, false),
-            AnnotationRenderMode::All => (&document.document, true),
+            AnnotationRenderMode::None => (&document.document, RasterSource::Display, false),
+            AnnotationRenderMode::All => (&document.document, RasterSource::Display, true),
             AnnotationRenderMode::RetainedOnly => match &document.retained {
-                RetainedPdfiumDocument::None => (&document.document, false),
-                RetainedPdfiumDocument::Original => (&document.document, true),
-                RetainedPdfiumDocument::Filtered(filtered) => (filtered, true),
+                RetainedPdfiumDocument::None => (&document.document, RasterSource::Display, false),
+                RetainedPdfiumDocument::Original => {
+                    (&document.document, RasterSource::Display, true)
+                }
+                RetainedPdfiumDocument::Filtered(filtered) => {
+                    (filtered, RasterSource::Retained, true)
+                }
                 RetainedPdfiumDocument::Failed(error) => return Err(error.clone()),
                 RetainedPdfiumDocument::Unprepared => {
                     unreachable!("retained document prepared above")
                 }
             },
         };
-        let page = raster_document
-            .pages()
-            .get(page_index)
-            .map_err(map_pdfium_error)?;
+        let page = document
+            .loaded_pages
+            .get(source, page_index, raster_document)?;
         let width = i32::try_from(request.surface.width)
             .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
         let height = i32::try_from(request.surface.height)
@@ -470,6 +525,7 @@ impl PdfBackend for PdfiumBackend {
             .reset_matrix(PdfMatrix::new(a, b, c, d, e, f))
             .map_err(map_pdfium_error)?
             .clip(0, 0, width, height);
+        let config = config.set_image_smoothing(!request.draft);
         // A vector Snapshot's Form is drawn on a transparent page.
         let config = if request.annotation_mode == AnnotationRenderMode::VectorSnapshots {
             config.set_clear_color(PdfColor::new(255, 255, 255, 0))
@@ -1303,6 +1359,7 @@ mod tests {
                 byte_len: u64::from(width) * 160 * 4,
                 format: SurfaceFormat::Bgra8Premultiplied,
             },
+            draft: false,
         }
     }
 
@@ -2502,6 +2559,7 @@ mod tests {
                 height: 256,
             },
             surface: descriptor,
+            draft: false,
         };
         let mut pixels = vec![0; request.surface.byte_len as usize];
         backend

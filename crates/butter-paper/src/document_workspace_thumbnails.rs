@@ -16,6 +16,42 @@ pub(super) type ThumbnailRow = (
     Option<String>,
 );
 
+/// The rows the thumbnails list lays out in a frame, gathered as each row
+/// prepaints (only rows on screen do) and handed to the workspace once the
+/// frame is done, so it draws the thumbnails shown first.
+#[derive(Default)]
+pub(super) struct ThumbnailRowsShown {
+    rows: Vec<u32>,
+    flush_queued: bool,
+}
+
+impl ThumbnailRowsShown {
+    fn record(
+        shown: &Rc<RefCell<Self>>,
+        document_id: DocumentId,
+        page_index: u32,
+        owner: WeakEntity<DocumentWorkspace>,
+        cx: &mut App,
+    ) {
+        let mut state = shown.borrow_mut();
+        state.rows.push(page_index);
+        if std::mem::replace(&mut state.flush_queued, true) {
+            return;
+        }
+        let shown = shown.clone();
+        cx.defer(move |cx| {
+            let rows = {
+                let mut state = shown.borrow_mut();
+                state.flush_queued = false;
+                std::mem::take(&mut state.rows)
+            };
+            let _ = owner.update(cx, |workspace, cx| {
+                workspace.show_thumbnail_rows(document_id, &rows, cx)
+            });
+        });
+    }
+}
+
 /// What the thumbnails sidebar shows for the active document.
 pub(super) struct ThumbnailSidebarInputs {
     pub document_id: DocumentId,
@@ -62,6 +98,7 @@ impl DocumentWorkspace {
                             let thumbnail_focused = focused_annotation_id.clone();
                             let thumbnail_control = cx.entity().downgrade();
                             let thumbnail_images = image_assets.clone();
+                            let rows_shown = self.thumbnail_rows_shown.clone();
                             v_flex().id("document-left-sidebar")
                                 .on_prepaint(self.left_sidebar_sizing.measure())
                                 .debug_selector(|| "document-left-sidebar".into())
@@ -141,14 +178,10 @@ impl DocumentWorkspace {
                                                         .flex_none()
                                                         .p_2()
                                                         .gap_2()
-                                                        .when(image.is_none() && preview_error.is_none(), |row| {
+                                                        .on_prepaint({
                                                             let owner = thumbnail_control.clone();
-                                                            row.on_prepaint(move |_, _, cx| {
-                                                                let owner = owner.clone();
-                                                                cx.defer(move |cx| {
-                                                                    let _ = owner.update(cx, |workspace, cx| workspace.request_thumbnail_preview(document_id, page_index, false, cx));
-                                                                });
-                                                            })
+                                                            let rows_shown = rows_shown.clone();
+                                                            move |_, _, cx| ThumbnailRowsShown::record(&rows_shown, document_id, page_index, owner.clone(), cx)
                                                         })
                                                         .rounded(cx.theme().radius)
                                                         .border_1()

@@ -1,6 +1,7 @@
 //! Butter Paper's build, packaging and release tasks: `cargo xtask <command>`.
 
 mod archive;
+mod bench;
 mod check;
 mod corpus;
 mod dev;
@@ -11,6 +12,7 @@ mod pdfium;
 mod phone;
 mod release;
 mod target;
+mod thumb_bench;
 mod version;
 
 use std::{
@@ -30,6 +32,10 @@ const USAGE: &str = "usage: cargo xtask <command>
   check                       repository, version and workflow checks
   pdf-corpus [--pages N] [--edits N] [--jobs N] [--limit N] [--out DIR] DIR...
                               check Edit PDF Content against local PDFs (reads them only)
+  render-bench [--sample N] [--backlog N] [--out DIR] PDF
+                              time opening and rendering one large local PDF (reads it only)
+  thumb-bench [--runs N] [--fraction F] [--fling-ms MS] [--click-row R] [--mode single|continuous] [--sweep PAGES] [--label NAME] PDF
+                              benchmark the thumbnails sidebar in the app on one large PDF (macOS)
   dev [--release] [--data DIR] [PDF...]
                               run the app, rebuilding and restarting it on changes
   version X.Y.Z[-beta.N]      set the app version and start its CHANGELOG section
@@ -54,6 +60,8 @@ fn main() -> ExitCode {
         "check" => args.finish().and_then(|()| check::run()),
         "dev" => dev::run(&mut args),
         "pdf-corpus" => corpus::run(&mut args),
+        "render-bench" => bench::run(&mut args),
+        "thumb-bench" => thumb_bench::run(&mut args),
         "version" => version::run(&mut args),
         "pdfium" => pdfium::run(&mut args),
         "phone-helper" => phone::run(&mut args),

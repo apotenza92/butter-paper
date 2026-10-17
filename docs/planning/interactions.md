@@ -277,9 +277,19 @@ is under the pointer.
   discrete mouse wheel. Scrolling up zooms in; Reverse Scroll Zoom flips it.
 - In Single Page with the mouse wheel set to Scroll, each notch of a
   discrete wheel turns one page. Turning it quickly flicks through the
-  pages: each shows as it renders and the view ends on the last page asked
-  for, without queueing a render per page. Page Up and Page Down do the
-  same.
+  pages: each shows at once from its thumbnail, if drawn, and the view ends
+  on the last page asked for, rendering only that one rather than a render
+  per page. Page Up and Page Down do the same.
+- Going to a page (a thumbnail, the page buttons, the wheel) moves there at
+  once: the page shows its thumbnail drawn up to size, if the sidebar has
+  drawn it, until its own render replaces it. What is on screen renders
+  first: the current page's tiles, then its whole-page image, then
+  thumbnails.
+- The thumbnails sidebar draws the thumbnails of the rows it shows, then two
+  rows above and below, one at a time, and never pages further off. While
+  the list scrolls it draws none; it starts on the rows where the scroll
+  stops, so a fling or a jump of the scroll bar never waits behind rows it
+  passed. Thumbnails far from view are unloaded once they hold 96 MB.
 - A full-width bottom status bar explains the active tool and navigation
   shortcuts while a document is open. Empty windows omit it. Narrow windows
   show shorter guidance; full help remains in tooltips.

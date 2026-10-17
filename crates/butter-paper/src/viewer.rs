@@ -187,6 +187,17 @@ impl<T> TileCache<T> {
     }
 
     pub fn insert(&mut self, key: TileRequest, value: T, bytes: usize) -> bool {
+        self.insert_evicting(key, value, bytes, &mut Vec::new())
+    }
+
+    /// `insert`, moving the entries it evicts (or replaces) to `evicted`.
+    pub fn insert_evicting(
+        &mut self,
+        key: TileRequest,
+        value: T,
+        bytes: usize,
+        evicted: &mut Vec<T>,
+    ) -> bool {
         let key = TileIdentity::from(key);
         if bytes > self.policy.max_bytes {
             return false;
@@ -194,6 +205,7 @@ impl<T> TileCache<T> {
         if let Some(previous) = self.entries.remove(&key) {
             self.bytes = self.bytes.saturating_sub(previous.bytes);
             self.order.retain(|candidate| *candidate != key);
+            evicted.push(previous.value);
         }
         while self.bytes + bytes > self.policy.max_bytes {
             let Some(oldest) = self.order.pop_front() else {
@@ -201,6 +213,7 @@ impl<T> TileCache<T> {
             };
             if let Some(removed) = self.entries.remove(&oldest) {
                 self.bytes = self.bytes.saturating_sub(removed.bytes);
+                evicted.push(removed.value);
             }
         }
         self.entries.insert(key, CachedTile { value, bytes });
@@ -243,6 +256,13 @@ impl<T> TileCache<T> {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
+
+    /// `clear`, moving every entry to `evicted`.
+    pub fn drain_into(&mut self, evicted: &mut Vec<T>) {
+        evicted.extend(self.entries.drain().map(|(_, tile)| tile.value));
         self.order.clear();
         self.bytes = 0;
     }
@@ -684,5 +704,51 @@ fn finite_nonnegative(value: f32) -> f32 {
         value.max(0.0)
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tile(x: usize) -> TileRequest {
+        TileRequest {
+            source: RenderSource {
+                document_id: 1,
+                revision: 1,
+            },
+            generation: 1,
+            page: 0,
+            zoom_tenths: 1_000,
+            device_scale_millis: 1_000,
+            rotation_quarter_turns: 0,
+            crop: PixelRect {
+                x,
+                y: 0,
+                width: 16,
+                height: 16,
+            },
+        }
+    }
+
+    #[test]
+    fn a_tile_cache_hands_back_what_it_evicts_or_clears() {
+        let mut cache = TileCache::new(CachePolicy {
+            max_bytes: 20,
+            ..CachePolicy::default()
+        });
+        let mut evicted = Vec::new();
+        assert!(cache.insert_evicting(tile(0), "first", 10, &mut evicted));
+        assert!(cache.insert_evicting(tile(16), "second", 10, &mut evicted));
+        assert!(evicted.is_empty());
+        assert!(cache.insert_evicting(tile(32), "third", 10, &mut evicted));
+        assert_eq!(evicted, ["first"], "the least recently used goes");
+        assert!(cache.insert_evicting(tile(32), "third again", 10, &mut evicted));
+        assert_eq!(evicted, ["first", "third"], "a replaced entry goes too");
+        cache.drain_into(&mut evicted);
+        evicted[2..].sort();
+        assert_eq!(evicted, ["first", "third", "second", "third again"]);
+        assert!(cache.is_empty());
+        assert_eq!(cache.bytes(), 0);
     }
 }

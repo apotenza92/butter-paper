@@ -2720,6 +2720,8 @@ fn build_document_window(
             }
         }
         workspace.bind_recent_documents(shared.recent_documents.clone(), cx);
+        workspace
+            .set_thumbnail_scroll_settle(butter_paper::document_workspace::THUMBNAIL_SCROLL_SETTLE);
         if let Some(store) = &shared.recent_signature_store {
             workspace.bind_recent_signature_store(store.clone());
         }
@@ -3835,6 +3837,10 @@ mod updates {
 }
 
 #[cfg(feature = "review-driver")]
+#[path = "butter-paper/thumb_bench.rs"]
+mod thumb_bench;
+
+#[cfg(feature = "review-driver")]
 mod review_driver {
     use super::*;
     use gpui::{
@@ -4177,6 +4183,16 @@ mod review_driver {
                         )
                         .unwrap();
                         pause(cx, 400).await;
+                    }
+                    "thumb-bench" => {
+                        // thumb-bench W [FRACTION] [FLING_MS] [CLICK_ROW] [single|continuous] [SWEEP_PAGES]: see `thumb_bench`.
+                        let window = number(1) as usize;
+                        let fraction = words.get(2).and_then(|word| word.parse().ok()).unwrap_or(0.9);
+                        let fling_ms = words.get(3).and_then(|word| word.parse().ok()).unwrap_or(1_500);
+                        let click_row = words.get(4).and_then(|word| word.parse().ok());
+                        let continuous = words.get(5) == Some(&"continuous");
+                        let sweep = words.get(6).and_then(|word| word.parse().ok()).unwrap_or(0);
+                        super::thumb_bench::run(cx, window, fraction, fling_ms, click_row, continuous, sweep, &out, &mut log).await;
                     }
                     "click" => {
                         // click W X Y [COUNT]: a left click at window coordinates.

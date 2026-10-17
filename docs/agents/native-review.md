@@ -29,6 +29,17 @@ not prove that LaunchServices delivered it.
   This development command does not replace the uniquely named review bundle
   required for live GUI review.
 - Real-PDFium tests: `BP_PDFIUM_LIBRARY=<approved-library> cargo test <test-filter> -- --ignored`.
+- `cargo xtask render-bench PDF` times how the worker opens and draws one
+  large local PDF (thumbnails, page images, tiles, and a page asked for
+  behind a backlog of thumbnails) and writes `target/render-bench`.
+- `cargo xtask thumb-bench [--runs N] [--mode single|continuous] [--sweep PAGES] [--label NAME] PDF`
+  benchmarks the thumbnails sidebar in a background review bundle: it
+  flings the list, clicks the page it stops on and snaps the scroll bar to
+  the end, timing until the rows shown have thumbnails and the clicked page
+  shows and is sharp, while measuring main-thread delays, canvas flashes and
+  memory. It writes each measure's median to
+  `target/thumb-bench/LABEL.json`; compare labels before and after a change,
+  on a quiet machine. macOS only.
 - `cargo xtask pdf-corpus [--pages N] [--edits N] [--jobs N] [--limit N] DIR...`
   checks Edit PDF Content against a local folder of PDFs: its text against PDFium's
   characters, its outlines against rendered ink, no-op and typed edit

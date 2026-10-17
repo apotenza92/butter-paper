@@ -12,8 +12,7 @@ use butter_paper::document_recovery_store::{
     DocumentRecoveryStore, RecoveryPublication, RecoverySourceKind,
 };
 use butter_paper::document_resource::{
-    DEFAULT_THUMBNAIL_WIDTH, NativeDocumentResource, OpenedNativeDocument, RasterSurface,
-    ThumbnailSurface,
+    NativeDocumentResource, OpenedNativeDocument, RasterSurface, ThumbnailSurface,
 };
 use butter_paper::document_workspace::{
     DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID, DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID, DeferredStartupOpen,
@@ -101,9 +100,11 @@ impl NativeDocumentResource for PageTextResource {
     }
 
     fn render_page(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
-        if width == DEFAULT_THUMBNAIL_WIDTH {
-            self.thumbnail_renders.fetch_add(1, Ordering::AcqRel);
-        }
+        Ok(raster(width, page_index + 2))
+    }
+
+    fn render_thumbnail(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
+        self.thumbnail_renders.fetch_add(1, Ordering::AcqRel);
         Ok(raster(width, page_index + 2))
     }
 

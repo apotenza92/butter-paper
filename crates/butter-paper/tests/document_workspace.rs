@@ -39303,7 +39303,10 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         .first()
         .expect("the real page must produce one thumbnail");
     assert_eq!(thumbnail.page_index, 0);
-    assert_eq!(thumbnail.raster.width(), 104);
+    assert_eq!(
+        thumbnail.raster.width().max(thumbnail.raster.height()),
+        butter_paper::document_resource::THUMBNAIL_EDGE
+    );
     assert!(thumbnail.raster.has_spatial_variation());
     let thumbnail_aspect =
         f64::from(thumbnail.raster.width()) / f64::from(thumbnail.raster.height());
@@ -40127,7 +40130,8 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
             .enumerate()
             .all(|(index, thumbnail)| {
                 thumbnail.page_index == index as u32
-                    && thumbnail.raster.width() == 104
+                    && thumbnail.raster.width().max(thumbnail.raster.height())
+                        == butter_paper::document_resource::THUMBNAIL_EDGE
                     && thumbnail.raster.height() > 0
                     && !thumbnail.raster.pixels_bgra().is_empty()
             })
@@ -40348,8 +40352,18 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         ),
         (before_rotation_dimensions.1, before_rotation_dimensions.0)
     );
-    assert_ne!(rotation_pixels.thumbnail.width(), 104);
-    assert_eq!(rotation_pixels.thumbnail.height(), 104);
+    // Turned like the page, at the same size.
+    assert_eq!(
+        rotation_pixels
+            .thumbnail
+            .width()
+            .max(rotation_pixels.thumbnail.height()),
+        butter_paper::document_resource::THUMBNAIL_EDGE
+    );
+    assert_eq!(
+        rotation_pixels.thumbnail.width() > rotation_pixels.thumbnail.height(),
+        rotation_pixels.current_page.width() > rotation_pixels.current_page.height()
+    );
     assert_eq!(
         workspace.update(cx, |workspace, cx| workspace.apply_page_rotation_result(
             &rotation_request,

@@ -25,6 +25,7 @@ use crate::{
         RenderRequest, RequestId, Rotation, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId,
         WorkerError, WorkerErrorCode, WorkerProcessClient, WorkerRequest, WorkerResponse,
     },
+    render_gate::{RenderGate, RenderPriority},
     semantic_snapping::PageGridDefinition,
     viewer::TileRequest,
 };
@@ -34,8 +35,29 @@ use sha2::{Digest as _, Sha256};
 use smallvec::smallvec;
 
 pub const DEFAULT_PAGE_RENDER_WIDTH: u32 = 900;
-pub const DEFAULT_THUMBNAIL_WIDTH: u32 = 104;
+/// The longest side, in pixels, of a page thumbnail: sharp in the sidebar
+/// on a 2x display. A heavy page costs about the same to draw at any small
+/// size, since its content, not its pixels, takes the time.
+pub const THUMBNAIL_EDGE: u32 = 360;
+/// What a thumbnail of every page together may hold in memory before the
+/// thumbnails furthest from view are unloaded.
+pub const THUMBNAIL_CACHE_BYTES: usize = 96 * 1024 * 1024;
+
+/// The width to draw a thumbnail of a page `page_size` points across, so
+/// that its longest side is `THUMBNAIL_EDGE` pixels whichever way it turns.
+pub fn thumbnail_width(page_size: (f32, f32)) -> u32 {
+    let (width, height) = page_size;
+    if !(width.is_finite() && height.is_finite() && width > 0. && height > 0.) {
+        return THUMBNAIL_EDGE;
+    }
+    (THUMBNAIL_EDGE as f32 * width / width.max(height))
+        .round()
+        .max(1.) as u32
+}
 pub const DEFAULT_THUMBNAIL_COUNT: usize = 12;
+/// How long a page image waits before queueing for the worker: a couple of
+/// frames, in which the viewer asks for the tiles shown in front of it.
+const PAGE_IMAGE_DEFERRAL: std::time::Duration = std::time::Duration::from_millis(40);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DocumentId(u64);
@@ -256,6 +278,27 @@ impl RasterSurface {
         Ok(Arc::new(RenderImage::new(smallvec![Frame::new(pixels)])))
     }
 
+    /// This raster scaled so its longest side is at most `edge` pixels,
+    /// each pixel the average of those it covers.
+    pub(crate) fn downscaled_to_edge(&self, edge: u32) -> Result<Self, String> {
+        let longest = self.width.max(self.height);
+        if longest <= edge {
+            return Ok(self.clone());
+        }
+        let scale =
+            |side: u32| ((u64::from(side) * u64::from(edge)) / u64::from(longest)).max(1) as u32;
+        let (width, height) = (scale(self.width), scale(self.height));
+        let source =
+            ImageBuffer::<Rgba<u8>, &[u8]>::from_raw(self.width, self.height, &self.pixels_bgra)
+                .ok_or_else(|| "the raster's pixels do not match its size".to_owned())?;
+        // Channel order does not matter to averaging.
+        Self::new(
+            width,
+            height,
+            image::imageops::thumbnail(&source, width, height).into_raw(),
+        )
+    }
+
     pub(crate) fn into_render_image(self) -> Result<Arc<RenderImage>, String> {
         let pixels =
             ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(self.width, self.height, self.pixels_bgra)
@@ -282,6 +325,16 @@ impl ThumbnailSurface {
 pub trait NativeDocumentResource: Send + Sync {
     fn worker_pid(&self) -> Option<u32>;
     fn render_page(&self, page_index: u32, width: u32) -> Result<RasterSurface, String>;
+    /// A page's thumbnail: drawn as `render_page` draws it, after whatever
+    /// the user is waiting for.
+    fn render_thumbnail(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
+        self.render_page(page_index, width)
+    }
+    /// The whole-page image of a page navigated to: drawn as `render_page`
+    /// draws it, after the viewer's tiles of that page.
+    fn render_page_image(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
+        self.render_page(page_index, width)
+    }
     fn render_page_with_pdf_annotations(
         &self,
         page_index: u32,
@@ -325,6 +378,11 @@ pub trait NativeDocumentResource: Send + Sync {
         Arc::default()
     }
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String>;
+    /// A tile shown only until a full-quality one replaces it: drawn as fast
+    /// as the worker can, images unsmoothed.
+    fn render_draft_tile(&self, request: TileRequest) -> Result<RasterSurface, String> {
+        self.render_tile(request)
+    }
     fn close(&self) -> Result<(), String>;
     fn is_released(&self) -> bool;
     /// Whether the PDF worker process has stopped, so that only reopening
@@ -470,6 +528,14 @@ impl OpenedNativeDocument {
 
     pub fn page_count(&self) -> usize {
         self.page_sizes.len()
+    }
+
+    pub fn page_sizes(&self) -> &[(f32, f32)] {
+        &self.page_sizes
+    }
+
+    pub fn resource(&self) -> Arc<dyn NativeDocumentResource> {
+        self.resource.clone()
     }
 
     pub fn page_coordinate_space(&self, page_index: u32) -> Option<PageCoordinateSpace> {
@@ -625,8 +691,12 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
         request: &OpenDocumentRequest,
         edits: &DocumentEdits,
     ) -> Result<OpenedNativeDocument, String> {
-        let source_sha256: [u8; 32] =
-            Sha256::digest(fs::read(&request.path).map_err(|error| error.to_string())?).into();
+        // Hashed while the worker opens the file, which takes longer: a
+        // large file then opens in the time of the slower of the two.
+        let hashing = {
+            let path = request.path.clone();
+            std::thread::spawn(move || sha256_of_file(&path))
+        };
         let persistence = PdfPersistenceSession::open(&request.path)
             .map_err(|error| format!("failed to import PDF annotations: {error}"))?;
         let vector_snapshot_ids = persistence.vector_snapshot_ids();
@@ -646,6 +716,9 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
             &self.surface_root,
             request,
         )?;
+        let source_sha256 = hashing
+            .join()
+            .map_err(|_| "hashing the PDF failed".to_owned())??;
         resource
             .digitally_signed
             .store(persistence.is_digitally_signed(), Ordering::Release);
@@ -682,7 +755,8 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
         {
             thumbnails.push(ThumbnailSurface::new(
                 page_index,
-                resource.render_page(page_index, DEFAULT_THUMBNAIL_WIDTH)?,
+                resource
+                    .render_page(page_index, thumbnail_width(page_sizes[page_index as usize]))?,
             ));
         }
         let title = request
@@ -708,6 +782,8 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
 }
 
 struct PdfiumWorkerResource {
+    /// Orders the requests waiting for `client`.
+    gate: RenderGate,
     client: Mutex<Option<WorkerProcessClient>>,
     session_id: SessionId,
     page_sizes: Vec<(f32, f32)>,
@@ -791,6 +867,7 @@ impl PdfiumWorkerResource {
                 page_sizes.push(display_size(geometry)?);
             }
             Ok(Arc::new(Self {
+                gate: RenderGate::default(),
                 client: Mutex::new(Some(client)),
                 session_id,
                 page_sizes,
@@ -817,6 +894,8 @@ impl PdfiumWorkerResource {
         page_index: u32,
         desired_width: u32,
         annotation_mode: AnnotationRenderMode,
+        priority: RenderPriority,
+        draft: bool,
     ) -> Result<RasterSurface, String> {
         let (page_width, page_height) = *self
             .page_sizes
@@ -841,6 +920,7 @@ impl PdfiumWorkerResource {
             byte_len,
             format: SurfaceFormat::Bgra8Premultiplied,
         };
+        let _turn = self.gate.enter(priority);
         let mut guard = self
             .client
             .lock()
@@ -870,6 +950,7 @@ impl PdfiumWorkerResource {
                         height,
                     },
                     surface: descriptor,
+                    draft,
                 },
             })
             .map_err(worker_error)?;
@@ -905,6 +986,7 @@ impl PdfiumWorkerResource {
             byte_len,
             format: SurfaceFormat::Bgra8Premultiplied,
         };
+        let _turn = self.gate.enter(RenderPriority::Interactive);
         let mut guard = self
             .client
             .lock()
@@ -932,6 +1014,7 @@ impl PdfiumWorkerResource {
                         height,
                     },
                     surface: descriptor,
+                    draft: false,
                 },
             })
             .map_err(worker_error)?;
@@ -947,150 +1030,7 @@ impl PdfiumWorkerResource {
         RasterSurface::new(width, height, surface.pixels().to_vec())?.to_rgba_asset()
     }
 
-    fn request_id(&self) -> RequestId {
-        RequestId(self.next_request.fetch_add(1, Ordering::Relaxed))
-    }
-
-    fn finish_release(&self) -> Result<(), String> {
-        match fs::remove_dir_all(&self.surface_root) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("failed to remove PDF surface directory: {error}")),
-        }
-        self.released.store(true, Ordering::Release);
-        Ok(())
-    }
-}
-
-impl NativeDocumentResource for PdfiumWorkerResource {
-    fn worker_pid(&self) -> Option<u32> {
-        Some(self.worker_pid)
-    }
-
-    fn render_page(&self, page_index: u32, desired_width: u32) -> Result<RasterSurface, String> {
-        self.render_page_with_policy(
-            page_index,
-            desired_width,
-            AnnotationRenderMode::RetainedOnly,
-        )
-    }
-
-    fn render_page_with_pdf_annotations(
-        &self,
-        page_index: u32,
-        desired_width: u32,
-    ) -> Result<RasterSurface, String> {
-        self.render_page_with_policy(page_index, desired_width, AnnotationRenderMode::All)
-    }
-
-    fn render_page_without_pdf_annotations(
-        &self,
-        page_index: u32,
-        desired_width: u32,
-    ) -> Result<RasterSurface, String> {
-        self.render_page_with_policy(page_index, desired_width, AnnotationRenderMode::None)
-    }
-
-    fn page_snap_geometry(&self, page_index: u32) -> Result<PageSnapGeometry, String> {
-        if page_index as usize >= self.page_sizes.len() {
-            return Err("PDF page is outside the document".to_owned());
-        }
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
-        match client
-            .exchange(&WorkerRequest::PageSnapGeometry {
-                request_id: self.request_id(),
-                session_id: self.session_id,
-                page_index,
-            })
-            .map_err(worker_error)?
-        {
-            WorkerResponse::PageSnapGeometry {
-                session_id,
-                page_index: returned_page,
-                geometry,
-                ..
-            } if session_id == self.session_id
-                && returned_page == page_index
-                && geometry.page_index == page_index =>
-            {
-                Ok(geometry)
-            }
-            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
-            response => Err(unexpected_response("page snap geometry", response)),
-        }
-    }
-
-    fn page_text(&self, page_index: u32) -> Result<PageTextLayer, String> {
-        if page_index as usize >= self.page_sizes.len() {
-            return Err("PDF page is outside the document".to_owned());
-        }
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
-        match client
-            .exchange(&WorkerRequest::PageText {
-                request_id: self.request_id(),
-                session_id: self.session_id,
-                page_index,
-            })
-            .map_err(worker_error)?
-        {
-            WorkerResponse::PageText {
-                session_id, layer, ..
-            } if session_id == self.session_id && layer.page_index == page_index => Ok(layer),
-            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
-            response => Err(unexpected_response("page text", response)),
-        }
-    }
-
-    fn digitally_signed(&self) -> bool {
-        self.digitally_signed.load(Ordering::Acquire)
-    }
-
-    fn form_layer(&self) -> Arc<FormLayer> {
-        self.form_layer
-            .lock()
-            .map(|layer| layer.clone())
-            .unwrap_or_default()
-    }
-
-    fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
-        match client
-            .exchange(&WorkerRequest::SetDocumentEdits {
-                request_id: self.request_id(),
-                session_id: self.session_id,
-                edits: edits.clone(),
-            })
-            .map_err(worker_error)?
-        {
-            WorkerResponse::DocumentEditsSet { session_id, .. }
-                if session_id == self.session_id =>
-            {
-                Ok(())
-            }
-            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
-            response => Err(unexpected_response("document edits", response)),
-        }
-    }
-
-    fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String> {
+    fn render_tile_with(&self, request: TileRequest, draft: bool) -> Result<RasterSurface, String> {
         let page_index = u32::try_from(request.page)
             .map_err(|_| "viewer tile page index overflowed".to_owned())?;
         let target_rotation =
@@ -1106,6 +1046,8 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                     page_index,
                     source_width,
                     AnnotationRenderMode::RetainedOnly,
+                    RenderPriority::Viewer,
+                    draft,
                 )?
                 .rotated(delta)?;
             return full.cropped(
@@ -1153,6 +1095,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             byte_len,
             format: SurfaceFormat::Bgra8Premultiplied,
         };
+        let _turn = self.gate.enter(RenderPriority::Viewer);
         let mut guard = self
             .client
             .lock()
@@ -1189,6 +1132,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                         height,
                     },
                     surface: descriptor,
+                    draft,
                 },
             })
             .map_err(worker_error)?;
@@ -1202,6 +1146,210 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             response => return Err(unexpected_response("tile render", response)),
         }
         RasterSurface::new(width, height, surface.pixels().to_vec())
+    }
+
+    fn request_id(&self) -> RequestId {
+        RequestId(self.next_request.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn finish_release(&self) -> Result<(), String> {
+        match fs::remove_dir_all(&self.surface_root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("failed to remove PDF surface directory: {error}")),
+        }
+        self.released.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl NativeDocumentResource for PdfiumWorkerResource {
+    fn worker_pid(&self) -> Option<u32> {
+        Some(self.worker_pid)
+    }
+
+    fn render_page(&self, page_index: u32, desired_width: u32) -> Result<RasterSurface, String> {
+        self.render_page_with_policy(
+            page_index,
+            desired_width,
+            AnnotationRenderMode::RetainedOnly,
+            RenderPriority::Interactive,
+            false,
+        )
+    }
+
+    fn render_page_image(
+        &self,
+        page_index: u32,
+        desired_width: u32,
+    ) -> Result<RasterSurface, String> {
+        // The viewer plans the page's tiles on its next frame; let them
+        // queue first, so they are not stuck behind this.
+        std::thread::sleep(PAGE_IMAGE_DEFERRAL);
+        self.render_page_with_policy(
+            page_index,
+            desired_width,
+            AnnotationRenderMode::RetainedOnly,
+            RenderPriority::PageImage,
+            false,
+        )
+    }
+
+    fn render_thumbnail(
+        &self,
+        page_index: u32,
+        desired_width: u32,
+    ) -> Result<RasterSurface, String> {
+        // Drawn twice the size with images unsmoothed, then averaged down:
+        // as clean as smoothing, and for a page of large images about twice
+        // as fast, since smoothing redoes each image at every draw.
+        let draft = self.render_page_with_policy(
+            page_index,
+            desired_width.saturating_mul(2),
+            AnnotationRenderMode::RetainedOnly,
+            RenderPriority::Thumbnail,
+            true,
+        )?;
+        draft.downscaled_to_edge(draft.width().max(draft.height()) / 2)
+    }
+
+    fn render_page_with_pdf_annotations(
+        &self,
+        page_index: u32,
+        desired_width: u32,
+    ) -> Result<RasterSurface, String> {
+        self.render_page_with_policy(
+            page_index,
+            desired_width,
+            AnnotationRenderMode::All,
+            RenderPriority::Interactive,
+            false,
+        )
+    }
+
+    fn render_page_without_pdf_annotations(
+        &self,
+        page_index: u32,
+        desired_width: u32,
+    ) -> Result<RasterSurface, String> {
+        self.render_page_with_policy(
+            page_index,
+            desired_width,
+            AnnotationRenderMode::None,
+            RenderPriority::Interactive,
+            false,
+        )
+    }
+
+    fn page_snap_geometry(&self, page_index: u32) -> Result<PageSnapGeometry, String> {
+        if page_index as usize >= self.page_sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        // Read ahead for snapping, after the tiles of the page on screen.
+        let _turn = self.gate.enter(RenderPriority::PageImage);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        match client
+            .exchange(&WorkerRequest::PageSnapGeometry {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::PageSnapGeometry {
+                session_id,
+                page_index: returned_page,
+                geometry,
+                ..
+            } if session_id == self.session_id
+                && returned_page == page_index
+                && geometry.page_index == page_index =>
+            {
+                Ok(geometry)
+            }
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("page snap geometry", response)),
+        }
+    }
+
+    fn page_text(&self, page_index: u32) -> Result<PageTextLayer, String> {
+        if page_index as usize >= self.page_sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        match client
+            .exchange(&WorkerRequest::PageText {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::PageText {
+                session_id, layer, ..
+            } if session_id == self.session_id && layer.page_index == page_index => Ok(layer),
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("page text", response)),
+        }
+    }
+
+    fn digitally_signed(&self) -> bool {
+        self.digitally_signed.load(Ordering::Acquire)
+    }
+
+    fn form_layer(&self) -> Arc<FormLayer> {
+        self.form_layer
+            .lock()
+            .map(|layer| layer.clone())
+            .unwrap_or_default()
+    }
+
+    fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        match client
+            .exchange(&WorkerRequest::SetDocumentEdits {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                edits: edits.clone(),
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::DocumentEditsSet { session_id, .. }
+                if session_id == self.session_id =>
+            {
+                Ok(())
+            }
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("document edits", response)),
+        }
+    }
+
+    fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String> {
+        self.render_tile_with(request, false)
+    }
+
+    fn render_draft_tile(&self, request: TileRequest) -> Result<RasterSurface, String> {
+        self.render_tile_with(request, true)
     }
 
     fn close(&self) -> Result<(), String> {
@@ -1286,6 +1434,23 @@ impl Drop for PdfiumWorkerResource {
         }
     }
 }
+/// The SHA-256 of a file, read a piece at a time rather than whole.
+fn sha256_of_file(path: &Path) -> Result<[u8; 32], String> {
+    use std::io::Read as _;
+    let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 1 << 20];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => hasher.update(&buffer[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(hasher.finalize().into())
+}
+
 fn display_size(geometry: PageGeometry) -> Result<(f32, f32), String> {
     let size = (
         geometry.display_width_points,
@@ -1450,6 +1615,18 @@ mod raster_colour_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_image_scales_down_to_a_thumbnail_keeping_its_shape_and_colour() {
+        // 8 x 4 of one BGRA colour.
+        let pixel = [10, 20, 200, 255];
+        let raster = RasterSurface::new(8, 4, pixel.repeat(32)).unwrap();
+        let thumbnail = raster.downscaled_to_edge(4).unwrap();
+        assert_eq!((thumbnail.width(), thumbnail.height()), (4, 2));
+        assert!(thumbnail.pixels_bgra().chunks_exact(4).all(|p| p == pixel));
+        let small = raster.downscaled_to_edge(16).unwrap();
+        assert_eq!((small.width(), small.height()), (8, 4), "never scaled up");
+    }
 
     #[test]
     fn tile_images_repeat_their_edge_pixels_around_the_raster() {

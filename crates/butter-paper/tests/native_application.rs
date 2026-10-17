@@ -2438,6 +2438,215 @@ fn sidebar_loads_visible_late_pages_and_retries_failure_without_navigation(
     });
 }
 
+#[gpui::test]
+fn sidebar_draws_the_rows_a_fling_stops_on_and_not_the_rows_it_passes(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let backend = Arc::new(RecordingBackend {
+        page_count: 60,
+        ..Default::default()
+    });
+    let workspace = cx.new(|cx| {
+        let mut workspace = DocumentWorkspace::with_opener(backend.clone(), cx);
+        workspace.set_thumbnail_scroll_settle(std::time::Duration::from_millis(100));
+        workspace
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.open_path(PathBuf::from("/tmp/sidebar-fling.pdf"), cx)
+    });
+    cx.run_until_parked();
+    let observed = workspace.clone();
+    let close = cx.new({
+        let backend = backend.clone();
+        move |_| ApplicationCloseWorkspace::new(workspace, backend)
+    });
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let shell = cx.new(|cx| ApplicationCloseShell::new_for_native_window(close, window, cx));
+        Root::new(shell, window, cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let toggle = cx.debug_bounds("document-left-rail-pages").unwrap();
+    cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let opened = backend.thumbnail_renders.lock().unwrap().len();
+    assert!(opened > 0, "the rows first shown are drawn at once");
+    // A fling: the rows shown change on every frame.
+    for page in [10, 20, 30, 40, 50] {
+        observed.update(cx, |workspace, cx| {
+            workspace.scroll_thumbnail_to_page(page, cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        backend.thumbnail_renders.lock().unwrap().len(),
+        opened,
+        "no thumbnail is drawn for rows a fling passes"
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(150));
+    for _ in 0..3 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    let drawn = backend.thumbnail_renders.lock().unwrap()[opened..].to_vec();
+    assert!(!drawn.is_empty(), "the rows the fling stopped on are drawn");
+    assert!(
+        drawn.iter().all(|page| *page >= 40),
+        "only rows near where the list stopped are drawn: {drawn:?}"
+    );
+    observed.read_with(cx, |workspace, cx| {
+        let session = workspace
+            .session(workspace.active_document_id().unwrap(), cx)
+            .unwrap()
+            .read(cx);
+        assert!(session.thumbnail_base_raster(50).is_some());
+        assert!(session.thumbnail_base_raster(25).is_none());
+    });
+}
+
+#[gpui::test]
+fn arriving_thumbnails_leave_the_canvas_tiles_alone(cx: &mut TestAppContext) {
+    // Each thumbnail once redrew every canvas tile on Windows and Linux,
+    // flashing the page while the sidebar filled in.
+    cx.update(gpui_component::init);
+    let backend = Arc::new(RecordingBackend {
+        page_count: 12,
+        ..Default::default()
+    });
+    let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.open_path(PathBuf::from("/tmp/canvas-steady.pdf"), cx)
+    });
+    cx.run_until_parked();
+    let observed = workspace.clone();
+    let close = cx.new({
+        let backend = backend.clone();
+        move |_| ApplicationCloseWorkspace::new(workspace, backend)
+    });
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let shell = cx.new(|cx| ApplicationCloseShell::new_for_native_window(close, window, cx));
+        Root::new(shell, window, cx)
+    });
+    for _ in 0..2 {
+        observed.update(cx, |workspace, cx| {
+            let id = workspace.active_document_id().unwrap();
+            workspace
+                .refresh_viewport_async(id, 700., 500., 1., cx)
+                .unwrap();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    let tiles = backend.tile_renders.load(Ordering::Acquire);
+    assert!(tiles > 0, "the canvas drew its tiles");
+    for page in 1..8 {
+        observed.update(cx, |workspace, cx| {
+            let id = workspace.active_document_id().unwrap();
+            workspace.request_thumbnail_preview(id, page, false, cx);
+        });
+        cx.run_until_parked();
+        // As the next frame would (the test platform runs no frame
+        // callbacks): plan the canvas, drawing whatever it lacks.
+        observed.update(cx, |workspace, cx| {
+            let id = workspace.active_document_id().unwrap();
+            workspace
+                .refresh_viewport_async(id, 700., 500., 1., cx)
+                .unwrap();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    observed.read_with(cx, |workspace, cx| {
+        let session = workspace
+            .session(workspace.active_document_id().unwrap(), cx)
+            .unwrap()
+            .read(cx);
+        assert!((1..8).all(|page| session.thumbnail_base_raster(page).is_some()));
+    });
+    assert_eq!(
+        backend.tile_renders.load(Ordering::Acquire),
+        tiles,
+        "thumbnails arriving must not make the canvas draw its tiles again"
+    );
+}
+
+#[gpui::test]
+fn clicking_a_drawn_thumbnail_moves_to_its_page_at_once(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let backend = Arc::new(RecordingBackend {
+        page_count: 6,
+        ..Default::default()
+    });
+    let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.open_path(PathBuf::from("/tmp/instant-page.pdf"), cx)
+    });
+    cx.run_until_parked();
+    let observed = workspace.clone();
+    let close = cx.new({
+        let backend = backend.clone();
+        move |_| ApplicationCloseWorkspace::new(workspace, backend)
+    });
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let shell = cx.new(|cx| ApplicationCloseShell::new_for_native_window(close, window, cx));
+        Root::new(shell, window, cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let toggle = cx.debug_bounds("document-left-rail-pages").unwrap();
+    cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    let session = |cx: &mut gpui::VisualTestContext| {
+        observed.read_with(cx, |workspace, cx| {
+            let session = workspace
+                .session(workspace.active_document_id().unwrap(), cx)
+                .unwrap()
+                .read(cx);
+            (
+                session.current_page(),
+                session.thumbnail_base_raster(2).is_some(),
+                session.base_raster_of(2).is_some(),
+            )
+        })
+    };
+    assert_eq!(session(cx), (0, true, false), "page 3's thumbnail is drawn");
+    let row = cx.debug_bounds("document-1-thumbnail-2").unwrap();
+    // Dispatched without letting the render run, as a slow page would be.
+    cx.update(|window, cx| {
+        for event in [
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: row.center(),
+                modifiers: gpui::Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: row.center(),
+                modifiers: gpui::Modifiers::default(),
+                click_count: 1,
+            }),
+        ] {
+            window.dispatch_event(event, cx);
+        }
+    });
+    assert_eq!(
+        session(cx),
+        (2, true, false),
+        "the page changes on the click, before its render arrives"
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        session(cx),
+        (2, true, true),
+        "then its render replaces the thumbnail"
+    );
+}
+
 #[test]
 fn sidebar_scale_ratio_uses_units_not_preset_name() {
     use butter_paper::annotation_model::{PageScale, ScalePrecision, ScaleUnit};
@@ -2550,6 +2759,9 @@ struct RecordingBackend {
     page_count: usize,
     preview_failure: Arc<AtomicBool>,
     preview_failures: Arc<std::sync::atomic::AtomicUsize>,
+    /// Pages whose thumbnails were drawn, in order.
+    thumbnail_renders: Arc<std::sync::Mutex<Vec<u32>>>,
+    tile_renders: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl NativeDocumentOpener for RecordingBackend {
@@ -2567,6 +2779,8 @@ impl NativeDocumentOpener for RecordingBackend {
                 released: self.released.clone(),
                 preview_failure: self.preview_failure.clone(),
                 preview_failures: self.preview_failures.clone(),
+                thumbnail_renders: self.thumbnail_renders.clone(),
+                tile_renders: self.tile_renders.clone(),
             }),
         )
     }
@@ -2582,6 +2796,8 @@ struct RecordingResource {
     released: Arc<AtomicBool>,
     preview_failure: Arc<AtomicBool>,
     preview_failures: Arc<std::sync::atomic::AtomicUsize>,
+    thumbnail_renders: Arc<std::sync::Mutex<Vec<u32>>>,
+    tile_renders: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl NativeDocumentResource for RecordingResource {
@@ -2597,7 +2813,13 @@ impl NativeDocumentResource for RecordingResource {
         Ok(raster(width, width.max(1)))
     }
 
+    fn render_thumbnail(&self, page: u32, width: u32) -> Result<RasterSurface, String> {
+        self.thumbnail_renders.lock().unwrap().push(page);
+        self.render_page(page, width)
+    }
+
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String> {
+        self.tile_renders.fetch_add(1, Ordering::AcqRel);
         Ok(raster(
             request.crop.width.max(1) as u32,
             request.crop.height.max(1) as u32,

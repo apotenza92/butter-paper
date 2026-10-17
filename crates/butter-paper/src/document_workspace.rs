@@ -1,5 +1,10 @@
 #[path = "document_workspace_alerts.rs"]
 mod alerts;
+#[cfg(feature = "review-driver")]
+#[path = "document_workspace_bench.rs"]
+mod bench;
+#[cfg(feature = "review-driver")]
+pub use bench::ThumbnailBenchProbe;
 #[path = "document_workspace_forms.rs"]
 mod forms;
 #[path = "interaction_chrome.rs"]
@@ -22,7 +27,7 @@ pub use forms::{
 };
 use forms::{FormChoiceMenu, FormFieldEditor, FormOverlay, FormWidgetRef};
 use page_text::{PageTextDocumentState, PageTextEditing, PageTextHover, PageTextOverlay};
-use thumbnail_sidebar::ThumbnailSidebarInputs;
+use thumbnail_sidebar::{ThumbnailRowsShown, ThumbnailSidebarInputs};
 #[path = "document_workspace_empty.rs"]
 mod empty;
 #[path = "document_workspace_settings_popovers.rs"]
@@ -39,7 +44,7 @@ use viewport::ViewportInputs;
 use gpui_component::ElementExt as _;
 use gpui_component::FocusTrapElement as _;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
@@ -50,10 +55,10 @@ use std::{
 
 use crate::dialog_buttons::dialog_action_button;
 pub use crate::document_resource::{
-    DEFAULT_PAGE_RENDER_WIDTH, DEFAULT_THUMBNAIL_COUNT, DEFAULT_THUMBNAIL_WIDTH, DocumentId,
-    DocumentRecoveryRequest, NativeDocumentOpener, NativeDocumentResource, OpenDocumentRequest,
-    OpenedNativeDocument, PageRenderRequest, PageRotationPresentation, PageRotationRequest,
-    PdfiumWorkerBackend, RasterSurface, ThumbnailSurface,
+    DEFAULT_PAGE_RENDER_WIDTH, DEFAULT_THUMBNAIL_COUNT, DocumentId, DocumentRecoveryRequest,
+    NativeDocumentOpener, NativeDocumentResource, OpenDocumentRequest, OpenedNativeDocument,
+    PageRenderRequest, PageRotationPresentation, PageRotationRequest, PdfiumWorkerBackend,
+    RasterSurface, THUMBNAIL_CACHE_BYTES, THUMBNAIL_EDGE, ThumbnailSurface, thumbnail_width,
 };
 pub use crate::document_session::{
     DocumentRecoveryPreparation, DocumentSaveFailure, DocumentSaveFailureKind,
@@ -504,6 +509,13 @@ pub fn register_document_workspace_actions_for(
 
 pub const DOCUMENT_WORKSPACE_ID: &str = "document-workspace";
 pub const DOCUMENT_THUMBNAIL_STRIP_ID: &str = "document-thumbnail-strip";
+/// Thumbnails drawn ahead above and below the rows shown, once those are.
+const THUMBNAIL_PREFETCH_ROWS: u32 = 2;
+/// How long the thumbnail rows shown must stay put before thumbnails are
+/// drawn: a page drawn for a row a fling passes is wasted, and cannot be
+/// stopped, so it would hold up the rows the list stops on and any page
+/// clicked there.
+pub const THUMBNAIL_SCROLL_SETTLE: Duration = Duration::from_millis(100);
 pub const DOCUMENT_PAGE_ID: &str = "document-current-page";
 pub const DOCUMENT_VIEWPORT_SCROLLBARS_ID: &str = "document-workspace-viewport-scrollbars";
 pub const DOCUMENT_VIEWPORT_ID: &str = "document-native-viewport";
@@ -2740,6 +2752,12 @@ pub struct DocumentWorkspace {
     right_sidebar_sizing: crate::sidebar_sizing::SidebarSizing,
     pages_panel_open: bool,
     thumbnail_scroll: UniformListScrollHandle,
+    thumbnail_rows_shown: Rc<RefCell<ThumbnailRowsShown>>,
+    /// While the thumbnail rows shown keep changing within this, the list
+    /// is scrolling and no thumbnail is started; zero starts them at once.
+    thumbnail_scroll_settle: Duration,
+    thumbnail_rows_moved_at: Option<Instant>,
+    thumbnail_settle_task: Option<Task<()>>,
     _viewer_toolbar_subscriptions: Vec<Subscription>,
     viewer_session_subscriptions: HashMap<DocumentId, Subscription>,
     generated_document_store: Option<GeneratedDocumentStore>,
@@ -4267,6 +4285,10 @@ impl DocumentWorkspace {
             right_sidebar_sizing: crate::sidebar_sizing::SidebarSizing::new(1),
             pages_panel_open: false,
             thumbnail_scroll: UniformListScrollHandle::new(),
+            thumbnail_rows_shown: Rc::default(),
+            thumbnail_scroll_settle: Duration::ZERO,
+            thumbnail_rows_moved_at: None,
+            thumbnail_settle_task: None,
             _viewer_toolbar_subscriptions: viewer_toolbar_subscriptions,
             viewer_session_subscriptions: HashMap::new(),
             generated_document_store: None,
@@ -10099,6 +10121,7 @@ impl DocumentWorkspace {
                         return ApplyDisposition::Applied;
                     }
                 };
+                let thumbnail_rotations = opened.page_rotations.clone();
                 let thumbnails = opened
                     .thumbnails
                     .into_iter()
@@ -10110,6 +10133,10 @@ impl DocumentWorkspace {
                                 base_raster,
                                 image,
                                 highlight_pixels: 0,
+                                rotation: thumbnail_rotations
+                                    .get(thumbnail.page_index as usize)
+                                    .copied()
+                                    .unwrap_or(PageRotation::Degrees0),
                             }
                         })
                     })
@@ -10148,6 +10175,7 @@ impl DocumentWorkspace {
                     };
                     session.current_base_raster = Some(current_base_raster);
                     session.current_image = Some(page_image);
+                    session.current_image_page = Some(session.current_page);
                     session.thumbnails = thumbnails;
                     session.resource = Some(opened.resource);
                     session.resource_epoch = session.resource_epoch.saturating_add(1);
@@ -10599,6 +10627,7 @@ impl DocumentWorkspace {
                 session.requested_page = page_index;
                 session.current_base_raster = Some(surface);
                 session.current_image = Some(image);
+                session.current_image_page = Some(page_index);
                 session.viewer.invalidate_layout();
                 if let Err(error) = session.rebuild_stable_highlight_presentations() {
                     session.presentation_error = Some(error);
@@ -11501,6 +11530,12 @@ impl DocumentWorkspace {
                 )
             });
             session.viewer.configure_cad(cad_layout);
+            let covered = session
+                .current_image
+                .as_ref()
+                .zip(session.current_image_page)
+                .map(|(image, page)| (page as usize, image.size(0).width.0.max(0) as u32));
+            session.viewer.set_covered_page(covered);
             session.view_state.set_scroll(scroll_x, scroll_y);
             session.viewer.observe_motion(scroll_x, scroll_y, now);
             let mut plan = session.viewer.plan_at(
@@ -11757,8 +11792,14 @@ impl DocumentWorkspace {
             #[cfg(not(target_os = "macos"))]
             let pens = pens.clone();
             let request = job.raster;
+            let preview = job.quality == crate::document_viewer::ViewerRenderQuality::Preview;
             let task = cx.background_executor().spawn(async move {
-                let raster = resource.render_tile(request)?;
+                // A preview shows only until a full tile replaces it.
+                let raster = if preview {
+                    resource.render_draft_tile(request)?
+                } else {
+                    resource.render_tile(request)?
+                };
                 #[cfg(target_os = "macos")]
                 let highlight_pixels = 0;
                 #[cfg(not(target_os = "macos"))]
@@ -12134,12 +12175,19 @@ impl DocumentWorkspace {
             .as_ref()
             .ok_or_else(|| "document resource is unavailable".to_owned())?;
         let delta = request.target_rotation.delta_from(request.source_rotation);
+        let thumbnail = thumbnail_width(
+            session
+                .source_page_sizes
+                .get(request.page_index as usize)
+                .copied()
+                .ok_or_else(|| "page is outside the document".to_owned())?,
+        );
         Ok(PageRotationPresentation {
             current_page: resource
                 .render_page(request.page_index, DEFAULT_PAGE_RENDER_WIDTH)?
                 .rotated(delta)?,
             thumbnail: resource
-                .render_page(request.page_index, DEFAULT_THUMBNAIL_WIDTH)?
+                .render_page(request.page_index, thumbnail)?
                 .rotated(delta)?,
         })
     }
@@ -12169,10 +12217,13 @@ impl DocumentWorkspace {
         let Ok(request) = self.begin_page_rotation(document_id, page_index, direction, cx) else {
             return;
         };
-        let Some(resource) = self
-            .session(document_id, cx)
-            .and_then(|session| session.read(cx).resource.clone())
-        else {
+        let Some((resource, thumbnail)) = self.session(document_id, cx).and_then(|session| {
+            let session = session.read(cx);
+            Some((
+                session.resource.clone()?,
+                thumbnail_width(*session.source_page_sizes.get(page_index as usize)?),
+            ))
+        }) else {
             return;
         };
         let task = cx.background_executor().spawn(async move {
@@ -12183,7 +12234,7 @@ impl DocumentWorkspace {
                         .render_page(request.page_index, DEFAULT_PAGE_RENDER_WIDTH)?
                         .rotated(delta)?,
                     thumbnail: resource
-                        .render_page(request.page_index, DEFAULT_THUMBNAIL_WIDTH)?
+                        .render_page(request.page_index, thumbnail)?
                         .rotated(delta)?,
                 })
             })();
@@ -12235,15 +12286,22 @@ impl DocumentWorkspace {
                     match (page_image, thumbnail_image) {
                         (Ok(page_image), Ok(thumbnail_image)) => {
                             session.current_page = request.page_index;
+                            session.placeholder_page = None;
                             session.current_base_raster = Some(presentation.current_page);
-                            session.current_image = Some(page_image);
+                            session.current_image_page = Some(request.page_index);
+                            if let Some(previous) = session.current_image.replace(page_image) {
+                                session.retired_images.push(previous);
+                            }
                             if let Some(thumbnail) = session
                                 .thumbnails
                                 .iter_mut()
                                 .find(|thumbnail| thumbnail.page_index == request.page_index)
                             {
                                 thumbnail.base_raster = presentation.thumbnail;
-                                thumbnail.image = thumbnail_image;
+                                thumbnail.rotation = request.target_rotation;
+                                let previous =
+                                    std::mem::replace(&mut thumbnail.image, thumbnail_image);
+                                session.retired_images.push(previous);
                             }
                             session.presentation_error = None;
                             if let Err(error) = session.rebuild_stable_highlight_presentations() {
@@ -12296,6 +12354,7 @@ impl DocumentWorkspace {
                     session.requested_page = page_index;
                     cx.notify();
                 });
+                self.show_navigation_placeholder(document_id, page_index, cx);
             }
             return;
         }
@@ -12308,47 +12367,136 @@ impl DocumentWorkspace {
         else {
             return;
         };
+        self.show_navigation_placeholder(document_id, page_index, cx);
+        // The page alone: its thumbnail, if not already drawn, comes from
+        // the sidebar, after the page.
         let task = cx.background_executor().spawn(async move {
-            let page = resource
-                .render_page(request.page_index, DEFAULT_PAGE_RENDER_WIDTH)
+            resource
+                .render_page_image(request.page_index, DEFAULT_PAGE_RENDER_WIDTH)
                 .and_then(|surface| {
                     surface.rotated(request.target_rotation.delta_from(request.source_rotation))
-                })?;
-            let thumbnail = resource
-                .render_page(request.page_index, DEFAULT_THUMBNAIL_WIDTH)
-                .and_then(|surface| {
-                    surface.rotated(request.target_rotation.delta_from(request.source_rotation))
-                })?;
-            Ok::<_, String>((page, thumbnail))
+                })
         });
         self.navigation_in_flight.insert(document_id);
         cx.spawn(async move |entity, cx| {
             let result = task.await;
             let _ = entity.update(cx, |workspace, cx| {
                 workspace.navigation_in_flight.remove(&document_id);
-                let disposition = match result {
-                    Ok((page, thumbnail)) => {
-                        let disposition = workspace.apply_page_result(&request, Ok(page), cx);
-                        if disposition == ApplyDisposition::Applied {
-                            workspace.apply_navigation_thumbnail(&request, thumbnail, cx);
-                        }
-                        disposition
+                let Some(session) = workspace.session(document_id, cx).cloned() else {
+                    return;
+                };
+                // A page asked for since and already showing its thumbnail
+                // is not taken back to this one.
+                let superseded = {
+                    let session = session.read(cx);
+                    session.requested_page != request.page_index
+                        && session.placeholder_page == Some(session.requested_page)
+                };
+                let disposition = if superseded {
+                    ApplyDisposition::Applied
+                } else {
+                    let disposition = workspace.apply_page_result(&request, result, cx);
+                    if disposition == ApplyDisposition::Applied {
+                        workspace.thumbnail_from_page_image(&request, cx);
                     }
-                    Err(error) => workspace.apply_page_result(&request, Err(error), cx),
+                    disposition
                 };
                 // Pages asked for while this one rendered.
-                if disposition == ApplyDisposition::Applied
-                    && let Some(session) = workspace.session(document_id, cx)
-                {
+                if disposition == ApplyDisposition::Applied {
                     let session = session.read(cx);
                     let next = session.requested_page;
-                    if next != request.page_index && next != session.current_page {
+                    if next != request.page_index
+                        && (next != session.current_page || session.placeholder_page == Some(next))
+                    {
                         workspace.navigate_async(document_id, next, cx);
                     }
                 }
+                workspace.pump_thumbnails(document_id, cx);
             });
         })
         .detach();
+    }
+
+    /// Makes a page's missing thumbnail from the whole-page image just
+    /// drawn for it, rather than asking the worker to draw the page again.
+    fn thumbnail_from_page_image(&mut self, request: &PageRenderRequest, cx: &mut Context<Self>) {
+        let Some(session) = self.session(request.document_id, cx).cloned() else {
+            return;
+        };
+        session.update(cx, |session, cx| {
+            let page_index = request.page_index;
+            if session
+                .thumbnail(page_index)
+                .is_some_and(|thumbnail| thumbnail.rotation == request.target_rotation)
+            {
+                return;
+            }
+            let Some(surface) = session
+                .base_raster_of(page_index)
+                .and_then(|raster| raster.downscaled_to_edge(THUMBNAIL_EDGE).ok())
+            else {
+                return;
+            };
+            let Ok(image) = surface.clone().into_render_image() else {
+                return;
+            };
+            if let Err(error) =
+                session.present_thumbnail(page_index, request.target_rotation, surface, image)
+            {
+                session.presentation_error = Some(error);
+            }
+            session.evict_thumbnails(THUMBNAIL_CACHE_BYTES);
+            cx.notify();
+        });
+    }
+
+    /// Moves to the page being navigated to at once: its tiles are asked
+    /// for on the next frame, and its thumbnail, drawn up to the page's
+    /// size, stands in until they and its whole-page image arrive.
+    fn show_navigation_placeholder(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let shown = session.update(cx, |session, cx| {
+            if session.current_page == page_index && session.placeholder_page.is_none() {
+                return false;
+            }
+            let rotation = session.page_rotation(page_index).or_else(|| {
+                session
+                    .source_page_rotations
+                    .get(page_index as usize)
+                    .copied()
+            });
+            let thumbnail = session
+                .thumbnail(page_index)
+                .filter(|thumbnail| Some(thumbnail.rotation) == rotation)
+                .map(|thumbnail| thumbnail.image.clone());
+            session.current_page = page_index;
+            session.placeholder_page = Some(page_index);
+            if let Some(image) = thumbnail {
+                // A thumbnail is too coarse to cut a Snapshot from.
+                session.current_base_raster = None;
+                session.current_image_page = Some(page_index);
+                if let Some(previous) = session.current_image.replace(image) {
+                    session.retired_images.push(previous);
+                }
+            }
+            // The viewer plans the new page on its next frame, keeping the
+            // pages it shows until then.
+            session.pending_navigation_scroll = Some(page_index);
+            cx.notify();
+            true
+        });
+        if shown {
+            self.thumbnail_scroll
+                .scroll_to_item(page_index as usize, ScrollStrategy::Nearest);
+            cx.notify();
+        }
     }
 
     pub fn request_thumbnail_preview(
@@ -12381,6 +12529,121 @@ impl DocumentWorkspace {
         self.request_thumbnail_render(document_id, page_index, false, true, cx);
     }
 
+    /// The thumbnail rows the sidebar laid out in its last frame: their
+    /// thumbnails are drawn first.
+    pub(super) fn show_thumbnail_rows(
+        &mut self,
+        document_id: DocumentId,
+        rows: &[u32],
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(first), Some(last)) = (rows.iter().min(), rows.iter().max()) else {
+            return;
+        };
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let shown = *first..last + 1;
+        let previous = session.update(cx, |session, _| {
+            std::mem::replace(&mut session.thumbnail_rows_shown, shown.clone())
+        });
+        if previous == shown {
+            return;
+        }
+        // Scrolling moves the first row; the list growing or shrinking
+        // (laid out, resized) does not.
+        let settle = self.thumbnail_scroll_settle;
+        let now = cx.background_executor().now();
+        let scrolling = previous.start != shown.start
+            && !previous.is_empty()
+            && self
+                .thumbnail_rows_moved_at
+                .replace(now)
+                .is_some_and(|moved| now.saturating_duration_since(moved) < settle);
+        if scrolling {
+            // Once the rows stop changing.
+            self.thumbnail_settle_task = Some(cx.spawn(async move |owner, cx| {
+                cx.background_executor().timer(settle).await;
+                let _ = owner.update(cx, |workspace, cx| {
+                    workspace.pump_thumbnails(document_id, cx)
+                });
+            }));
+            return;
+        }
+        self.pump_thumbnails(document_id, cx);
+    }
+
+    /// See `THUMBNAIL_SCROLL_SETTLE`; zero, the default, draws at once.
+    pub fn set_thumbnail_scroll_settle(&mut self, settle: Duration) {
+        self.thumbnail_scroll_settle = settle;
+    }
+
+    /// Asks for the next thumbnail, if none is being drawn: the first row
+    /// shown without one, then the `THUMBNAIL_PREFETCH_ROWS` above and
+    /// below, nearest first. One at a time, so a fast scroll never queues
+    /// renders for rows already gone, and the rows the list stops on are
+    /// drawn next; pages further off stay undrawn.
+    pub(super) fn pump_thumbnails(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let now = cx.background_executor().now();
+        if self.thumbnail_rows_moved_at.is_some_and(|moved| {
+            now.saturating_duration_since(moved) < self.thumbnail_scroll_settle
+        }) {
+            return;
+        }
+        let next = {
+            let state = session.read(cx);
+            if !matches!(state.status, NativeDocumentStatus::Ready)
+                || state.resource.is_none()
+                || state.pending_rotation_generation.is_some()
+            {
+                return;
+            }
+            let epoch = state.resource_epoch;
+            if state
+                .thumbnail_requests
+                .values()
+                .any(|request| request.epoch == epoch && request.error.is_none())
+            {
+                return;
+            }
+            let page_count = state.page_sizes.len() as u32;
+            let wanted = |page: &u32| {
+                *page < page_count
+                    && state.thumbnail(*page).is_none_or(|thumbnail| {
+                        Some(thumbnail.rotation)
+                            != state.page_rotation(*page).or_else(|| {
+                                state.source_page_rotations.get(*page as usize).copied()
+                            })
+                    })
+                    && !state
+                        .thumbnail_requests
+                        .get(page)
+                        .is_some_and(|request| request.epoch == epoch)
+            };
+            let shown = state.thumbnail_rows_shown.clone();
+            if shown.is_empty() {
+                return;
+            }
+            shown.clone().find(wanted).or_else(|| {
+                (1..=THUMBNAIL_PREFETCH_ROWS)
+                    .flat_map(|distance| {
+                        [
+                            Some(shown.end - 1 + distance),
+                            shown.start.checked_sub(distance),
+                        ]
+                    })
+                    .flatten()
+                    .find(wanted)
+            })
+        };
+        if let Some(page_index) = next {
+            self.request_thumbnail_render(document_id, page_index, false, true, cx);
+        }
+    }
+
     fn request_thumbnail_render(
         &mut self,
         document_id: DocumentId,
@@ -12395,11 +12658,7 @@ impl DocumentWorkspace {
         let request = {
             let state = session.read(cx);
             if state.pending_rotation_generation.is_some()
-                || (!replace
-                    && state
-                        .thumbnails
-                        .iter()
-                        .any(|thumbnail| thumbnail.page_index == page_index))
+                || (!replace && state.thumbnail(page_index).is_some())
             {
                 return;
             }
@@ -12407,6 +12666,10 @@ impl DocumentWorkspace {
                 .source_page_rotations
                 .get(page_index as usize)
                 .copied()
+            else {
+                return;
+            };
+            let Some(source_size) = state.source_page_sizes.get(page_index as usize).copied()
             else {
                 return;
             };
@@ -12435,9 +12698,16 @@ impl DocumentWorkspace {
             let Some(resource) = state.resource.clone() else {
                 return;
             };
-            (resource, epoch, source_rotation, rotation, content)
+            (
+                resource,
+                epoch,
+                source_rotation,
+                rotation,
+                content,
+                thumbnail_width(source_size),
+            )
         };
-        let (resource, epoch, source_rotation, rotation, content) = request;
+        let (resource, epoch, source_rotation, rotation, content, width) = request;
         session.update(cx, |state, cx| {
             state.thumbnail_requests.insert(
                 page_index,
@@ -12450,20 +12720,24 @@ impl DocumentWorkspace {
             );
             cx.notify();
         });
+        // The image is made here too, off the main thread.
         let task = cx.background_executor().spawn(async move {
-            resource
-                .render_page(page_index, DEFAULT_THUMBNAIL_WIDTH)
-                .and_then(|surface| surface.rotated(rotation.delta_from(source_rotation)))
-                .and_then(|surface| {
-                    surface.clone().into_render_image()?;
-                    Ok(surface)
-                })
+            let surface = resource
+                .render_thumbnail(page_index, width)
+                .and_then(|surface| surface.rotated(rotation.delta_from(source_rotation)))?;
+            let image = surface.clone().into_render_image()?;
+            Ok::<_, String>((surface, image))
         });
         cx.spawn(async move |owner, cx| {
             let result = task.await;
             let _ = owner.update(cx, |workspace, cx| {
                 let Some(session) = workspace.session(document_id, cx).cloned() else {
                     return;
+                };
+                let this_request = |request: &crate::document_session::ThumbnailRequestState| {
+                    request.epoch == epoch
+                        && request.rotation == rotation
+                        && request.content == content
                 };
                 let current = {
                     let state = session.read(cx);
@@ -12476,82 +12750,44 @@ impl DocumentWorkspace {
                         && state
                             .thumbnail_requests
                             .get(&page_index)
-                            .is_some_and(|request| {
-                                request.epoch == epoch
-                                    && request.rotation == rotation
-                                    && request.content == content
-                            })
+                            .is_some_and(this_request)
                 };
-                if !current {
-                    return;
-                }
-                match result {
-                    Ok(surface) => {
-                        session.update(cx, |state, _| {
+                session.update(cx, |state, cx| {
+                    if !current {
+                        // Outdated: forget it, unless a newer request
+                        // for the page replaced it.
+                        if state
+                            .thumbnail_requests
+                            .get(&page_index)
+                            .is_some_and(this_request)
+                        {
                             state.thumbnail_requests.remove(&page_index);
-                        });
-                        let request = PageRenderRequest {
-                            document_id,
-                            page_index,
-                            generation: session.read(cx).generation,
-                            source_rotation,
-                            target_rotation: rotation,
-                        };
-                        workspace.apply_navigation_thumbnail(&request, surface, cx);
-                    }
-                    Err(error) => session.update(cx, |state, cx| {
-                        if let Some(request) = state.thumbnail_requests.get_mut(&page_index) {
-                            request.error = Some(error);
                         }
-                        cx.notify();
-                    }),
-                }
+                        return;
+                    }
+                    match result {
+                        Ok((surface, image)) => {
+                            state.thumbnail_requests.remove(&page_index);
+                            if let Err(error) =
+                                state.present_thumbnail(page_index, rotation, surface, image)
+                            {
+                                state.presentation_error = Some(error);
+                            }
+                            state.evict_thumbnails(THUMBNAIL_CACHE_BYTES);
+                        }
+                        Err(error) => {
+                            if let Some(request) = state.thumbnail_requests.get_mut(&page_index) {
+                                request.error = Some(error);
+                            }
+                        }
+                    }
+                    cx.notify();
+                });
+                workspace.pump_thumbnails(document_id, cx);
                 cx.notify();
             });
         })
         .detach();
-    }
-
-    fn apply_navigation_thumbnail(
-        &mut self,
-        request: &PageRenderRequest,
-        surface: RasterSurface,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.session(request.document_id, cx).cloned() else {
-            return;
-        };
-        if session.read(cx).generation != request.generation {
-            return;
-        }
-        session.update(cx, |session, cx| {
-            let Ok(image) = surface.clone().into_render_image() else {
-                return;
-            };
-            session.thumbnail_requests.remove(&request.page_index);
-            if let Some(thumbnail) = session
-                .thumbnails
-                .iter_mut()
-                .find(|thumbnail| thumbnail.page_index == request.page_index)
-            {
-                thumbnail.base_raster = surface;
-                thumbnail.image = image;
-            } else {
-                session.thumbnails.push(ThumbnailPresentation {
-                    page_index: request.page_index,
-                    base_raster: surface,
-                    image,
-                    highlight_pixels: 0,
-                });
-                session
-                    .thumbnails
-                    .sort_by_key(|thumbnail| thumbnail.page_index);
-            }
-            if let Err(error) = session.rebuild_stable_highlight_presentations() {
-                session.presentation_error = Some(error);
-            }
-            cx.notify();
-        });
     }
 
     pub fn scroll_thumbnail_to_page(&mut self, page_index: u32, cx: &mut Context<Self>) -> bool {
@@ -12611,11 +12847,21 @@ impl DocumentWorkspace {
             match result {
                 Ok(surface) => match surface.clone().into_render_image() {
                     Ok(image) => {
+                        // The placeholder already moved the view to this
+                        // page and planned its tiles: only the image under
+                        // them sharpens, and tiles on the way are kept.
+                        let from_placeholder = session.placeholder_page == Some(request.page_index);
                         session.current_page = request.page_index;
+                        session.placeholder_page = None;
                         session.current_base_raster = Some(surface);
-                        session.pending_navigation_scroll = Some(request.page_index);
-                        session.current_image = Some(image);
-                        session.viewer.invalidate_layout();
+                        session.current_image_page = Some(request.page_index);
+                        if let Some(previous) = session.current_image.replace(image) {
+                            session.retired_images.push(previous);
+                        }
+                        if !from_placeholder {
+                            session.pending_navigation_scroll = Some(request.page_index);
+                            session.viewer.invalidate_layout();
+                        }
                         session.status = NativeDocumentStatus::Ready;
                         session.presentation_error = None;
                         if let Err(error) = session.rebuild_stable_highlight_presentations() {
@@ -12878,6 +13124,7 @@ impl DocumentWorkspace {
                 return ApplyDisposition::Applied;
             }
         };
+        let thumbnail_rotations = opened.page_rotations.clone();
         let thumbnails = opened
             .thumbnails
             .drain(..)
@@ -12891,6 +13138,10 @@ impl DocumentWorkspace {
                         base_raster,
                         image,
                         highlight_pixels: 0,
+                        rotation: thumbnail_rotations
+                            .get(thumbnail.page_index as usize)
+                            .copied()
+                            .unwrap_or(PageRotation::Degrees0),
                     })
             })
             .collect::<Result<Vec<_>, _>>();
@@ -12931,6 +13182,7 @@ impl DocumentWorkspace {
         }
         session.update(cx, |session, cx| {
             let old_current = session.current_image.replace(current_image);
+            session.current_image_page = Some(session.current_page);
             let old_thumbnails = std::mem::replace(&mut session.thumbnails, thumbnails);
             session.current_base_raster = Some(current_base_raster);
             session.source_page_coordinate_spaces = opened.page_coordinate_spaces.clone();
@@ -13248,6 +13500,7 @@ impl DocumentWorkspace {
                 return ApplyDisposition::Applied;
             }
         };
+        let thumbnail_rotations = saved.opened.page_rotations.clone();
         let thumbnails =
             saved
                 .opened
@@ -13261,6 +13514,10 @@ impl DocumentWorkspace {
                             base_raster,
                             image,
                             highlight_pixels: 0,
+                            rotation: thumbnail_rotations
+                                .get(thumbnail.page_index as usize)
+                                .copied()
+                                .unwrap_or(PageRotation::Degrees0),
                         }
                     })
                 })
@@ -13286,6 +13543,7 @@ impl DocumentWorkspace {
             session.requested_page = request.current_page;
             session.current_base_raster = Some(current_base_raster);
             session.current_image = Some(page_image);
+            session.current_image_page = Some(session.current_page);
             session.thumbnails = thumbnails;
             session.source_sha256 = source_sha256;
             // The validated reopen owns a different PDF resource. Pixels from
@@ -17681,7 +17939,7 @@ impl DocumentWorkspace {
                             "Snapshot page coordinate space is unavailable".to_owned()
                         })?;
                     session
-                        .current_base_raster()
+                        .base_raster_of(interaction.page_index)
                         .ok_or_else(|| "Snapshot base raster is unavailable".to_owned())?
                         .snapshot_asset(rect, coordinate_space)
                 })
@@ -24032,6 +24290,12 @@ fn session_tab_close_lane() -> gpui::Div {
 
 impl Render for DocumentWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Release the GPU textures of tile and thumbnail images that are no
+        // longer drawn; the window would otherwise keep every one.
+        for session in self.sessions.clone() {
+            let releasable = session.update(cx, |session, _| session.take_releasable_images());
+            defer_drop_images(releasable, cx);
+        }
         if self.recovery_attention_count(cx) == 0 {
             self.recovery_notifications_open = false;
         }
@@ -24170,7 +24434,12 @@ impl Render for DocumentWorkspace {
             let current_coordinate_space = session
                 .annotation_page_coordinate_space(current_page)
                 .expect("a ready page must retain coordinate-space metadata");
-            let current_image = session.current_image.clone();
+            // Not another page's: in Continuous view the current page
+            // follows scrolling while the image stays with its page.
+            let current_image = session
+                .current_image
+                .clone()
+                .filter(|_| session.current_image_page == Some(current_page));
             let annotation_tool = session.annotations.tool();
             let annotation_dirty = session.is_dirty();
             let (annotation_undo_depth, annotation_redo_depth) =
@@ -24454,9 +24723,7 @@ impl Render for DocumentWorkspace {
                             .annotation_page_coordinate_space(page_index)
                             .expect("a thumbnail row must retain coordinate-space metadata"),
                         session
-                            .thumbnails
-                            .iter()
-                            .find(|thumbnail| thumbnail.page_index == page_index)
+                            .thumbnail(page_index)
                             .map(|thumbnail| thumbnail.image.clone()),
                         session
                             .annotations

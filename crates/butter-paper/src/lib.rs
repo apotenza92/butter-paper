@@ -74,6 +74,7 @@ pub mod perf_scenario;
 pub mod recent_documents;
 pub mod recent_signature_store;
 pub mod rectangle_property_inspector;
+pub mod render_gate;
 pub mod selection_geometry;
 pub mod semantic_snapping;
 pub mod session_manifest;

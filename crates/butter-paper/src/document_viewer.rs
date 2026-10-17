@@ -181,6 +181,9 @@ pub(crate) struct DocumentViewerState {
     /// Tiles shown before a content refresh, drawn until their re-rendered
     /// replacements arrive so the page does not flash.
     content_fallback: HashMap<TileGeometry, Arc<RenderImage>>,
+    /// Tile images no longer cached, whose GPU textures the window can
+    /// release once nothing draws them.
+    retired: Vec<Arc<RenderImage>>,
     scroll_handle: ScrollHandle,
     rejected_stale_tiles: usize,
     error: Option<String>,
@@ -193,6 +196,9 @@ pub(crate) struct DocumentViewerState {
     motion_settle_deadline: Option<Instant>,
     last_motion_sample: Option<(f32, f32, Instant)>,
     thumbnail_navigation_target: Option<usize>,
+    /// The page shown under its tiles by a whole-page image already, and
+    /// that image's width in pixels.
+    covered_page: Option<(usize, u32)>,
     viewport_key: Option<ViewportKey>,
     cad_layout: Option<(CadOrganisation, usize)>,
     /// The painted viewport, which sizes the pan margin.
@@ -306,6 +312,7 @@ impl Default for DocumentViewerState {
             cache: TileCache::new(cache_policy(FULL_CACHE_BYTES)),
             detail_cache: TileCache::new(cache_policy(DETAIL_CACHE_BYTES)),
             content_fallback: HashMap::new(),
+            retired: Vec::new(),
             scroll_handle: scroll_handle.clone(),
             viewport_size: (0., 0.),
             pending_offset: std::cell::Cell::new(None),
@@ -322,6 +329,7 @@ impl Default for DocumentViewerState {
             motion_settle_deadline: None,
             last_motion_sample: None,
             thumbnail_navigation_target: None,
+            covered_page: None,
             viewport_key: None,
             cad_layout: None,
         }
@@ -355,10 +363,16 @@ impl DocumentViewerState {
     pub fn invalidate_raster(&mut self) {
         self.raster_revision = self.raster_revision.saturating_add(1).max(1);
         self.cancel_plan();
-        self.cache.clear();
-        self.preview_cache.clear();
-        self.detail_cache.clear();
-        self.content_fallback.clear();
+        self.cache.drain_into(&mut self.retired);
+        self.preview_cache.drain_into(&mut self.retired);
+        self.detail_cache.drain_into(&mut self.retired);
+        self.retired
+            .extend(self.content_fallback.drain().map(|(_, image)| image));
+    }
+
+    /// Tile images dropped from the caches since the last call.
+    pub fn take_retired_images(&mut self) -> Vec<Arc<RenderImage>> {
+        std::mem::take(&mut self.retired)
     }
 
     /// Re-renders the pages after their content changed (edited page
@@ -390,9 +404,11 @@ impl DocumentViewerState {
         self.pending_promotions.clear();
         self.scheduler_revision = self.scheduler_revision.saturating_add(1).max(1);
         self.viewport_key = None;
-        self.cache.clear();
-        self.preview_cache.clear();
-        self.detail_cache.clear();
+        self.cache.drain_into(&mut self.retired);
+        self.preview_cache.drain_into(&mut self.retired);
+        self.detail_cache.drain_into(&mut self.retired);
+        self.retired
+            .extend(self.content_fallback.drain().map(|(_, image)| image));
         self.content_fallback = fallback;
     }
 
@@ -563,9 +579,23 @@ impl DocumentViewerState {
                 self.schedule_promotion(detail, now);
                 continue;
             }
+            // A heavy page takes nearly as long to draw at preview size as
+            // at full size: a page just clicked in the sidebar, or already
+            // shown by a whole-page image as sharp as a preview would be,
+            // goes straight to full.
+            let preview_width = page_sizes.get(request.page).map_or(f32::MAX, |size| {
+                size.0 * preview.raster.zoom_tenths as f32 / 1_000.
+                    * preview.raster.device_scale_millis as f32
+                    / 1_000.
+            });
+            let covered = self
+                .covered_page
+                .is_some_and(|(page, width)| page == request.page && preview_width <= width as f32);
             if self.preview_cache.contains(preview.raster) {
                 self.schedule_promotion(full, now);
             } else if preview.raster == full.raster
+                || covered
+                || self.thumbnail_navigation_target == Some(request.page)
                 || self
                     .content_fallback
                     .contains_key(&TileGeometry::of(request))
@@ -651,6 +681,12 @@ impl DocumentViewerState {
 
     pub fn viewport_in_motion(&self) -> bool {
         self.viewport_in_motion
+    }
+
+    /// The page a whole-page image shows under its tiles, if any, and the
+    /// image's width in pixels.
+    pub fn set_covered_page(&mut self, page: Option<(usize, u32)>) {
+        self.covered_page = page;
     }
 
     pub fn mark_thumbnail_navigation_target(&mut self, page: usize, now: Instant) {
@@ -796,23 +832,24 @@ impl DocumentViewerState {
         }
         match result {
             Ok((image, bytes)) => {
-                let inserted = match request.quality {
-                    ViewerRenderQuality::Preview => {
-                        self.preview_cache.insert(request.raster, image, bytes)
-                    }
-                    ViewerRenderQuality::Full => self.cache.insert(request.raster, image, bytes),
-                    ViewerRenderQuality::Detail => {
-                        self.detail_cache.insert(request.raster, image, bytes)
-                    }
+                let cache = match request.quality {
+                    ViewerRenderQuality::Preview => &mut self.preview_cache,
+                    ViewerRenderQuality::Full => &mut self.cache,
+                    ViewerRenderQuality::Detail => &mut self.detail_cache,
                 };
+                let inserted =
+                    cache.insert_evicting(request.raster, image, bytes, &mut self.retired);
                 if !inserted {
                     self.error = Some("viewer tile exceeds the cache limit".into());
                     return false;
                 }
                 self.page_errors.remove(&request.authority.page);
-                if request.quality != ViewerRenderQuality::Preview {
-                    self.content_fallback
-                        .remove(&TileGeometry::of(request.authority));
+                if request.quality != ViewerRenderQuality::Preview
+                    && let Some(image) = self
+                        .content_fallback
+                        .remove(&TileGeometry::of(request.authority))
+                {
+                    self.retired.push(image);
                 }
                 match request.quality {
                     ViewerRenderQuality::Preview => {
@@ -967,7 +1004,8 @@ impl DocumentViewerState {
             .retain(|candidate| candidate.authority != request);
         self.active
             .retain(|candidate| candidate.authority != request);
-        self.cache.insert(request, image, bytes)
+        self.cache
+            .insert_evicting(request, image, bytes, &mut self.retired)
     }
 
     pub fn cache_len(&self) -> usize {

@@ -288,6 +288,10 @@ pub struct RenderRequest {
     pub transform: [f32; 6],
     pub clip: ClipRect,
     pub surface: SurfaceDescriptor,
+    /// Images drawn without smoothing: for pages of large images, about
+    /// twice as fast, for a raster scaled down afterwards (thumbnails).
+    #[serde(default)]
+    pub draft: bool,
 }
 
 impl RenderRequest {
@@ -2476,6 +2480,7 @@ mod annotation_mode_tests {
                         byte_len: 4,
                         format: SurfaceFormat::Bgra8Premultiplied,
                     },
+                    draft: false,
                 },
             };
             let mut value = serde_json::to_value(&request).unwrap();

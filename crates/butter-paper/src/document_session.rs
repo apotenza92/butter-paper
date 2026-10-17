@@ -9,8 +9,8 @@ use crate::document_recovery_store::{RecoveryAuthority, RecoverySourceKind};
 use crate::{
     adaptive_performance::AdaptiveViewerPerformance,
     document_resource::{
-        DEFAULT_PAGE_RENDER_WIDTH, DEFAULT_THUMBNAIL_WIDTH, DocumentId, NativeDocumentResource,
-        OpenedNativeDocument, RasterSurface, coordinate_rotation,
+        DEFAULT_PAGE_RENDER_WIDTH, DocumentId, NativeDocumentResource, OpenedNativeDocument,
+        RasterSurface, coordinate_rotation,
     },
     document_viewer::DocumentViewerState,
     native_document_view_state::NativeDocumentViewState,
@@ -207,6 +207,8 @@ pub(crate) struct ThumbnailPresentation {
     // Read where highlights are precomposed (Windows and Linux).
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) highlight_pixels: usize,
+    /// The page rotation the thumbnail shows.
+    pub(crate) rotation: PageRotation,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -327,11 +329,22 @@ pub struct NativeDocumentSession {
     pub(crate) publication_durability_warning: Option<PublicationDurabilityWarning>,
     pub(crate) current_base_raster: Option<RasterSurface>,
     pub(crate) current_image: Option<Arc<RenderImage>>,
+    /// The page `current_image` and `current_base_raster` show: in
+    /// Continuous view the current page follows scrolling and can differ.
+    pub(crate) current_image_page: Option<u32>,
+    /// The page shown from its thumbnail while its render is on the way;
+    /// `current_base_raster` is then empty.
+    pub(crate) placeholder_page: Option<u32>,
     pub(crate) thumbnails: Vec<ThumbnailPresentation>,
     pub(crate) thumbnail_requests: HashMap<u32, ThumbnailRequestState>,
     /// Bumped when a page's drawn content changes without a new resource
     /// (page-text edits), so its thumbnail is rendered again.
     pub(crate) thumbnail_content_revisions: HashMap<u32, u64>,
+    /// The thumbnail rows the sidebar showed in its last frame.
+    pub(crate) thumbnail_rows_shown: std::ops::Range<u32>,
+    /// Images no longer shown, whose GPU textures are released once
+    /// nothing else holds them.
+    pub(crate) retired_images: Vec<Arc<RenderImage>>,
     pub(crate) page_content_geometry_requests: HashMap<u32, PageContentGeometryRequestState>,
     pub(crate) page_content_geometry_lru: VecDeque<u32>,
     pub(crate) image_assets: HashMap<String, Arc<RenderImage>>,
@@ -388,9 +401,13 @@ impl NativeDocumentSession {
             publication_durability_warning: None,
             current_base_raster: None,
             current_image: None,
+            current_image_page: None,
+            placeholder_page: None,
             thumbnails: Vec::new(),
             thumbnail_requests: HashMap::new(),
             thumbnail_content_revisions: HashMap::new(),
+            thumbnail_rows_shown: 0..0,
+            retired_images: Vec::new(),
             page_content_geometry_requests: HashMap::new(),
             page_content_geometry_lru: VecDeque::new(),
             image_assets: HashMap::new(),
@@ -572,6 +589,13 @@ impl NativeDocumentSession {
         self.current_base_raster.as_ref()
     }
 
+    /// The page raster of `page_index`, if it is the one held.
+    pub fn base_raster_of(&self, page_index: u32) -> Option<&RasterSurface> {
+        self.current_base_raster
+            .as_ref()
+            .filter(|_| self.current_image_page == Some(page_index))
+    }
+
     pub fn thumbnail_base_raster(&self, page_index: u32) -> Option<&RasterSurface> {
         self.thumbnails
             .iter()
@@ -662,31 +686,171 @@ impl NativeDocumentSession {
             .render_page(current_page, DEFAULT_PAGE_RENDER_WIDTH)?
             .rotated(current_delta)?;
         let current_image = current_raster.clone().into_render_image()?;
-        let mut thumbnails = Vec::with_capacity(self.thumbnails.len());
-        for thumbnail in &self.thumbnails {
-            let page_index = thumbnail.page_index;
-            let delta = self
-                .page_rotation(page_index)
-                .ok_or_else(|| "thumbnail page rotation is unavailable".to_owned())?
-                .delta_from(self.source_page_rotations[page_index as usize]);
-            let raster = resource
-                .render_page(page_index, DEFAULT_THUMBNAIL_WIDTH)?
-                .rotated(delta)?;
-            thumbnails.push((page_index, raster.clone(), raster.into_render_image()?));
-        }
         self.current_base_raster = Some(current_raster);
-        self.current_image = Some(current_image);
-        for (page_index, raster, image) in thumbnails {
-            if let Some(thumbnail) = self
-                .thumbnails
-                .iter_mut()
-                .find(|thumbnail| thumbnail.page_index == page_index)
-            {
-                thumbnail.base_raster = raster;
-                thumbnail.image = image;
+        self.current_image_page = Some(current_page);
+        if let Some(previous) = self.current_image.replace(current_image) {
+            self.retired_images.push(previous);
+        }
+        // A rotation turns a thumbnail's pixels; the worker need not draw it
+        // again, which for every thumbnail would hold up the window.
+        for index in 0..self.thumbnails.len() {
+            let page_index = self.thumbnails[index].page_index;
+            let target = self
+                .page_rotation(page_index)
+                .ok_or_else(|| "thumbnail page rotation is unavailable".to_owned())?;
+            let thumbnail = &mut self.thumbnails[index];
+            if thumbnail.rotation == target {
+                continue;
             }
+            let raster = thumbnail
+                .base_raster
+                .rotated(target.delta_from(thumbnail.rotation))?;
+            let image = raster.clone().into_render_image()?;
+            thumbnail.base_raster = raster;
+            thumbnail.rotation = target;
+            let previous = std::mem::replace(&mut thumbnail.image, image);
+            self.retired_images.push(previous);
         }
         self.rebuild_stable_highlight_presentations()
+    }
+
+    /// The loaded thumbnail of `page_index`.
+    pub(crate) fn thumbnail(&self, page_index: u32) -> Option<&ThumbnailPresentation> {
+        self.thumbnails
+            .binary_search_by_key(&page_index, |thumbnail| thumbnail.page_index)
+            .ok()
+            .map(|index| &self.thumbnails[index])
+    }
+
+    /// Shows a newly drawn thumbnail, replacing any older one, with the
+    /// document's highlights where they are precomposed, without redrawing
+    /// other thumbnails or the canvas.
+    pub(crate) fn present_thumbnail(
+        &mut self,
+        page_index: u32,
+        rotation: PageRotation,
+        base_raster: RasterSurface,
+        image: Arc<RenderImage>,
+    ) -> Result<(), String> {
+        let presentation = ThumbnailPresentation {
+            page_index,
+            base_raster,
+            image,
+            highlight_pixels: 0,
+            rotation,
+        };
+        let index = match self
+            .thumbnails
+            .binary_search_by_key(&page_index, |thumbnail| thumbnail.page_index)
+        {
+            Ok(index) => {
+                let previous = std::mem::replace(&mut self.thumbnails[index], presentation);
+                self.retired_images.push(previous.image);
+                index
+            }
+            Err(index) => {
+                self.thumbnails.insert(index, presentation);
+                index
+            }
+        };
+        #[cfg(target_os = "macos")]
+        let _ = index;
+        #[cfg(not(target_os = "macos"))]
+        {
+            let Some(snapshot) = self.annotations.snapshot(self.id.value()) else {
+                return Ok(());
+            };
+            if snapshot.revision != self.highlight_composite.annotation_revision {
+                return self.rebuild_stable_highlight_presentations();
+            }
+            let coordinate_space = self
+                .annotation_page_coordinate_space(page_index)
+                .ok_or_else(|| "thumbnail coordinate space is unavailable".to_owned())?;
+            let thumbnail = &mut self.thumbnails[index];
+            let mut composited = thumbnail.base_raster.clone();
+            let pixels = composited.precompose_highlights(
+                page_index,
+                coordinate_space,
+                0.,
+                0.,
+                (
+                    f64::from(thumbnail.base_raster.width()),
+                    f64::from(thumbnail.base_raster.height()),
+                ),
+                &snapshot.pens,
+            )?;
+            thumbnail.highlight_pixels = pixels;
+            let plain = std::mem::replace(&mut thumbnail.image, composited.into_render_image()?);
+            self.retired_images.push(plain);
+            self.highlight_composite.thumbnail_pixels = self
+                .thumbnails
+                .iter()
+                .map(|thumbnail| thumbnail.highlight_pixels)
+                .sum();
+        }
+        Ok(())
+    }
+
+    /// Unloads the thumbnails furthest from the rows shown until those
+    /// left take at most `budget` bytes.
+    pub(crate) fn evict_thumbnails(&mut self, budget: usize) {
+        let mut bytes = self
+            .thumbnails
+            .iter()
+            .map(|thumbnail| thumbnail.base_raster.pixels_bgra().len())
+            .sum::<usize>();
+        if bytes <= budget {
+            return;
+        }
+        let shown = self.thumbnail_rows_shown.clone();
+        let distance = |page: u32| {
+            if page < shown.start {
+                shown.start - page
+            } else {
+                page.saturating_sub(shown.end.saturating_sub(1))
+            }
+        };
+        let mut furthest = self
+            .thumbnails
+            .iter()
+            .map(|thumbnail| thumbnail.page_index)
+            .filter(|page| !shown.contains(page) && *page != self.current_page)
+            .collect::<Vec<_>>();
+        furthest.sort_by_key(|page| std::cmp::Reverse(distance(*page)));
+        let mut evicted = std::collections::HashSet::new();
+        for page in furthest {
+            if bytes <= budget {
+                break;
+            }
+            if let Some(thumbnail) = self.thumbnail(page) {
+                bytes -= thumbnail.base_raster.pixels_bgra().len();
+                evicted.insert(page);
+            }
+        }
+        let (kept, removed) = std::mem::take(&mut self.thumbnails)
+            .into_iter()
+            .partition::<Vec<_>, _>(|thumbnail| !evicted.contains(&thumbnail.page_index));
+        self.thumbnails = kept;
+        self.retired_images
+            .extend(removed.into_iter().map(|thumbnail| thumbnail.image));
+    }
+
+    /// Retired images (the viewer's included) that nothing else holds now,
+    /// so their GPU textures can be released.
+    pub(crate) fn take_releasable_images(&mut self) -> Vec<Arc<RenderImage>> {
+        self.retired_images
+            .extend(self.viewer.take_retired_images());
+        if self.retired_images.is_empty() {
+            return Vec::new();
+        }
+        let mut retired = std::mem::take(&mut self.retired_images);
+        retired.sort_by_key(|image| Arc::as_ptr(image) as usize);
+        retired.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        let (releasable, held) = retired
+            .into_iter()
+            .partition(|image| Arc::strong_count(image) == 1);
+        self.retired_images = held;
+        releasable
     }
 
     pub(crate) fn rebuild_stable_highlight_presentations(&mut self) -> Result<(), String> {
@@ -705,7 +869,7 @@ impl NativeDocumentSession {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let current_page = self.current_page;
+            let current_page = self.current_image_page.unwrap_or(self.current_page);
             let current_coordinate_space = self
                 .annotation_page_coordinate_space(current_page)
                 .ok_or_else(|| "current page coordinate space is unavailable".to_owned())?;
@@ -726,7 +890,10 @@ impl NativeDocumentSession {
                     (f64::from(base.width()), f64::from(base.height())),
                     &snapshot.pens,
                 )?;
-                self.current_image = Some(composited.into_render_image()?);
+                if let Some(previous) = self.current_image.replace(composited.into_render_image()?)
+                {
+                    self.retired_images.push(previous);
+                }
             }
             let mut thumbnail_pixels = 0usize;
             for thumbnail in &mut self.thumbnails {
@@ -743,7 +910,9 @@ impl NativeDocumentSession {
                     &snapshot.pens,
                 )?;
                 thumbnail_pixels = thumbnail_pixels.saturating_add(thumbnail.highlight_pixels);
-                thumbnail.image = composited.into_render_image()?;
+                let previous =
+                    std::mem::replace(&mut thumbnail.image, composited.into_render_image()?);
+                self.retired_images.push(previous);
             }
             self.highlight_composite.annotation_revision = snapshot.revision;
             self.highlight_composite.current_page_pixels = current_pixels;
