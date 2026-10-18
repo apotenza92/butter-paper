@@ -63,6 +63,37 @@ the Entra tenant's admin sign-in. The client secret expires: when Partner
 Center shows it near expiry, add a new key there, update the 1Password item
 and the environment secret, then remove the old key.
 
+### Setting up or rotating the Store credentials
+
+The account signs in to Partner Center with a personal Microsoft account, so
+the application lives in a Microsoft Entra tenant created for it
+(`AlexanderPotenza.onmicrosoft.com`). Its admin sign-in is the 1Password item
+"Microsoft Entra admin (AlexanderPotenza.onmicrosoft.com)", including its
+one-time password; the application's credentials are the item "Microsoft
+Store submission API (Partner Center app)". Both are in the vault "Butter
+Paper Release". Do these steps in a browser with 1Password autofill:
+
+1. Once only: Partner Center > Account settings > Tenants > Associate
+   Microsoft Entra ID, signing in as that admin. If Microsoft asks for MFA,
+   choose a different authenticator app and save its QR code to the admin
+   item as a one-time password.
+2. Once only: Account settings > User management > Microsoft Entra
+   applications > Create, named "Butter Paper Store publishing", with the
+   Manager role. Copy its tenant ID and client ID into the credentials item.
+3. To create or rotate the secret: open the application, Add new key, and
+   paste the key (shown once) and its expiry into the credentials item.
+4. Copy the three values to the environment, reading them from 1Password
+   without printing them:
+
+   ```sh
+   item="op://Butter Paper Release/Microsoft Store submission API (Partner Center app)"
+   for name in STORE_TENANT_ID STORE_CLIENT_ID STORE_CLIENT_SECRET; do
+     op read "$item/$name" | gh secret set "$name" --env microsoft-store
+   done
+   ```
+
+5. After rotating, remove the old key in Partner Center.
+
 Without the job (or if it fails), submit by hand: download both artifacts with
 `gh run download <run> -p 'microsoft-store-*'`, start an update submission,
 replace the packages with both MSIX files and submit it for certification.
