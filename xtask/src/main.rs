@@ -12,6 +12,7 @@ mod pdfium;
 mod phone;
 mod release;
 mod store;
+mod store_chrome;
 mod target;
 mod thumb_bench;
 mod version;
@@ -52,7 +53,9 @@ const USAGE: &str = "usage: cargo xtask <command>
   release                     check the version and changelog, then push the tag
   store-submit --app ID --msix FILE [--msix FILE]...
                               replace the Microsoft Store packages and submit them for certification
-                              (STORE_TENANT_ID, STORE_CLIENT_ID and STORE_CLIENT_SECRET in the environment)";
+                              (STORE_TENANT_ID, STORE_CLIENT_ID and STORE_CLIENT_SECRET in the environment)
+  store-chrome [--run ID] [--app ID] [--msix FILE]...
+                              submit the Store update through Partner Center in the signed-in Chrome (macOS)";
 
 fn main() -> ExitCode {
     let mut args = Args(env::args().skip(1).collect());
@@ -74,6 +77,7 @@ fn main() -> ExitCode {
         "publish-assets" => homebrew::run(&mut args),
         "release" => release::release(&mut args),
         "store-submit" => store::run(&mut args),
+        "store-chrome" => store_chrome::run(&mut args),
         _ => Err(USAGE.to_string()),
     };
     match result {

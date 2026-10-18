@@ -94,8 +94,22 @@ Paper Release". Do these steps in a browser with 1Password autofill:
 
 5. After rotating, remove the old key in Partner Center.
 
-Until the credentials are set, the job notes that and skips. Without the job
-(or if it fails), submit by hand: download both artifacts with
+Until the credentials are set, the job notes that and skips. Then submit from
+a Mac with `cargo xtask store-chrome`: it downloads both packages from the
+latest successful release run (`--run ID` for another), drives Partner Center
+in Google Chrome in a window of its own, replaces the packages and submits
+them for certification. It stops if a submission is already in
+certification or the Store already has the version. Chrome must be signed in
+to Partner Center as the developer account that owns the app (not a work or
+tenant account) and needs View > Developer > Allow JavaScript from Apple
+Events. Partner Center can take minutes to render a fresh window.
+
+The Entra tenant for the credentials (`AlexanderPotenza.onmicrosoft.com`) is
+active, with its admin's MFA key in 1Password, but it is linked only to the
+account's commercial side: Partner Center has no Microsoft Entra applications
+tab for the developer account yet, so no application holds the Manager role.
+
+Without either (or if both fail), submit by hand: download both artifacts with
 `gh run download <run> -p 'microsoft-store-*'`, start an update submission,
 replace the packages with both MSIX files and submit it for certification.
 
