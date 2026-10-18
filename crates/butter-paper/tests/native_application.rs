@@ -433,7 +433,7 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
 
 #[test]
 fn about_and_settings_are_available_in_both_menu_surfaces() {
-    use butter_paper::application_shell::{AboutButterPaper, OpenSettings};
+    use butter_paper::application_shell::{AboutButterPaper, CheckForUpdates, OpenSettings};
     for status in [
         UpdateMenuStatus::Unavailable,
         UpdateMenuStatus::Checking,
@@ -463,9 +463,14 @@ fn about_and_settings_are_available_in_both_menu_surfaces() {
                 action.as_any().is::<OpenSettings>()
             });
             assert!(!item(product, "Settings…").is_disabled());
+            // Every copy has Check for Updates; the rest lives in Settings.
+            assert_action(item(product, "Check for Updates…"), |action| {
+                action.as_any().is::<CheckForUpdates>()
+            });
             assert!(
                 !menu_item_names(product)
                     .iter()
+                    .filter(|name| **name != "Check for Updates…")
                     .any(|name| name.contains("Update") || name.contains("Automatically"))
             );
         }
@@ -2934,9 +2939,20 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
             });
             cx.update(|window, cx| window.draw(cx).clear(cx));
             let update = cx.debug_bounds("application-update-button");
+            // Without the in-app menu bar the tab strip carries the status.
             if !matches!(status, UpdateMenuStatus::Ready(_)) {
-                assert!(update.is_none());
-                assert!(cx.debug_bounds("application-update-lane").is_none());
+                assert!(update.is_some(), "{status:?} shows in the tab strip");
+                cx.update(|_, cx| {
+                    cx.set_global(butter_paper::application_settings::InAppMenuBarShown(true))
+                });
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                assert!(
+                    cx.debug_bounds("application-update-lane").is_none(),
+                    "the menu bar carries the status when it is shown"
+                );
+                cx.update(|_, cx| {
+                    cx.set_global(butter_paper::application_settings::InAppMenuBarShown(false))
+                });
                 continue;
             }
             let update = update.expect("ready update affordance");

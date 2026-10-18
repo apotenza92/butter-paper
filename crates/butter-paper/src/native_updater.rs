@@ -442,7 +442,13 @@ pub fn fetch_releases(feed_url: &str) -> Result<Vec<Release>, UpdateError> {
 
 /// Downloads the package into `directory`, checking its size and its
 /// published SHA-256 as it streams.
-pub fn download_update(update: &AvailableUpdate, directory: &Path) -> Result<PathBuf, UpdateError> {
+/// Downloads and verifies the update's package into `directory`, counting
+/// the bytes received so far in `received`.
+pub fn download_update(
+    update: &AvailableUpdate,
+    directory: &Path,
+    received: &std::sync::atomic::AtomicU64,
+) -> Result<PathBuf, UpdateError> {
     let client = http_client()?;
     let checksums = get_bounded(&client, &update.checksums.url, MAX_CHECKSUMS_BYTES)?;
     let checksums = parse_checksums(&String::from_utf8_lossy(&checksums));
@@ -460,11 +466,30 @@ pub fn download_update(update: &AvailableUpdate, directory: &Path) -> Result<Pat
         )));
     }
     let path = directory.join(&update.package.name);
-    let written = write_verified(response, &path, update.package.size, expected);
+    let counted = CountingReader {
+        inner: response,
+        received,
+    };
+    let written = write_verified(counted, &path, update.package.size, expected);
     if written.is_err() {
         let _ = fs::remove_file(&path);
     }
     written.map(|()| path)
+}
+
+/// A reader that adds the bytes it reads to `received`.
+struct CountingReader<'a, R> {
+    inner: R,
+    received: &'a std::sync::atomic::AtomicU64,
+}
+
+impl<R: Read> Read for CountingReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.received
+            .fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(read)
+    }
 }
 
 /// Streams `source` to a new file at `path`, requiring exactly `size` bytes
@@ -1591,7 +1616,7 @@ mod tests {
         fs::create_dir_all(bundle.join("Contents")).unwrap();
         let work = root.join("work");
         fs::create_dir_all(&work).unwrap();
-        let package = download_update(&update, &work).unwrap();
+        let package = download_update(&update, &work, &Default::default()).unwrap();
         let prepared = prepare_update(
             &update,
             &package,
@@ -1663,7 +1688,7 @@ mod tests {
         };
         let work = root.join("work");
         fs::create_dir_all(&work).unwrap();
-        let package = download_update(&update, &work).unwrap();
+        let package = download_update(&update, &work, &Default::default()).unwrap();
         // Install the same package relabelled as the previous version.
         let fake = root.join("fake-old");
         fs::create_dir_all(&fake).unwrap();

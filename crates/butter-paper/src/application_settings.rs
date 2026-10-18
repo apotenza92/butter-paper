@@ -26,14 +26,150 @@ pub struct ApplicationUpdatePresentation {
     pub state: UpdateMenuState,
     pub message: String,
     pub notes: String,
+    /// While downloading: the bytes received and the package's size.
+    pub progress: Option<UpdateProgress>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UpdateProgress {
+    pub received: u64,
+    pub total: u64,
+}
+
+impl UpdateProgress {
+    pub fn fraction(self) -> f32 {
+        if self.total == 0 {
+            0.
+        } else {
+            (self.received as f64 / self.total as f64).clamp(0., 1.) as f32
+        }
+    }
+
+    /// Whether every byte is in and the update is being prepared.
+    pub fn preparing(self) -> bool {
+        self.total > 0 && self.received >= self.total
+    }
+
+    /// "12.3 MB of 56.1 MB (22%)", or the preparing step.
+    pub fn describe(self) -> String {
+        if self.preparing() {
+            return "Preparing the update…".into();
+        }
+        format!(
+            "{} of {} ({}%)",
+            megabytes(self.received),
+            megabytes(self.total),
+            (self.fraction() * 100.).floor() as u32
+        )
+    }
+}
+
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.)
 }
 impl gpui::Global for ApplicationUpdatePresentation {}
 
-/// Ready updates stay out of the way until installation is one restart away.
-pub fn update_button(state: UpdateMenuStatus, cx: &App) -> Option<AnyElement> {
-    let UpdateMenuStatus::Ready(version) = state else {
-        return None;
+/// Whether windows show the in-app menu bar, which carries the update
+/// status. Without it (a macOS choice) the tab strip carries it instead.
+#[derive(Clone, Copy, Debug)]
+pub struct InAppMenuBarShown(pub bool);
+impl gpui::Global for InAppMenuBarShown {}
+
+/// The update status button: checking, downloading with its progress, an
+/// update to download, or one ready to install. Idle copies show nothing.
+fn update_status_button(
+    presentation: &ApplicationUpdatePresentation,
+    id: &'static str,
+    style: impl FnOnce(Button) -> Button,
+) -> Option<AnyElement> {
+    let button = style(
+        Button::new(id)
+            .debug_selector(move || id.into())
+            .accessibility_id(id),
+    );
+    let open_settings = |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+        window.dispatch_action(Box::new(OpenUpdateSettings), cx);
     };
+    Some(match presentation.state.status {
+        UpdateMenuStatus::Checking => button
+            .label("Checking for updates…")
+            .loading(true)
+            .on_click(open_settings)
+            .into_any_element(),
+        UpdateMenuStatus::Downloading => button
+            .label(match presentation.progress {
+                Some(progress) if progress.preparing() => "Preparing update…".to_owned(),
+                Some(progress) => format!(
+                    "Downloading update {}%",
+                    (progress.fraction() * 100.).floor() as u32
+                ),
+                None => "Downloading update…".to_owned(),
+            })
+            .loading(true)
+            .on_click(open_settings)
+            .into_any_element(),
+        UpdateMenuStatus::Available(version) => button
+            .label("Update available")
+            .icon(Icon::default().path(crate::application_assets::DOWNLOAD_ICON))
+            .dropdown_menu(move |menu, _, _| {
+                menu.label(format!("Butter Paper {version} is available"))
+                    .item(
+                        PopupMenuItem::new("Download update").on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(DownloadUpdate), cx);
+                        }),
+                    )
+                    .separator()
+                    .menu("View release notes", Box::new(OpenUpdateSettings))
+            })
+            .into_any_element(),
+        UpdateMenuStatus::Ready(version) => button
+            .label("Update ready")
+            .icon(Icon::default().path(crate::application_assets::DOWNLOAD_ICON))
+            .dropdown_menu(move |menu, _, _| {
+                menu.label(format!("Butter Paper {version} is ready"))
+                    .item(
+                        PopupMenuItem::new("Restart to update").on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(RestartToUpdate), cx);
+                        }),
+                    )
+                    .separator()
+                    .menu("View release notes", Box::new(OpenUpdateSettings))
+            })
+            .into_any_element(),
+        UpdateMenuStatus::Unavailable | UpdateMenuStatus::Store | UpdateMenuStatus::Idle => {
+            return None;
+        }
+    })
+}
+
+/// The update status at the right end of the in-app menu bar: as slim as
+/// the menus beside it.
+pub fn menu_bar_update_status(cx: &App) -> Option<AnyElement> {
+    let presentation = cx.try_global::<ApplicationUpdatePresentation>()?;
+    let button = update_status_button(presentation, "application-update-status", |button| {
+        button.ghost().xsmall()
+    })?;
+    Some(
+        h_flex()
+            .id("application-update-status-lane")
+            .debug_selector(|| "application-update-status-lane".into())
+            .flex_shrink_0()
+            .pr_1()
+            .child(button)
+            .into_any_element(),
+    )
+}
+
+/// The update status in the tab strip, for macOS windows whose in-app menu
+/// bar is turned off.
+pub fn update_button(presentation: &ApplicationUpdatePresentation, cx: &App) -> Option<AnyElement> {
+    if cx
+        .try_global::<InAppMenuBarShown>()
+        .is_some_and(|shown| shown.0)
+    {
+        return None;
+    }
+    let button = update_status_button(presentation, "application-update-button", Button::outline)?;
     Some(
         h_flex()
             .id("application-update-lane")
@@ -42,24 +178,7 @@ pub fn update_button(state: UpdateMenuStatus, cx: &App) -> Option<AnyElement> {
             .pl_3()
             .border_l_1()
             .border_color(cx.theme().border)
-            .child(
-                Button::new("application-update-button")
-                    .debug_selector(|| "application-update-button".into())
-                    .accessibility_id("application-update-button")
-                    .outline()
-                    .label("Update ready")
-                    .icon(Icon::default().path(crate::application_assets::DOWNLOAD_ICON))
-                    .dropdown_menu(move |menu, _, _| {
-                        menu.label(format!("Butter Paper {version} is ready"))
-                            .item(PopupMenuItem::new("Restart to update").on_click(
-                                |_, window, cx| {
-                                    window.dispatch_action(Box::new(RestartToUpdate), cx);
-                                },
-                            ))
-                            .separator()
-                            .menu("View release notes", Box::new(OpenUpdateSettings))
-                    }),
-            )
+            .child(button)
             .into_any_element(),
     )
 }
@@ -189,7 +308,7 @@ impl SettingsView {
         }
     }
 
-    fn render_update_sections(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_update_sections(&self, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
         let presentation = cx
             .try_global::<ApplicationUpdatePresentation>()
             .cloned()
@@ -263,6 +382,25 @@ impl SettingsView {
                     .child(format!("Installed version {}", env!("CARGO_PKG_VERSION"))),
             )
             .child(message)
+            .when_some(presentation.progress, |section, progress| {
+                section.child(
+                    v_flex()
+                        .id("settings-update-progress")
+                        .debug_selector(|| "settings-update-progress".into())
+                        .gap_1()
+                        .child(
+                            gpui_component::progress::Progress::new("settings-update-progress-bar")
+                                .value(progress.fraction() * 100.)
+                                .loading(progress.preparing()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(progress.describe()),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .flex_wrap()
@@ -273,20 +411,33 @@ impl SettingsView {
             .into_any_element();
         // The Store updates its copies itself: no checks or downloads here.
         if store {
-            return vec![version];
+            return vec![("Version", version)];
         }
-        vec![
-            version,
-            v_flex().id("settings-automatic-section").debug_selector(|| "settings-automatic-section".into()).gap_3().pb_6()
-                .child(div().font_semibold().child("Automatic checks"))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose how often Butter Paper looks for updates."))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Updates download automatically after a successful check. You choose when to restart."))
-                .child(schedule).into_any_element(),
-            v_flex().id("settings-notes-section").debug_selector(|| "settings-notes-section".into()).gap_3()
-                .child(div().font_semibold().child("What’s new"))
-                .child(TextView::markdown("update-release-notes", if presentation.notes.is_empty() { "Release notes appear here when an update is available.".to_owned() } else { presentation.notes }))
-                .into_any_element(),
-        ]
+        let automatic = v_flex().id("settings-automatic-section").debug_selector(|| "settings-automatic-section".into()).gap_3().pb_6()
+            .child(div().font_semibold().child("Automatic checks"))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose how often Butter Paper looks for updates."))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Updates download automatically after a successful check. You choose when to restart."))
+            .child(schedule).into_any_element();
+        let mut sections = vec![("Automatic checks", automatic), ("Version", version)];
+        // What's new is for an update there is to install.
+        if (available || ready || state.status == UpdateMenuStatus::Downloading)
+            && !presentation.notes.is_empty()
+        {
+            sections.push((
+                "What’s new",
+                v_flex()
+                    .id("settings-notes-section")
+                    .debug_selector(|| "settings-notes-section".into())
+                    .gap_3()
+                    .child(div().font_semibold().child("What’s new"))
+                    .child(TextView::markdown(
+                        "update-release-notes",
+                        presentation.notes,
+                    ))
+                    .into_any_element(),
+            ));
+        }
+        sections
     }
 }
 impl Render for SettingsView {
@@ -321,16 +472,11 @@ impl Render for SettingsView {
                 },
             ))
         });
-        let sections = match self.category {
-            SettingsCategory::Updates => self.render_update_sections(cx),
+        let (title, sections) = match self.category {
+            SettingsCategory::Updates => ("Updates", self.render_update_sections(cx)),
         };
-        let (title, headings): (&str, &[&str]) = match self.category {
-            SettingsCategory::Updates => {
-                ("Updates", &["Version", "Automatic checks", "What’s new"])
-            }
-        };
-        // Store copies have only the Version section.
-        let headings = &headings[..sections.len().min(headings.len())];
+        let (headings, sections): (Vec<&str>, Vec<AnyElement>) = sections.into_iter().unzip();
+        let headings = headings.as_slice();
         let scroll = v_flex()
             .id("application-settings-scroll")
             .debug_selector(|| "application-settings-scroll".into())
@@ -609,7 +755,14 @@ mod tests {
         let (_, cx) = cx.add_window_view({
             let retained = retained.clone();
             move |window, cx| {
+                // What's new shows for an update there is to install.
                 cx.set_global(ApplicationUpdatePresentation {
+                    state: UpdateMenuState {
+                        status: UpdateMenuStatus::Available(
+                            crate::native_updater::ReleaseVersion::stable(0, 1, 5),
+                        ),
+                        frequency: Some(UpdateFrequency::Daily),
+                    },
                     notes: "Release detail.\n\n".repeat(100),
                     ..Default::default()
                 });
@@ -653,7 +806,14 @@ mod tests {
         let (_, cx) = cx.add_window_view({
             let retained = retained.clone();
             move |window, cx| {
+                // What's new shows for an update there is to install.
                 cx.set_global(ApplicationUpdatePresentation {
+                    state: UpdateMenuState {
+                        status: UpdateMenuStatus::Available(
+                            crate::native_updater::ReleaseVersion::stable(0, 1, 5),
+                        ),
+                        frequency: Some(UpdateFrequency::Daily),
+                    },
                     notes: "Release detail.\n\n".repeat(100),
                     ..Default::default()
                 });
@@ -782,21 +942,54 @@ mod tests {
     }
 
     #[gpui::test]
-    fn quiet_update_button_is_only_present_when_ready(cx: &mut TestAppContext) {
+    fn update_status_shows_only_while_there_is_update_work(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             let version = crate::native_updater::ReleaseVersion::stable(0, 1, 5);
+            let presentation = |status| ApplicationUpdatePresentation {
+                state: UpdateMenuState {
+                    status,
+                    frequency: None,
+                },
+                ..Default::default()
+            };
             for status in [
                 UpdateMenuStatus::Idle,
                 UpdateMenuStatus::Unavailable,
                 UpdateMenuStatus::Store,
+            ] {
+                assert!(update_button(&presentation(status), cx).is_none());
+            }
+            for status in [
                 UpdateMenuStatus::Checking,
                 UpdateMenuStatus::Available(version),
                 UpdateMenuStatus::Downloading,
+                UpdateMenuStatus::Ready(version),
             ] {
-                assert!(update_button(status, cx).is_none());
+                assert!(update_button(&presentation(status), cx).is_some());
             }
-            assert!(update_button(UpdateMenuStatus::Ready(version), cx).is_some());
+            cx.set_global(InAppMenuBarShown(true));
+            assert!(
+                update_button(&presentation(UpdateMenuStatus::Ready(version)), cx).is_none(),
+                "the in-app menu bar carries the status instead"
+            );
         });
+    }
+
+    #[test]
+    fn download_progress_reads_as_size_and_percent_then_preparing() {
+        let progress = UpdateProgress {
+            received: 12_345_678,
+            total: 56_100_000,
+        };
+        assert_eq!(progress.describe(), "12.3 MB of 56.1 MB (22%)");
+        assert!(!progress.preparing());
+        let done = UpdateProgress {
+            received: 56_100_000,
+            total: 56_100_000,
+        };
+        assert!(done.preparing());
+        assert_eq!(done.describe(), "Preparing the update…");
+        assert_eq!(UpdateProgress::default().fraction(), 0.);
     }
 }

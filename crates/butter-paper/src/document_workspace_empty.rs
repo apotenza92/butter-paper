@@ -179,7 +179,7 @@ impl DocumentWorkspace {
             .children(
                 cx.try_global::<crate::application_settings::ApplicationUpdatePresentation>()
                     .and_then(|presentation| {
-                        crate::application_settings::update_button(presentation.state.status, cx)
+                        crate::application_settings::update_button(presentation, cx)
                     }),
             );
         let inactive_session_tabs = session_tabs

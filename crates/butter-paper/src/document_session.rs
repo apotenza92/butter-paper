@@ -358,6 +358,10 @@ pub struct NativeDocumentSession {
     pub(crate) adaptive_last_evaluated_at: Option<Instant>,
     pub(crate) view_state: NativeDocumentViewState,
     pub(crate) highlight_composite: HighlightCompositeEvidence,
+    /// The highlights the page images and viewer tiles were composed with,
+    /// where highlights are precomposed (Windows and Linux).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    composed_highlights: Option<Vec<crate::annotation_model::PenAnnotation>>,
     pub(crate) source_sha256: Option<[u8; 32]>,
     pub(crate) viewport_size: Option<(f32, f32)>,
     pub(crate) temporary_source: Option<(GeneratedDocumentStore, OwnedGeneratedDocument)>,
@@ -422,6 +426,7 @@ impl NativeDocumentSession {
             adaptive_last_evaluated_at: None,
             view_state: NativeDocumentViewState::default(),
             highlight_composite: HighlightCompositeEvidence::default(),
+            composed_highlights: None,
             source_sha256: None,
             viewport_size: None,
             temporary_source: None,
@@ -765,7 +770,7 @@ impl NativeDocumentSession {
                 return Ok(());
             };
             if snapshot.revision != self.highlight_composite.annotation_revision {
-                return self.rebuild_stable_highlight_presentations();
+                self.sync_stable_highlight_presentations()?;
             }
             let coordinate_space = self
                 .annotation_page_coordinate_space(page_index)
@@ -857,6 +862,34 @@ impl NativeDocumentSession {
         releasable
     }
 
+    /// Brings precomposed highlights up to date after an annotation edit.
+    /// Edits that leave the highlights as they were (most edits) keep the
+    /// page images and tiles on screen untouched.
+    pub(crate) fn sync_stable_highlight_presentations(&mut self) -> Result<(), String> {
+        #[cfg(not(target_os = "macos"))]
+        if let Some(snapshot) = self.annotations.snapshot(self.id.value())
+            && self.composed_highlights.as_ref() == Some(&composed_highlights(&snapshot.pens))
+        {
+            self.highlight_composite.annotation_revision = snapshot.revision;
+            return Ok(());
+        }
+        self.rebuild_stable_highlight_presentations()
+    }
+
+    /// Composes the highlights into a newly shown current page. Thumbnails
+    /// and tiles are recomposed only when the highlights changed too.
+    pub(crate) fn present_current_page_highlights(&mut self) -> Result<(), String> {
+        #[cfg(not(target_os = "macos"))]
+        if let Some(snapshot) = self.annotations.snapshot(self.id.value())
+            && self.composed_highlights.as_ref() == Some(&composed_highlights(&snapshot.pens))
+        {
+            self.compose_current_page_highlights(&snapshot.pens)?;
+            self.highlight_composite.annotation_revision = snapshot.revision;
+            return Ok(());
+        }
+        self.rebuild_stable_highlight_presentations()
+    }
+
     pub(crate) fn rebuild_stable_highlight_presentations(&mut self) -> Result<(), String> {
         let Some(snapshot) = self.annotations.snapshot(self.id.value()) else {
             return Ok(());
@@ -873,32 +906,13 @@ impl NativeDocumentSession {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let current_page = self.current_image_page.unwrap_or(self.current_page);
-            let current_coordinate_space = self
-                .annotation_page_coordinate_space(current_page)
-                .ok_or_else(|| "current page coordinate space is unavailable".to_owned())?;
             let coordinate_spaces = (0..self.page_sizes.len())
                 .map(|page_index| {
                     self.annotation_page_coordinate_space(page_index as u32)
                         .ok_or_else(|| "thumbnail coordinate space is unavailable".to_owned())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let mut current_pixels = 0;
-            if let Some(base) = self.current_base_raster.clone() {
-                let mut composited = base.clone();
-                current_pixels = composited.precompose_highlights(
-                    current_page,
-                    current_coordinate_space,
-                    0.,
-                    0.,
-                    (f64::from(base.width()), f64::from(base.height())),
-                    &snapshot.pens,
-                )?;
-                if let Some(previous) = self.current_image.replace(composited.into_render_image()?)
-                {
-                    self.retired_images.push(previous);
-                }
-            }
+            self.compose_current_page_highlights(&snapshot.pens)?;
             let mut thumbnail_pixels = 0usize;
             for thumbnail in &mut self.thumbnails {
                 let mut composited = thumbnail.base_raster.clone();
@@ -919,14 +933,47 @@ impl NativeDocumentSession {
                 self.retired_images.push(previous);
             }
             self.highlight_composite.annotation_revision = snapshot.revision;
-            self.highlight_composite.current_page_pixels = current_pixels;
             self.highlight_composite.thumbnail_pixels = thumbnail_pixels;
-            self.highlight_composite.viewer_tile_pixels = 0;
-            // Tile identities include this raster revision. In-flight results from
-            // the prior annotation revision must be rejected, not painted stale.
-            self.viewer.invalidate_raster();
+            let highlights = composed_highlights(&snapshot.pens);
+            if self.composed_highlights.as_ref() != Some(&highlights) {
+                // Tiles carry the highlights too. Their identities include the
+                // raster revision, so in-flight results from the prior
+                // highlights are rejected; the tiles on screen stay until
+                // their replacements arrive rather than blanking the page.
+                self.highlight_composite.viewer_tile_pixels = 0;
+                self.viewer.refresh_highlights();
+                self.composed_highlights = Some(highlights);
+            }
             Ok(())
         }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn compose_current_page_highlights(
+        &mut self,
+        pens: &[crate::annotation_model::PenAnnotation],
+    ) -> Result<(), String> {
+        let current_page = self.current_image_page.unwrap_or(self.current_page);
+        let current_coordinate_space = self
+            .annotation_page_coordinate_space(current_page)
+            .ok_or_else(|| "current page coordinate space is unavailable".to_owned())?;
+        let mut current_pixels = 0;
+        if let Some(base) = self.current_base_raster.clone() {
+            let mut composited = base.clone();
+            current_pixels = composited.precompose_highlights(
+                current_page,
+                current_coordinate_space,
+                0.,
+                0.,
+                (f64::from(base.width()), f64::from(base.height())),
+                pens,
+            )?;
+            if let Some(previous) = self.current_image.replace(composited.into_render_image()?) {
+                self.retired_images.push(previous);
+            }
+        }
+        self.highlight_composite.current_page_pixels = current_pixels;
+        Ok(())
     }
 
     pub(crate) fn sync_image_assets(&mut self) -> Result<Vec<Arc<RenderImage>>, String> {
@@ -991,6 +1038,17 @@ impl Drop for NativeDocumentSession {
     fn drop(&mut self) {
         let _ = self.release();
     }
+}
+
+/// The pens composed into page images: highlights.
+#[cfg(not(target_os = "macos"))]
+fn composed_highlights(
+    pens: &[crate::annotation_model::PenAnnotation],
+) -> Vec<crate::annotation_model::PenAnnotation> {
+    pens.iter()
+        .filter(|pen| pen.tool() == crate::annotation_model::InkTool::Highlight)
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]

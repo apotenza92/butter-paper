@@ -4,6 +4,32 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.2.3]
+
+### Windows
+
+- Editing no longer makes the page flash. Adding, changing or moving any
+  markup, and finishing an Edit PDF Content change, used to drop the page
+  to a blurry or blank image until it re-rendered; the page now stays sharp.
+  Moving between pages no longer re-renders every thumbnail either.
+- Pointing at a markup you can move shows the four-headed move arrow;
+  Windows showed the plain arrow because it has no hand cursor.
+
+### Viewing
+
+- Zooming no longer drops the page to a blurry image for a moment: the
+  page stays drawn at the previous zoom until the new one is ready.
+
+### Updates
+
+- Every copy has Check for Updates in the Butter Paper menu. In the
+  Microsoft Store version it opens Butter Paper's Store page.
+- Checking for and downloading an update shows in a slim status button at
+  the right end of the menu bar, with the download's progress; Settings
+  shows its size and percentage too.
+- Updates settings list Automatic checks first, and show What's new only
+  when there is an update to install.
+
 ## [0.2.2]
 
 ### Viewing

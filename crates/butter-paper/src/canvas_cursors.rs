@@ -1,5 +1,5 @@
-//! Butter Paper's own canvas cursors: resize arrows at a box's exact angle and
-//! the rotate arrow. Standard cursors (arrow, hands, crosshair, text) stay the
+//! Butter Paper's own canvas cursors: resize arrows at a box's exact angle,
+//! the rotate arrow and, on Windows, the move arrow. Standard cursors (arrow, hands, crosshair, text) stay the
 //! system's, which follow the user's pointer size and colour settings.
 //!
 //! The cursors are drawn here from signed distance fields, black with a white
@@ -41,10 +41,26 @@ pub fn rotate_cursor() -> CursorStyle {
     }))
 }
 
+/// The cursor over a movable markup (`moving` false) and while moving it.
+/// macOS and Linux show the system's open or closed hand. Windows has no hand
+/// cursors, so it shows the four-headed move arrow Windows applications use.
+pub fn move_cursor(moving: bool) -> CursorStyle {
+    if cfg!(target_os = "windows") {
+        CursorStyle::Image(registered(Shape::Move, || {
+            cursor_image(move_arrow_distance, CursorStyle::OpenHand)
+        }))
+    } else if moving {
+        CursorStyle::ClosedHand
+    } else {
+        CursorStyle::OpenHand
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Shape {
     Resize(u16),
     Rotate,
+    Move,
 }
 
 fn resize_step(degrees: f64) -> u16 {
@@ -168,6 +184,11 @@ fn resize_arrow_distance(x: f32, y: f32, angle: f32) -> f32 {
     shaft.min(forward).min(backward)
 }
 
+/// Horizontal and vertical double-headed arrows, crossed.
+fn move_arrow_distance(x: f32, y: f32) -> f32 {
+    resize_arrow_distance(x, y, 0.).min(resize_arrow_distance(x, y, PI / 2.))
+}
+
 /// Three quarters of a circle, clockwise, ending in an arrowhead.
 fn rotate_arrow_distance(x: f32, y: f32) -> f32 {
     const RADIUS: f32 = 6.;
@@ -269,6 +290,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn move_cursor_is_the_platform_move_cursor() {
+        if cfg!(target_os = "windows") {
+            let CursorStyle::Image(id) = move_cursor(false) else {
+                panic!("Windows draws its move arrow");
+            };
+            assert_eq!(move_cursor(true), move_cursor(false));
+            assert_eq!(move_cursor(false).standard(), CursorStyle::OpenHand);
+            let raster = gpui::cursor_image(id).unwrap();
+            let raster = raster.raster_for_scale(1.).unwrap();
+            for (x, y) in [(7., 0.), (-7., 0.), (0., 7.), (0., -7.)] {
+                assert_eq!(alpha_at(raster, x, y), 255, "an arm reaches ({x}, {y})");
+            }
+            assert_eq!(alpha_at(raster, 7., 7.), 0, "the quadrants are open");
+        } else {
+            assert_eq!(move_cursor(false), CursorStyle::OpenHand);
+            assert_eq!(move_cursor(true), CursorStyle::ClosedHand);
+        }
+    }
+
     /// Writes each cursor at 2x, on a mid-grey card, for a visual check.
     #[test]
     #[ignore = "writes cursor previews for manual review"]
@@ -279,7 +320,15 @@ mod tests {
         let cursors = [0., 30., 45., 90., 135.]
             .map(|degrees| (format!("resize-{degrees}"), resize_cursor(degrees)))
             .into_iter()
-            .chain([("rotate".to_owned(), rotate_cursor())]);
+            .chain([
+                ("rotate".to_owned(), rotate_cursor()),
+                (
+                    "move".to_owned(),
+                    CursorStyle::Image(registered(Shape::Move, || {
+                        cursor_image(move_arrow_distance, CursorStyle::OpenHand)
+                    })),
+                ),
+            ]);
         for (name, cursor) in cursors {
             let CursorStyle::Image(id) = cursor else {
                 unreachable!()

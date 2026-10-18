@@ -451,6 +451,10 @@ jobs:
           set -euo pipefail
           store="$RUNNER_TEMP/store"
           ls -l "$store"
+          if [ -z "$STORE_CLIENT_SECRET" ]; then
+            echo "::notice::No Store credentials yet: submit the Store packages by hand (docs/agents/releases.md)."
+            exit 0
+          fi
           cargo xtask store-submit --app "$STORE_PRODUCT_ID" \
             --msix "$store/Butter-Paper-Windows-x64.msix" \
             --msix "$store/Butter-Paper-Windows-arm64.msix"

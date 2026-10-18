@@ -154,8 +154,15 @@ fn build_window_menu() -> Menu {
 }
 
 fn build_product_menu() -> Menu {
+    // Check for Updates does what fits the copy: a Microsoft Store copy
+    // opens its Store page, an installed release checks and shows the
+    // progress in Settings, and other copies open the releases page.
     Menu::new("Butter Paper").items([
         MenuItem::action("About Butter Paper", AboutButterPaper),
+        MenuItem::action(
+            "Check for Updates…",
+            crate::application_shell::CheckForUpdates,
+        ),
         MenuItem::separator(),
         MenuItem::action("Settings…", OpenSettings),
         MenuItem::action("Set as Default PDF App…", SetAsDefaultPdfApp),

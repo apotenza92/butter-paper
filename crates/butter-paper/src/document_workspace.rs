@@ -3341,7 +3341,7 @@ fn refresh_session_after_recovery_change(
     if rotations_changed {
         session.refresh_rotation_presentations()?;
     }
-    session.rebuild_stable_highlight_presentations()?;
+    session.sync_stable_highlight_presentations()?;
     let _ = document_id;
     Ok(())
 }
@@ -12927,7 +12927,7 @@ impl DocumentWorkspace {
                         }
                         session.status = NativeDocumentStatus::Ready;
                         session.presentation_error = None;
-                        if let Err(error) = session.rebuild_stable_highlight_presentations() {
+                        if let Err(error) = session.present_current_page_highlights() {
                             session.presentation_error = Some(error);
                         }
                         page_applied = true;
@@ -17153,12 +17153,12 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let pressed_hot_annotation_handle = self.hot_annotation_handle.clone();
-        // The cursor a drag keeps: the grabbed control's, or a closed hand when
-        // the press lands on an item to move it.
+        // The cursor a drag keeps: the grabbed control's, or the moving cursor
+        // when the press lands on an item to move it.
         let pressed_gesture_cursor = if pressed_hot_annotation_handle.is_some() {
             Some(self.viewport_cursor)
         } else if self.hovered_annotation.is_some() {
-            Some(CursorStyle::ClosedHand)
+            Some(crate::canvas_cursors::move_cursor(true))
         } else {
             None
         };
@@ -24486,6 +24486,7 @@ impl Render for DocumentWorkspace {
             viewer_scroll,
             viewer_pan_margin,
             viewer_pages,
+            viewer_zoom_fallback,
         ) = {
             let document_id = session.id;
             let title = session.title.clone();
@@ -24803,6 +24804,12 @@ impl Render for DocumentWorkspace {
             let viewer_plan = session.viewer.plan_snapshot().cloned();
             let viewer_scroll = session.viewer.scroll_handle();
             let viewer_pan_margin = session.viewer.pan_margin();
+            let viewer_zoom_fallback = viewer_plan
+                .iter()
+                .flat_map(|plan| plan.visible_pages.iter().copied())
+                .map(|page| (page, session.viewer.zoom_fallback_tiles(page)))
+                .filter(|(_, tiles)| !tiles.is_empty())
+                .collect::<HashMap<_, _>>();
             let viewer_pages = viewer_plan
                 .as_ref()
                 .map(|plan| {
@@ -24860,8 +24867,9 @@ impl Render for DocumentWorkspace {
                                     .annotation_page_coordinate_space(layout.page as u32)
                                     .expect("a viewer page must retain coordinate-space metadata"),
                                 scene,
-                                layout.page == current_page as usize
-                                    || (expected_tiles > 0 && tiles.len() == expected_tiles),
+                                !session.viewer.page_shows_stale_highlights(layout.page)
+                                    && (layout.page == current_page as usize
+                                        || (expected_tiles > 0 && tiles.len() == expected_tiles)),
                                 tiles,
                                 painted_viewer,
                                 quality,
@@ -24919,6 +24927,7 @@ impl Render for DocumentWorkspace {
                 viewer_scroll,
                 viewer_pan_margin,
                 viewer_pages,
+                viewer_zoom_fallback,
             )
         };
         let select_hover_cursor = self
@@ -24957,7 +24966,7 @@ impl Render for DocumentWorkspace {
                         .read(cx)
                         .annotations
                         .annotation_is_movable(document_id.value(), id))
-                .then_some(CursorStyle::OpenHand)
+                .then(|| crate::canvas_cursors::move_cursor(false))
             });
         // While dragging an item, keep the cursor the press began with.
         let select_hover_cursor = self
@@ -26342,6 +26351,7 @@ impl Render for DocumentWorkspace {
                 document_opening_batch_count,
                 focused_annotation_id,
                 has_viewer_pages,
+                viewer_zoom_fallback,
                 hot_annotation_handle,
                 hovered_annotation,
                 image_assets,

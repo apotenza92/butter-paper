@@ -97,14 +97,23 @@ changes it; history is in git.
   shadcn's nested-sidebar pattern, using native sidebar surfaces and
   left-aligned, full-width navigation controls. Narrow windows replace the rail and
   sidebar with a category row and a Jump to section menu. Settings owns update
-  checks, their visible results, the check frequency and release notes. Checks
-  discover releases and download them automatically in the background. A
-  button appears beside the template control only when an update is ready,
-  separated by a full-height vertical rule and matching the adjacent control
-  height and neutral outline style.
-  Its first click opens a popup; Restart to update installs and relaunches,
-  while View release notes opens Settings. Failed downloads can be retried in
-  Settings. Default automatic checks run at startup for
+  checks, their visible results and the check frequency. Its Updates
+  category shows Automatic checks first, then Version (with the download's
+  size and percentage while one runs), then What's new only while there is
+  an update to install. Checks discover releases and download them
+  automatically in the background. Every copy has Check for Updates under
+  About in the Butter Paper menu: a Microsoft Store copy opens its Store
+  page, an installed release checks and opens Updates in Settings, and other
+  copies open the releases page.
+  While there is update work (checking, downloading, an update to download
+  or one ready), a slim status button is pinned to the right end of the
+  in-app menu bar. On macOS with that menu bar turned off, it sits beside
+  the template control instead, separated by a full-height vertical rule and
+  matching the adjacent control height and neutral outline style.
+  Checking and downloading open Updates in Settings. An available or ready
+  update opens a popup: Download update or Restart to update, and View
+  release notes. Failed downloads can be retried there or in Settings.
+  Default automatic checks run at startup for
   beta builds and weekly for stable builds, preserving saved user choices.
   Interface size stays in the View menu, not Settings. Restart uses the normal
   unsaved-work quit flow.

@@ -247,13 +247,13 @@ A PDF's form fields are filled with the Select tool, as in Acrobat and Revu.
 | Box edge or corner | Butter Paper's resize arrow at the handle's angle, including the box's rotation |
 | Vertex or endpoint | crosshair |
 | Rotation knob | Butter Paper's rotate arrow |
-| Movable stroke, fill or content; either Rectangle move band, selected or not | open hand |
+| Movable stroke, fill or content; either Rectangle move band, selected or not | open hand (Windows: move arrow) |
 | Editable page text with Edit PDF Content, and while selecting it | I-beam |
 | Page text Edit PDF Content cannot change | not allowed |
 | A fillable text field with Select | I-beam |
 | Page text with Select, where no markup or field is, and while selecting it | I-beam |
 | A fillable check box, radio button, combo or list box with Select | pointing hand |
-| Moving a markup | closed hand |
+| Moving a markup | closed hand (Windows: move arrow) |
 | Pan tool | open hand; closed while dragging |
 | Elsewhere | arrow |
 
@@ -262,7 +262,9 @@ the cursor even when the pointer is stationary.
 
 Resize and rotate arrows are drawn by Butter Paper (`canvas_cursors.rs`) and
 shown through the GPUI fork's cursor images on macOS and Windows; Linux shows
-the nearest system cursor. All other cursors are the system's, so they follow
+the nearest system cursor. Windows has no hand cursors, so moving uses Butter
+Paper's four-headed move arrow there, as Windows applications do; the Pan tool
+still shows the arrow on Windows. All other cursors are the system's, so they follow
 the user's pointer size and colour settings.
 
 A drag keeps the cursor it started with; on release the cursor reflects what

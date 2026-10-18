@@ -246,10 +246,12 @@ pub fn display_path(path: &std::path::Path) -> String {
 }
 
 /// Stable identity across ordering changes, including non-Unicode paths.
+/// A Windows file has one identity whether or not its path is spelled in
+/// the canonical `\\?\` form.
 pub fn recent_document_id(path: &std::path::Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
-    normalized_path_key(path).hash(&mut hash);
+    normalized_path_key(dunce::simplified(path)).hash(&mut hash);
     format!("recent-pdf-{:016x}", hash.finish())
 }
 
@@ -360,5 +362,15 @@ mod tests {
             );
         });
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_canonical_windows_path_has_the_plain_paths_identity() {
+        if cfg!(windows) {
+            assert_eq!(
+                recent_document_id(std::path::Path::new(r"\\?\C:\Plans\a.pdf")),
+                recent_document_id(std::path::Path::new(r"C:\Plans\a.pdf"))
+            );
+        }
     }
 }

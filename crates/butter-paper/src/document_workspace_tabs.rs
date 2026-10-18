@@ -539,9 +539,7 @@ impl DocumentWorkspace {
         let recovery_button = self.render_recovery_notifications_button(cx);
         let update_button = cx
             .try_global::<crate::application_settings::ApplicationUpdatePresentation>()
-            .and_then(|presentation| {
-                crate::application_settings::update_button(presentation.state.status, cx)
-            });
+            .and_then(|presentation| crate::application_settings::update_button(presentation, cx));
         // With three or more tool columns, Open and New sit above the rail's
         // last three columns, and the strip's divider continues the rail's
         // edge. Narrower rails cannot fit them, so they keep a padded row.

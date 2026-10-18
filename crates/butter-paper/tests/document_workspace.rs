@@ -34,6 +34,7 @@ use butter_paper::annotation_model::{
     ellipse_cubic_bezier_points,
 };
 use butter_paper::cad_view_control::{CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID};
+use butter_paper::canvas_cursors::move_cursor;
 use butter_paper::dimension_property_inspector::{
     DIMENSION_INSPECTOR_FONT_SIZE_ID, DIMENSION_INSPECTOR_LOCKED_ID, DIMENSION_INSPECTOR_OFFSET_ID,
     DIMENSION_INSPECTOR_OPACITY_ID, DIMENSION_INSPECTOR_STROKE_COLOR_ID,
@@ -19652,11 +19653,24 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             > 0,
         !cfg!(target_os = "macos")
     );
+    let tiles_painted = |cx: &mut TestAppContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.evidence_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .rendered_device_pixel_ratio
+            .is_some()
+    };
+    assert!(tiles_painted(cx));
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_selected_annotation_locked(request.document_id, true, cx)
         })
         .unwrap();
+    // An edit never blanks the page: the tiles on screen stay until any
+    // replacements arrive, including where highlights are precomposed.
+    assert!(tiles_painted(cx));
     assert!(
         workspace
             .update(cx, |workspace, cx| {
@@ -45497,7 +45511,7 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     let bottom_edge = view(mid_x, bottom);
     assert_eq!(
         cursor_at(cx, point(bottom_edge.x, bottom_edge.y - px(14.))),
-        CursorStyle::OpenHand,
+        move_cursor(false).standard(),
         "a band just inside the outline moves"
     );
     assert_eq!(
@@ -45556,7 +45570,7 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     assert!(!rectangles(cx)[0].selected, "hover must not select");
     assert_eq!(cursor_at(cx, view(mid_x, mid_y)), CursorStyle::Arrow);
     let outside_move = view(right + 20. / scale, mid_y + 20.);
-    assert_eq!(cursor_at(cx, outside_move), CursorStyle::OpenHand);
+    assert_eq!(cursor_at(cx, outside_move), move_cursor(false).standard());
     assert!(
         !rectangles(cx)[0].selected,
         "outer-band hover never selects"
@@ -45567,7 +45581,7 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     );
     assert_eq!(
         cursor_at(cx, point(bottom_edge.x, bottom_edge.y - px(14.))),
-        CursorStyle::OpenHand
+        move_cursor(false).standard()
     );
     cx.simulate_mouse_down(outside_move, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -45647,7 +45661,7 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
         Modifiers::default(),
     );
     draw(cx);
-    assert_eq!(cursor(cx), CursorStyle::ClosedHand);
+    assert_eq!(cursor(cx), move_cursor(true));
     cx.simulate_mouse_up(
         point(middle.x, middle.y + px(30.)),
         MouseButton::Left,
@@ -45801,7 +45815,7 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     draw(cx);
     assert_eq!(
         cursor_at(cx, view(380., 400. - 6. / scale)),
-        CursorStyle::OpenHand
+        move_cursor(false).standard()
     );
     assert_eq!(
         cursor_at(cx, view(380., 400. - 9. / scale)),
@@ -45973,7 +45987,8 @@ fn blank_workspace_recent_files_reopen_through_the_normal_open_route(cx: &mut Te
             .read(cx)
             .path()
             .to_owned()),
-        path
+        // Opened documents keep their canonical path.
+        std::fs::canonicalize(&path).unwrap()
     );
     std::fs::remove_dir_all(directory).unwrap();
 }

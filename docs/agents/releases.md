@@ -94,7 +94,8 @@ Paper Release". Do these steps in a browser with 1Password autofill:
 
 5. After rotating, remove the old key in Partner Center.
 
-Without the job (or if it fails), submit by hand: download both artifacts with
+Until the credentials are set, the job notes that and skips. Without the job
+(or if it fails), submit by hand: download both artifacts with
 `gh run download <run> -p 'microsoft-store-*'`, start an update submission,
 replace the packages with both MSIX files and submit it for certification.
 

@@ -49,6 +49,8 @@ pub(super) struct ViewportInputs {
     pub selection_color: Hsla,
     pub semantic_snap_decision: Option<SemanticSnapDecision>,
     pub viewer_pages: Vec<ViewerPageRender>,
+    /// Each page's tiles from before a zoom, drawn under its tiles.
+    pub viewer_zoom_fallback: HashMap<usize, Vec<(crate::viewer::Rect, Arc<RenderImage>)>>,
     pub viewer_pan_margin: (f32, f32),
     pub viewer_plan: Option<ViewerPlanSnapshot>,
     pub viewer_scroll: ScrollHandle,
@@ -89,6 +91,7 @@ impl DocumentWorkspace {
             selection_color,
             semantic_snap_decision,
             viewer_pages,
+            viewer_zoom_fallback,
             viewer_pan_margin,
             viewer_plan,
             viewer_scroll,
@@ -234,6 +237,39 @@ impl DocumentWorkspace {
                                                                         }),
                                                                 )
                                                         });
+                                                    // Tiles from before a zoom, scaled under
+                                                    // the new ones until those arrive.
+                                                    let zoom_fallback_tiles = viewer_zoom_fallback
+                                                        .get(&layout.page)
+                                                        .into_iter()
+                                                        .flatten()
+                                                        .map(|(rect, image)| {
+                                                            let image_size = image.size(0);
+                                                            let pad = crate::document_resource::TILE_IMAGE_PADDING as f32;
+                                                            let border = |extent: f32, pixels: i32| {
+                                                                let inner = pixels as f32 - 2. * pad;
+                                                                if inner > 0. { extent * pad / inner } else { 0. }
+                                                            };
+                                                            let border_x = border(rect.width, image_size.width.0);
+                                                            let border_y = border(rect.height, image_size.height.0);
+                                                            gpui::div()
+                                                                .absolute()
+                                                                .left(px(rect.x))
+                                                                .top(px(rect.y))
+                                                                .w(px(rect.width))
+                                                                .h(px(rect.height))
+                                                                .overflow_hidden()
+                                                                .child(
+                                                                    img(image.clone())
+                                                                        .absolute()
+                                                                        .left(px(-border_x))
+                                                                        .top(px(-border_y))
+                                                                        .w(px(rect.width + 2. * border_x))
+                                                                        .h(px(rect.height + 2. * border_y))
+                                                                        .object_fit(ObjectFit::Fill),
+                                                                )
+                                                        })
+                                                        .collect::<Vec<_>>();
                                                     let page_tiles = tiles
                                                         .into_iter()
                                                         .enumerate()
@@ -322,6 +358,7 @@ impl DocumentWorkspace {
                                                                 )
                                                             },
                                                         )
+                                                        .children(zoom_fallback_tiles)
                                                         .children(page_tiles)
                                                         .children(quality_marker)
                                                         .child(annotation_layer(

@@ -337,6 +337,9 @@ impl ComponentStory {
         });
         let menu_bar_visible = !menu_bar_visibility_supported
             || shared_application(cx).preferences.get().menu_bar_visible();
+        cx.set_global(butter_paper::application_settings::InAppMenuBarShown(
+            menu_bar_visible,
+        ));
         // The active document window owns the application menus; refresh them
         // and any template changes made in another window when this one
         // becomes active.
@@ -548,6 +551,9 @@ impl ComponentStory {
         // replacing the in-window projection, especially when hiding the bar.
         // The preference applies to every window.
         cx.defer(move |cx| {
+            cx.set_global(butter_paper::application_settings::InAppMenuBarShown(
+                visible,
+            ));
             for story in document_window_stories(cx) {
                 story.update(cx, |story, cx| {
                     story.menu_bar_visible = visible;
@@ -1695,7 +1701,12 @@ impl Render for ComponentStory {
                     .bg(cx.theme().background)
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(self.app_menu_bar.clone()),
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(self.app_menu_bar.clone()))
+                    .children(butter_paper::application_settings::menu_bar_update_status(
+                        cx,
+                    )),
             )
         } else {
             root
@@ -1715,7 +1726,12 @@ impl Render for ComponentStory {
                 .bg(cx.theme().background)
                 .border_b_1()
                 .border_color(cx.theme().border)
-                .child(self.app_menu_bar.clone()),
+                .flex()
+                .items_center()
+                .child(div().flex_1().min_w_0().child(self.app_menu_bar.clone()))
+                .children(butter_paper::application_settings::menu_bar_update_status(
+                    cx,
+                )),
         );
         root.child(
             div()
@@ -3456,6 +3472,8 @@ mod updates {
         relaunch_after_quit: bool,
         message: String,
         notes: String,
+        /// While downloading: the bytes received so far and the package size.
+        download_progress: Option<(std::sync::Arc<std::sync::atomic::AtomicU64>, u64)>,
     }
 
     impl Global for UpdateService {}
@@ -3488,9 +3506,18 @@ mod updates {
             relaunch_after_quit: false,
             message: String::new(),
             notes: String::new(),
+            download_progress: None,
         });
 
-        cx.on_action(|_: &CheckForUpdates, cx| check(cx, true));
+        cx.on_action(|_: &CheckForUpdates, cx| {
+            let service = cx.global::<UpdateService>();
+            // An installed copy checks itself: Settings shows the progress.
+            let installed = !service.microsoft_store && service.installation.is_some();
+            check(cx, true);
+            if installed {
+                cx.dispatch_action(&butter_paper::application_shell::OpenUpdateSettings);
+            }
+        });
         refresh_menus(cx);
         cx.on_action(|_: &butter_paper::application_shell::DownloadUpdate, cx| {
             let service = cx.global_mut::<UpdateService>();
@@ -3632,6 +3659,15 @@ mod updates {
                 state,
                 message: service.message.clone(),
                 notes: service.notes.clone(),
+                progress: matches!(service.status, Status::Downloading)
+                    .then_some(service.download_progress.as_ref())
+                    .flatten()
+                    .map(
+                        |(received, total)| butter_paper::application_settings::UpdateProgress {
+                            received: received.load(std::sync::atomic::Ordering::Relaxed),
+                            total: *total,
+                        },
+                    ),
             },
         );
         for story in super::document_window_stories(cx) {
@@ -3642,6 +3678,10 @@ mod updates {
     fn check(cx: &mut App, manual: bool) {
         let service = cx.global::<UpdateService>();
         if service.microsoft_store {
+            // The Store updates Store copies: a manual check opens its page.
+            if manual {
+                cx.open_url(butter_paper::application_shell::MICROSOFT_STORE_URL);
+            }
             return;
         }
         if service.installation.is_none() {
@@ -3722,11 +3762,34 @@ mod updates {
             std::process::id()
         ));
         let retry_update = update.clone();
+        let received = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        cx.global_mut::<UpdateService>().download_progress =
+            Some((received.clone(), update.package.size));
+        // Show the progress while the download runs.
+        cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+                let downloading = cx.update(|cx| {
+                    let downloading =
+                        matches!(cx.global::<UpdateService>().status, Status::Downloading);
+                    if downloading {
+                        refresh_menus(cx);
+                    }
+                    downloading
+                });
+                if !downloading {
+                    break;
+                }
+            }
+        })
+        .detach();
         let task = cx.background_executor().spawn(async move {
             let _ = std::fs::remove_dir_all(&work);
             std::fs::create_dir_all(&work)
                 .map_err(|_| UpdateError::new_public("The update could not be saved."))?;
-            let result = download_update(&update, &work)
+            let result = download_update(&update, &work, &received)
                 .and_then(|package| prepare_update(&update, &package, &work, &installation));
             if result.is_err() {
                 let _ = std::fs::remove_dir_all(&work);
@@ -3737,6 +3800,7 @@ mod updates {
             let result = task.await;
             cx.update(|cx| {
                 let service = cx.global_mut::<UpdateService>();
+                service.download_progress = None;
                 match result {
                     Ok(prepared) => {
                         service.status = Status::Ready(prepared);
@@ -3898,6 +3962,10 @@ mod review_driver {
                 let text_argument_all = line.split_once(' ').map_or("", |(_, text)| text).to_string();
                 let number = |index: usize| words[index].parse::<f32>().unwrap();
                 match words[0] {
+                    "toggle-menu-bar" => {
+                        cx.update(|cx| cx.dispatch_action(&ToggleApplicationMenuBar));
+                        pause(cx, 800).await;
+                    }
                     "settings" => {
                         cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenSettings));
                         pause(cx, 500).await;
@@ -3943,6 +4011,7 @@ mod review_driver {
                             state: UpdateMenuState {status, frequency: Some(UpdateFrequency::Daily)},
                             message: if words[1] == "failed" { "Couldn’t download the update. Check your connection and try again.".into() } else { String::new() },
                             notes: "## Butter Paper 0.1.5\n\n- Improved update controls and release notes.\n- Added About Butter Paper and Settings.\n\nKeep working while the update downloads.".into(),
+                            progress: (words[1] == "downloading").then_some(butter_paper::application_settings::UpdateProgress { received: 12_345_678, total: 56_100_000 }),
                         }));
                         pause(cx, 500).await;
                     }
@@ -4495,6 +4564,67 @@ mod review_driver {
                         });
                         pause(cx, 800).await;
                     }
+                    "drag-smooth" => {
+                        // drag-smooth W X1 Y1 X2 Y2 STEPS GAP_MS: a left drag
+                        // as a hand makes it, with no captures on the way.
+                        let window = number(1) as usize;
+                        let start = point(px(number(2)), px(number(3)));
+                        let end = point(px(number(4)), px(number(5)));
+                        let steps = number(6) as usize;
+                        let gap = number(7) as u64;
+                        dispatch(cx, window, PlatformInput::MouseDown(MouseDownEvent {
+                            button: MouseButton::Left,
+                            position: start,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                            first_mouse: false,
+                        }));
+                        for step in 1..=steps {
+                            pause(cx, gap).await;
+                            let t = step as f32 / steps as f32;
+                            dispatch(cx, window, PlatformInput::MouseMove(MouseMoveEvent {
+                                position: start + (end - start) * t,
+                                pressed_button: Some(MouseButton::Left),
+                                modifiers: Modifiers::default(),
+                            }));
+                        }
+                        pause(cx, gap).await;
+                        dispatch(cx, window, PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: end,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                        }));
+                        pause(cx, 400).await;
+                    }
+                    "type-slow" => {
+                        // type-slow W GAP_MS TEXT: like type, one character
+                        // every GAP_MS, as a person types.
+                        let window = number(1) as usize;
+                        let gap = number(2) as u64;
+                        let text = words[3..].join(" ");
+                        for character in text.chars() {
+                            cx.update(|cx| {
+                                if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                                    let _ = entry.handle.update(cx, |_, window, cx| {
+                                        window.dispatch_keystroke(
+                                            gpui::Keystroke {
+                                                modifiers: gpui::Modifiers::default(),
+                                                key: if character == ' ' {
+                                                    "space".into()
+                                                } else {
+                                                    character.to_lowercase().to_string()
+                                                },
+                                                key_char: Some(character.to_string()),
+                                            },
+                                            cx,
+                                        );
+                                    });
+                                }
+                            });
+                            pause(cx, gap).await;
+                        }
+                    }
                     "log-text" => {
                         // log-text W: the edited line's text and the status.
                         let window = number(1) as usize;
@@ -4513,6 +4643,51 @@ mod review_driver {
                                         .active_document_id()
                                         .map(|id| workspace.page_text_sync_summary(id))
                                         .unwrap_or_default()
+                                )
+                                .unwrap();
+                            }
+                        });
+                    }
+                    "new-blank" => {
+                        // new-blank W: a new blank PDF, as New from Template's
+                        // Blank creates it.
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(number(1) as usize)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                let disposition = workspace.update(cx, |workspace, cx| {
+                                    workspace.request_generated_template("built-in-blank", cx)
+                                });
+                                writeln!(log, "new-blank: {disposition:?}").unwrap();
+                            }
+                        });
+                        pause(cx, 2000).await;
+                    }
+                    "log-markups" => {
+                        // log-markups W LABEL: the active document's markups,
+                        // tool, status and errors.
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(window)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                let workspace = workspace.read(cx);
+                                let id = workspace.active_document_id();
+                                let snapshot = id.and_then(|id| workspace.annotation_snapshot(id, cx));
+                                writeln!(
+                                    log,
+                                    "markups {} order={:?} rectangles={:?} revision={:?} dirty={:?} tool={:?} status={:?} file_error={:?} sessions={:?}",
+                                    words.get(2).copied().unwrap_or_default(),
+                                    snapshot.as_ref().map(|snapshot| snapshot.annotation_order.len()),
+                                    snapshot.as_ref().map(|snapshot| snapshot.rectangles.len()),
+                                    snapshot.as_ref().map(|snapshot| snapshot.revision),
+                                    snapshot.as_ref().map(|snapshot| snapshot.dirty),
+                                    id.and_then(|id| workspace.annotation_tool(id, cx)),
+                                    workspace.annotation_status(),
+                                    workspace.last_file_error(),
+                                    workspace.session_debug_states(cx),
                                 )
                                 .unwrap();
                             }
