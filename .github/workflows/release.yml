@@ -10,8 +10,9 @@ name: Release
 # Running it by hand (workflow_dispatch) from main is a dry run: every target
 # is built and packaged, unsigned, and nothing is published.
 #
-# Windows jobs also leave the Microsoft Store packages as microsoft-store-*
-# run artifacts, which are uploaded in Partner Center (docs/agents/releases.md).
+# Windows jobs also build the Microsoft Store packages (microsoft-store-* run
+# artifacts). After a stable release is published, the microsoft-store job
+# submits them to the Store for certification (docs/agents/releases.md).
 
 on:
   push:
@@ -418,3 +419,38 @@ jobs:
             --arg correlation_id "$correlation" \
             '{event_type:"publish-homebrew-v1",client_payload:{product:$product,tag:$tag,release_commit:$release_commit,source_run_id:$source_run_id,source_run_attempt:$source_run_attempt,correlation_id:$correlation_id}}' |
             gh api --method POST repos/apotenza92/homebrew-tap/dispatches --input -
+
+  microsoft-store:
+    needs: [validate, publish]
+    if: needs.validate.outputs.dry_run == 'false' && needs.validate.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # The Partner Center application's credentials live only in this
+    # environment.
+    environment: microsoft-store
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: microsoft-store-*
+          path: ${{ runner.temp }}/store
+          merge-multiple: true
+      - name: Submit the Store packages for certification
+        shell: bash
+        env:
+          STORE_TENANT_ID: ${{ secrets.STORE_TENANT_ID }}
+          STORE_CLIENT_ID: ${{ secrets.STORE_CLIENT_ID }}
+          STORE_CLIENT_SECRET: ${{ secrets.STORE_CLIENT_SECRET }}
+          STORE_PRODUCT_ID: ${{ vars.STORE_PRODUCT_ID }}
+        run: |
+          set -euo pipefail
+          store="$RUNNER_TEMP/store"
+          ls -l "$store"
+          cargo xtask store-submit --app "$STORE_PRODUCT_ID" \
+            --msix "$store/Butter-Paper-Windows-x64.msix" \
+            --msix "$store/Butter-Paper-Windows-arm64.msix"

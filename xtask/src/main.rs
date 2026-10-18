@@ -11,6 +11,7 @@ mod package;
 mod pdfium;
 mod phone;
 mod release;
+mod store;
 mod target;
 mod thumb_bench;
 mod version;
@@ -48,7 +49,10 @@ const USAGE: &str = "usage: cargo xtask <command>
                               build and package one release asset
   publish-assets --assets DIR --tag vX.Y.Z --commit SHA --run-id N --run-attempt N --jobs a,b
                               add the Homebrew bundle and SHA256SUMS.txt
-  release                     check the version and changelog, then push the tag";
+  release                     check the version and changelog, then push the tag
+  store-submit --app ID --msix FILE [--msix FILE]...
+                              replace the Microsoft Store packages and submit them for certification
+                              (STORE_TENANT_ID, STORE_CLIENT_ID and STORE_CLIENT_SECRET in the environment)";
 
 fn main() -> ExitCode {
     let mut args = Args(env::args().skip(1).collect());
@@ -69,6 +73,7 @@ fn main() -> ExitCode {
         "package" => package::run(&mut args),
         "publish-assets" => homebrew::run(&mut args),
         "release" => release::release(&mut args),
+        "store-submit" => store::run(&mut args),
         _ => Err(USAGE.to_string()),
     };
     match result {

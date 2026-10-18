@@ -46,11 +46,26 @@ named `microsoft-store-windows-*`, not release assets; the Store signs them.
 Its identity in Partner Center is `xtask/templates/windows/store-identity.json`
 and the listing text is [docs/store/listing.md](../store/listing.md).
 
-After a stable release, in Partner Center (Apps and games > Butter Paper):
+After a stable release is published, the release workflow's `microsoft-store`
+job runs `cargo xtask store-submit`. It creates a Store submission from the
+live one, replaces its packages with both MSIX files and commits it; Microsoft
+then certifies and publishes the update. Watch it in Partner Center (Apps and
+games > Butter Paper). A draft left unsubmitted is replaced; a submission
+already in certification stops the job, so wait for it or cancel it first.
 
-1. Download both artifacts: `gh run download <run> -p 'microsoft-store-*'`.
-2. Start an update submission, replace the packages with both MSIX files and
-   submit it for certification.
+The job authenticates as a Microsoft Entra application associated with the
+Partner Center account (Account settings > User management > Microsoft Entra
+applications, Manager role). Its credentials are the `microsoft-store`
+environment secrets `STORE_TENANT_ID`, `STORE_CLIENT_ID` and
+`STORE_CLIENT_SECRET`, with the Store ID in the repository variable
+`STORE_PRODUCT_ID`. The 1Password vault "Butter Paper Release" holds them and
+the Entra tenant's admin sign-in. The client secret expires: when Partner
+Center shows it near expiry, add a new key there, update the 1Password item
+and the environment secret, then remove the old key.
+
+Without the job (or if it fails), submit by hand: download both artifacts with
+`gh run download <run> -p 'microsoft-store-*'`, start an update submission,
+replace the packages with both MSIX files and submit it for certification.
 
 The Store copy needs the Microsoft Visual C++ runtime framework package,
 which the Store installs with it.
