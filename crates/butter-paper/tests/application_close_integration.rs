@@ -39,15 +39,14 @@ use butter_paper::{
         DOCUMENT_IMAGE_TOOL_ID, DOCUMENT_LINE_TOOL_ID, DOCUMENT_PEN_TOOL_ID,
         DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_SELECT_TOOL_ID,
         DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID, DOCUMENT_TEXT_BOX_EDITOR_ID,
-        DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_TOOLBAR_SCROLL_ID, DocumentEditCapabilities,
-        DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest,
-        DocumentOpenBatchStatus, DocumentOpenOrigin, DocumentWorkspace, NativeDocumentOpener,
-        NativeDocumentResource, NativeDocumentSaveStatus, NativeDocumentSaver,
-        NativeDocumentStatus, OpenDocumentRequest, OpenedNativeDocument, PdfDocumentSaver,
-        PdfiumWorkerBackend, RasterSurface, RotatePageRight, Save, SaveAs, SaveDocumentRequest,
-        SavedNativeDocument, ThumbnailSurface, ViewerFitPreset, ZoomIn,
-        document_annotation_layer_id, document_session_close_id, document_session_tab_id,
-        document_thumbnail_id, init_document_workspace_actions,
+        DOCUMENT_TEXT_BOX_TOOL_ID, DocumentEditCapabilities, DocumentId,
+        DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
+        DocumentOpenOrigin, DocumentWorkspace, NativeDocumentOpener, NativeDocumentResource,
+        NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus, OpenDocumentRequest,
+        OpenedNativeDocument, PdfDocumentSaver, PdfiumWorkerBackend, RasterSurface,
+        RotatePageRight, Save, SaveAs, SaveDocumentRequest, SavedNativeDocument, ThumbnailSurface,
+        ViewerFitPreset, ZoomIn, document_annotation_layer_id, document_session_close_id,
+        document_session_tab_id, document_thumbnail_id, init_document_workspace_actions,
     },
     highlight_defaults_panel::{HIGHLIGHT_DEFAULTS_CLOSE_ID, HIGHLIGHT_DEFAULTS_PANEL_ID},
     ink_property_inspector::{
@@ -317,8 +316,6 @@ fn scroll_annotation_target_into_view(cx: &mut gpui::VisualTestContext, target_i
         "text-box-property-inspector-scroll"
     } else if target_id.starts_with("straight-line-inspector-") {
         "straight-line-property-inspector-scroll"
-    } else if cx.debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID).is_some() {
-        DOCUMENT_TOOLBAR_SCROLL_ID
     } else {
         "document-workspace-right-rail-scroll"
     };
@@ -4297,9 +4294,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
         .expect("Select must remain available before opening inline Pen properties");
     cx.simulate_click(select_tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    if cx.debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID).is_none() {
-        toggle_document_actions(cx);
-    }
+    toggle_document_actions(cx);
     for id in [
         INK_INSPECTOR_LOCKED_ID,
         INK_INSPECTOR_COLOR_ID,

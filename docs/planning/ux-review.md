@@ -17,7 +17,7 @@ Repeat this pass on the exact images being handed to the user, after the last co
 - If a workaround places the pointer via wheel input, record both effects and verify scrolling did not change the tested geometry. A pointer covering the close glyph or its feedback cannot establish close-only hover clarity; obtain unobscured evidence or leave that check open.
 - For pinch and Ctrl-scroll zoom, check bursts of several input events before repaint as well as one step per frame; the page point under the pointer must stay fixed without a flash of the document top.
 - Review drawing before commit: capture intermediate drag steps and pointer movement between clicks for every tool, including the first Cloud+ segment, Cloud's rectangular drag and Arc's chord/bulge. The outline must follow each move and match its committed geometry; release-only evidence cannot establish a live preview.
-- Capture transitions where the requirement is transitional. A screenshot of one endpoint cannot prove animation, focus restoration or absence of movement between states. For selected markups, inspect outline and rotation-knob feedback during move, rotate and resize, with snapping enabled; an existing-object preview must not inherit creation-draft suppression.
+- Capture transitions where the requirement is transitional. A screenshot of one endpoint cannot prove animation, focus restoration or absence of movement between states. For selected markups, inspect handle and rotation-knob feedback during move, rotate and resize, and check that no chrome covers the markup's own stroke, with snapping enabled; an existing-object preview must not inherit creation-draft suppression.
 
 ## Coupled states must agree
 

@@ -64,7 +64,9 @@ const TEXT_WIDTH_PT: f64 = 240.0;
 const TEXT_HEIGHT_PT: f64 = 72.0;
 const HIGHLIGHT_MIN_DISTANCE_PT: f64 = 0.5;
 const POINTER_DRAG_THRESHOLD_CSS_PX: f64 = 3.0;
-const CLOUD_PLUS_TEXT_WIDTH_PT: f64 = 150.0;
+const CAPTION_MIN_WIDTH_PT: f64 = 24.0;
+const CAPTION_HEIGHT_PT: f64 = 44.0;
+const CALLOUT_DEFAULT_TEXT: &str = "Callout";
 const CLOUD_PLUS_TEXT_HEIGHT_PT: f64 = 44.0;
 const CLOUD_PLUS_TEXT_GAP_PT: f64 = 24.0;
 const LENGTH_MINIMUM_PDF_DISTANCE: f64 = 2.0;
@@ -800,6 +802,17 @@ enum ActivePointer {
         start: PdfPoint,
         current: PdfPoint,
         original_paths: Vec<Vec<PdfPoint>>,
+    },
+    InkResize {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        handle: RectangleResizeHandle,
+        start: PdfPoint,
+        current: PdfPoint,
+        original_paths: Vec<Vec<PdfPoint>>,
+        original_box: InkResizeBox,
     },
     TextBoxMove {
         document_id: u64,
@@ -2939,6 +2952,12 @@ impl AnnotationAdapter {
                 ..
             })
             | Some(ActivePointer::SnapshotResize {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                ..
+            })
+            | Some(ActivePointer::InkResize {
                 document_id: active_document_id,
                 page_index: active_page_index,
                 id,
@@ -5094,6 +5113,11 @@ impl AnnotationAdapter {
                 page_index,
                 ..
             }
+            | ActivePointer::InkResize {
+                document_id,
+                page_index,
+                ..
+            }
             | ActivePointer::SnapshotRotate {
                 document_id,
                 page_index,
@@ -6100,6 +6124,41 @@ impl AnnotationAdapter {
     /// Snapshot resize control under the pointer in rectangle feedback order.
     /// The selected unlocked Snapshot may also expose rotation at index eight;
     /// hovered-unselected Snapshots expose only their eight resize controls.
+    /// A Pen or Highlight stroke's resize handle under `point`: the selected
+    /// stroke's first, else the topmost unlocked stroke's.
+    pub fn hover_ink_handle(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        tolerance_pt: f64,
+    ) -> Result<Option<(MarkupId, usize)>, AnnotationError> {
+        let document = self
+            .documents
+            .get(&document_id)
+            .ok_or(AnnotationError::NoSelection)?;
+        if self.tool != AnnotationTool::Select {
+            return Ok(None);
+        }
+        let selected = document.selected_id();
+        let hit = |pen: &crate::annotation_model::PenAnnotation| {
+            InkResizeBox::of(pen.paths(), pen.appearance.width_pt())?
+                .hit(point, tolerance_pt, self.observed_pixels_per_point.0)
+                .map(|index| (pen.id.clone(), index))
+        };
+        let pens = || {
+            document
+                .pens()
+                .iter()
+                .rev()
+                .filter(|pen| pen.page_index == page_index && !pen.locked)
+        };
+        Ok(pens()
+            .filter(|pen| selected == Some(&pen.id))
+            .find_map(hit)
+            .or_else(|| pens().find_map(hit)))
+    }
+
     pub fn hover_snapshot_handle(
         &self,
         document_id: u64,
@@ -6300,6 +6359,7 @@ impl AnnotationAdapter {
             self.hover_vertex_path_handle(document_id, page_index, point, tolerance_pt)?,
             self.hover_measurement_path_handle(document_id, page_index, point, tolerance_pt)?,
             self.hover_snapshot_handle(document_id, page_index, point, tolerance_pt)?,
+            self.hover_ink_handle(document_id, page_index, point, tolerance_pt)?,
             self.hover_callout_handle(document_id, page_index, point, tolerance_pt)?,
             self.hover_cloud_plus_handle(document_id, page_index, point, tolerance_pt)?,
             self.hover_cloud_handle(document_id, page_index, point, tolerance_pt)?,
@@ -6363,6 +6423,19 @@ impl AnnotationAdapter {
             .find(|text_box| text_box.id == selected.id)
     }
 
+    /// Returns a Callout only when the current selection contains exactly one.
+    pub fn exact_selected_callout(&self, document_id: u64) -> Option<&CalloutAnnotation> {
+        let document = self.documents.get(&document_id)?;
+        let selected = document.selected_annotations_in_document_order();
+        let [Annotation::Callout(selected)] = selected.as_slice() else {
+            return None;
+        };
+        document
+            .callouts()
+            .iter()
+            .find(|callout| callout.id == selected.id)
+    }
+
     /// Returns a Cloud+ only when the current selection contains exactly one.
     pub fn exact_selected_cloud_plus(&self, document_id: u64) -> Option<&CloudPlusAnnotation> {
         let document = self.documents.get(&document_id)?;
@@ -6374,6 +6447,14 @@ impl AnnotationAdapter {
             .cloud_pluses()
             .iter()
             .find(|cloud_plus| cloud_plus.id == selected.id)
+    }
+
+    pub fn cloud_plus(&self, document_id: u64, id: &MarkupId) -> Option<&CloudPlusAnnotation> {
+        self.documents
+            .get(&document_id)?
+            .cloud_pluses()
+            .iter()
+            .find(|cloud_plus| &cloud_plus.id == id)
     }
 
     /// Returns a Dimension only when the current selection contains exactly one.
@@ -7558,6 +7639,38 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
+                if let Some((id, index)) = hit_selected_ink_resize_handle(
+                    document,
+                    page_index,
+                    point,
+                    tolerance_pt,
+                    self.observed_pixels_per_point.0,
+                    transform_owner.as_ref(),
+                ) {
+                    document.select(&id);
+                    let pen = document
+                        .pens()
+                        .iter()
+                        .find(|pen| pen.id == id)
+                        .expect("a resize-handle hit must retain its stroke");
+                    if pen.locked {
+                        return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                    }
+                    let original_box = InkResizeBox::of(pen.paths(), pen.appearance.width_pt())
+                        .expect("a stroke with a handle has points");
+                    self.active = Some(ActivePointer::InkResize {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        handle: RectangleResizeHandle::ALL[index],
+                        start: point,
+                        current: point,
+                        original_paths: pen.paths().map(<[PdfPoint]>::to_vec).collect(),
+                        original_box,
+                    });
+                    return Ok(PointerPhaseOutcome::GestureStarted);
+                }
                 if let Some((id, handle)) = hit_selected_snapshot_resize_handle(
                     document,
                     page_index,
@@ -8412,6 +8525,20 @@ impl AnnotationAdapter {
             return Ok(PointerPhaseOutcome::SelectionChanged(Some(selected)));
         }
         if let Some(selected) = document.selected_id().cloned()
+            && document.callouts().iter().any(|annotation| {
+                let text_box = annotation.text_box;
+                annotation.id == selected
+                    && annotation.page_index == page_index
+                    && !annotation.locked
+                    && point.x >= text_box.x - tolerance_pt
+                    && point.x <= text_box.x + text_box.width + tolerance_pt
+                    && point.y >= text_box.y - tolerance_pt
+                    && point.y <= text_box.y + text_box.height + tolerance_pt
+            })
+        {
+            return Ok(PointerPhaseOutcome::SelectionChanged(Some(selected)));
+        }
+        if let Some(selected) = document.selected_id().cloned()
             && document.cloud_pluses().iter().any(|annotation| {
                 annotation.id == selected
                     && annotation.page_index == page_index
@@ -8853,6 +8980,11 @@ impl AnnotationAdapter {
                 ..
             }
             | ActivePointer::SnapshotResize {
+                pointer_id: active_pointer,
+                current,
+                ..
+            }
+            | ActivePointer::InkResize {
                 pointer_id: active_pointer,
                 current,
                 ..
@@ -10011,6 +10143,36 @@ impl AnnotationAdapter {
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
             }
+            ActivePointer::InkResize {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                handle,
+                start,
+                original_paths,
+                original_box,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let paths = original_box.resized_paths(
+                    original_paths.iter().map(Vec::as_slice),
+                    handle,
+                    point,
+                );
+                self.documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?
+                    .apply_command(AnnotationCommand::EditAnnotation {
+                        id: id.clone(),
+                        edit: AnnotationEdit::ReplacePenPaths(paths),
+                    })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
+            }
             ActivePointer::TextBoxMove {
                 document_id,
                 pointer_id: active_pointer,
@@ -10458,17 +10620,15 @@ impl AnnotationAdapter {
         start: PdfPoint,
         end: PdfPoint,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let text_box = PdfRect::new(end.x, end.y - 22., 150., 44.)?;
-        let connection = PdfPoint::new(text_box.x, text_box.y + text_box.height * 0.5)?;
-        let knee = PdfPoint::new((start.x + connection.x) * 0.5, connection.y)?;
         let properties = self.tool_properties(AnnotationTool::Callout);
         let appearance = callout_tool_appearance(&properties)?;
+        let (text_box, leader_points) = callout_initial_layout(start, end, appearance.text())?;
         let annotation = match CalloutAnnotation::new(
             id.clone(),
             page_index,
-            vec![start, knee, connection],
+            leader_points,
             text_box,
-            "Callout",
+            CALLOUT_DEFAULT_TEXT,
             appearance,
         ) {
             Ok(annotation) => annotation,
@@ -10499,10 +10659,11 @@ impl AnnotationAdapter {
         let routing_context =
             self.cloud_plus_routing_context(document_id, page_index, None, caption_supplement);
         let visible_path = cloud_visible_path(&cloud_points, properties.cloud_intensity)?;
+        let appearance = cloud_plus_tool_appearance(&properties)?;
         let placement = place_initial_cloud_plus_text_box(
             &cloud_points,
             &visible_path,
-            CLOUD_PLUS_TEXT_WIDTH_PT,
+            caption_box_width("Cloud+", appearance.text()),
             CLOUD_PLUS_TEXT_HEIGHT_PT,
             CLOUD_PLUS_TEXT_GAP_PT,
             &routing_context,
@@ -10515,7 +10676,7 @@ impl AnnotationAdapter {
             placement.leader.points,
             placement.text_box,
             "Cloud+",
-            cloud_plus_tool_appearance(&properties)?,
+            appearance,
         )?;
         self.documents
             .get_mut(&document_id)
@@ -10657,7 +10818,48 @@ impl AnnotationAdapter {
             .documents
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?;
-        document.replace_callout_content_in_create_transaction(id, content)?;
+        let content = content.into();
+        let text_box = callout_fitted_text_box(
+            document
+                .callouts()
+                .iter()
+                .find(|annotation| &annotation.id == id)
+                .ok_or(AnnotationError::NoSelection)?,
+            &content,
+        );
+        document.replace_callout_content_in_create_transaction(id, content, text_box)?;
+        Ok(())
+    }
+
+    pub fn callout(&self, document_id: u64, id: &MarkupId) -> Option<&CalloutAnnotation> {
+        self.documents
+            .get(&document_id)?
+            .callouts()
+            .iter()
+            .find(|callout| &callout.id == id)
+    }
+
+    /// Replaces an existing Callout's text, refitting its box, as one
+    /// undoable change.
+    pub fn replace_callout_text(
+        &mut self,
+        document_id: u64,
+        id: &MarkupId,
+        content: impl Into<String>,
+    ) -> Result<(), AnnotationError> {
+        let content = content.into();
+        let text_box = callout_fitted_text_box(
+            self.callout(document_id, id)
+                .ok_or(AnnotationError::NoSelection)?,
+            &content,
+        );
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetCalloutContentAndTextBox { content, text_box },
+            })?;
         Ok(())
     }
 
@@ -12259,30 +12461,17 @@ impl AnnotationAdapter {
             && start != current
         {
             let properties = self.tool_properties(AnnotationTool::Callout);
-            let text_box = PdfRect {
-                x: current.x,
-                y: current.y - 22.,
-                width: 150.,
-                height: 44.,
-            };
-            let connection = PdfPoint {
-                x: text_box.x,
-                y: text_box.y + text_box.height * 0.5,
-            };
+            let appearance = callout_tool_appearance(&properties)
+                .expect("stored Callout tool properties are validated");
+            let (text_box, leader_points) =
+                callout_initial_layout(*start, *current, appearance.text())
+                    .expect("a Callout drag between distinct finite points has a layout");
             scene.callouts.push(SceneCallout {
                 id: id.clone(),
-                leader_points: vec![
-                    *start,
-                    PdfPoint {
-                        x: (start.x + connection.x) * 0.5,
-                        y: connection.y,
-                    },
-                    connection,
-                ],
+                leader_points,
                 text_box,
-                content: "Callout".into(),
-                appearance: callout_tool_appearance(&properties)
-                    .expect("stored Callout tool properties are validated"),
+                content: CALLOUT_DEFAULT_TEXT.into(),
+                appearance,
                 selected: true,
                 locked: false,
                 draft: true,
@@ -12323,15 +12512,15 @@ impl AnnotationAdapter {
                 },
             ];
             if let Ok(visible_path) = cloud_visible_path(&cloud_points, properties.cloud_intensity)
+                && let Ok(appearance) = cloud_plus_tool_appearance(&properties)
                 && let Ok(placement) = place_initial_cloud_plus_text_box(
                     &cloud_points,
                     &visible_path,
-                    CLOUD_PLUS_TEXT_WIDTH_PT,
+                    caption_box_width("Cloud+", appearance.text()),
                     CLOUD_PLUS_TEXT_HEIGHT_PT,
                     CLOUD_PLUS_TEXT_GAP_PT,
                     &routing_context,
                 )
-                && let Ok(appearance) = cloud_plus_tool_appearance(&properties)
             {
                 scene.cloud_pluses.push(SceneCloudPlus {
                     id: id.clone(),
@@ -12490,15 +12679,15 @@ impl AnnotationAdapter {
             if cloud_points.len() >= 3
                 && let Ok(visible_path) =
                     cloud_visible_path(&cloud_points, properties.cloud_intensity)
+                && let Ok(appearance) = cloud_plus_tool_appearance(&properties)
                 && let Ok(placement) = place_initial_cloud_plus_text_box(
                     &cloud_points,
                     &visible_path,
-                    CLOUD_PLUS_TEXT_WIDTH_PT,
+                    caption_box_width("Cloud+", appearance.text()),
                     CLOUD_PLUS_TEXT_HEIGHT_PT,
                     CLOUD_PLUS_TEXT_GAP_PT,
                     &routing_context,
                 )
-                && let Ok(appearance) = cloud_plus_tool_appearance(&properties)
             {
                 scene.cloud_pluses.push(SceneCloudPlus {
                     id: draft.id.clone(),
@@ -12678,6 +12867,36 @@ impl AnnotationAdapter {
                 .collect();
             annotation.points = annotation.paths.first().cloned().unwrap_or_default();
             annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
+        }
+        if let Some(ActivePointer::InkResize {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            handle,
+            current,
+            original_paths,
+            original_box,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Some(annotation) = scene
+                .pens
+                .iter_mut()
+                .find(|annotation| annotation.id == *id)
+        {
+            annotation.paths = original_box.resized_paths(
+                original_paths.iter().map(Vec::as_slice),
+                *handle,
+                *current,
+            );
+            annotation.points = annotation.paths.first().cloned().unwrap_or_default();
+            annotation.feedback = SceneInteractionFeedback::Transform {
+                chrome_visible,
+                active_handle: RectangleResizeHandle::ALL
+                    .iter()
+                    .position(|candidate| candidate == handle)
+                    .expect("a stroke resize uses a known handle"),
+            };
         }
         if let Some(ActivePointer::TextBoxMove {
             document_id: active_document_id,
@@ -13472,6 +13691,7 @@ fn active_pointer_document_id(active: &ActivePointer) -> u64 {
         | ActivePointer::VertexPathPoint { document_id, .. }
         | ActivePointer::MeasurementPathPoint { document_id, .. }
         | ActivePointer::InkMove { document_id, .. }
+        | ActivePointer::InkResize { document_id, .. }
         | ActivePointer::TextBoxMove { document_id, .. }
         | ActivePointer::TextBoxResize { document_id, .. }
         | ActivePointer::TextBoxRotate { document_id, .. }
@@ -14153,6 +14373,151 @@ fn hit_selected_snapshot_rotation_handle(
         true,
     ) == Some(RectangleResizeHandle::ALL.len()))
     .then(|| annotation.id.clone())
+}
+
+/// The box a Pen or Highlight stroke resizes by: the bounds of its points,
+/// with its handles half the line width further out, at the visible
+/// stroke's edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct InkResizeBox {
+    points: PdfRect,
+    padding: f64,
+}
+
+impl InkResizeBox {
+    /// Below this extent a stroke is flat along that axis and has no
+    /// handles across it, which would do nothing.
+    const FLAT_PT: f64 = 0.5;
+    /// A resized stroke keeps at least this extent along a non-flat axis.
+    const MIN_EXTENT_PT: f64 = 1.;
+
+    pub(crate) fn of<'a>(
+        paths: impl IntoIterator<Item = &'a [PdfPoint]>,
+        width_pt: f64,
+    ) -> Option<Self> {
+        let mut points = paths.into_iter().flatten();
+        let first = points.next()?;
+        let (mut left, mut bottom, mut right, mut top) = (first.x, first.y, first.x, first.y);
+        for point in points {
+            left = left.min(point.x);
+            bottom = bottom.min(point.y);
+            right = right.max(point.x);
+            top = top.max(point.y);
+        }
+        Some(Self {
+            points: PdfRect {
+                x: left,
+                y: bottom,
+                width: right - left,
+                height: top - bottom,
+            },
+            padding: (width_pt * 0.5).max(1.),
+        })
+    }
+
+    pub(crate) fn outer(self) -> PdfRect {
+        PdfRect {
+            x: self.points.x - self.padding,
+            y: self.points.y - self.padding,
+            width: self.points.width + self.padding * 2.,
+            height: self.points.height + self.padding * 2.,
+        }
+    }
+
+    /// The handles that resize the stroke, as indices into
+    /// [`RectangleResizeHandle::ALL`] with their points.
+    pub(crate) fn handles(self) -> Vec<(usize, PdfPoint)> {
+        let flat_x = self.points.width < Self::FLAT_PT;
+        let flat_y = self.points.height < Self::FLAT_PT;
+        RectangleResizeHandle::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|(_, handle)| {
+                let horizontal = handle.affects_east() || handle.affects_west();
+                let vertical = handle.affects_north() || handle.affects_south();
+                !(horizontal && flat_x) && !(vertical && flat_y)
+            })
+            .map(|(index, handle)| (index, handle.point(self.outer())))
+            .collect()
+    }
+
+    /// `paths` scaled into the box that dragging `handle` to `point` makes.
+    pub(crate) fn resized_paths<'a>(
+        self,
+        paths: impl IntoIterator<Item = &'a [PdfPoint]>,
+        handle: RectangleResizeHandle,
+        point: PdfPoint,
+    ) -> Vec<Vec<PdfPoint>> {
+        let outer = self.outer().rotated_resize_from_handle(0., handle, point);
+        let axis = |start: f64, extent: f64, new_start: f64, new_extent: f64| {
+            let new_extent = if extent < Self::FLAT_PT {
+                0.
+            } else {
+                (new_extent - self.padding * 2.).max(Self::MIN_EXTENT_PT)
+            };
+            let new_start = new_start + self.padding;
+            move |value: f64| {
+                if extent < Self::FLAT_PT {
+                    value - start + new_start + (new_extent - extent) * 0.5
+                } else {
+                    new_start + (value - start) * new_extent / extent
+                }
+            }
+        };
+        let map_x = axis(self.points.x, self.points.width, outer.x, outer.width);
+        let map_y = axis(self.points.y, self.points.height, outer.y, outer.height);
+        paths
+            .into_iter()
+            .map(|path| {
+                path.iter()
+                    .map(|sample| PdfPoint {
+                        x: map_x(sample.x),
+                        y: map_y(sample.y),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn hit(self, point: PdfPoint, tolerance: f64, observed_pixels_per_point: f64) -> Option<usize> {
+        let reach = tolerance.max(
+            crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
+                / observed_pixels_per_point.max(f64::EPSILON),
+        );
+        self.handles()
+            .into_iter()
+            .filter(|(_, handle)| distance(*handle, point) <= reach)
+            .min_by(|(_, left), (_, right)| {
+                distance(*left, point).total_cmp(&distance(*right, point))
+            })
+            .map(|(index, _)| index)
+    }
+}
+
+/// The selected stroke's resize handle under `point`, else that of the
+/// hovered stroke that owns the pointer's transform.
+fn hit_selected_ink_resize_handle(
+    document: &AnnotationDocument,
+    page_index: u32,
+    point: PdfPoint,
+    tolerance: f64,
+    observed_pixels_per_point: f64,
+    transform_owner: Option<&MarkupId>,
+) -> Option<(MarkupId, usize)> {
+    let selected = document.selected_id();
+    document
+        .pens()
+        .iter()
+        .rev()
+        .filter(|pen| {
+            pen.page_index == page_index
+                && (selected == Some(&pen.id) || transform_owner == Some(&pen.id))
+        })
+        .find_map(|pen| {
+            InkResizeBox::of(pen.paths(), pen.appearance.width_pt())?
+                .hit(point, tolerance, observed_pixels_per_point)
+                .map(|index| (pen.id.clone(), index))
+        })
 }
 
 fn hit_snapshot_handle_index(
@@ -15303,6 +15668,104 @@ fn cloud_plus_hit(annotation: &CloudPlusAnnotation, point: PdfPoint, tolerance: 
         || cloud_plus_cloud_hit(annotation, point, tolerance)
 }
 
+/// The width of a Callout or Cloud+ caption box that holds `content`, whose
+/// lines never wrap, at `style`.
+pub(crate) fn caption_box_width(content: &str, style: &TextBoxStyle) -> f64 {
+    let text_width = crate::pdf_engine::appearance_text_block_width_pt(
+        content,
+        style.font_size_pt(),
+        style.font_family(),
+    )
+    .unwrap_or_else(|| {
+        content
+            .split('\n')
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0) as f64
+            * style.font_size_pt()
+            * 0.6
+    });
+    // A little slack keeps the last glyph clear of the border when the
+    // canvas font measures slightly wider than the saved appearance.
+    (text_width + style.inset_pt() * 2. + 2.).max(CAPTION_MIN_WIDTH_PT)
+}
+
+/// The height of a caption box that holds `content` without clipping it.
+fn caption_box_height(content: &str, style: &TextBoxStyle) -> f64 {
+    let line_count = content.split('\n').count().max(1) as f64;
+    (line_count * style.font_size_pt() * 1.15 + 12.).max(CAPTION_HEIGHT_PT)
+}
+
+/// A Callout's text box and leader as drawn from `start`, its arrow tip, to
+/// `end`. The box sits beyond `end` on the side away from the tip, centred
+/// on it, so the leader never crosses its own text.
+fn callout_initial_layout(
+    start: PdfPoint,
+    end: PdfPoint,
+    style: &TextBoxStyle,
+) -> Result<(PdfRect, Vec<PdfPoint>), AnnotationError> {
+    let width = caption_box_width(CALLOUT_DEFAULT_TEXT, style);
+    let height = caption_box_height(CALLOUT_DEFAULT_TEXT, style);
+    let leftwards = end.x < start.x;
+    let text_box = PdfRect::new(
+        if leftwards { end.x - width } else { end.x },
+        end.y - height * 0.5,
+        width,
+        height,
+    )?;
+    let connection = PdfPoint::new(end.x, end.y)?;
+    let knee = PdfPoint::new((start.x + connection.x) * 0.5, connection.y)?;
+    Ok((text_box, vec![start, knee, connection]))
+}
+
+/// A Callout's text box refitted to `content`. The side its leader meets
+/// stays put and the box keeps its vertical centre.
+pub(crate) fn callout_fitted_text_box(annotation: &CalloutAnnotation, content: &str) -> PdfRect {
+    let style = annotation.appearance.text();
+    let current = annotation.text_box;
+    let width = caption_box_width(content, style);
+    let height = caption_box_height(content, style);
+    let right = current.x + current.width;
+    let leader_meets_right = annotation
+        .leader_points()
+        .last()
+        .is_some_and(|connection| (connection.x - right).abs() < (connection.x - current.x).abs());
+    PdfRect {
+        x: if leader_meets_right {
+            right - width
+        } else {
+            current.x
+        },
+        y: current.y + (current.height - height) * 0.5,
+        width,
+        height,
+    }
+}
+
+/// A Cloud+ caption box resized to fit `content`. The side its leader meets
+/// stays put, so the text never drifts away from the leader.
+pub(crate) fn cloud_plus_fitted_text_box(
+    annotation: &CloudPlusAnnotation,
+    content: &str,
+) -> PdfRect {
+    let current = annotation.text_box;
+    let width = caption_box_width(content, annotation.appearance.text());
+    let right = current.x + current.width;
+    let leader_meets_right = annotation
+        .leader_points()
+        .last()
+        .is_some_and(|connection| (connection.x - right).abs() < (connection.x - current.x).abs());
+    PdfRect {
+        x: if leader_meets_right {
+            right - width
+        } else {
+            current.x
+        },
+        width,
+        ..current
+    }
+}
+
 fn cloud_plus_text_layout(
     annotation: &CloudPlusAnnotation,
     content: &str,
@@ -15315,6 +15778,7 @@ fn cloud_plus_text_layout(
         .text_box
         .height
         .max(line_count * line_height + 12.);
+    let fitted = cloud_plus_fitted_text_box(annotation, &normalized_content);
     let connection = annotation.leader_points().last().copied();
     let existing_center_y = annotation.text_box.y + annotation.text_box.height * 0.5;
     let connects_to_vertical_side = connection.is_some_and(|connection| {
@@ -15332,12 +15796,7 @@ fn cloud_plus_text_layout(
     } else {
         existing_center_y
     };
-    let text_box = PdfRect::new(
-        annotation.text_box.x,
-        center_y - height * 0.5,
-        annotation.text_box.width,
-        height,
-    )?;
+    let text_box = PdfRect::new(fitted.x, center_y - height * 0.5, fitted.width, height)?;
     let leader = route_cloud_plus_leader(
         annotation.cloud_points(),
         &annotation.scallop_path(),
@@ -16772,6 +17231,211 @@ mod tests {
             Err(AnnotationError::NoActiveGesture)
         );
         assert_eq!(adapter.snapshot(7).unwrap().revision, stale_revision);
+    }
+
+    fn seed_pen(adapter: &mut AnnotationAdapter, points: Vec<PdfPoint>) -> MarkupId {
+        let id = MarkupId::new("pen:resize").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Pen(
+                PenAnnotation::new(
+                    id.clone(),
+                    0,
+                    points,
+                    PenAppearance::new("#ff0000", 2., 1.).unwrap(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn dragging_a_selected_strokes_handle_scales_it_into_the_new_box_in_one_step() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_pen(
+            &mut adapter,
+            vec![point(100., 100.), point(150., 140.), point(200., 100.)],
+        );
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let history_before = adapter.history_depths(7);
+        let resize_box = InkResizeBox::of(
+            [&[point(100., 100.), point(150., 140.), point(200., 100.)][..]],
+            2.,
+        )
+        .unwrap();
+        assert_eq!(
+            resize_box.outer(),
+            PdfRect {
+                x: 99.,
+                y: 99.,
+                width: 102.,
+                height: 42.
+            }
+        );
+        assert_eq!(resize_box.handles().len(), 8);
+        // East handle, at the right edge of the visible stroke.
+        let east = point(201., 120.);
+        assert_eq!(
+            adapter.hover_transform_handle(7, 0, east, 2.).unwrap(),
+            Some((id.clone(), 3))
+        );
+        assert_eq!(
+            adapter.pointer_down(7, 0, 1, east, 2.).unwrap(),
+            PointerPhaseOutcome::GestureStarted
+        );
+        adapter.pointer_move(1, point(301., 120.)).unwrap();
+        let preview = adapter.document_scene(7, 0).pens.remove(0);
+        assert_eq!(
+            preview.paths[0],
+            vec![point(100., 100.), point(200., 140.), point(300., 100.)]
+        );
+        assert_eq!(
+            adapter.history_depths(7),
+            history_before,
+            "a preview adds no history"
+        );
+        assert_eq!(
+            adapter.pointer_up(1, point(301., 120.)).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id.clone())
+        );
+        let resized = adapter.snapshot(7).unwrap().pens[0].clone();
+        assert_eq!(
+            resized.paths().next().unwrap(),
+            &[point(100., 100.), point(200., 140.), point(300., 100.)][..],
+            "the west edge stays put and heights are untouched"
+        );
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().pens[0].paths().next().unwrap(),
+            &[point(100., 100.), point(150., 140.), point(200., 100.)][..]
+        );
+    }
+
+    #[test]
+    fn a_flat_stroke_has_no_handles_across_its_flat_side_and_locked_strokes_do_not_resize() {
+        let flat = InkResizeBox::of([&[point(100., 100.), point(200., 100.)][..]], 12.).unwrap();
+        let indices = flat
+            .handles()
+            .into_iter()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            indices,
+            vec![3, 7],
+            "a level highlight only has its east and west handles"
+        );
+
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_pen(
+            &mut adapter,
+            vec![point(100., 100.), point(150., 140.), point(200., 100.)],
+        );
+        let document = adapter.documents.get_mut(&7).unwrap();
+        assert!(document.select(&id));
+        document
+            .apply_command(AnnotationCommand::SetLocked {
+                id: id.clone(),
+                locked: true,
+            })
+            .unwrap();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+        assert_eq!(
+            adapter
+                .hover_transform_handle(7, 0, point(201., 120.), 2.)
+                .unwrap(),
+            None
+        );
+        adapter
+            .pointer_down(7, 0, 1, point(201., 120.), 2.)
+            .unwrap();
+        adapter.pointer_move(1, point(301., 120.)).unwrap();
+        adapter.pointer_up(1, point(301., 120.)).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().pens, before.pens);
+    }
+
+    #[test]
+    fn a_callout_box_sits_beyond_its_drag_end_away_from_the_tip_and_fits_its_text() {
+        for (end, leftwards) in [(point(260., 300.), false), (point(140., 300.), true)] {
+            let mut adapter = AnnotationAdapter::default();
+            adapter.set_tool(AnnotationTool::Callout).unwrap();
+            let start = point(200., 200.);
+            adapter.pointer_down(7, 0, 1, start, 4.).unwrap();
+            adapter.pointer_move(1, end).unwrap();
+            let preview = adapter.document_scene(7, 0).callouts.remove(0);
+            adapter.pointer_up(1, end).unwrap();
+            let callout = adapter.snapshot(7).unwrap().callouts[0].clone();
+            assert_eq!(callout.text_box, preview.text_box);
+            assert_eq!(callout.leader_points(), preview.leader_points);
+            let text_box = callout.text_box;
+            assert_eq!(*callout.leader_points().last().unwrap(), end);
+            if leftwards {
+                assert_eq!(
+                    text_box.x + text_box.width,
+                    end.x,
+                    "a leftward box ends at the drag end"
+                );
+            } else {
+                assert_eq!(text_box.x, end.x, "a rightward box starts at the drag end");
+            }
+            assert!(
+                !(text_box.x..text_box.x + text_box.width).contains(&start.x),
+                "the box must not sit over its own leader"
+            );
+            assert_eq!(
+                text_box.width,
+                caption_box_width(CALLOUT_DEFAULT_TEXT, callout.appearance.text())
+            );
+        }
+    }
+
+    #[test]
+    fn editing_callout_text_refits_its_box_against_the_leader_in_one_step() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_callout(&mut adapter);
+        let original = adapter.snapshot(7).unwrap().callouts[0].clone();
+        let history_before = adapter.history_depths(7);
+
+        adapter
+            .replace_callout_text(7, &id, "A much longer note\non two lines")
+            .unwrap();
+        let edited = adapter.snapshot(7).unwrap().callouts[0].clone();
+        assert_eq!(edited.content(), "A much longer note\non two lines");
+        assert_eq!(
+            edited.text_box.x, original.text_box.x,
+            "the leader meets the left edge"
+        );
+        assert!(edited.text_box.width > original.text_box.width);
+        assert!(edited.text_box.height >= 2. * 12. * 1.15 + 12.);
+        assert_eq!(
+            edited.text_box.y + edited.text_box.height * 0.5,
+            original.text_box.y + original.text_box.height * 0.5
+        );
+        assert_eq!(*edited.leader_points().last().unwrap(), point(100., 40.));
+        assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().callouts[0], original);
+    }
+
+    #[test]
+    fn double_clicking_a_selected_callouts_text_opens_it_for_editing() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_callout(&mut adapter);
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let history_before = adapter.history_depths(7);
+        assert_eq!(
+            adapter
+                .pointer_double_click(7, 0, point(140., 40.), 2.)
+                .unwrap(),
+            PointerPhaseOutcome::SelectionChanged(Some(id))
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
     }
 
     #[test]
@@ -20725,6 +21389,57 @@ mod tests {
     }
 
     #[test]
+    fn a_cloud_plus_caption_fits_its_text_and_keeps_the_side_its_leader_meets() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = MarkupId::new("cloud-plus:left-caption").unwrap();
+        let annotation = CloudPlusAnnotation::new(
+            id.clone(),
+            0,
+            vec![
+                point(200., 10.),
+                point(240., 10.),
+                point(240., 50.),
+                point(200., 50.),
+            ],
+            2.,
+            vec![point(200., 30.), point(188., 30.), point(176., 30.)],
+            PdfRect::new(26., 20., 150., 20.).unwrap(),
+            "Cloud+",
+            default_cloud_plus_appearance().unwrap(),
+        )
+        .unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::CloudPlus(
+                annotation,
+            )))
+            .unwrap();
+
+        adapter.replace_cloud_plus_text(7, &id, "Gap").unwrap();
+        let short = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let width = caption_box_width("Gap", short.appearance.text());
+        assert!(
+            width < 60.,
+            "a short caption must not keep a wide box: {width}"
+        );
+        assert_eq!(short.text_box.width, width);
+        assert_eq!(
+            short.text_box.x + short.text_box.width,
+            176.,
+            "a caption left of its cloud must stay against the leader"
+        );
+
+        adapter
+            .replace_cloud_plus_text(7, &id, "A much longer caption")
+            .unwrap();
+        let long = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert!(long.text_box.width > short.text_box.width);
+        assert_eq!(long.text_box.x + long.text_box.width, 176.);
+    }
+
+    #[test]
     fn selected_cloud_plus_double_click_and_existing_text_edit_use_ordinary_history() {
         let mut adapter = AnnotationAdapter::default();
         let id = seed_cloud_plus(&mut adapter);
@@ -20748,7 +21463,10 @@ mod tests {
         assert_eq!(edited.content(), "one\ntwo\nthree");
         assert!(edited.text_box.height > original.text_box.height);
         assert_eq!(edited.text_box.x, original.text_box.x);
-        assert_eq!(edited.text_box.width, original.text_box.width);
+        assert_eq!(
+            edited.text_box.width,
+            caption_box_width("one\ntwo\nthree", edited.appearance.text())
+        );
         assert_eq!(
             edited.text_box.y + edited.text_box.height * 0.5,
             original.leader_points().last().unwrap().y,

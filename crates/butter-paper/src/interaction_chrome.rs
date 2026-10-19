@@ -10,7 +10,6 @@ fn halo_colour() -> Hsla {
 }
 
 /// Locked handles are visibly inert; they do not imply the active yellow affordance.
-#[cfg(test)]
 pub(super) fn locked_handle_colour() -> Hsla {
     rgb(0x94a3b8).into()
 }
@@ -19,6 +18,7 @@ pub(super) fn hover_colour() -> Hsla {
     rgb(0x93c5fd).into()
 }
 
+#[cfg(test)]
 pub(super) fn focus_colour() -> Hsla {
     rgb(0x1d4ed8).into()
 }
@@ -36,6 +36,18 @@ pub(super) enum ChromeState {
     Focused,
     Hover,
     Draft,
+    /// A locked markup's handles: shown, but inert.
+    Locked,
+}
+
+/// The state a markup's handles take: locked markups show inert handles in
+/// place of active ones.
+pub(super) fn handle_state(state: ChromeState, locked: bool) -> ChromeState {
+    if locked && state != ChromeState::Draft {
+        ChromeState::Locked
+    } else {
+        state
+    }
 }
 
 /// Routed Electron feedback precedence; lock suppresses handles, not the outline state.
@@ -65,153 +77,77 @@ pub(super) fn feedback_state(
 
 pub(super) struct ChromeStyle {
     pub colour: Hsla,
+    /// Handle border width.
     pub width: f32,
-    pub dash: Option<(f32, f32)>,
-    pub halo: f32,
+    /// Handle size; drafts carry no handles.
     pub handle: Option<f32>,
 }
 
-/// Style table for the feedback states. Values mirror the Electron chrome roles:
-/// selected and focused share dash and handle size but differ in colour and
-/// weight; hover is lighter with smaller handles; draft carries no handles.
+/// Style table for the feedback states: every selected markup's handles look
+/// the same, including the one with keyboard focus; hover is lighter with
+/// smaller handles; locked handles are grey; drafts carry no handles. No state
+/// draws a line over or around the markup, so its own colour and thickness
+/// stay visible.
 pub(super) fn chrome_style(state: ChromeState) -> ChromeStyle {
     match state {
-        ChromeState::Selected => ChromeStyle {
+        ChromeState::Selected | ChromeState::Focused => ChromeStyle {
             colour: selection_colour(),
             width: 1.5,
-            dash: Some((5., 4.)),
-            halo: 5.,
-            handle: Some(7.),
-        },
-        ChromeState::Focused => ChromeStyle {
-            colour: focus_colour(),
-            width: 1.75,
-            dash: Some((5., 4.)),
-            halo: 5.,
             handle: Some(7.),
         },
         ChromeState::Hover => ChromeStyle {
             colour: hover_colour(),
             width: 1.25,
-            dash: Some((4., 3.)),
-            halo: 4.,
+            handle: Some(6.),
+        },
+        ChromeState::Locked => ChromeStyle {
+            colour: locked_handle_colour(),
+            width: 1.25,
             handle: Some(6.),
         },
         ChromeState::Draft => ChromeStyle {
             colour: draft_colour(),
             width: 1.5,
-            dash: Some((6., 4.)),
-            halo: 5.,
             handle: None,
         },
     }
 }
 
-/// Closed selection bounds sit this far outside the item, so the dashes and
-/// halo never cover the item's own outline.
+/// The rotation knob's stem starts this far outside the markup.
 pub(super) const SELECTION_OUTSET_PX: f32 = crate::annotation_model::SELECTION_OUTSET_CSS_PX as f32;
 
-/// Paint a screen-space control polygon or rectangle with the reference halo and dash roles.
-/// Closed bounds are drawn [`SELECTION_OUTSET_PX`] outside the given outline.
-pub(super) fn paint_feedback_path(
-    points: &[Point<Pixels>],
-    closed: bool,
+/// A handle: a small square in the state colour over white, filled while hot.
+fn handle_paths(
+    center: Point<Pixels>,
+    degrees: f64,
     state: ChromeState,
-    window: &mut Window,
-) {
-    let outset;
-    let points = if closed && points.len() >= 3 {
-        outset = outset_polygon(points, SELECTION_OUTSET_PX);
-        &outset[..]
-    } else {
-        points
-    };
-    for (path, colour) in feedback_paths(points, closed, state) {
-        window.paint_path(path, colour);
-    }
-}
-
-/// Moves each edge of a simple polygon outward by `distance`, joining the
-/// moved edges with mitres. Exact for rectangles at any rotation.
-fn outset_polygon(points: &[Point<Pixels>], distance: f32) -> Vec<Point<Pixels>> {
-    let count = points.len();
-    let xy = |point: Point<Pixels>| (f32::from(point.x), f32::from(point.y));
-    let signed_area: f32 = (0..count)
-        .map(|index| {
-            let (x0, y0) = xy(points[index]);
-            let (x1, y1) = xy(points[(index + 1) % count]);
-            x0 * y1 - x1 * y0
-        })
-        .sum();
-    if !signed_area.is_finite() || signed_area == 0. {
-        return points.to_vec();
-    }
-    // Outward normal of the edge leaving `index`, for either winding.
-    let normal = |index: usize| {
-        let (x0, y0) = xy(points[index]);
-        let (x1, y1) = xy(points[(index + 1) % count]);
-        let (dx, dy) = (x1 - x0, y1 - y0);
-        let length = dx.hypot(dy);
-        if length <= f32::EPSILON {
-            return None;
-        }
-        let (nx, ny) = (dy / length, -dx / length);
-        Some(if signed_area > 0. {
-            (nx, ny)
-        } else {
-            (-nx, -ny)
-        })
-    };
-    (0..count)
-        .map(|index| {
-            let previous = normal((index + count - 1) % count);
-            let next = normal(index);
-            let (nx, ny) = match (previous, next) {
-                (Some((ax, ay)), Some((bx, by))) => {
-                    let (sx, sy) = (ax + bx, ay + by);
-                    let dot = sx * ax + sy * ay;
-                    if dot <= 0.25 {
-                        (bx, by)
-                    } else {
-                        (sx / dot, sy / dot)
-                    }
-                }
-                (Some(normal), None) | (None, Some(normal)) => normal,
-                (None, None) => (0., 0.),
-            };
-            let (x, y) = xy(points[index]);
-            gpui::point(px(x + nx * distance), px(y + ny * distance))
-        })
-        .collect()
-}
-
-fn feedback_paths(
-    points: &[Point<Pixels>],
-    closed: bool,
-    state: ChromeState,
+    hot: bool,
 ) -> Vec<(Path<Pixels>, Hsla)> {
-    if points.len() < 2 {
-        return Vec::new();
-    }
     let style = chrome_style(state);
+    let Some(size) = style.handle else {
+        return Vec::new();
+    };
+    let hot = hot && state != ChromeState::Locked;
+    let half = (size + if hot { 2. } else { 0. }) / 2.;
+    let corners = [(-half, -half), (half, -half), (half, half), (-half, half)]
+        .map(|(x, y)| rotate_feedback_point(center + gpui::point(px(x), px(y)), center, degrees));
     let mut result = Vec::with_capacity(2);
-    for halo in [true, false] {
-        let mut builder = PathBuilder::stroke(px(if halo { style.halo } else { style.width }));
-        if !halo && let Some((dash, gap)) = style.dash {
-            builder = builder.dash_array(&[px(dash), px(gap)]);
+    for filled in [true, false] {
+        let mut builder = if filled {
+            PathBuilder::fill()
+        } else {
+            PathBuilder::stroke(px(if hot { 2. } else { style.width }))
+        };
+        builder.move_to(corners[0]);
+        for corner in &corners[1..] {
+            builder.line_to(*corner);
         }
-        builder.move_to(points[0]);
-        for point in &points[1..] {
-            builder.line_to(*point);
-        }
-        if closed {
-            builder.close();
-        }
+        builder.close();
         if let Ok(path) = builder.build() {
             result.push((
                 path,
-                if halo {
-                    halo_colour().opacity(0.92)
+                if filled && !hot {
+                    halo_colour()
                 } else {
                     style.colour
                 },
@@ -221,47 +157,14 @@ fn feedback_paths(
     result
 }
 
-/// Electron selectionLineBoundsPathData: extend both caps and both normals by five pixels.
-fn line_feedback_points(start: Point<Pixels>, end: Point<Pixels>) -> Option<[Point<Pixels>; 4]> {
-    let dx = f32::from(end.x - start.x);
-    let dy = f32::from(end.y - start.y);
-    let length = dx.hypot(dy);
-    if !length.is_finite() || length <= 0. {
-        return None;
-    }
-    let tx = dx / length * 5.;
-    let ty = dy / length * 5.;
-    Some([
-        gpui::point(start.x - px(tx + ty), start.y + px(tx - ty)),
-        gpui::point(end.x + px(tx - ty), end.y + px(ty + tx)),
-        gpui::point(end.x + px(tx + ty), end.y + px(ty - tx)),
-        gpui::point(start.x + px(ty - tx), start.y - px(ty + tx)),
-    ])
-}
-
-pub(super) fn paint_line_feedback(
-    start: Point<Pixels>,
-    end: Point<Pixels>,
+/// Paints a resize or point handle at one of the markup's grab targets.
+pub(super) fn paint_feedback_handle(
+    center: Point<Pixels>,
     state: ChromeState,
+    hot: bool,
     window: &mut Window,
 ) {
-    // The envelope already clears the line, so it is not outset again.
-    if let Some(points) = line_feedback_points(start, end) {
-        for (path, colour) in feedback_paths(&points, true, state) {
-            window.paint_path(path, colour);
-        }
-    }
-}
-
-/// Resize and point handles are not painted: the item's own corners, edges
-/// and vertices are the grab targets, announced by the pointer cursor, and
-/// the outset selection outline leaves them visible. Hit-testing is unchanged.
-pub(super) fn paint_feedback_handle(
-    _center: Point<Pixels>,
-    _state: ChromeState,
-    _hot: bool,
-    _window: &mut Window,
-) {
+    paint_rotated_feedback_handle(center, 0., state, hot, window);
 }
 
 pub(super) fn rotate_feedback_point(
@@ -278,14 +181,43 @@ pub(super) fn rotate_feedback_point(
     )
 }
 
-/// See [`paint_feedback_handle`]: rotated resize handles are not painted either.
+/// A handle turned with its markup's rotation.
 pub(super) fn paint_rotated_feedback_handle(
-    _center: Point<Pixels>,
-    _degrees: f64,
-    _state: ChromeState,
-    _hot: bool,
-    _window: &mut Window,
+    center: Point<Pixels>,
+    degrees: f64,
+    state: ChromeState,
+    hot: bool,
+    window: &mut Window,
 ) {
+    if degrees.rem_euclid(90.).abs() <= f64::EPSILON {
+        if let Some(quad) = handle_quad(center, state, hot) {
+            window.paint_quad(quad);
+        }
+        return;
+    }
+    for (path, colour) in handle_paths(center, degrees, state, hot) {
+        window.paint_path(path, colour);
+    }
+}
+
+/// An upright handle, as one quad: white with a state-coloured border, or
+/// filled while hot.
+fn handle_quad(center: Point<Pixels>, state: ChromeState, hot: bool) -> Option<gpui::PaintQuad> {
+    let style = chrome_style(state);
+    let size = style.handle?;
+    let hot = hot && state != ChromeState::Locked;
+    let half = (size + if hot { 2. } else { 0. }) / 2.;
+    Some(
+        fill(
+            Bounds::new(
+                center - gpui::point(px(half), px(half)),
+                gpui::size(px(half * 2.), px(half * 2.)),
+            ),
+            if hot { style.colour } else { halo_colour() },
+        )
+        .border_widths(px(if hot { 2. } else { style.width }))
+        .border_color(style.colour),
+    )
 }
 
 pub(super) fn rotation_feedback_radius(state: ChromeState, hot: bool) -> f32 {
@@ -297,8 +229,8 @@ fn rotation_feedback_quad(
     state: ChromeState,
     hot: bool,
 ) -> Option<gpui::PaintQuad> {
-    // The rotation knob belongs to the blue selection outline: outlined in
-    // the state colour over the halo, and filled with it while hot.
+    // The rotation knob matches the handles: outlined in the state colour
+    // over white, and filled with it while hot.
     let style = chrome_style(state);
     style.handle?;
     let border = if hot { 2. } else { style.width };
@@ -320,7 +252,7 @@ fn rotation_feedback_quad(
 }
 
 /// Connector follows the descriptor projection, including its page-rotation quirks.
-/// Unlike bounds it has no halo. Caller suppresses both primitives when locked.
+/// Caller suppresses both primitives when locked.
 pub(super) fn paint_rotation_feedback(
     start: Point<Pixels>,
     end: Point<Pixels>,
@@ -342,17 +274,14 @@ fn rotation_connector_path(
     end: Point<Pixels>,
     state: ChromeState,
 ) -> Option<Path<Pixels>> {
-    let style = chrome_style(state);
-    // The stem leaves from the outset selection outline, not the item itself.
+    // A thin solid stem that leaves from just outside the item, not over it.
     let (dx, dy) = (f32::from(end.x - start.x), f32::from(end.y - start.y));
     let length = dx.hypot(dy);
     if length > SELECTION_OUTSET_PX {
         let scale = SELECTION_OUTSET_PX / length;
         let start = gpui::point(start.x + px(dx * scale), start.y + px(dy * scale));
-        let mut builder = PathBuilder::stroke(px(style.width));
-        if let Some((dash, gap)) = style.dash {
-            builder = builder.dash_array(&[px(dash), px(gap)]);
-        }
+        chrome_style(state).handle?;
+        let mut builder = PathBuilder::stroke(px(1.));
         builder.move_to(start);
         builder.line_to(end);
         if let Ok(path) = builder.build() {
@@ -494,55 +423,21 @@ mod tests {
     }
 
     #[test]
-    fn rotation_connector_has_separate_dashes_and_clears_the_markup() {
+    fn rotation_connector_is_a_solid_stem_that_clears_the_markup() {
         let start = gpui::point(px(20.), px(100.));
         let end = gpui::point(px(20.), px(0.));
         let path = rotation_connector_path(start, end, ChromeState::Selected).unwrap();
         assert!(
-            path.vertices.len() > 6,
-            "connector must contain multiple dash segments"
+            path.vertices.len() <= 6,
+            "the stem is one solid segment, not dashes: {} vertices",
+            path.vertices.len()
         );
         assert!(
             f32::from(path.bounds.bottom()) <= 95.,
             "stem starts outside the markup"
         );
         assert!(rotation_connector_path(start, start, ChromeState::Selected).is_none());
-    }
-
-    #[test]
-    fn closed_selection_bounds_sit_outside_the_item_at_any_rotation() {
-        let square = [
-            gpui::point(px(10.), px(10.)),
-            gpui::point(px(30.), px(10.)),
-            gpui::point(px(30.), px(30.)),
-            gpui::point(px(10.), px(30.)),
-        ];
-        let expected = [
-            gpui::point(px(4.), px(4.)),
-            gpui::point(px(36.), px(4.)),
-            gpui::point(px(36.), px(36.)),
-            gpui::point(px(4.), px(36.)),
-        ];
-        assert_eq!(outset_polygon(&square, 6.), expected);
-        let mut reversed = square;
-        reversed.reverse();
-        let mut reversed_expected = expected;
-        reversed_expected.reverse();
-        assert_eq!(
-            outset_polygon(&reversed, 6.),
-            reversed_expected,
-            "either winding grows outward"
-        );
-        let diamond = [
-            gpui::point(px(20.), px(0.)),
-            gpui::point(px(40.), px(20.)),
-            gpui::point(px(20.), px(40.)),
-            gpui::point(px(0.), px(20.)),
-        ];
-        let grown = outset_polygon(&diamond, 6.);
-        let diagonal = 6. * 2_f32.sqrt();
-        assert!((f32::from(grown[0].y) - (0. - diagonal)).abs() < 0.001);
-        assert!((f32::from(grown[1].x) - (40. + diagonal)).abs() < 0.001);
+        assert!(rotation_connector_path(start, end, ChromeState::Draft).is_none());
     }
 
     #[test]
@@ -567,41 +462,54 @@ mod tests {
     }
 
     #[test]
-    fn feedback_geometry_emits_closed_line_envelope_and_halo_before_dashes() {
-        let start = gpui::point(px(20.), px(30.));
-        let end = gpui::point(px(120.), px(30.));
-        let corners = line_feedback_points(start, end).unwrap();
-        assert_eq!(
-            corners,
-            [
-                gpui::point(px(15.), px(35.)),
-                gpui::point(px(125.), px(35.)),
-                gpui::point(px(125.), px(25.)),
-                gpui::point(px(15.), px(25.))
-            ]
-        );
-        assert!(line_feedback_points(start, start).is_none());
-        let oblique = line_feedback_points(start, gpui::point(px(50.), px(70.))).unwrap();
-        assert_eq!(oblique[0], gpui::point(px(13.), px(29.)));
-        assert_eq!(oblique[2], gpui::point(px(57.), px(71.)));
-        let paths = feedback_paths(&corners, true, ChromeState::Focused);
+    fn handles_are_squares_over_white_filled_while_hot_and_inert_when_locked() {
+        let center = gpui::point(px(50.), px(50.));
+        let paths = handle_paths(center, 0., ChromeState::Selected, false);
         assert_eq!(paths.len(), 2);
-        assert_eq!(paths[0].1, halo_colour().opacity(0.92));
-        assert_eq!(paths[1].1, focus_colour());
-        assert!(!paths[0].0.vertices.is_empty());
-        assert!(
-            paths[1].0.vertices.len() > paths[0].0.vertices.len(),
-            "dashes must produce distinct stroked segments"
+        assert_eq!(paths[0].1, halo_colour(), "the square is filled white");
+        assert_eq!(
+            paths[1].1,
+            selection_colour(),
+            "and outlined in the selection blue"
         );
+        let width = f32::from(paths[0].0.bounds.size.width);
         assert!(
-            paths[0].0.bounds.size.height > paths[1].0.bounds.size.height,
-            "halo must extend outside the narrower feedback stroke"
+            (width - 7.).abs() < 0.5,
+            "a selected handle is 7px: {width}"
         );
-        let open = feedback_paths(&corners, false, ChromeState::Focused);
+
+        let hot = handle_paths(center, 0., ChromeState::Selected, true);
+        assert_eq!(hot[0].1, selection_colour(), "a hot handle is filled");
+        assert!(hot[0].0.bounds.size.width > paths[0].0.bounds.size.width);
+
+        let locked = handle_paths(center, 0., ChromeState::Locked, true);
+        assert_eq!(
+            locked[0].1,
+            halo_colour(),
+            "a locked handle never turns hot"
+        );
+        assert_eq!(locked[1].1, locked_handle_colour());
+
+        let turned = handle_paths(center, 45., ChromeState::Selected, false);
         assert!(
-            paths[0].0.vertices.len() > open[0].0.vertices.len(),
-            "closed envelope includes the return edge"
+            turned[0].0.bounds.size.width > paths[0].0.bounds.size.width,
+            "a handle turns with its markup"
         );
+        assert!(handle_paths(center, 0., ChromeState::Draft, false).is_empty());
+    }
+
+    #[test]
+    fn handle_state_shows_locked_markups_as_inert() {
+        assert_eq!(
+            handle_state(ChromeState::Selected, true),
+            ChromeState::Locked
+        );
+        assert_eq!(handle_state(ChromeState::Hover, true), ChromeState::Locked);
+        assert_eq!(
+            handle_state(ChromeState::Focused, false),
+            ChromeState::Focused
+        );
+        assert_eq!(handle_state(ChromeState::Draft, true), ChromeState::Draft);
     }
 
     #[test]
@@ -691,28 +599,29 @@ mod tests {
         assert_ne!(focus_colour(), selection_colour());
         assert_ne!(draft_colour(), selection_colour());
         assert_ne!(draft_colour(), hover_colour());
+        assert_ne!(locked_handle_colour(), selection_colour());
 
         let selected = chrome_style(ChromeState::Selected);
         assert_eq!(selected.colour, selection_colour());
         assert_eq!(selected.width, 1.5);
-        assert_eq!(selected.dash, Some((5., 4.)));
         assert_eq!(selected.handle, Some(7.));
 
         let focused = chrome_style(ChromeState::Focused);
-        assert_eq!(focused.colour, focus_colour());
-        assert_eq!(focused.width, 1.75);
-        assert_eq!(focused.dash, selected.dash);
-        assert_eq!(focused.handle, selected.handle);
+        assert_eq!(
+            (focused.colour, focused.width, focused.handle),
+            (selected.colour, selected.width, selected.handle),
+            "focus must not make one selected markup's handles look different"
+        );
 
         let hover = chrome_style(ChromeState::Hover);
         assert_eq!(hover.colour, hover_colour());
-        assert_eq!(hover.width, 1.25);
-        assert_eq!(hover.dash, Some((4., 3.)));
         assert_eq!(hover.handle, Some(6.));
 
-        let draft = chrome_style(ChromeState::Draft);
-        assert_eq!(draft.colour, draft_colour());
-        assert_eq!(draft.handle, None);
+        assert_eq!(
+            chrome_style(ChromeState::Locked).colour,
+            locked_handle_colour()
+        );
+        assert_eq!(chrome_style(ChromeState::Draft).handle, None);
     }
 
     #[test]

@@ -1935,13 +1935,10 @@ impl StraightLineAppearance {
         })
     }
 
-    pub fn default_for(kind: LineKind) -> Self {
+    pub fn default_for(_kind: LineKind) -> Self {
         Self {
             stroke_color: "#ff0000".into(),
-            stroke_width_pt: match kind {
-                LineKind::Line => 1.0,
-                LineKind::Arrow => 0.5,
-            },
+            stroke_width_pt: 1.0,
             opacity: 1.0,
             stroke_style: StrokeStyle::Solid,
         }
@@ -4818,7 +4815,11 @@ pub enum AnnotationEdit {
         delta_x: f64,
         delta_y: f64,
     },
-    SetCalloutContent(String),
+    /// New text with its box refitted to it, as one undoable change.
+    SetCalloutContentAndTextBox {
+        content: String,
+        text_box: PdfRect,
+    },
     SetCalloutLeaderPoint {
         point_index: usize,
         point: PdfPoint,
@@ -4948,19 +4949,19 @@ impl RectangleResizeHandle {
         rotate_point_around_rect_center(self.point(rect), rect, -rotation_degrees)
     }
 
-    fn affects_west(self) -> bool {
+    pub(crate) fn affects_west(self) -> bool {
         matches!(self, Self::NorthWest | Self::SouthWest | Self::West)
     }
 
-    fn affects_east(self) -> bool {
+    pub(crate) fn affects_east(self) -> bool {
         matches!(self, Self::NorthEast | Self::East | Self::SouthEast)
     }
 
-    fn affects_north(self) -> bool {
+    pub(crate) fn affects_north(self) -> bool {
         matches!(self, Self::NorthWest | Self::North | Self::NorthEast)
     }
 
-    fn affects_south(self) -> bool {
+    pub(crate) fn affects_south(self) -> bool {
         matches!(self, Self::SouthEast | Self::South | Self::SouthWest)
     }
 
@@ -8254,12 +8255,13 @@ impl AnnotationDocument {
         }
     }
 
-    /// Replaces the initial Callout text while retaining the undo boundary
-    /// immediately before that Callout was created.
+    /// Replaces the initial Callout text and its refitted box while retaining
+    /// the undo boundary immediately before that Callout was created.
     pub fn replace_callout_content_in_create_transaction(
         &mut self,
         id: &MarkupId,
         content: impl Into<String>,
+        text_box: PdfRect,
     ) -> Result<bool, AnnotationError> {
         self.require_no_gesture()?;
         if self.callout(id).is_none() {
@@ -8285,7 +8287,13 @@ impl AnnotationDocument {
             .past
             .pop_back()
             .expect("the checked Callout create undo boundary remains available");
-        let edit = self.edit_annotation(id, AnnotationEdit::SetCalloutContent(content.into()));
+        let edit = self.edit_annotation(
+            id,
+            AnnotationEdit::SetCalloutContentAndTextBox {
+                content: content.into(),
+                text_box,
+            },
+        );
         match edit {
             Ok((AnnotationKind::Callout, changed)) => {
                 if changed {
@@ -11393,23 +11401,25 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::CloudPlus, true))
             }
-            AnnotationEdit::SetCalloutContent(content) => {
+            AnnotationEdit::SetCalloutContentAndTextBox { content, text_box } => {
                 validate_optional_text(&content, "callout content", MAX_TEXT_BOX_BYTES)?;
                 let annotation = self.callout(id).ok_or(AnnotationError::NoSelection)?;
                 if annotation.locked {
                     return Err(AnnotationError::LockedMarkup(id.clone()));
                 }
-                if annotation.content == content {
+                if annotation.content == content && annotation.text_box == text_box {
                     return Ok((AnnotationKind::Callout, false));
                 }
+                let mut replacement = annotation.resized_text_box(text_box)?;
+                replacement.content = content;
                 let id = id.clone();
                 self.commit_state_change(move |state| {
-                    state
+                    *state
                         .callouts
                         .iter_mut()
                         .find(|annotation| annotation.id == id)
-                        .expect("a validated Callout text edit must retain its target")
-                        .content = content;
+                        .expect("a validated Callout text edit must retain its target") =
+                        replacement;
                 });
                 Ok((AnnotationKind::Callout, true))
             }

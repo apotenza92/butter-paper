@@ -153,13 +153,13 @@ use crate::{
     },
     annotation_model::{
         Annotation, AnnotationEdit, AnnotationError, AnnotationKind, AnnotationScene,
-        AnnotationSnapshot, ArcControlPoint, DimensionAppearance, HitTarget, InkTool,
-        LengthCalibration, LengthEndpoint, LineKind, MarkupId, MeasurementPathKind,
-        PENDING_REDACTION_STATUS, PageRotation, PageRotationDirection, PageScale,
-        PageScaleApplyTarget, PageTransform, PdfPoint, PdfRect, PenAppearance, PointerCancelReason,
-        RectangleAppearance, RectangleResizeHandle, ScalePreset, SceneArc, SceneCloudPlus,
-        SceneDimension, SceneRectangle, SceneRedact, StraightLineAppearance, StrokeStyle,
-        TextAlignment, TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, built_in_scale_presets,
+        AnnotationSnapshot, ArcControlPoint, DimensionAppearance, HitTarget, LengthCalibration,
+        LengthEndpoint, LineKind, MarkupId, MeasurementPathKind, PENDING_REDACTION_STATUS,
+        PageRotation, PageRotationDirection, PageScale, PageScaleApplyTarget, PageTransform,
+        PdfPoint, PdfRect, PenAppearance, PointerCancelReason, RectangleAppearance,
+        RectangleResizeHandle, ScalePreset, SceneArc, SceneCloudPlus, SceneDimension,
+        SceneRectangle, SceneRedact, StraightLineAppearance, StrokeStyle, TextAlignment,
+        TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, built_in_scale_presets,
         ellipse_cubic_bezier_points, rectangle_world_corners,
     },
     annotation_paint_path::{InkPaintPathSegment, build_ink_paint_path},
@@ -525,7 +525,6 @@ pub const DOCUMENT_VIEWER_STATUS_ID: &str = "document-viewer-status";
 pub const DOCUMENT_VIEWER_PROGRESS_ID: &str = "document-viewer-progress";
 pub const DOCUMENT_RECOVERY_ALERT_ID: &str = "document-worker-recovery-alert";
 pub const DOCUMENT_RECOVERY_RETRY_ID: &str = "document-worker-recovery-retry";
-pub const DOCUMENT_CLOSE_ID: &str = "document-workspace-close";
 pub const DOCUMENT_RECTANGLE_TOOL_ID: &str = "document-workspace-rectangle-tool";
 pub const DOCUMENT_ELLIPSE_TOOL_ID: &str = "document-workspace-ellipse-tool";
 pub const DOCUMENT_ARC_TOOL_ID: &str = "tool-arc";
@@ -542,7 +541,6 @@ pub const DOCUMENT_DIMENSION_TOOL_ID: &str = "tool-dimension";
 pub const DOCUMENT_CALLOUT_TOOL_ID: &str = "tool-callout";
 pub const DOCUMENT_REDACT_TOOL_ID: &str = "tool-redact";
 pub const DOCUMENT_REDACT_PENDING_ALERT_ID: &str = "document-workspace-redact-pending-alert";
-pub const DOCUMENT_TOOLBAR_SCROLL_ID: &str = "document-workspace-toolbar-scroll";
 pub const DOCUMENT_SIGNED_TEXT_EDIT_DIALOG_ID: &str = "document-workspace-signed-text-edit";
 pub const DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID: &str =
     "document-workspace-signed-text-edit-confirm";
@@ -551,7 +549,6 @@ pub const DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID: &str = "document-workspace-signed
 pub const DOCUMENT_WORKSPACE_TAB_ACTIONS_ID: &str = "document-workspace-tab-actions";
 pub const DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID: &str =
     "document-workspace-right-rail-resize-handle";
-pub const DOCUMENT_TOOLBAR_CONTENT_ID: &str = "document-workspace-toolbar-content";
 pub const DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID: &str = "document-workspace-active-inspector-slot";
 pub const DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID: &str = "document-workspace-active-inspector-close";
 pub const DOCUMENT_PEN_TOOL_ID: &str = "document-workspace-pen-tool";
@@ -561,7 +558,6 @@ pub const DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID: &str =
 pub const DOCUMENT_TEXT_BOX_PROPERTIES_ID: &str = "document-workspace-text-box-properties";
 pub const DOCUMENT_TEXT_BOX_TOOL_ID: &str = "document-workspace-text-box-tool";
 pub const DOCUMENT_HIGHLIGHT_TOOL_ID: &str = "document-workspace-highlight-tool";
-pub const DOCUMENT_HIGHLIGHT_SETTINGS_ID: &str = "document-workspace-highlight-settings";
 pub const DOCUMENT_HIGHLIGHT_COLOR_YELLOW_ID: &str = "document-workspace-highlight-color-yellow";
 pub const DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID: &str = "document-workspace-highlight-color-green";
 pub const DOCUMENT_HIGHLIGHT_WIDTH_12_ID: &str = "document-workspace-highlight-width-12";
@@ -625,13 +621,7 @@ pub const DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID: &str =
 pub const DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID: &str = "document-workspace-text-box-return-focus";
 pub const DOCUMENT_SELECT_TOOL_ID: &str = "document-workspace-select-tool";
 pub const DOCUMENT_EDIT_PDF_CONTENT_TOOL_ID: &str = "document-workspace-edit-pdf-content-tool";
-pub const DOCUMENT_ANNOTATION_UNDO_ID: &str = "document-workspace-annotation-undo";
-pub const DOCUMENT_ANNOTATION_REDO_ID: &str = "document-workspace-annotation-redo";
-pub const DOCUMENT_ANNOTATION_DELETE_ID: &str = "document-workspace-annotation-delete";
-pub const DOCUMENT_ANNOTATION_LOCK_ID: &str = "document-workspace-annotation-lock";
 pub const DOCUMENT_RECTANGLE_STROKE_ID: &str = "document-workspace-rectangle-stroke";
-pub const DOCUMENT_RECTANGLE_PROPERTIES_ID: &str = "document-workspace-rectangle-properties";
-pub const DOCUMENT_ELLIPSE_PROPERTIES_ID: &str = "document-workspace-ellipse-properties";
 pub const DOCUMENT_DIMENSION_PROPERTIES_ID: &str = "document-workspace-dimension-properties";
 pub const DIMENSION_PROPERTY_OFFSET_ID: &str = "dimension-property-offset";
 pub const DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID: &str =
@@ -644,8 +634,6 @@ pub const DOCUMENT_STRAIGHT_LINE_WIDTH_4_ID: &str = "document-workspace-straight
 pub const DOCUMENT_STRAIGHT_LINE_OPACITY_ID: &str = "document-workspace-straight-line-opacity";
 pub const DOCUMENT_STRAIGHT_LINE_OPACITY_50_ID: &str =
     "document-workspace-straight-line-opacity-50";
-pub const DOCUMENT_SAVE_ID: &str = "document-workspace-save";
-pub const DOCUMENT_SAVE_AS_ID: &str = "document-workspace-save-as";
 pub const DOCUMENT_SAVE_ERROR_ALERT_ID: &str = "document-workspace-save-error-alert";
 pub const DOCUMENT_SAVE_ERROR_RETRY_ID: &str = "document-workspace-save-error-retry";
 pub const DOCUMENT_SAVE_ERROR_SAVE_AS_ID: &str = "document-workspace-save-error-save-as";
@@ -657,8 +645,6 @@ pub const DOCUMENT_RECOVERY_PREPARATION_RETRY_ID: &str =
 pub const DOCUMENT_RECOVERY_PREPARATION_CONFIRM_ID: &str =
     "document-workspace-recovery-preparation-confirm";
 pub const DOCUMENT_RECOVERY_REBASE_RETRY_ID: &str = "document-workspace-recovery-rebase-retry";
-pub const DOCUMENT_ROTATE_LEFT_ID: &str = "document-workspace-rotate-left";
-pub const DOCUMENT_ROTATE_RIGHT_ID: &str = "document-workspace-rotate-right";
 pub const DOCUMENT_SESSION_TABS_ID: &str = "document-workspace-session-tabs";
 pub const DOCUMENT_SESSION_TAB_MIN_WIDTH: f32 = 96.;
 pub const DOCUMENT_TAB_DRAG_GHOST_ID: &str = "document-workspace-tab-drag-ghost";
@@ -800,7 +786,9 @@ pub fn annotation_resize_cursor_style(
             _ => None,
         };
         (handle, annotation.rotation_degrees)
-    } else if scene.callouts.iter().any(|annotation| &annotation.id == id) {
+    } else if scene.callouts.iter().any(|annotation| &annotation.id == id)
+        || scene.pens.iter().any(|annotation| &annotation.id == id)
+    {
         (RectangleResizeHandle::ALL.get(index).copied(), 0.)
     } else if let Some(annotation) = scene
         .cloud_pluses
@@ -2617,14 +2605,11 @@ pub struct DocumentWorkspace {
     session_tab_reorder_announcement: String,
     viewport_refresh_scheduled: Option<DocumentId>,
     viewer_quality_tasks: HashMap<DocumentId, Task<()>>,
-    annotation_stroke_menu_open: bool,
-    annotation_highlight_settings_open: bool,
     semantic_snap_settings_open: bool,
     semantic_snap_settings: SemanticSnapSettings,
     semantic_snap_grid_spacing_input: Option<Entity<InputState>>,
     semantic_snap_dimension_increment_input: Option<Entity<InputState>>,
     semantic_snap_input_subscriptions: Vec<Subscription>,
-    toolbar_scroll: ScrollHandle,
     right_rail_actions_open: bool,
     right_rail_columns: usize,
     right_rail_resizable: Entity<ResizableState>,
@@ -3756,6 +3741,9 @@ enum PendingTextEditorTarget {
     Callout {
         id: MarkupId,
     },
+    ExistingCallout {
+        id: MarkupId,
+    },
     NewCloudPlus {
         id: MarkupId,
     },
@@ -4183,14 +4171,11 @@ impl DocumentWorkspace {
             session_tab_reorder_announcement: String::new(),
             viewport_refresh_scheduled: None,
             viewer_quality_tasks: HashMap::new(),
-            annotation_stroke_menu_open: false,
-            annotation_highlight_settings_open: false,
             semantic_snap_settings_open: false,
             semantic_snap_settings: SemanticSnapSettings::default(),
             semantic_snap_grid_spacing_input: None,
             semantic_snap_dimension_increment_input: None,
             semantic_snap_input_subscriptions: Vec::new(),
-            toolbar_scroll: ScrollHandle::new(),
             right_rail_actions_open: false,
             right_rail_columns: DEFAULT_RIGHT_RAIL_COLUMNS,
             right_rail_resizable: cx.new(|_| ResizableState::default()),
@@ -7803,10 +7788,6 @@ impl DocumentWorkspace {
             .map(|editor| editor.input.clone())
     }
 
-    pub fn annotation_toolbar_scroll_offset(&self) -> gpui::Point<Pixels> {
-        self.toolbar_scroll.offset()
-    }
-
     pub fn right_rail_scroll_offset(&self) -> gpui::Point<Pixels> {
         self.right_rail_scroll.offset()
     }
@@ -8218,6 +8199,11 @@ impl DocumentWorkspace {
                 .into_iter()
                 .find(|callout| &callout.id == id)
                 .map(|callout| callout.content().to_owned()),
+            PendingTextEditorTarget::ExistingCallout { id } => snapshot
+                .callouts
+                .into_iter()
+                .find(|callout| &callout.id == id && !callout.locked)
+                .map(|callout| callout.content().to_owned()),
             PendingTextEditorTarget::NewCloudPlus { id }
             | PendingTextEditorTarget::ExistingCloudPlus { id } => snapshot
                 .cloud_pluses
@@ -8305,6 +8291,7 @@ impl DocumentWorkspace {
             matches!(
                 editor.target,
                 PendingTextEditorTarget::Callout { .. }
+                    | PendingTextEditorTarget::ExistingCallout { .. }
                     | PendingTextEditorTarget::NewCloudPlus { .. }
                     | PendingTextEditorTarget::ExistingCloudPlus { .. }
                     | PendingTextEditorTarget::NewDimension { .. }
@@ -8388,9 +8375,10 @@ impl DocumentWorkspace {
             matches!(
                 editor.target,
                 PendingTextEditorTarget::ExistingCloudPlus { .. }
+                    | PendingTextEditorTarget::ExistingCallout { .. }
             )
         }) {
-            return self.commit_pending_existing_cloud_plus(trim_composite_submit_newline, cx);
+            return self.commit_pending_existing_caption(trim_composite_submit_newline, cx);
         }
         if self.pending_text_box_editor.as_ref().is_some_and(|editor| {
             matches!(editor.target, PendingTextEditorTarget::NewDimension { .. })
@@ -8562,13 +8550,17 @@ impl DocumentWorkspace {
             PendingTextEditorTarget::ExistingDimension { .. } => {
                 unreachable!("existing Dimension captions commit through their authority path")
             }
-            PendingTextEditorTarget::ExistingCloudPlus { .. } => {
-                unreachable!("existing Cloud+ captions commit through their authority path")
+            PendingTextEditorTarget::ExistingCloudPlus { .. }
+            | PendingTextEditorTarget::ExistingCallout { .. } => {
+                unreachable!(
+                    "existing Cloud+ and Callout captions commit through their authority path"
+                )
             }
         }
     }
 
-    fn commit_pending_existing_cloud_plus(
+    /// Commits an existing Cloud+ or Callout caption, refitting its box.
+    fn commit_pending_existing_caption(
         &mut self,
         trim_submit_newline: bool,
         cx: &mut Context<Self>,
@@ -8576,13 +8568,15 @@ impl DocumentWorkspace {
         let Some(editor) = self.pending_text_box_editor.as_ref() else {
             return Ok(false);
         };
-        let PendingTextEditorTarget::ExistingCloudPlus { id } = &editor.target else {
-            return Ok(false);
+        let (id, is_callout) = match &editor.target {
+            PendingTextEditorTarget::ExistingCloudPlus { id } => (id, false),
+            PendingTextEditorTarget::ExistingCallout { id } => (id, true),
+            _ => return Ok(false),
         };
         let authority = editor
             .authority
             .as_ref()
-            .ok_or_else(|| "Cloud+ editor authority is missing".to_owned())?;
+            .ok_or_else(|| "caption editor authority is missing".to_owned())?;
         let document_id = editor.document_id;
         let page_index = editor.page_index;
         let id = id.clone();
@@ -8608,15 +8602,24 @@ impl DocumentWorkspace {
                 .annotations
                 .snapshot(document_id.value())
                 .ok_or_else(|| "document has no annotation state".to_owned())?;
-            let target = snapshot
-                .cloud_pluses
-                .iter()
-                .find(|cloud_plus| cloud_plus.id == id && cloud_plus.page_index == page_index);
+            let target = if is_callout {
+                snapshot
+                    .callouts
+                    .iter()
+                    .find(|callout| callout.id == id && callout.page_index == page_index)
+                    .map(|target| (target.content(), target.locked))
+            } else {
+                snapshot
+                    .cloud_pluses
+                    .iter()
+                    .find(|cloud_plus| cloud_plus.id == id && cloud_plus.page_index == page_index)
+                    .map(|target| (target.content(), target.locked))
+            };
             validate_existing_text_editor_authority(
                 authority,
                 session.resource_epoch,
                 snapshot.revision,
-                target.map(|target| (target.content(), target.locked)),
+                target,
             )?;
         }
         if content == authority.baseline_text {
@@ -8629,12 +8632,16 @@ impl DocumentWorkspace {
         let caption_supplement =
             self.annotation_caption_selection_paths(document_id, page_index, cx);
         self.update_annotation_history(document_id, cx, move |annotations, document_id| {
-            annotations.replace_cloud_plus_text_with_routing_supplement(
-                document_id,
-                &id,
-                content,
-                &caption_supplement,
-            )?;
+            if is_callout {
+                annotations.replace_callout_text(document_id, &id, content)?;
+            } else {
+                annotations.replace_cloud_plus_text_with_routing_supplement(
+                    document_id,
+                    &id,
+                    content,
+                    &caption_supplement,
+                )?;
+            }
             Ok(())
         })?;
         self.pending_text_box_editor = None;
@@ -15549,8 +15556,6 @@ impl DocumentWorkspace {
             return !crate::overlay_state::press_owned_by_overlay(window, cx);
         }
         !self.signature_popover_open
-            && !self.annotation_stroke_menu_open
-            && !self.annotation_highlight_settings_open
             && !self.semantic_snap_settings_open
             && !self.right_rail_actions_open
             && !self
@@ -16547,7 +16552,6 @@ impl DocumentWorkspace {
         if !available {
             return;
         }
-        self.annotation_stroke_menu_open = false;
         let _ = self.set_annotation_tool(document_id, tool, cx);
     }
 
@@ -16810,7 +16814,6 @@ impl DocumentWorkspace {
         if !available {
             return;
         }
-        self.annotation_stroke_menu_open = false;
         let _ = self.set_annotation_tool(document_id, AnnotationTool::Highlight, cx);
     }
 
@@ -17646,18 +17649,26 @@ impl DocumentWorkspace {
                         .is_some()
                     {
                         PendingTextEditorTarget::ExistingCloudPlus { id }
+                    } else if session
+                        .read(cx)
+                        .annotations
+                        .exact_selected_callout(interaction.document_id.value())
+                        .is_some()
+                    {
+                        PendingTextEditorTarget::ExistingCallout { id }
                     } else {
                         PendingTextEditorTarget::ExistingTextBox { id }
                     };
-                    // A Text Box edits its text where it sits; other text
-                    // markups still edit in the properties sidebar.
-                    let edits_inline = matches!(
-                        &target,
-                        PendingTextEditorTarget::ExistingTextBox { id }
-                            if self
-                                .inline_existing_text_box(interaction.document_id, id, cx)
-                                .is_some()
-                    );
+                    // Text Boxes, Callouts and Cloud+ edit their text where it
+                    // sits; Dimensions and rotated Text Boxes edit in the sidebar.
+                    let edits_inline = match &target {
+                        PendingTextEditorTarget::ExistingTextBox { id } => self
+                            .inline_existing_text_box(interaction.document_id, id, cx)
+                            .is_some(),
+                        PendingTextEditorTarget::ExistingCloudPlus { .. }
+                        | PendingTextEditorTarget::ExistingCallout { .. } => true,
+                        _ => false,
+                    };
                     if !edits_inline {
                         self.right_rail_actions_open = properties_double_click_sidebar_open(
                             already_selected,
@@ -19150,7 +19161,6 @@ pub fn straight_line_arrowhead_points(
 }
 
 struct ShapeFeedbackGeometry {
-    bounds: [Point<Pixels>; 4],
     handles: [Point<Pixels>; 8],
     rotation_center: Point<Pixels>,
     connector_start: Point<Pixels>,
@@ -19194,13 +19204,6 @@ fn shape_feedback_geometry(
         let point = transform.point_to_local_pixels(sample);
         gpui::point(origin.x + px(point.x as f32), origin.y + px(point.y as f32))
     };
-    let bounds = [
-        point(left, top),
-        point(right, top),
-        point(right, bottom),
-        point(left, bottom),
-    ]
-    .map(rotate);
     let handles = RectangleResizeHandle::ALL.map(|handle| {
         let pdf = if ellipse {
             ellipse_resize_handle_point_for_rect(rect, 0., handle)
@@ -19244,7 +19247,6 @@ fn shape_feedback_geometry(
             }),
     );
     ShapeFeedbackGeometry {
-        bounds,
         handles,
         rotation_center: rotate(rotation_center),
         connector_start: rotate(connector_start),
@@ -19286,10 +19288,11 @@ fn paint_shape_feedback(
         origin,
         interaction_chrome::rotation_feedback_radius(state, false),
     );
-    interaction_chrome::paint_feedback_path(&geometry.bounds, true, state, window);
-    if (annotation.selected || hover_controls_visible) && !candidate && !annotation.locked {
+    let handle_state = interaction_chrome::handle_state(state, annotation.locked);
+    {
         // Stems precede resize handles: sideways-page projection can cross a corner.
         if annotation.selected
+            && !annotation.locked
             && allow_rotation
             && annotation
                 .feedback
@@ -19314,7 +19317,7 @@ fn paint_shape_feedback(
                 interaction_chrome::paint_rotated_feedback_handle(
                     center,
                     annotation.rotation_degrees,
-                    state,
+                    handle_state,
                     hot,
                     window,
                 );
@@ -19424,6 +19427,34 @@ fn paint_callout_box_border(
     border.close();
     if let Ok(path) = border.build() {
         window.paint_path(path, color);
+    }
+}
+
+/// Where the in-place editor for a Callout or Cloud+ caption sits: its box
+/// refitted to the text being typed, trimmed to the centred text block so the
+/// editor's top-inset text lines up with the committed caption.
+/// The caption box drawn around an in-place caption editor: it follows the
+/// box being refitted to the typed text and never shrinks below `committed`'s
+/// height until the text is committed.
+fn live_caption_box(pending: &PendingTextBoxPresentation, committed: PdfRect) -> PdfRect {
+    let inset = pending.style.inset_pt();
+    let height = committed.height.max(pending.rect.height - inset * 2. + 12.);
+    PdfRect {
+        x: pending.rect.x,
+        y: pending.rect.y + (pending.rect.height - height) * 0.5,
+        width: pending.rect.width,
+        height,
+    }
+}
+
+fn caption_editor_rect(fitted: PdfRect, style: &TextBoxStyle, content: &str) -> PdfRect {
+    let line_height = style.font_size_pt() * 1.15;
+    let text_height = line_height * content.split('\n').count().max(1) as f64;
+    let height = text_height + style.inset_pt() * 2.;
+    PdfRect {
+        y: fitted.y + (fitted.height - height) * 0.5,
+        height,
+        ..fitted
     }
 }
 
@@ -19601,32 +19632,7 @@ fn paint_cloud_plus_annotation(
             .copied()
             .map(project)
             .collect::<Vec<_>>();
-        let mut bounds_points = projected_cloud.clone();
-        bounds_points.extend(projected_leader.iter().copied());
-        bounds_points.extend([
-            text_box_bounds.origin,
-            point(text_box_bounds.right(), text_box_bounds.bottom()),
-        ]);
-        let min_x = bounds_points.iter().map(|point| point.x).min().unwrap();
-        let min_y = bounds_points.iter().map(|point| point.y).min().unwrap();
-        let max_x = bounds_points.iter().map(|point| point.x).max().unwrap();
-        let max_y = bounds_points.iter().map(|point| point.y).max().unwrap();
-        interaction_chrome::paint_feedback_path(
-            &[
-                point(min_x, min_y),
-                point(max_x, min_y),
-                point(max_x, max_y),
-                point(min_x, max_y),
-            ],
-            true,
-            state,
-            window,
-        );
-        interaction_chrome::paint_feedback_path(&projected_cloud, true, state, window);
-        interaction_chrome::paint_feedback_path(&projected_leader, false, state, window);
-        if (annotation.selected || hovered_id == Some(&annotation.id))
-            && !annotation_candidate
-            && !annotation.locked
+        let state = interaction_chrome::handle_state(state, annotation.locked);
         {
             let cloud_count = projected_cloud.len();
             let resize_end = cloud_count + RectangleResizeHandle::ALL.len();
@@ -19801,24 +19807,8 @@ fn paint_dimension_annotation(
             false,
             annotation_candidate,
         )
-        && let Some(frame) = crate::annotation_model::measurement_selection_frame(
-            annotation.start,
-            annotation.end,
-            annotation.dimension_line_offset,
-            line.stroke_width_pt(),
-            caption_text_width_pt,
-            caption_layout
-                .as_ref()
-                .map_or(&[][..], |layout| &layout.pdf_corners),
-        )
     {
-        interaction_chrome::paint_feedback_path(&frame.corners().map(project), true, state, window);
-    }
-
-    if !annotation_candidate
-        && !annotation.locked
-        && (annotation.selected || hovered_id == Some(&annotation.id))
-    {
+        let state = interaction_chrome::handle_state(state, annotation.locked);
         for (index, center) in [
             project(annotation.start),
             project(annotation.end),
@@ -19828,14 +19818,6 @@ fn paint_dimension_annotation(
         .enumerate()
         {
             if annotation.feedback.handle_visible(index) {
-                let state = interaction_chrome::feedback_state(
-                    annotation.selected,
-                    focused_id == Some(&annotation.id),
-                    hovered_id == Some(&annotation.id),
-                    false,
-                    annotation_candidate,
-                )
-                .expect("a selected or hovered Dimension has feedback state");
                 interaction_chrome::paint_feedback_handle(
                     center,
                     state,
@@ -19901,14 +19883,7 @@ fn paint_arc_annotations(
                 annotation_candidate,
             )
         {
-            if let Some(bounds) =
-                path_feedback_bounds(&annotation.sampled_path, 0., transform, page_bounds.origin)
-            {
-                interaction_chrome::paint_feedback_path(&bounds, true, state, window);
-            }
-            if (annotation.selected || transform_hovered)
-                && !annotation_candidate
-                && !annotation.locked
+            let state = interaction_chrome::handle_state(state, annotation.locked);
             {
                 for (index, center) in [
                     project(annotation.start),
@@ -20871,81 +20846,6 @@ fn paint_construction_grid(
     }
 }
 
-/// SVG rectangle feedback starts at screen top-left, irrespective of PDF/page rotation.
-/// Raw vertex descriptors permit zero extents (which SVG does not paint); measured
-/// descriptors apply their one-point minimum in PDF space before projection.
-fn path_feedback_bounds(
-    points: &[PdfPoint],
-    minimum_extent: f64,
-    transform: &PageTransform,
-    page_origin: Point<Pixels>,
-) -> Option<[Point<Pixels>; 4]> {
-    let first = points.first()?;
-    let (mut left, mut bottom, mut right, mut top) = (first.x, first.y, first.x, first.y);
-    for sample in &points[1..] {
-        left = left.min(sample.x);
-        bottom = bottom.min(sample.y);
-        right = right.max(sample.x);
-        top = top.max(sample.y);
-    }
-    let width = (right - left).max(minimum_extent);
-    let height = (top - bottom).max(minimum_extent);
-    if width <= 0. || height <= 0. {
-        return None;
-    }
-    let local = transform.rect_to_local_pixels(PdfRect {
-        x: left,
-        y: bottom,
-        width,
-        height,
-    });
-    let left = page_origin.x + px(local.x as f32);
-    let top = page_origin.y + px(local.y as f32);
-    let right = left + px(local.width as f32);
-    let bottom = top + px(local.height as f32);
-    Some([
-        point(left, top),
-        point(right, top),
-        point(right, bottom),
-        point(left, bottom),
-    ])
-}
-
-/// Electron's ink descriptor encloses every retained path and expands the PDF
-/// bounds by half the stroke width, with a one-point minimum padding.
-fn ink_feedback_bounds(
-    paths: &[Vec<PdfPoint>],
-    stroke_width_pt: f64,
-    transform: &PageTransform,
-    page_origin: Point<Pixels>,
-) -> Option<[Point<Pixels>; 4]> {
-    let first = paths.iter().flatten().next()?;
-    let (mut left, mut bottom, mut right, mut top) = (first.x, first.y, first.x, first.y);
-    for sample in paths.iter().flatten().skip(1) {
-        left = left.min(sample.x);
-        bottom = bottom.min(sample.y);
-        right = right.max(sample.x);
-        top = top.max(sample.y);
-    }
-    let padding = (stroke_width_pt * 0.5).max(1.);
-    let local = transform.rect_to_local_pixels(PdfRect {
-        x: left - padding,
-        y: bottom - padding,
-        width: right - left + padding * 2.,
-        height: top - bottom + padding * 2.,
-    });
-    let left = page_origin.x + px(local.x as f32);
-    let top = page_origin.y + px(local.y as f32);
-    let right = left + px(local.width as f32);
-    let bottom = top + px(local.height as f32);
-    Some([
-        point(left, top),
-        point(right, top),
-        point(right, bottom),
-        point(left, bottom),
-    ])
-}
-
 /// Each retained ink path is its own compositing primitive, matching SVG.
 fn build_ink_scene_path(
     points: &[PdfPoint],
@@ -21483,10 +21383,7 @@ fn annotation_layer(
                                     annotation_candidate,
                                 )
                             {
-                                interaction_chrome::paint_line_feedback(start, end, state, window);
-                                if (annotation.selected || transform_hovered)
-                                    && !annotation_candidate
-                                    && !annotation.locked
+                                let state = interaction_chrome::handle_state(state, annotation.locked);
                                 {
                                     for (index, center) in [start, end].into_iter().enumerate() {
                                         if !annotation.selected
@@ -21581,16 +21478,7 @@ fn annotation_layer(
                                 false,
                                 annotation_candidate,
                             ) {
-                                if !closes && projected.len() == 2 {
-                                    interaction_chrome::paint_line_feedback(projected[0], projected[1], state, window);
-                                } else if let Some(bounds) = path_feedback_bounds(
-                                    &annotation.points, 0., &transform, page_bounds.origin,
-                                ) {
-                                    interaction_chrome::paint_feedback_path(&bounds, true, state, window);
-                                }
-                                if (annotation.selected || transform_hovered)
-                                    && !annotation_candidate
-                                    && !annotation.locked
+                                let state = interaction_chrome::handle_state(state, annotation.locked);
                                 {
                                     for (index, center) in projected.iter().copied().enumerate() {
                                         interaction_chrome::paint_feedback_handle(
@@ -21668,27 +21556,13 @@ fn annotation_layer(
                                     annotation_candidate,
                                 )
                             {
-                                if let Some(bounds) = path_feedback_bounds(
-                                    &annotation.points,
-                                    0.,
-                                    &transform,
-                                    page_bounds.origin,
-                                ) {
-                                    interaction_chrome::paint_feedback_path(
-                                        &bounds,
-                                        true,
-                                        state,
-                                        window,
-                                    );
-                                }
-                                if (annotation.selected || hover_controls_visible)
-                                    && !annotation_candidate
-                                    && !annotation.locked
+                                let state = interaction_chrome::handle_state(state, annotation.locked);
                                 {
                                     for (index, center) in
                                         annotation.points.into_iter().map(project).enumerate()
                                     {
-                                        if hover_controls_visible
+                                        if !annotation.selected
+                                            || hover_controls_visible
                                             || annotation.feedback.handle_visible(index)
                                         {
                                             interaction_chrome::paint_feedback_handle(
@@ -21707,7 +21581,15 @@ fn annotation_layer(
                                 }
                             }
                         }
-                        crate::annotation_model::SceneAnnotation::CloudPlus(annotation) => {
+                        crate::annotation_model::SceneAnnotation::CloudPlus(mut annotation) => {
+                            if let Some(pending) = painted_pending_text_box
+                                .as_ref()
+                                .filter(|pending| pending.existing_id.as_ref() == Some(&annotation.id))
+                            {
+                                // The in-place editor draws the live text.
+                                annotation.text_box = live_caption_box(pending, annotation.text_box);
+                                annotation.content.clear();
+                            }
                             paint_cloud_plus_annotation(
                                 annotation,
                                 &transform,
@@ -21722,7 +21604,15 @@ fn annotation_layer(
                                 cx,
                             );
                         }
-                        crate::annotation_model::SceneAnnotation::Callout(annotation) => {
+                        crate::annotation_model::SceneAnnotation::Callout(mut annotation) => {
+                            if let Some(pending) = painted_pending_text_box
+                                .as_ref()
+                                .filter(|pending| pending.existing_id.as_ref() == Some(&annotation.id))
+                            {
+                                // The in-place editor draws the live text.
+                                annotation.text_box = live_caption_box(pending, annotation.text_box);
+                                annotation.content.clear();
+                            }
                             let annotation_candidate = marquee_candidate_ids.contains(&annotation.id);
                             let hover_controls_visible = hovered_id == Some(&annotation.id)
                                 || hot_handle
@@ -21868,35 +21758,7 @@ fn annotation_layer(
                                     annotation_candidate,
                                 )
                             {
-                                let mut bounds_points = projected_leader.clone();
-                                bounds_points.extend([
-                                    text_box_bounds.origin,
-                                    point(text_box_bounds.right(), text_box_bounds.bottom()),
-                                ]);
-                                let min_x = bounds_points.iter().map(|point| point.x).min().unwrap();
-                                let min_y = bounds_points.iter().map(|point| point.y).min().unwrap();
-                                let max_x = bounds_points.iter().map(|point| point.x).max().unwrap();
-                                let max_y = bounds_points.iter().map(|point| point.y).max().unwrap();
-                                interaction_chrome::paint_feedback_path(
-                                    &[
-                                        point(min_x, min_y),
-                                        point(max_x, min_y),
-                                        point(max_x, max_y),
-                                        point(min_x, max_y),
-                                    ],
-                                    true,
-                                    state,
-                                    window,
-                                );
-                                interaction_chrome::paint_feedback_path(
-                                    &projected_leader,
-                                    false,
-                                    state,
-                                    window,
-                                );
-                                if (annotation.selected || hover_controls_visible)
-                                    && !annotation_candidate
-                                    && !annotation.locked
+                                let state = interaction_chrome::handle_state(state, annotation.locked);
                                 {
                                     for (index, handle) in
                                         RectangleResizeHandle::ALL.into_iter().enumerate()
@@ -22012,16 +21874,7 @@ fn annotation_layer(
                                 false,
                                 annotation_candidate,
                             ) {
-                                if !closes && projected.len() == 2 {
-                                    interaction_chrome::paint_line_feedback(projected[0], projected[1], state, window);
-                                } else if let Some(bounds) = path_feedback_bounds(
-                                    &annotation.points, 1., &transform, page_bounds.origin,
-                                ) {
-                                    interaction_chrome::paint_feedback_path(&bounds, true, state, window);
-                                }
-                                if (annotation.selected || transform_hovered)
-                                    && !annotation_candidate
-                                    && !annotation.locked
+                                let state = interaction_chrome::handle_state(state, annotation.locked);
                                 {
                                     for (index, center) in projected.iter().copied().enumerate() {
                                         interaction_chrome::paint_feedback_handle(
@@ -22074,24 +21927,35 @@ fn annotation_layer(
                                     );
                                 }
                             }
-                            if annotation.feedback.chrome_visible()
+                            let transform_hovered = hot_handle
+                                .as_ref()
+                                .is_some_and(|(id, _)| id == &annotation.id);
+                            if (annotation.feedback.chrome_visible() || transform_hovered)
                                 && let Some(state) = interaction_chrome::feedback_state(
                                     annotation.selected,
                                     focused_id == Some(&annotation.id),
-                                    hovered_id == Some(&annotation.id),
+                                    hovered_id == Some(&annotation.id) || transform_hovered,
                                     false,
                                     annotation_candidate,
                                 )
-                                && let Some(bounds) = ink_feedback_bounds(
-                                    &annotation.paths,
+                                && let Some(resize_box) = crate::annotation_adapter::InkResizeBox::of(
+                                    annotation.paths.iter().map(Vec::as_slice),
                                     annotation.appearance.width_pt(),
-                                    &transform,
-                                    page_bounds.origin,
                                 )
                             {
-                                interaction_chrome::paint_feedback_path(
-                                    &bounds, true, state, window,
-                                );
+                                let state = interaction_chrome::handle_state(state, annotation.locked);
+                                for (index, center) in resize_box.handles() {
+                                    if annotation.feedback.handle_visible(index) {
+                                        interaction_chrome::paint_feedback_handle(
+                                            project(center),
+                                            state,
+                                            hot_handle.as_ref().is_some_and(|(id, hot_index)| {
+                                                id == &annotation.id && *hot_index == index
+                                            }),
+                                            window,
+                                        );
+                                    }
+                                }
                             }
                         }
                         crate::annotation_model::SceneAnnotation::TextBox(annotation) => {
@@ -22228,15 +22092,11 @@ fn annotation_layer(
                                     page_bounds.origin,
                                     interaction_chrome::rotation_feedback_radius(state, false),
                                 );
-                                interaction_chrome::paint_feedback_path(
-                                    &geometry.bounds, true, state, window,
-                                );
-                                if (annotation.selected || hover_controls_visible)
-                                    && !annotation_candidate
-                                    && !annotation.locked
                                 {
+                                    let state = interaction_chrome::handle_state(state, annotation.locked);
                                     let rotation_index = RectangleResizeHandle::ALL.len();
                                     if annotation.selected
+                                        && !annotation.locked
                                         && annotation.feedback.handle_visible(rotation_index)
                                     {
                                         interaction_chrome::paint_rotation_feedback(
@@ -22327,17 +22187,6 @@ fn annotation_layer(
                                     window,
                                 );
                             }
-                            let selection_frame =
-                                crate::annotation_model::measurement_selection_frame(
-                                    annotation.start,
-                                    annotation.end,
-                                    crate::annotation_model::LENGTH_LEADER_LENGTH_PT,
-                                    line.stroke_width_pt(),
-                                    caption_text_width_pt,
-                                    caption_layout
-                                        .as_ref()
-                                        .map_or(&[][..], |layout| &layout.pdf_corners),
-                                );
                             if let Some(layout) = caption_layout {
                                 layout.paint(page_bounds.origin, window, cx);
                             }
@@ -22353,18 +22202,8 @@ fn annotation_layer(
                                     annotation_candidate,
                                 )
                             {
-                                if let Some(frame) = selection_frame {
-                                    interaction_chrome::paint_feedback_path(
-                                        &frame.corners().map(project),
-                                        true,
-                                        state,
-                                        window,
-                                    );
-                                }
-                                if (annotation.selected || transform_hovered)
-                                    && !annotation_candidate
-                                    && !annotation.locked
                                 {
+                                    let state = interaction_chrome::handle_state(state, annotation.locked);
                                     for (index, center) in [start, end].into_iter().enumerate() {
                                         if !annotation.selected
                                             || annotation.feedback.handle_visible(index)
@@ -22442,15 +22281,11 @@ fn annotation_layer(
                                     page_bounds.origin,
                                     interaction_chrome::rotation_feedback_radius(state, false),
                                 );
-                                interaction_chrome::paint_feedback_path(
-                                    &geometry.bounds, true, state, window,
-                                );
-                                if (annotation.selected || hover_controls_visible)
-                                    && !annotation_candidate
-                                    && !annotation.locked
                                 {
+                                    let state = interaction_chrome::handle_state(state, annotation.locked);
                                     let rotation_index = RectangleResizeHandle::ALL.len();
                                     if annotation.selected
+                                        && !annotation.locked
                                         && annotation.feedback.handle_visible(rotation_index)
                                     {
                                         interaction_chrome::paint_rotation_feedback(
@@ -22538,15 +22373,11 @@ fn annotation_layer(
                                     page_bounds.origin,
                                     interaction_chrome::rotation_feedback_radius(state, false),
                                 );
-                                interaction_chrome::paint_feedback_path(
-                                    &geometry.bounds, true, state, window,
-                                );
-                                if (annotation.selected || hover_controls_visible)
-                                    && !annotation_candidate
-                                    && !annotation.locked
                                 {
+                                    let state = interaction_chrome::handle_state(state, annotation.locked);
                                     let rotation_index = RectangleResizeHandle::ALL.len();
                                     if annotation.selected
+                                        && !annotation.locked
                                         && annotation.feedback.handle_visible(rotation_index)
                                     {
                                         interaction_chrome::paint_rotation_feedback(
@@ -22584,58 +22415,6 @@ fn annotation_layer(
                                 }
                             }
                         }
-                        }
-                    }
-                    if let Some(pending) = painted_pending_text_box
-                        .as_ref()
-                        .filter(|pending| pending.existing_id.is_none())
-                    {
-                        let rect = pending.rect;
-                        let corners = [
-                            PdfPoint { x: rect.x, y: rect.y + rect.height },
-                            PdfPoint { x: rect.x + rect.width, y: rect.y + rect.height },
-                            PdfPoint { x: rect.x + rect.width, y: rect.y },
-                            PdfPoint { x: rect.x, y: rect.y },
-                        ]
-                        .map(|sample| {
-                            let local = transform.point_to_local_pixels(sample);
-                            point(
-                                page_bounds.origin.x + px(local.x as f32),
-                                page_bounds.origin.y + px(local.y as f32),
-                            )
-                        });
-                        interaction_chrome::paint_feedback_path(
-                            &corners,
-                            true,
-                            interaction_chrome::ChromeState::Focused,
-                            window,
-                        );
-                        let left = rect.x;
-                        let centre_x = rect.x + rect.width / 2.;
-                        let right = rect.x + rect.width;
-                        let bottom = rect.y;
-                        let centre_y = rect.y + rect.height / 2.;
-                        let top = rect.y + rect.height;
-                        for sample in [
-                            PdfPoint { x: left, y: bottom },
-                            PdfPoint { x: centre_x, y: bottom },
-                            PdfPoint { x: right, y: bottom },
-                            PdfPoint { x: right, y: centre_y },
-                            PdfPoint { x: right, y: top },
-                            PdfPoint { x: centre_x, y: top },
-                            PdfPoint { x: left, y: top },
-                            PdfPoint { x: left, y: centre_y },
-                        ] {
-                            let local = transform.point_to_local_pixels(sample);
-                            interaction_chrome::paint_feedback_handle(
-                                point(
-                                    page_bounds.origin.x + px(local.x as f32),
-                                    page_bounds.origin.y + px(local.y as f32),
-                                ),
-                                interaction_chrome::ChromeState::Focused,
-                                false,
-                                window,
-                            );
                         }
                     }
                     if let Some(preview) = pending_image_preview.as_ref() {
@@ -24388,6 +24167,10 @@ impl Render for DocumentWorkspace {
                 matches!(
                     &editor.target,
                     PendingTextEditorTarget::ExistingTextBox { .. }
+                        | PendingTextEditorTarget::NewCloudPlus { .. }
+                        | PendingTextEditorTarget::ExistingCloudPlus { .. }
+                        | PendingTextEditorTarget::Callout { .. }
+                        | PendingTextEditorTarget::ExistingCallout { .. }
                 )
             })
             .and_then(|editor| {
@@ -24449,15 +24232,15 @@ impl Render for DocumentWorkspace {
             current_image,
             annotation_tool,
             _annotation_dirty,
-            annotation_undo_depth,
-            annotation_redo_depth,
-            selected_annotation_id,
-            selected_annotation_locked,
-            selected_has_unlocked_annotation,
+            _annotation_undo_depth,
+            _annotation_redo_depth,
+            _selected_annotation_id,
+            _selected_annotation_locked,
+            _selected_has_unlocked_annotation,
             selected_rectangle,
             selected_ellipse,
             selected_dimension,
-            selected_rectangle_stroke_width,
+            _selected_rectangle_stroke_width,
             selected_straight_line,
             selected_vertex_path,
             selected_ink,
@@ -24465,7 +24248,7 @@ impl Render for DocumentWorkspace {
             selected_text_box,
             selected_measurement,
             highlight_defaults,
-            save_in_progress,
+            _save_in_progress,
             save_busy,
             ink_mutation_disabled,
             save_failure,
@@ -25338,8 +25121,53 @@ impl Render for DocumentWorkspace {
                         let text_box = self.inline_existing_text_box(editor.document_id, id, cx)?;
                         (
                             Some(id.clone()),
-                            &text_box.layout_rect,
+                            text_box.layout_rect,
                             text_box.style(),
+                            inline_editor_interaction.as_ref()?,
+                        )
+                    }
+                    PendingTextEditorTarget::Callout { id }
+                    | PendingTextEditorTarget::ExistingCallout { id } => {
+                        let callout = self
+                            .session(editor.document_id, cx)?
+                            .read(cx)
+                            .annotations
+                            .callout(editor.document_id.value(), id)?;
+                        let style = callout.appearance.text();
+                        let content = editor.input.read(cx).value();
+                        (
+                            Some(id.clone()),
+                            caption_editor_rect(
+                                crate::annotation_adapter::callout_fitted_text_box(
+                                    callout,
+                                    content.as_ref(),
+                                ),
+                                style,
+                                content.as_ref(),
+                            ),
+                            style,
+                            inline_editor_interaction.as_ref()?,
+                        )
+                    }
+                    PendingTextEditorTarget::NewCloudPlus { id }
+                    | PendingTextEditorTarget::ExistingCloudPlus { id } => {
+                        let cloud_plus = self
+                            .session(editor.document_id, cx)?
+                            .read(cx)
+                            .annotations
+                            .cloud_plus(editor.document_id.value(), id)?;
+                        let style = cloud_plus.appearance.text();
+                        (
+                            Some(id.clone()),
+                            caption_editor_rect(
+                                crate::annotation_adapter::cloud_plus_fitted_text_box(
+                                    cloud_plus,
+                                    editor.input.read(cx).value().as_ref(),
+                                ),
+                                style,
+                                editor.input.read(cx).value().as_ref(),
+                            ),
+                            style,
                             inline_editor_interaction.as_ref()?,
                         )
                     }
@@ -25348,10 +25176,10 @@ impl Render for DocumentWorkspace {
                         style,
                         interaction,
                         ..
-                    } => (None, rect, style, interaction),
+                    } => (None, *rect, style, interaction),
                     _ => return None,
                 };
-                let local = interaction.transform.rect_to_local_pixels(*rect);
+                let local = interaction.transform.rect_to_local_pixels(rect);
                 let editor_bounds = Some(Bounds::new(
                     point(
                         interaction.bounds.origin.x - interaction.container_bounds.origin.x
@@ -25364,7 +25192,7 @@ impl Render for DocumentWorkspace {
                 Some(PendingTextBoxPresentation {
                     document_id: editor.document_id,
                     page_index: editor.page_index,
-                    rect: *rect,
+                    rect,
                     style: style.clone(),
                     input: editor.input.clone(),
                     editor_bounds,
@@ -25386,8 +25214,6 @@ impl Render for DocumentWorkspace {
                     && !pending_editor_inline
             })
             .map(|editor| editor.input.clone());
-        let highlight_settings_control =
-            self.render_highlight_settings_popover(document_id, highlight_defaults, save_busy, cx);
         let semantic_snap_control = self.render_snap_settings_popover(
             save_busy,
             snap_grid_spacing_input,
@@ -25414,260 +25240,6 @@ impl Render for DocumentWorkspace {
             dim_inactive_window_chrome(window),
             cx,
         );
-        let history_group = h_flex()
-            .gap_1()
-            .child(
-                Button::new(DOCUMENT_ANNOTATION_UNDO_ID)
-                    .debug_selector(|| DOCUMENT_ANNOTATION_UNDO_ID.into())
-                    .small()
-                    .label("Undo")
-                    .disabled(annotation_undo_depth == 0 || save_busy)
-                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                        let _ = workspace.undo_annotations(document_id, cx);
-                    })),
-            )
-            .child(
-                Button::new(DOCUMENT_ANNOTATION_REDO_ID)
-                    .debug_selector(|| DOCUMENT_ANNOTATION_REDO_ID.into())
-                    .small()
-                    .label("Redo")
-                    .disabled(annotation_redo_depth == 0 || save_busy)
-                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                        let _ = workspace.redo_annotations(document_id, cx);
-                    })),
-            );
-        let rectangle_properties_control = cx.entity().downgrade();
-        let rectangle_properties_button = Button::new(DOCUMENT_RECTANGLE_PROPERTIES_ID)
-            .debug_selector(|| DOCUMENT_RECTANGLE_PROPERTIES_ID.into())
-            .small()
-            .label("Properties")
-            .tooltip("Show or hide Rectangle properties")
-            .selected(self.rectangular_shape_property_inspector_open)
-            .toggled(self.rectangular_shape_property_inspector_open)
-            .disabled(selected_rectangle.is_none())
-            .on_click(move |_, window, cx| {
-                let _ = rectangle_properties_control.update(cx, |workspace, cx| {
-                    workspace.set_rectangular_shape_property_inspector_open(
-                        !workspace.rectangular_shape_property_inspector_open,
-                        window,
-                        cx,
-                    );
-                });
-            });
-        let ellipse_properties_control = cx.entity().downgrade();
-        let ellipse_properties_button = Button::new(DOCUMENT_ELLIPSE_PROPERTIES_ID)
-            .debug_selector(|| DOCUMENT_ELLIPSE_PROPERTIES_ID.into())
-            .small()
-            .label("Properties")
-            .tooltip("Show or hide Ellipse properties")
-            .selected(self.rectangular_shape_property_inspector_open)
-            .toggled(self.rectangular_shape_property_inspector_open)
-            .disabled(selected_ellipse.is_none())
-            .on_click(move |_, window, cx| {
-                let _ = ellipse_properties_control.update(cx, |workspace, cx| {
-                    workspace.set_rectangular_shape_property_inspector_open(
-                        !workspace.rectangular_shape_property_inspector_open,
-                        window,
-                        cx,
-                    );
-                });
-            });
-        let stroke_update_control = cx.entity().downgrade();
-        let stroke_open_control = cx.entity().downgrade();
-        let stroke_control = Popover::new("document-workspace-rectangle-stroke-popover")
-            .anchor(Anchor::BottomLeft)
-            .open(crate::overlay_state::sync_overlay_open(
-                "stroke-menu",
-                self.annotation_stroke_menu_open,
-                cx,
-            ))
-            .on_open_change(move |open, _, cx| {
-                let _ = stroke_open_control.update(cx, |workspace, cx| {
-                    workspace.annotation_stroke_menu_open = *open;
-                    cx.notify();
-                });
-            })
-            .trigger(
-                Button::new(DOCUMENT_RECTANGLE_STROKE_ID)
-                    .debug_selector(|| DOCUMENT_RECTANGLE_STROKE_ID.into())
-                    .small()
-                    .label(
-                        selected_rectangle_stroke_width
-                            .map(|width| format!("Line {width} pt"))
-                            .unwrap_or_else(|| "Line width".to_owned()),
-                    )
-                    .disabled(selected_rectangle_stroke_width.is_none() || save_busy),
-            )
-            .content(move |_, _, cx| {
-                let popover = cx.entity();
-                h_flex().gap_1().children([1., 1.5, 3., 4.].map(|width| {
-                    let control = stroke_update_control.clone();
-                    let popover = popover.clone();
-                    let id = format!("document-workspace-stroke-{width}");
-                    let selector = id.clone();
-                    Button::new(id)
-                        .debug_selector(move || selector.clone())
-                        .label(format!("{width} pt"))
-                        .selected(selected_rectangle_stroke_width == Some(width))
-                        .toggled(selected_rectangle_stroke_width == Some(width))
-                        .disabled(save_busy)
-                        .on_click(move |_, window, cx| {
-                            let _ = control.update(cx, |workspace, cx| {
-                                workspace.set_selected_rectangle_stroke_width(
-                                    document_id,
-                                    width,
-                                    cx,
-                                )
-                            });
-                            popover.update(cx, |popover, cx| popover.dismiss(window, cx));
-                        })
-                }))
-            });
-        let straight_line_property_control = cx.entity().downgrade();
-        let straight_line_properties = selected_straight_line.as_ref().map(|annotation| {
-            Button::new(DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID)
-                .debug_selector(|| DOCUMENT_STRAIGHT_LINE_PROPERTIES_ID.into())
-                .small()
-                .label("Properties")
-                .tooltip(format!(
-                    "Show or hide {} properties",
-                    match annotation.kind {
-                        LineKind::Line => "Line",
-                        LineKind::Arrow => "Arrow",
-                    }
-                ))
-                .selected(self.straight_line_property_inspector_open)
-                .toggled(self.straight_line_property_inspector_open)
-                .on_click(move |_, window, cx| {
-                    let _ = straight_line_property_control.update(cx, |workspace, cx| {
-                        workspace.set_straight_line_property_inspector_open(
-                            !workspace.straight_line_property_inspector_open,
-                            window,
-                            cx,
-                        );
-                    });
-                })
-        });
-        let vertex_path_properties_control = cx.entity().downgrade();
-        let vertex_path_properties = selected_vertex_path.as_ref().map(|(_, kind, _, _)| {
-            Button::new(DOCUMENT_VERTEX_PATH_PROPERTIES_ID)
-                .debug_selector(|| DOCUMENT_VERTEX_PATH_PROPERTIES_ID.into())
-                .small()
-                .label("Properties")
-                .tooltip(format!("Show or hide {kind:?} properties"))
-                .selected(self.vertex_path_property_inspector_open)
-                .toggled(self.vertex_path_property_inspector_open)
-                .on_click(move |_, window, cx| {
-                    let _ = vertex_path_properties_control.update(cx, |workspace, cx| {
-                        workspace.set_vertex_path_property_inspector_open(
-                            !workspace.vertex_path_property_inspector_open,
-                            window,
-                            cx,
-                        )
-                    });
-                })
-        });
-        let ink_properties_control = cx.entity().downgrade();
-        let ink_properties_button = selected_ink.as_ref().map(|ink| {
-            Button::new(DOCUMENT_INK_PROPERTIES_ID)
-                .debug_selector(|| DOCUMENT_INK_PROPERTIES_ID.into())
-                .small()
-                .label("Properties")
-                .tooltip(match ink.tool() {
-                    InkTool::Pen => "Show or hide Pen properties",
-                    InkTool::Highlight => "Show or hide Highlight properties",
-                })
-                .selected(self.ink_property_inspector_open)
-                .toggled(self.ink_property_inspector_open)
-                .on_click(move |_, window, cx| {
-                    let _ = ink_properties_control.update(cx, |workspace, cx| {
-                        workspace.set_ink_property_inspector_open(
-                            !workspace.ink_property_inspector_open,
-                            window,
-                            cx,
-                        );
-                    });
-                })
-        });
-        let engineering_visual_properties_control = cx.entity().downgrade();
-        let engineering_visual_properties_button =
-            selected_engineering_visual.as_ref().map(|(_, values, _)| {
-                let kind = values.kind();
-                Button::new(DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID)
-                    .debug_selector(|| DOCUMENT_ENGINEERING_VISUAL_PROPERTIES_ID.into())
-                    .small()
-                    .label("Properties")
-                    .tooltip(format!("Show or hide {} properties", kind.label()))
-                    .selected(self.engineering_visual_property_inspector_open)
-                    .toggled(self.engineering_visual_property_inspector_open)
-                    .on_click(move |_, window, cx| {
-                        let _ =
-                            engineering_visual_properties_control.update(cx, |workspace, cx| {
-                                workspace.set_engineering_visual_property_inspector_open(
-                                    !workspace.engineering_visual_property_inspector_open,
-                                    window,
-                                    cx,
-                                );
-                            });
-                    })
-            });
-        let text_box_properties_control = cx.entity().downgrade();
-        let text_box_properties_button = selected_text_box.as_ref().map(|_| {
-            Button::new(DOCUMENT_TEXT_BOX_PROPERTIES_ID)
-                .debug_selector(|| DOCUMENT_TEXT_BOX_PROPERTIES_ID.into())
-                .small()
-                .label("Properties")
-                .tooltip("Show or hide Text Box properties")
-                .selected(self.text_box_property_inspector_open)
-                .toggled(self.text_box_property_inspector_open)
-                .on_click(move |_, window, cx| {
-                    let _ = text_box_properties_control.update(cx, |workspace, cx| {
-                        workspace.set_text_box_property_inspector_open(
-                            !workspace.text_box_property_inspector_open,
-                            window,
-                            cx,
-                        );
-                    });
-                })
-        });
-        let measurement_properties_control = cx.entity().downgrade();
-        let measurement_properties_button = selected_measurement.as_ref().map(|_| {
-            Button::new(DOCUMENT_MEASUREMENT_PROPERTIES_ID)
-                .debug_selector(|| DOCUMENT_MEASUREMENT_PROPERTIES_ID.into())
-                .small()
-                .label("Measurement Properties")
-                .tooltip("Show or hide measurement properties")
-                .selected(self.measurement_property_inspector_open)
-                .toggled(self.measurement_property_inspector_open)
-                .on_click(move |_, window, cx| {
-                    let _ = measurement_properties_control.update(cx, |workspace, cx| {
-                        workspace.set_measurement_property_inspector_open(
-                            !workspace.measurement_property_inspector_open,
-                            window,
-                            cx,
-                        );
-                    });
-                })
-        });
-        let dimension_properties = selected_dimension.as_ref().map(|_| {
-            let control = cx.entity().downgrade();
-            Button::new(DOCUMENT_DIMENSION_PROPERTIES_ID)
-                .debug_selector(|| DOCUMENT_DIMENSION_PROPERTIES_ID.into())
-                .small()
-                .label("Dimension Properties")
-                .tooltip("Show or hide Dimension properties")
-                .selected(self.dimension_property_inspector_open)
-                .toggled(self.dimension_property_inspector_open)
-                .on_click(move |_, window, cx| {
-                    let _ = control.update(cx, |workspace, cx| {
-                        workspace.set_dimension_property_inspector_open(
-                            !workspace.dimension_property_inspector_open,
-                            window,
-                            cx,
-                        )
-                    });
-                })
-        });
         let inspector_width = window.rem_size() * 18.75;
         let inspector_range = window.rem_size() * 13.75..window.rem_size() * 26.25;
         let inline_selection =
@@ -25917,239 +25489,67 @@ impl Render for DocumentWorkspace {
             window,
             cx,
         );
-        let supporting_actions = v_flex()
-            .w_full()
-            .h_full()
-            .flex_none()
-            .min_w_0()
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .child(
-                crate::property_controls::PropertyInspectorHeader::new(
-                    "document-workspace-rail-actions-header",
-                    title,
-                )
-                .trailing(
-                    close_icon_button(
-                        "document-workspace-rail-actions-close",
-                        "Close document actions",
-                    )
-                    .on_click(cx.listener(|workspace, _, _, cx| {
-                        if workspace.pending_text_box_editor.is_some()
-                            && let Err(error) = workspace.commit_pending_text_box(cx)
-                        {
-                            workspace.text_box_commit_error = Some(error);
-                            cx.notify();
-                            return;
-                        }
-                        workspace.right_rail_actions_open = false;
-                        cx.notify();
-                    })),
-                ),
+        // Text that cannot be edited where it sits (a Dimension caption or a
+        // rotated Text Box) is edited here instead.
+        let text_editor_title = match self
+            .pending_text_box_editor
+            .as_ref()
+            .map(|editor| &editor.target)
+        {
+            Some(
+                PendingTextEditorTarget::NewDimension { .. }
+                | PendingTextEditorTarget::ExistingDimension { .. },
+            ) => "Dimension Text",
+            _ => "Text",
+        };
+        let supporting_actions = crate::property_controls::PropertyInspectorPanel::new(
+            "document-workspace-text-editor",
+            "document-workspace-text-editor-header",
+            "document-workspace-text-editor-scroll",
+            text_editor_title,
+        )
+        .header_trailing(
+            close_icon_button(
+                "document-workspace-text-editor-close",
+                "Finish editing text",
             )
-            .child(
-                v_flex()
-                    .w_full()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .child(highlight_settings_control)
-                    .child(
+            .on_click(cx.listener(|workspace, _, _, cx| {
+                if let Err(error) = workspace.commit_pending_text_box(cx) {
+                    workspace.text_box_commit_error = Some(error);
+                }
+                cx.notify();
+            })),
+        )
+        .child(
+            v_flex()
+                .w_full()
+                .gap_2()
+                .p_3()
+                .when_some(pending_text_box_input, |panel, input| {
+                    panel.child(
                         gpui::div()
-                            .ml_auto()
-                            .flex_shrink_0()
-                            .text_sm()
-                            .child(format!("Page {}", current_page + 1)),
-                    )
-                    .child(
-                        v_flex()
-                            .id(DOCUMENT_TOOLBAR_SCROLL_ID)
-                            .debug_selector(|| DOCUMENT_TOOLBAR_SCROLL_ID.into())
+                            .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
+                            .debug_selector(|| DOCUMENT_TEXT_BOX_EDITOR_ID.into())
                             .w_full()
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.toolbar_scroll)
-                            .child(
-                                v_flex()
-                                    .id(DOCUMENT_TOOLBAR_CONTENT_ID)
-                                    .debug_selector(|| DOCUMENT_TOOLBAR_CONTENT_ID.into())
-                                    .w_full()
-                                    .flex_shrink_0()
-                                    .gap_2()
-                                    .child(v_flex().flex_shrink_0().child(history_group))
-                                    .child(
-                                        v_flex().flex_shrink_0().child(rectangle_properties_button),
-                                    )
-                                    .child(
-                                        v_flex().flex_shrink_0().child(ellipse_properties_button),
-                                    )
-                                    .child(v_flex().flex_shrink_0().child(stroke_control))
-                                    .when_some(straight_line_properties, |toolbar, button| {
-                                        toolbar.child(v_flex().flex_shrink_0().child(button))
-                                    })
-                                    .when_some(vertex_path_properties, |toolbar, button| {
-                                        toolbar.child(v_flex().flex_shrink_0().child(button))
-                                    })
-                                    .when_some(ink_properties_button, |toolbar, button| {
-                                        toolbar.child(v_flex().flex_shrink_0().child(button))
-                                    })
-                                    .when_some(
-                                        engineering_visual_properties_button,
-                                        |toolbar, button| {
-                                            toolbar.child(v_flex().flex_shrink_0().child(button))
-                                        },
-                                    )
-                                    .when_some(text_box_properties_button, |toolbar, button| {
-                                        toolbar.child(v_flex().flex_shrink_0().child(button))
-                                    })
-                                    .when_some(measurement_properties_button, |toolbar, button| {
-                                        toolbar.child(v_flex().flex_shrink_0().child(button))
-                                    })
-                                    .when_some(dimension_properties, |toolbar, properties| {
-                                        toolbar.child(v_flex().flex_shrink_0().child(properties))
-                                    })
-                                    .when_some(
-                                        self.annotation_statuses.get(&document_id).cloned(),
-                                        |toolbar, status| {
-                                            toolbar.child(
-                                                gpui::div()
-                                                    .id(DOCUMENT_ANNOTATION_STATUS_ID)
-                                                    .debug_selector(|| {
-                                                        DOCUMENT_ANNOTATION_STATUS_ID.into()
-                                                    })
-                                                    .text_sm()
-                                                    .text_color(cx.theme().danger)
-                                                    .child(status),
-                                            )
-                                        },
-                                    )
-                                    .when_some(pending_text_box_input, |toolbar, input| {
-                                        toolbar.child(
-                                            gpui::div()
-                                                .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
-                                                .debug_selector(|| {
-                                                    DOCUMENT_TEXT_BOX_EDITOR_ID.into()
-                                                })
-                                                .w(px(220.))
-                                                .h(px(72.))
-                                                .child(
-                                                    Textarea::new(&input)
-                                                        .aria_label("Text box content")
-                                                        .h_full(),
-                                                ),
-                                        )
-                                    })
-                                    .child(
-                                        Button::new(DOCUMENT_ANNOTATION_LOCK_ID)
-                                            .debug_selector(|| DOCUMENT_ANNOTATION_LOCK_ID.into())
-                                            .small()
-                                            .label(if selected_annotation_locked {
-                                                "Unlock"
-                                            } else {
-                                                "Lock"
-                                            })
-                                            .disabled(selected_annotation_id.is_none() || save_busy)
-                                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                                let _ = workspace.set_selected_annotation_locked(
-                                                    document_id,
-                                                    !selected_annotation_locked,
-                                                    cx,
-                                                );
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(DOCUMENT_ANNOTATION_DELETE_ID)
-                                            .debug_selector(|| DOCUMENT_ANNOTATION_DELETE_ID.into())
-                                            .small()
-                                            .danger()
-                                            .label("Delete")
-                                            .disabled(
-                                                selected_annotation_id.is_none()
-                                                    || !selected_has_unlocked_annotation
-                                                    || save_busy,
-                                            )
-                                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                                let _ = workspace
-                                                    .delete_selected_annotation(document_id, cx);
-                                            })),
-                                    ),
-                            ),
+                            .h(px(96.))
+                            .child(Textarea::new(&input).aria_label("Text").h_full()),
                     )
-                    .child(
-                        v_flex()
-                            .flex_shrink_0()
-                            .gap_1()
-                            .child(
-                                Button::new(DOCUMENT_ROTATE_LEFT_ID)
-                                    .debug_selector(|| DOCUMENT_ROTATE_LEFT_ID.into())
-                                    .small()
-                                    .label("Rotate Left")
-                                    .disabled(save_busy)
-                                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        workspace.rotate_page_async(
-                                            document_id,
-                                            PageRotationDirection::Left,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                Button::new(DOCUMENT_ROTATE_RIGHT_ID)
-                                    .debug_selector(|| DOCUMENT_ROTATE_RIGHT_ID.into())
-                                    .small()
-                                    .label("Rotate Right")
-                                    .disabled(save_busy)
-                                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        workspace.rotate_page_async(
-                                            document_id,
-                                            PageRotationDirection::Right,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                Button::new(DOCUMENT_SAVE_ID)
-                                    .debug_selector(|| DOCUMENT_SAVE_ID.into())
-                                    .small()
-                                    .label(if save_in_progress {
-                                        "Saving…"
-                                    } else {
-                                        "Save"
-                                    })
-                                    .disabled(save_busy)
-                                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        workspace.save_active_document(cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new(DOCUMENT_SAVE_AS_ID)
-                                    .debug_selector(|| DOCUMENT_SAVE_AS_ID.into())
-                                    .small()
-                                    .label(save_as_command_label(save_in_progress))
-                                    .disabled(save_busy)
-                                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        workspace.prompt_to_save_as(document_id, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new(DOCUMENT_CLOSE_ID)
-                                    .debug_selector(|| DOCUMENT_CLOSE_ID.into())
-                                    .small()
-                                    .ghost()
-                                    .label("Close")
-                                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                                        workspace.request_close_document(document_id, cx);
-                                    })),
-                            ),
-                    ),
-            );
-        let supporting_actions = if combined_measurement_properties
-            && self.pending_text_box_editor.is_none()
+                })
+                .when_some(
+                    self.annotation_statuses.get(&document_id).cloned(),
+                    |panel, status| {
+                        panel.child(
+                            gpui::div()
+                                .id(DOCUMENT_ANNOTATION_STATUS_ID)
+                                .debug_selector(|| DOCUMENT_ANNOTATION_STATUS_ID.into())
+                                .text_sm()
+                                .text_color(cx.theme().danger)
+                                .child(status),
+                        )
+                    },
+                ),
+        );
+        let supporting_actions = if combined_measurement_properties && !pending_non_creation_editor
         {
             let title = match selected_measurement.as_ref().map(|selected| selected.1) {
                 Some(AnnotationKind::Area) => "Area",
@@ -26184,23 +25584,21 @@ impl Render for DocumentWorkspace {
                     ),
             )
             .into_any_element()
-        } else if inspector_visible && self.pending_text_box_editor.is_none() {
+        } else if inspector_visible && !pending_non_creation_editor {
             gpui::div()
                 .w_full()
                 .h_full()
                 .min_h_0()
                 .child(inspector_shell)
                 .into_any_element()
-        } else if annotation_tool == AnnotationTool::Highlight
-            && self.pending_text_box_editor.is_none()
-        {
+        } else if annotation_tool == AnnotationTool::Highlight && !pending_non_creation_editor {
             gpui::div()
                 .w_full()
                 .h_full()
                 .min_h_0()
                 .child(highlight_defaults_panel)
                 .into_any_element()
-        } else if self.pending_text_box_editor.is_none() {
+        } else if !pending_non_creation_editor {
             gpui::div()
                 .w_full()
                 .h_full()
@@ -26938,40 +26336,34 @@ mod tests {
     }
 
     #[test]
-    fn shape_feedback_geometry_projects_then_rotates_bounds_handles_and_stem() {
+    fn shape_feedback_geometry_projects_then_rotates_handles_and_stem() {
         use super::*;
         let rect = PdfRect::new(10., 20., 40., 20.).unwrap();
         let origin = point(px(5.), px(7.));
         let transform = PageTransform::new_rotated(100., 200., 2., PageRotation::Degrees0).unwrap();
         let geometry = shape_feedback_geometry(rect, 0., false, &transform, origin, 4.);
-        assert_eq!(
-            geometry.bounds,
-            [
-                point(px(25.), px(327.)),
-                point(px(105.), px(327.)),
-                point(px(105.), px(367.)),
-                point(px(25.), px(367.))
-            ]
-        );
+        for corner in [
+            point(px(25.), px(327.)),
+            point(px(105.), px(327.)),
+            point(px(105.), px(367.)),
+            point(px(25.), px(367.)),
+        ] {
+            assert!(geometry.handles.contains(&corner), "{corner:?}");
+        }
         assert_eq!(geometry.rotation_center, point(px(65.), px(307.)));
         assert_eq!(geometry.connector_start, point(px(65.), px(327.)));
         assert_eq!(geometry.connector_end, point(px(65.), px(311.)));
         let rotated = shape_feedback_geometry(rect, 90., false, &transform, origin, 4.);
-        assert_eq!(
-            rotated.bounds,
-            [
-                point(px(85.), px(307.)),
-                point(px(85.), px(387.)),
-                point(px(45.), px(387.)),
-                point(px(45.), px(307.))
-            ]
-        );
+        for corner in [
+            point(px(85.), px(307.)),
+            point(px(85.), px(387.)),
+            point(px(45.), px(387.)),
+            point(px(45.), px(307.)),
+        ] {
+            assert!(rotated.handles.contains(&corner), "{corner:?}");
+        }
         assert_eq!(rotated.rotation_center, point(px(105.), px(347.)));
         let ellipse = shape_feedback_geometry(rect, 0., true, &transform, origin, 4.);
-        assert_eq!(
-            ellipse.bounds, geometry.bounds,
-            "ellipse chrome is the rectangle, not its curved perimeter"
-        );
         let northwest = ellipse.handles[0];
         assert!(
             (f32::from(northwest.x) - (65. - 40. * std::f32::consts::FRAC_1_SQRT_2)).abs() < 0.001
@@ -27011,95 +26403,6 @@ mod tests {
         let transformed = arbitrary.apply(point(px(80.), px(60.)));
         assert!((f32::from(transformed.x) - 77.320_51).abs() < 0.001);
         assert!((f32::from(transformed.y) - 50.).abs() < 0.001);
-    }
-
-    #[test]
-    fn path_feedback_bounds_use_svg_screen_order_and_pdf_minimum_before_rotation() {
-        use super::*;
-        let points = [
-            PdfPoint { x: 10., y: 20. },
-            PdfPoint { x: 50., y: 20. },
-            PdfPoint { x: 30., y: 20. },
-        ];
-        let origin = point(px(7.), px(11.));
-        for (rotation, expected) in [
-            (
-                PageRotation::Degrees0,
-                [(27., 153.), (107., 153.), (107., 155.), (27., 155.)],
-            ),
-            (
-                PageRotation::Degrees90,
-                [(47., 31.), (49., 31.), (49., 111.), (47., 111.)],
-            ),
-            (
-                PageRotation::Degrees180,
-                [(107., 51.), (187., 51.), (187., 53.), (107., 53.)],
-            ),
-            (
-                PageRotation::Degrees270,
-                [(149., 111.), (151., 111.), (151., 191.), (149., 191.)],
-            ),
-        ] {
-            let transform = PageTransform::new_rotated(100., 92., 2., rotation).unwrap();
-            assert!(
-                path_feedback_bounds(&points, 0., &transform, origin).is_none(),
-                "SVG raw zero-height rectangle must not paint"
-            );
-            assert_eq!(
-                path_feedback_bounds(&points, 1., &transform, origin).unwrap(),
-                expected.map(|(x, y)| point(px(x), px(y))),
-                "{rotation:?}"
-            );
-        }
-        let transform = PageTransform::new_rotated(100., 92., 1., PageRotation::Degrees0).unwrap();
-        let triangle = [
-            PdfPoint { x: 10., y: 20. },
-            PdfPoint { x: 50., y: 30. },
-            PdfPoint { x: 20., y: 60. },
-        ];
-        assert_eq!(
-            path_feedback_bounds(&triangle, 0., &transform, point(px(0.), px(0.))).unwrap(),
-            [
-                point(px(10.), px(32.)),
-                point(px(50.), px(32.)),
-                point(px(50.), px(72.)),
-                point(px(10.), px(72.))
-            ]
-        );
-    }
-
-    #[test]
-    fn ink_feedback_bounds_match_reference_stroke_padding_across_paths_and_rotation() {
-        use super::*;
-        let paths = vec![
-            vec![PdfPoint { x: 10., y: 20. }, PdfPoint { x: 50., y: 30. }],
-            vec![PdfPoint { x: 20., y: 60. }, PdfPoint { x: 35., y: 40. }],
-        ];
-        let origin = point(px(7.), px(11.));
-        let transform = PageTransform::new_rotated(100., 92., 2., PageRotation::Degrees0).unwrap();
-        assert_eq!(
-            ink_feedback_bounds(&paths, 8., &transform, origin).unwrap(),
-            [
-                point(px(19.), px(67.)),
-                point(px(115.), px(67.)),
-                point(px(115.), px(163.)),
-                point(px(19.), px(163.)),
-            ],
-            "four-point padding must be applied in PDF space before projection",
-        );
-
-        let transform = PageTransform::new_rotated(100., 92., 2., PageRotation::Degrees90).unwrap();
-        assert_eq!(
-            ink_feedback_bounds(&paths, 1., &transform, origin).unwrap(),
-            [
-                point(px(45.), px(29.)),
-                point(px(129.), px(29.)),
-                point(px(129.), px(113.)),
-                point(px(45.), px(113.)),
-            ],
-            "the reference one-point minimum padding must survive page rotation",
-        );
-        assert!(ink_feedback_bounds(&[], 8., &transform, origin).is_none());
     }
 
     #[test]

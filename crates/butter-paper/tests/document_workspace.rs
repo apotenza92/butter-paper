@@ -80,9 +80,9 @@ use butter_paper::document_workspace::{
     DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID, DOCUMENT_SNAP_POPOVER_ID,
     DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID, DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID,
     DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_THUMBNAIL_STRIP_ID,
-    DOCUMENT_TOOLBAR_SCROLL_ID, DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID,
-    DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution,
-    DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
+    DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID, DOCUMENT_VIEWPORT_ID,
+    DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution, DocumentId,
+    DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
     DocumentOpenOrigin, DocumentSaveFailureKind, DocumentSaveFailureOperation, DocumentSaveRoute,
     DocumentTabTransferEvent, DocumentWorkspace, FitPage, FitWidth,
     GeneratedTemplateRequestDisposition, NativeDocumentOpener, NativeDocumentResource,
@@ -2147,11 +2147,7 @@ fn real_page_content_and_form_xobjects_honour_optional_content_before_and_after_
     );
 }
 
-fn scroll_annotation_target_into_view(
-    cx: &mut gpui::VisualTestContext,
-    workspace: &gpui::Entity<DocumentWorkspace>,
-    target_id: &'static str,
-) {
+fn scroll_annotation_target_into_view(cx: &mut gpui::VisualTestContext, target_id: &'static str) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
     if cx.debug_bounds(target_id).is_none() {
         let rail = cx
@@ -2175,11 +2171,11 @@ fn scroll_annotation_target_into_view(
     let rail = cx
         .debug_bounds("document-workspace-right-rail-scroll")
         .unwrap();
-    let scroll_id = if target.left() >= rail.left() {
-        "document-workspace-right-rail-scroll"
-    } else {
-        DOCUMENT_TOOLBAR_SCROLL_ID
-    };
+    assert!(
+        target.left() >= rail.left(),
+        "{target_id} must sit in the annotation rail"
+    );
+    let scroll_id = "document-workspace-right-rail-scroll";
     let scroll = cx
         .debug_bounds(scroll_id)
         .expect("the annotation control must expose its vertical scroll owner");
@@ -2188,9 +2184,6 @@ fn scroll_annotation_target_into_view(
         .unwrap_or_else(|| panic!("{target_id} must render before scrolling"));
     // The rail's scroll cues cover the tools under them: clear them too.
     let cue = |id: &'static str, cx: &mut gpui::VisualTestContext| {
-        if scroll_id == DOCUMENT_TOOLBAR_SCROLL_ID {
-            return 0.;
-        }
         cx.debug_bounds(id)
             .map_or(0., |cue| f32::from(cue.size.height))
     };
@@ -2216,9 +2209,7 @@ fn scroll_annotation_target_into_view(
     let scrolled_target = cx.debug_bounds(target_id).unwrap();
     assert!(
         scrolled_target.top() >= scroll.top() && scrolled_target.bottom() <= scroll.bottom(),
-        "{target_id} must be fully reachable after vertical scrolling; viewport={scroll:?}, target={scrolled_target:?}, offset={:?}",
-        workspace.read_with(cx, |workspace, _| workspace
-            .annotation_toolbar_scroll_offset())
+        "{target_id} must be fully reachable after vertical scrolling; viewport={scroll:?}, target={scrolled_target:?}"
     );
 }
 
@@ -6127,14 +6118,18 @@ fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot = feedback_handles_at(cx, east);
     let ordinary = feedback_handles_at(cx, north_west);
-    assert!(
-        hot.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot.len(),
+        1,
+        "hovering shows the markup's handles, the one under the pointer filled"
     );
-    assert!(
-        ordinary.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot[0].background, hot[0].border_color.into());
+    assert_eq!(
+        ordinary.len(),
+        1,
+        "every handle shows while the markup is hovered"
     );
+    assert_ne!(ordinary[0].background, ordinary[0].border_color.into());
     let hover_scene = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
@@ -7967,7 +7962,7 @@ fn semantic_snapping_workspace_routes_real_line_input_and_transient_guide_eviden
         ApplyDisposition::Applied,
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_LINE_TOOL_ID);
     let line_button = cx
         .debug_bounds(DOCUMENT_LINE_TOOL_ID)
         .expect("the real GPUI Component Line button must render");
@@ -8093,7 +8088,7 @@ fn opened_page_grid_metadata_reaches_real_workspace_pointer_routes(cx: &mut Test
         ApplyDisposition::Applied,
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_LINE_TOOL_ID);
     let line_button = cx.debug_bounds(DOCUMENT_LINE_TOOL_ID).unwrap();
     cx.simulate_click(line_button.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -12047,7 +12042,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         }
     };
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_ARC_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_ARC_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -12097,7 +12092,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     engineering_visual_release_opacity(cx, &workspace, document_id, 0.7);
     engineering_visual_toggle_lock(cx);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_CLOUD_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -12136,7 +12131,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     );
     engineering_visual_toggle_lock(cx);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SNAPSHOT_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -12472,7 +12467,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
         )
     };
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_LINE_TOOL_ID);
     let line_tool = cx.debug_bounds(DOCUMENT_LINE_TOOL_ID).unwrap();
     cx.simulate_click(line_tool.center(), Modifiers::default());
     cx.simulate_mouse_down(to_view(72., 144.), MouseButton::Left, Modifiers::default());
@@ -12484,7 +12479,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
     cx.simulate_mouse_up(to_view(252., 240.), MouseButton::Left, Modifiers::default());
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARROW_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_ARROW_TOOL_ID);
     let arrow_tool = cx.debug_bounds(DOCUMENT_ARROW_TOOL_ID).unwrap();
     cx.simulate_click(arrow_tool.center(), Modifiers::default());
     let shift = Modifiers {
@@ -13868,13 +13863,12 @@ fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bou
         .expect("the real lock Switch must remain available");
     let viewport = cx.update(|window, _| window.viewport_size());
     let workspace_bounds = cx.debug_bounds(DOCUMENT_WORKSPACE_ID);
-    let toolbar_bounds = cx.debug_bounds(DOCUMENT_TOOLBAR_SCROLL_ID);
     let thumbnail_bounds = cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID);
     let inspector_scroll = cx.debug_bounds("rectangle-property-inspector-scroll");
     let details = cx.debug_bounds("rectangle-property-inspector-details");
     assert!(
         lock.right() <= viewport.width && lock.bottom() <= viewport.height,
-        "the real lock Switch must be inside the test viewport; workspace={workspace_bounds:?}, toolbar={toolbar_bounds:?}, thumbnails={thumbnail_bounds:?}, panel={panel:?}, scroll={inspector_scroll:?}, details={details:?}, lock={lock:?}, viewport={viewport:?}"
+        "the real lock Switch must be inside the test viewport; workspace={workspace_bounds:?}, thumbnails={thumbnail_bounds:?}, panel={panel:?}, scroll={inspector_scroll:?}, details={details:?}, lock={lock:?}, viewport={viewport:?}"
     );
     cx.simulate_click(lock.center(), Modifiers::default());
     let locked = workspace
@@ -14399,13 +14393,20 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry_on_nativ
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_resize = feedback_handles_at(cx, resize_start);
     let ordinary_resize = feedback_handles_at(cx, ordinary_resize);
-    assert!(
-        hot_resize.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_resize.len(),
+        1,
+        "hovering shows the markup's handles, the one under the pointer filled"
     );
-    assert!(
-        ordinary_resize.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot_resize[0].background, hot_resize[0].border_color.into());
+    assert_eq!(
+        ordinary_resize.len(),
+        1,
+        "every handle shows while the markup is hovered"
+    );
+    assert_ne!(
+        ordinary_resize[0].background,
+        ordinary_resize[0].border_color.into()
     );
     assert!(
         feedback_handles_at(cx, hover_rotation).is_empty(),
@@ -15308,9 +15309,7 @@ fn line_feedback_adapter_distinguishes_length_creation_from_committed_scene() {
 }
 
 #[gpui::test]
-fn line_feedback_workspace_paints_no_endpoint_handles_without_model_mutation(
-    cx: &mut TestAppContext,
-) {
+fn line_feedback_workspace_paints_endpoint_handles_without_model_mutation(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -15430,9 +15429,15 @@ fn line_feedback_workspace_paints_no_endpoint_handles_without_model_mutation(
                             && quad.border_widths.top.0 > 0.
                     })
                     .collect::<Vec<_>>();
-                assert!(
-                    handles.is_empty(),
-                    "selected {id:?} paints no handles at zoom {zoom}; the item itself is the grab target"
+                assert_eq!(
+                    handles.len(),
+                    1,
+                    "selected {id:?} shows one handle at each grab point at zoom {zoom}"
+                );
+                assert_ne!(
+                    handles[0].background,
+                    handles[0].border_color.into(),
+                    "a resting handle is white with a coloured border, leaving the markup visible"
                 );
             }
             let after = workspace
@@ -15502,13 +15507,13 @@ fn line_feedback_workspace_paints_no_endpoint_handles_without_model_mutation(
     };
     assert_eq!(
         handle_count(start),
-        0,
-        "endpoint transform must suppress the inactive handle"
+        1,
+        "the other endpoint keeps its handle while one is dragged"
     );
     assert_eq!(
         handle_count(moved_end),
-        0,
-        "the dragged endpoint is the line itself; no handle is painted"
+        1,
+        "the dragged endpoint's handle follows the pointer"
     );
     cx.simulate_keystrokes("escape");
     let after_cancel = workspace
@@ -15544,13 +15549,13 @@ fn line_feedback_workspace_paints_no_endpoint_handles_without_model_mutation(
     };
     assert_eq!(
         moved_handle_count(moved_start),
-        0,
-        "body move must hide the start handle"
+        1,
+        "the start handle moves with the body"
     );
     assert_eq!(
         moved_handle_count(moved_finish),
-        0,
-        "body move must hide the end handle"
+        1,
+        "the end handle moves with the body"
     );
     cx.simulate_keystrokes("escape");
     let after_body_cancel = workspace
@@ -15680,13 +15685,20 @@ fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let hot_start = feedback_handles_at(cx, hovered_start);
         let ordinary_end = feedback_handles_at(cx, ordinary_end);
-        assert!(
-            hot_start.is_empty(),
-            "item controls are not painted; the item itself is the grab target"
+        assert_eq!(
+            hot_start.len(),
+            1,
+            "the handle under the pointer shows, filled"
         );
-        assert!(
-            ordinary_end.is_empty(),
-            "item controls are not painted; the item itself is the grab target"
+        assert_eq!(hot_start[0].background, hot_start[0].border_color.into());
+        assert_eq!(
+            ordinary_end.len(),
+            1,
+            "every handle of a hovered or selected markup shows"
+        );
+        assert_ne!(
+            ordinary_end[0].background,
+            ordinary_end[0].border_color.into()
         );
     }
     let after_hover = workspace
@@ -15702,7 +15714,16 @@ fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_
         let locked_start = project(350., y);
         cx.simulate_mouse_move(locked_start, None, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(feedback_handles_at(cx, locked_start).is_empty());
+        let locked_handles = feedback_handles_at(cx, locked_start);
+        assert_eq!(
+            locked_handles.len(),
+            1,
+            "a locked markup shows inert handles"
+        );
+        assert_ne!(
+            locked_handles[0].background,
+            locked_handles[0].border_color.into()
+        );
     }
     workspace
         .update(cx, |workspace, cx| {
@@ -15964,13 +15985,20 @@ fn unselected_cloud_hover_controls_start_vertex_drag_on_first_press_on_native_st
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary_quads = feedback_handles_at(cx, project(points[1]));
-    assert!(
-        hot_quads.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_quads.len(),
+        1,
+        "the handle under the pointer shows, filled"
     );
-    assert!(
-        ordinary_quads.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot_quads[0].background, hot_quads[0].border_color.into());
+    assert_eq!(
+        ordinary_quads.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
+    );
+    assert_ne!(
+        ordinary_quads[0].background,
+        ordinary_quads[0].border_color.into()
     );
     let after_hover = workspace
         .read_with(cx, |workspace, cx| {
@@ -16148,17 +16176,29 @@ fn unselected_arc_hover_controls_start_control_drag_on_first_press_on_native_sta
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary_start = feedback_handles_at(cx, project(start));
     let ordinary_end = feedback_handles_at(cx, project(end));
-    assert!(
-        hot_quads.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_quads.len(),
+        1,
+        "the handle under the pointer shows, filled"
     );
-    assert!(
-        ordinary_start.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot_quads[0].background, hot_quads[0].border_color.into());
+    assert_eq!(
+        ordinary_start.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
     );
-    assert!(
-        ordinary_end.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_ne!(
+        ordinary_start[0].background,
+        ordinary_start[0].border_color.into()
+    );
+    assert_eq!(
+        ordinary_end.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
+    );
+    assert_ne!(
+        ordinary_end[0].background,
+        ordinary_end[0].border_color.into()
     );
     assert_eq!(
         workspace
@@ -16173,7 +16213,16 @@ fn unselected_arc_hover_controls_start_control_drag_on_first_press_on_native_sta
     let locked_mid = project(PdfPoint::new(mid.x + 250., mid.y).unwrap());
     cx.simulate_mouse_move(locked_mid, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(feedback_handles_at(cx, locked_mid).is_empty());
+    let locked_handles = feedback_handles_at(cx, locked_mid);
+    assert_eq!(
+        locked_handles.len(),
+        1,
+        "a locked markup shows inert handles"
+    );
+    assert_ne!(
+        locked_handles[0].background,
+        locked_handles[0].border_color.into()
+    );
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_annotation_tool(request.document_id, AnnotationTool::Arc, cx)
@@ -16347,14 +16396,18 @@ fn unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_sta
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary = feedback_handles_at(cx, project(points[0]));
-    assert!(
-        hot_quads.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_quads.len(),
+        1,
+        "the handle under the pointer shows, filled"
     );
-    assert!(
-        ordinary.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot_quads[0].background, hot_quads[0].border_color.into());
+    assert_eq!(
+        ordinary.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
     );
+    assert_ne!(ordinary[0].background, ordinary[0].border_color.into());
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -16367,7 +16420,16 @@ fn unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_sta
     let locked = project(PdfPoint::new(points[1].x + 250., points[1].y).unwrap());
     cx.simulate_mouse_move(locked, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(feedback_handles_at(cx, locked).is_empty());
+    let locked_handles = feedback_handles_at(cx, locked);
+    assert_eq!(
+        locked_handles.len(),
+        1,
+        "a locked markup shows inert handles"
+    );
+    assert_ne!(
+        locked_handles[0].background,
+        locked_handles[0].border_color.into()
+    );
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_annotation_tool(request.document_id, AnnotationTool::Polyline, cx)
@@ -16555,14 +16617,18 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_quads = feedback_handles_at(cx, hot);
     let ordinary = feedback_handles_at(cx, project(points[0]));
-    assert!(
-        hot_quads.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_quads.len(),
+        1,
+        "the handle under the pointer shows, filled"
     );
-    assert!(
-        ordinary.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot_quads[0].background, hot_quads[0].border_color.into());
+    assert_eq!(
+        ordinary.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
     );
+    assert_ne!(ordinary[0].background, ordinary[0].border_color.into());
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -16575,7 +16641,16 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
     let locked = project(PdfPoint::new(points[1].x + 250., points[1].y).unwrap());
     cx.simulate_mouse_move(locked, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(feedback_handles_at(cx, locked).is_empty());
+    let locked_handles = feedback_handles_at(cx, locked);
+    assert_eq!(
+        locked_handles.len(),
+        1,
+        "a locked markup shows inert handles"
+    );
+    assert_ne!(
+        locked_handles[0].background,
+        locked_handles[0].border_color.into()
+    );
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_annotation_tool(request.document_id, AnnotationTool::Polylength, cx)
@@ -16591,7 +16666,7 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
         .unwrap();
     cx.simulate_mouse_move(hot, None, Modifiers::default());
 
-    scroll_annotation_target_into_view(cx, &workspace, PAGE_SCALE_TRIGGER_ID);
+    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
     let page_scale_trigger = cx.debug_bounds(PAGE_SCALE_TRIGGER_ID).unwrap();
     cx.simulate_click(page_scale_trigger.center(), Modifiers::default());
     let page_scale_control = workspace
@@ -17170,9 +17245,7 @@ fn path_feedback_adapter_marks_creation_and_vertex_edit_previews() {
 }
 
 #[gpui::test]
-fn path_feedback_workspace_paints_no_vertex_handles_without_model_mutation(
-    cx: &mut TestAppContext,
-) {
+fn path_feedback_workspace_paints_vertex_handles_without_model_mutation(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -17309,9 +17382,15 @@ fn path_feedback_workspace_paints_no_vertex_handles_without_model_mutation(
                             && quad.border_widths.top.0 > 0.
                     })
                     .collect::<Vec<_>>();
-                assert!(
-                    handles.is_empty(),
-                    "selected {id:?} paints no handles at zoom {zoom}; the item itself is the grab target"
+                assert_eq!(
+                    handles.len(),
+                    1,
+                    "selected {id:?} shows one handle at each grab point at zoom {zoom}"
+                );
+                assert_ne!(
+                    handles[0].background,
+                    handles[0].border_color.into(),
+                    "a resting handle is white with a coloured border, leaving the markup visible"
                 );
             }
             let after = workspace
@@ -17330,7 +17409,7 @@ fn path_feedback_workspace_paints_no_vertex_handles_without_model_mutation(
 }
 
 #[gpui::test]
-fn shape_feedback_workspace_paints_no_resize_handles_and_locked_rotation_omission(
+fn shape_feedback_workspace_paints_resize_handles_and_locked_rotation_omission(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
@@ -17494,9 +17573,15 @@ fn shape_feedback_workspace_paints_no_resize_handles_and_locked_rotation_omissio
                             && quad.border_widths.top.0 > 0.
                     })
                     .collect::<Vec<_>>();
-                assert!(
-                    handles.is_empty(),
-                    "selected {id:?} paints no handles at zoom {zoom}; the item itself is the grab target"
+                assert_eq!(
+                    handles.len(),
+                    1,
+                    "selected {id:?} shows one handle at each grab point at zoom {zoom}"
+                );
+                assert_ne!(
+                    handles[0].background,
+                    handles[0].border_color.into(),
+                    "a resting handle is white with a coloured border, leaving the markup visible"
                 );
             }
             if let Some(rect) = rotation_rect {
@@ -17655,9 +17740,10 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
             .map(|quad| quad.border_color)
             .collect::<Vec<_>>()
     };
-    assert!(
-        border_colours(cx, 400., 100.).is_empty(),
-        "a selected Dimension paints no handle; the item itself is the grab target",
+    assert_eq!(
+        border_colours(cx, 400., 100.).len(),
+        1,
+        "a selected Dimension shows its handles",
     );
     assert!(
         workspace.update(cx, |workspace, cx| workspace.select_annotation(
@@ -17667,9 +17753,11 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
         ))
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(
-        border_colours(cx, 72., 96.).is_empty(),
-        "a selected Rectangle paints no corner handle; the item itself is the grab target"
+    let selected_colours = border_colours(cx, 72., 96.);
+    assert_eq!(
+        selected_colours.len(),
+        1,
+        "a selected Rectangle shows its corner handle"
     );
     let before = workspace
         .read_with(cx, |workspace, cx| {
@@ -17721,20 +17809,25 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
         before
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    // Rectangle outlines are Paths, which this harness does not expose, and
-    // selected items paint no handle quads, so these only guard against any
-    // handle reappearing on a candidate.
-    assert!(
-        border_colours(cx, 72., 96.).is_empty(),
-        "candidate Rectangle must suppress its selected handle"
+    // Candidates show their handles in the hover colour, in place of the
+    // selection colour; a locked candidate's handles stay inert grey.
+    let candidate_colours = border_colours(cx, 72., 96.);
+    assert_eq!(candidate_colours.len(), 1);
+    assert_ne!(
+        candidate_colours[0], selected_colours[0],
+        "a candidate Rectangle's handles take the hover colour"
     );
-    assert!(
-        border_colours(cx, 300., 96.).is_empty(),
-        "locked candidate must not gain handles"
+    let locked_colours = border_colours(cx, 300., 96.);
+    assert_eq!(
+        locked_colours.len(),
+        1,
+        "a locked candidate shows inert handles"
     );
-    assert!(
-        border_colours(cx, 400., 100.).is_empty(),
-        "candidate Dimension must suppress selection handles; its shared hover outline is a Path",
+    assert_ne!(locked_colours[0], candidate_colours[0]);
+    assert_eq!(
+        border_colours(cx, 400., 100.),
+        candidate_colours,
+        "a candidate Dimension's handles take the hover colour too",
     );
     cx.simulate_click(to_view(530., 70.), modifiers);
     assert_eq!(
@@ -18066,7 +18159,7 @@ fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut Tes
             cx,
         )
     });
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
     cx.simulate_click(button.center(), Modifiers::default());
@@ -18128,7 +18221,7 @@ fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut Tes
     assert_eq!((placed.rectangles.len(), placed.undo_depth), (1, 1));
     assert!(placed.images.is_empty());
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     let image = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap().center();
     cx.simulate_click(image, Modifiers::default());
     assert!(cx.did_prompt_for_paths());
@@ -18196,7 +18289,7 @@ fn image_picker_cancelled_repick_discards_previous_unplaced_asset(cx: &mut TestA
             cx,
         )
     });
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
     cx.simulate_click(button.center(), Modifiers::default());
@@ -18287,7 +18380,7 @@ fn image_picker_composed_clicks_open_one_picker_and_toggle_properties_once(
             .set_annotation_tool(request.document_id, AnnotationTool::Rectangle, cx)
             .unwrap()
     });
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
         cx.debug_bounds("document-workspace-properties-sidebar")
@@ -18385,7 +18478,7 @@ fn rectangle_pointer_placement_resets_select_only_after_creation(cx: &mut TestAp
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_RECTANGLE_TOOL_ID);
     let rectangle_button = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
     cx.simulate_click(rectangle_button.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -18533,7 +18626,7 @@ fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_PEN_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_PEN_TOOL_ID);
     let pen_button = cx
         .debug_bounds(DOCUMENT_PEN_TOOL_ID)
         .expect("Pen control must render");
@@ -19754,7 +19847,7 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
         !cfg!(target_os = "macos")
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_HIGHLIGHT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_HIGHLIGHT_TOOL_ID);
     let highlight_button = cx.debug_bounds(DOCUMENT_HIGHLIGHT_TOOL_ID).unwrap();
     cx.simulate_click(highlight_button.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -19956,7 +20049,7 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_TEXT_BOX_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_TEXT_BOX_TOOL_ID);
     let tool = cx
         .debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID)
         .expect("real Text Box tool must render");
@@ -20166,7 +20259,7 @@ fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
         origin.y + px((792. - 120.) * scale),
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_TEXT_BOX_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_TEXT_BOX_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -20196,7 +20289,7 @@ fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
         None
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_TEXT_BOX_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_TEXT_BOX_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -20267,7 +20360,7 @@ fn text_box_input_handler_composition_save_and_reopen_is_coherent(cx: &mut TestA
         origin.y + px((792. - 96.) * scale),
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_TEXT_BOX_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_TEXT_BOX_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -20620,13 +20713,13 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     };
     assert_eq!(
         painted_handles_at(cx, east),
-        0,
-        "item controls are not painted"
+        1,
+        "hovering a Text Box shows its resize handles"
     );
     assert_eq!(
         painted_handles_at(cx, west),
-        0,
-        "item controls are not painted"
+        1,
+        "hovering a Text Box shows its resize handles"
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.hot_annotation_handle()),
@@ -20718,8 +20811,12 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     );
     cx.simulate_mouse_move(image_south_west, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(painted_handles_at(cx, image_south_west), 0);
-    assert_eq!(painted_handles_at(cx, image_north_east), 0);
+    assert_eq!(
+        painted_handles_at(cx, image_south_west),
+        1,
+        "hovering an Image shows its handles"
+    );
+    assert_eq!(painted_handles_at(cx, image_north_east), 1);
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.hot_annotation_handle()),
         Some((image_id.clone(), 0)),
@@ -20731,7 +20828,7 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     );
     cx.simulate_mouse_move(image_east, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(painted_handles_at(cx, image_east), 0);
+    assert_eq!(painted_handles_at(cx, image_east), 1);
     let image_east_end = point(image_east.x + px(12.), image_east.y);
     cx.simulate_mouse_down(image_east, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -21214,7 +21311,7 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         (shortcut_selected.revision, shortcut_selected.undo_depth),
         (0, 0)
     );
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_LENGTH_TOOL_ID);
     let length_tool = cx
         .debug_bounds(DOCUMENT_LENGTH_TOOL_ID)
         .expect("the real Length tool must render");
@@ -21424,7 +21521,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    scroll_annotation_target_into_view(cx, &workspace, PAGE_SCALE_TRIGGER_ID);
+    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
     let trigger = cx
         .debug_bounds(PAGE_SCALE_TRIGGER_ID)
         .expect("the real Set Page Scale button must render");
@@ -22305,7 +22402,7 @@ fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, PAGE_SCALE_TRIGGER_ID);
+    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
     let page_scale_trigger = cx.debug_bounds(PAGE_SCALE_TRIGGER_ID).unwrap().center();
     cx.simulate_click(page_scale_trigger, Modifiers::default());
     let control = workspace
@@ -22680,7 +22777,7 @@ fn canvas_escape_preserves_tool_and_history_in_signature_input(cx: &mut TestAppC
             .unwrap();
     });
     cx.run_until_parked();
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_tool.center(), Modifiers::default());
@@ -22927,7 +23024,7 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     };
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let polyline_tool = cx.debug_bounds(DOCUMENT_POLYLINE_TOOL_ID).unwrap().center();
     cx.simulate_click(polyline_tool, Modifiers::default());
     let cancelled_point = project(84., 690.);
@@ -22943,7 +23040,7 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     assert_eq!(draft_only.0.vertex_paths[0].points.len(), 1);
     assert_eq!((draft_only.1.revision, draft_only.1.undo_depth), (0, 0));
     assert!(draft_only.1.vertex_paths.is_empty());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SELECT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SELECT_TOOL_ID);
     let select_tool = cx.debug_bounds(DOCUMENT_SELECT_TOOL_ID).unwrap().center();
     cx.simulate_click(select_tool, Modifiers::default());
     assert!(
@@ -22963,7 +23060,7 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         .unwrap();
     assert_eq!((after_cancel.revision, after_cancel.undo_depth), (0, 0));
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let polyline_tool = cx.debug_bounds(DOCUMENT_POLYLINE_TOOL_ID).unwrap().center();
     cx.simulate_click(polyline_tool, Modifiers::default());
     let polyline_points = [
@@ -23007,7 +23104,7 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         Some(AnnotationTool::Select),
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYGON_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYGON_TOOL_ID);
     let polygon_tool = cx.debug_bounds(DOCUMENT_POLYGON_TOOL_ID).unwrap().center();
     cx.simulate_click(polygon_tool, Modifiers::default());
     let closure_polygon = [
@@ -23036,7 +23133,7 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
     );
     let closure_polygon_before_edits = after_closure.vertex_paths[1].clone();
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYGON_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYGON_TOOL_ID);
     let polygon_tool = cx.debug_bounds(DOCUMENT_POLYGON_TOOL_ID).unwrap().center();
     cx.simulate_click(polygon_tool, Modifiers::default());
     for vertex in [
@@ -23336,7 +23433,7 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
     }
 
     let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let polyline_tool = cx.debug_bounds(DOCUMENT_POLYLINE_TOOL_ID).unwrap().center();
     cx.simulate_click(polyline_tool, Modifiers::default());
     assert_eq!(
@@ -23405,7 +23502,7 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
         "Enter must commit a valid Polyline and restore the one-shot Select tool",
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYGON_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYGON_TOOL_ID);
     let polygon_tool = cx.debug_bounds(DOCUMENT_POLYGON_TOOL_ID).unwrap().center();
     cx.simulate_click(polygon_tool, Modifiers::default());
     assert_eq!(
@@ -23558,7 +23655,7 @@ fn measurement_enter_commits_hover_endpoint_without_a_click(cx: &mut TestAppCont
             (192., 432.),
         ),
     ] {
-        scroll_annotation_target_into_view(cx, &workspace, control);
+        scroll_annotation_target_into_view(cx, control);
         let control_center = cx.debug_bounds(control).unwrap().center();
         cx.simulate_click(control_center, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -23727,7 +23824,7 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         point(origin.x + px(x * scale), origin.y + px((792. - y) * scale))
     };
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLENGTH_TOOL_ID);
     let polylength_button = cx
         .debug_bounds(DOCUMENT_POLYLENGTH_TOOL_ID)
         .unwrap()
@@ -23780,7 +23877,7 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     );
     let polylength_id = after_polylength.measurement_paths[0].id.clone();
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_AREA_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_AREA_TOOL_ID);
     let area_button = cx.debug_bounds(DOCUMENT_AREA_TOOL_ID).unwrap().center();
     cx.simulate_click(area_button, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -24014,7 +24111,7 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         None
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_AREA_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_AREA_TOOL_ID);
     let area_button = cx.debug_bounds(DOCUMENT_AREA_TOOL_ID).unwrap().center();
     cx.simulate_click(area_button, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -24074,7 +24171,7 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    scroll_annotation_target_into_view(cx, &workspace, CALLOUT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, CALLOUT_TOOL_ID);
     let callout_button = cx
         .debug_bounds(CALLOUT_TOOL_ID)
         .expect("Callout must be a real GPUI Component Button with the frozen stable id");
@@ -24116,11 +24213,15 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
     for (actual, expected) in [
         (text_box.x, 216.),
         (text_box.y, 170.),
-        (text_box.width, 150.),
         (text_box.height, 44.),
     ] {
         assert!((actual - expected).abs() <= 0.000_1);
     }
+    assert!(
+        (24. ..80.).contains(&text_box.width),
+        "the caption box must hug its default text: {}",
+        text_box.width
+    );
     assert!(
         workspace
             .read_with(cx, |workspace, cx| workspace
@@ -24198,13 +24299,23 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
         };
     let hot_unselected_knee = unselected_feedback_handles_at(cx, knee_center);
     let ordinary_unselected_start = unselected_feedback_handles_at(cx, leader_start);
-    assert!(
-        hot_unselected_knee.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_unselected_knee.len(),
+        1,
+        "the handle under the pointer shows, filled"
     );
-    assert!(
-        ordinary_unselected_start.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_unselected_knee[0].background,
+        hot_unselected_knee[0].border_color.into()
+    );
+    assert_eq!(
+        ordinary_unselected_start.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
+    );
+    assert_ne!(
+        ordinary_unselected_start[0].background,
+        ordinary_unselected_start[0].border_color.into()
     );
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
@@ -24302,31 +24413,48 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             .collect::<Vec<_>>()
     };
     let stable_knee_handles = feedback_handles_at(cx, knee_center);
-    assert!(
-        stable_knee_handles.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        stable_knee_handles.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
+    );
+    assert_ne!(
+        stable_knee_handles[0].background,
+        stable_knee_handles[0].border_color.into()
     );
     cx.simulate_mouse_move(knee_center, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let hot_knee_handles = feedback_handles_at(cx, knee_center);
-    assert!(
-        hot_knee_handles.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_knee_handles.len(),
+        1,
+        "the handle under the pointer shows, filled"
+    );
+    assert_eq!(
+        hot_knee_handles[0].background,
+        hot_knee_handles[0].border_color.into()
     );
     cx.simulate_mouse_move(project(500., 500.), None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(feedback_handles_at(cx, knee_center).is_empty());
+    let resting_knee = feedback_handles_at(cx, knee_center);
+    assert_eq!(
+        resting_knee.len(),
+        1,
+        "a selected Callout keeps its leader handles"
+    );
+    assert_ne!(
+        resting_knee[0].background,
+        resting_knee[0].border_color.into(),
+        "and the knee stops being hot once the pointer leaves"
+    );
     let moved_knee = point(knee_center.x + px(16.), knee_center.y - px(10.));
     cx.simulate_mouse_down(knee_center, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_knee, Some(MouseButton::Left), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(
-        feedback_handles_at(cx, moved_knee).is_empty(),
-        "enabled annotation snapping must replace ordinary active-handle chrome with snap feedback",
-    );
-    assert!(
-        feedback_handles_at(cx, project(72., 120.)).is_empty(),
-        "inactive Callout leader handles must be hidden during a transform",
+    assert_eq!(
+        feedback_handles_at(cx, project(72., 120.)).len(),
+        1,
+        "a Callout keeps its other leader handles while one is dragged",
     );
     assert_ne!(
         workspace
@@ -24374,7 +24502,11 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             as f32,
         (pointer_edited.callouts[0].text_box.y + pointer_edited.callouts[0].text_box.height) as f32,
     );
-    assert!(feedback_handles_at(cx, stable_north).is_empty());
+    assert_eq!(
+        feedback_handles_at(cx, stable_north).len(),
+        1,
+        "a selected Callout shows its text-box resize handles"
+    );
     let moved_north = point(stable_north.x, stable_north.y - px(18.));
     cx.simulate_mouse_down(stable_north, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_north, Some(MouseButton::Left), Modifiers::default());
@@ -24391,9 +24523,10 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
             .abs()
             <= 0.000_1
     );
-    assert!(
-        feedback_handles_at(cx, moved_north).is_empty(),
-        "enabled annotation snapping must hide ordinary resize chrome during manipulation",
+    assert_eq!(
+        feedback_handles_at(cx, moved_north).len(),
+        1,
+        "the dragged resize handle follows the pointer",
     );
     assert!(feedback_handles_at(cx, knee_center).is_empty());
     assert_eq!(
@@ -24482,7 +24615,7 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_PLUS_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_PLUS_TOOL_ID);
     let cloud_plus_button = cx
         .debug_bounds(DOCUMENT_CLOUD_PLUS_TOOL_ID)
         .expect("Cloud+ must be a real GPUI Component Button with the frozen stable id");
@@ -24529,7 +24662,11 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
         "workspace:cloud-plus:1"
     );
     assert_eq!(created.cloud_pluses[0].content(), "Cloud+");
-    assert_eq!(created.cloud_pluses[0].text_box.width, 150.);
+    assert!(
+        (24. ..80.).contains(&created.cloud_pluses[0].text_box.width),
+        "the caption box must hug its default text: {}",
+        created.cloud_pluses[0].text_box.width
+    );
     assert_eq!(created.cloud_pluses[0].text_box.height, 44.);
     assert_eq!(created.cloud_pluses[0].leader_points().len(), 3);
     let initial_text_box = created.cloud_pluses[0].text_box;
@@ -24557,6 +24694,10 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     assert_eq!(edited.cloud_pluses.len(), 1);
     assert_eq!(edited.cloud_pluses[0].content(), "one\ntwo\nthree\nfour");
     assert_eq!(edited.cloud_pluses[0].text_box.height, 67.2);
+    assert_ne!(
+        edited.cloud_pluses[0].text_box.width, initial_text_box.width,
+        "the caption box must refit its new text"
+    );
     assert!(
         ((edited.cloud_pluses[0].text_box.y + edited.cloud_pluses[0].text_box.height * 0.5)
             - (initial_text_box.y + initial_text_box.height * 0.5))
@@ -24605,14 +24746,18 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     };
     let hot = feedback_handles_at(cx, hot_vertex);
     let ordinary = feedback_handles_at(cx, ordinary_vertex);
-    assert!(
-        hot.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot.len(),
+        1,
+        "hovering shows the markup's handles, the one under the pointer filled"
     );
-    assert!(
-        ordinary.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot[0].background, hot[0].border_color.into());
+    assert_eq!(
+        ordinary.len(),
+        1,
+        "every handle shows while the markup is hovered"
     );
+    assert_ne!(ordinary[0].background, ordinary[0].border_color.into());
     let before_first_press = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -24708,6 +24853,15 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
         Some("one\ntwo\nthree\nfour".to_owned())
+    );
+    let editor = cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).unwrap();
+    assert!(
+        layer.contains(&editor.center()),
+        "a Cloud+ caption edits where it sits on the page: editor={editor:?}, layer={layer:?}"
+    );
+    assert!(
+        cx.debug_bounds("document-workspace-text-editor").is_none(),
+        "editing a Cloud+ caption in place must not open the sidebar text panel"
     );
     let input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
@@ -24879,7 +25033,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         "Shift+L must select Dimension without replacing plain L"
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_DIMENSION_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_DIMENSION_TOOL_ID);
     let dimension_button = cx
         .debug_bounds(DOCUMENT_DIMENSION_TOOL_ID)
         .expect("Dimension must render as a real GPUI Component Button with tool-dimension id");
@@ -24930,7 +25084,15 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     assert_eq!(created.dimensions[0].id.as_str(), "workspace:dimension:1");
     assert_eq!(created.dimensions[0].content(), "");
     assert_eq!(created.dimensions[0].dimension_line_offset(), 24.);
-    assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
+    let editor = cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).unwrap();
+    let text_panel = cx
+        .debug_bounds("document-workspace-text-editor")
+        .expect("a Dimension caption edits in the sidebar text panel");
+    assert!(text_panel.contains(&editor.center()));
+    assert!(
+        cx.debug_bounds("document-workspace-rotate-left").is_none(),
+        "the text panel holds only the text, not unrelated document actions"
+    );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
         Some(String::new())
@@ -25018,17 +25180,29 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     let ordinary_end = painted_handles_at(cx, hover_project(edited.dimensions[0].end));
     let ordinary_offset =
         painted_handles_at(cx, hover_project(edited.dimensions[0].caption_center()));
-    assert!(
-        hot_start.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot_start.len(),
+        1,
+        "the handle under the pointer shows, filled"
     );
-    assert!(
-        ordinary_end.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot_start[0].background, hot_start[0].border_color.into());
+    assert_eq!(
+        ordinary_end.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
     );
-    assert!(
-        ordinary_offset.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_ne!(
+        ordinary_end[0].background,
+        ordinary_end[0].border_color.into()
+    );
+    assert_eq!(
+        ordinary_offset.len(),
+        1,
+        "every handle of a hovered or selected markup shows"
+    );
+    assert_ne!(
+        ordinary_offset[0].background,
+        ordinary_offset[0].border_color.into()
     );
 
     let before_first_press = workspace
@@ -25775,7 +25949,7 @@ fn arc_workspace_renders_real_component_tool_three_click_preview_and_shift_snap(
         "Shift+C must select Arc without replacing the plain-C Circle shortcut"
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_ARC_TOOL_ID);
     let arc_button = cx
         .debug_bounds(DOCUMENT_ARC_TOOL_ID)
         .expect("Arc must render as a real GPUI Component Button with tool-arc id");
@@ -25902,7 +26076,7 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
                 .clone()
         };
     }
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_RECTANGLE_TOOL_ID);
     let rectangle_tool = cx
         .debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID)
         .unwrap()
@@ -25927,7 +26101,7 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     );
     let rectangle = snapshot!().rectangles[0].clone();
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_ARC_TOOL_ID);
     let arc_tool = cx.debug_bounds(DOCUMENT_ARC_TOOL_ID).unwrap().center();
     cx.simulate_click(arc_tool, Modifiers::default());
     for point in [
@@ -26473,7 +26647,7 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_REDACT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_REDACT_TOOL_ID);
     let redact_button = cx
         .debug_bounds(DOCUMENT_REDACT_TOOL_ID)
         .expect("Redact must render as a real GPUI Component Button with tool-redact id");
@@ -26622,14 +26796,18 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
     };
     let hot = feedback_handles_at(cx, east);
     let ordinary = feedback_handles_at(cx, north_west);
-    assert!(
-        hot.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(
+        hot.len(),
+        1,
+        "hovering shows the markup's handles, the one under the pointer filled"
     );
-    assert!(
-        ordinary.is_empty(),
-        "item controls are not painted; the item itself is the grab target"
+    assert_eq!(hot[0].background, hot[0].border_color.into());
+    assert_eq!(
+        ordinary.len(),
+        1,
+        "every handle shows while the markup is hovered"
     );
+    assert_ne!(ordinary[0].background, ordinary[0].border_color.into());
     let moved_east = project_deselected(350., 252.);
     cx.simulate_mouse_down(east, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_east, Some(MouseButton::Left), Modifiers::default());
@@ -26710,7 +26888,7 @@ fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capt
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SNAPSHOT_TOOL_ID);
     let snapshot_button = cx
         .debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID)
         .expect("Snapshot must render as a real GPUI Component Button with tool-snapshot id");
@@ -26906,7 +27084,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .expect("the real fixture must own one live worker");
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SNAPSHOT_TOOL_ID);
     let snapshot_button = cx
         .debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID)
         .expect("the real GPUI Component Snapshot button must render");
@@ -27526,7 +27704,7 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     assert_eq!(initial.selected_id, None);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_REDACT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_REDACT_TOOL_ID);
     let redact_button = cx
         .debug_bounds(DOCUMENT_REDACT_TOOL_ID)
         .expect("the real GPUI Component Redact button must render");
@@ -27964,7 +28142,7 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_TOOL_ID);
     let cloud_button = cx
         .debug_bounds(DOCUMENT_CLOUD_TOOL_ID)
         .expect("Cloud must be a real GPUI Component Button with a stable rendered id");
@@ -28193,7 +28371,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let polyline_tool = cx
         .debug_bounds(DOCUMENT_POLYLINE_TOOL_ID)
         .expect("the real GPUI Component Polyline button must render");
@@ -28243,7 +28421,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     let polyline_id = after_polyline.vertex_paths[0].id.clone();
     assert_eq!(polyline_id.as_str(), "workspace:polyline:1");
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let disposable_tool = cx.debug_bounds(DOCUMENT_POLYLINE_TOOL_ID).unwrap();
     cx.simulate_click(disposable_tool.center(), Modifiers::default());
     cx.simulate_click(to_view(510., 690.), Modifiers::default());
@@ -28259,7 +28437,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         "Escape must discard the disposable draft"
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYGON_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYGON_TOOL_ID);
     let polygon_tool = cx
         .debug_bounds(DOCUMENT_POLYGON_TOOL_ID)
         .expect("the real GPUI Component Polygon button must render");
@@ -28914,7 +29092,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     );
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_POLYLENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLENGTH_TOOL_ID);
     let polylength_tool = cx
         .debug_bounds(DOCUMENT_POLYLENGTH_TOOL_ID)
         .expect("the real GPUI Component Polylength button must render");
@@ -28974,7 +29152,7 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     );
     let polylength_id = after_polylength.measurement_paths[0].id.clone();
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_AREA_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_AREA_TOOL_ID);
     let area_tool = cx
         .debug_bounds(DOCUMENT_AREA_TOOL_ID)
         .expect("the real GPUI Component Area button must render");
@@ -29658,7 +29836,7 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_TOOL_ID);
     let cloud_button = cx
         .debug_bounds(DOCUMENT_CLOUD_TOOL_ID)
         .expect("the real GPUI Component Cloud button must render");
@@ -29920,7 +30098,7 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CALLOUT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_CALLOUT_TOOL_ID);
     let callout_button = cx
         .debug_bounds(DOCUMENT_CALLOUT_TOOL_ID)
         .expect("the real GPUI Component Callout button must render");
@@ -30234,7 +30412,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_CLOUD_PLUS_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_PLUS_TOOL_ID);
     let cloud_plus_button = cx
         .debug_bounds(DOCUMENT_CLOUD_PLUS_TOOL_ID)
         .expect("the real GPUI Component Cloud+ button must render");
@@ -30538,7 +30716,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         )
     };
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_RECTANGLE_TOOL_ID);
     let rectangle_button = cx
         .debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID)
         .expect("the real GPUI Component Rectangle button must render");
@@ -30573,7 +30751,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
     assert_eq!((reference.revision, reference.undo_depth), (1, 1));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LINE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_LINE_TOOL_ID);
     let line_button = cx
         .debug_bounds(DOCUMENT_LINE_TOOL_ID)
         .expect("the real GPUI Component Line button must render");
@@ -30629,7 +30807,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         })
         .expect("the real document must retain one page calibration");
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_LENGTH_TOOL_ID);
     let length_button = cx
         .debug_bounds(DOCUMENT_LENGTH_TOOL_ID)
         .expect("the real GPUI Component Length button must render");
@@ -30974,7 +31152,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         .expect("the real fixture must own one live worker");
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_DIMENSION_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_DIMENSION_TOOL_ID);
     let dimension_button = cx
         .debug_bounds(DOCUMENT_DIMENSION_TOOL_ID)
         .expect("the real GPUI Component Dimension button must render");
@@ -31040,7 +31218,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     assert_eq!(created.selected_id, None);
     let created_appearance = created.dimensions[0].appearance.clone();
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SELECT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SELECT_TOOL_ID);
     let select = cx
         .debug_bounds(DOCUMENT_SELECT_TOOL_ID)
         .expect("the real Select tool must render");
@@ -31381,7 +31559,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert!(!worker_process_exists(source_pixel_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_ARC_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_ARC_TOOL_ID);
     let arc_button = cx
         .debug_bounds(DOCUMENT_ARC_TOOL_ID)
         .expect("the real GPUI Component Arc button must render");
@@ -34719,7 +34897,7 @@ fn regular_png_native_picker_prepares_the_target_and_rejects_a_closed_session(
             cx,
         )
     });
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
     cx.simulate_click(button.center(), Modifiers::default());
@@ -34788,7 +34966,7 @@ fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editi
             cx,
         )
     });
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
     cx.simulate_click(button.center(), Modifiers::default());
@@ -34998,7 +35176,7 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
             .unwrap();
     });
     cx.run_until_parked();
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(trigger.center(), Modifiers::default());
@@ -35172,7 +35350,7 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
             .unwrap();
     });
     cx.run_until_parked();
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let signature_trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_trigger.center(), Modifiers::default());
@@ -35392,7 +35570,7 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
             .unwrap();
     });
     cx.run_until_parked();
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_tool.center(), Modifiers::default());
@@ -35808,7 +35986,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         })
         .expect("the copied source must own a real worker");
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     let signature_trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_trigger.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -36250,7 +36428,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     };
     assert!(cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none());
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_IMAGE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     let image_button = cx
         .debug_bounds(DOCUMENT_IMAGE_TOOL_ID)
         .expect("the rendered Image button must be available");
@@ -36371,7 +36549,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
         .expect("the regular Image must retain one GPUI atlas asset");
     cx.update(|window, _| assert!(window.has_image_atlas_entry(&render_asset)));
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SELECT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SELECT_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let select_tool = cx.debug_bounds(DOCUMENT_SELECT_TOOL_ID).unwrap();
     cx.simulate_click(select_tool.center(), Modifiers::default());
@@ -39574,7 +39752,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     }));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SNAPSHOT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SNAPSHOT_TOOL_ID);
     let snapshot_button = cx
         .debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID)
         .expect("the real GPUI Component Snapshot tool must render");
@@ -39636,7 +39814,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         "the canonical Snapshot crop must retain real spatially varied pixels"
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, PAGE_SCALE_TRIGGER_ID);
+    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
     let page_scale_trigger = cx
         .debug_bounds(PAGE_SCALE_TRIGGER_ID)
         .expect("the real Set Page Scale trigger must render");
@@ -39740,7 +39918,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert_eq!(after_scale.undo_depth, before_scale.undo_depth + 1);
     assert!(after_scale.dirty);
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_LENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_LENGTH_TOOL_ID);
     let length_tool = cx
         .debug_bounds(DOCUMENT_LENGTH_TOOL_ID)
         .expect("the real GPUI Component Length tool must render");
@@ -39795,7 +39973,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
             .same_scale_as(&applied_calibration)
     );
 
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SELECT_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SELECT_TOOL_ID);
     let select_tool = cx.debug_bounds(DOCUMENT_SELECT_TOOL_ID).unwrap();
     cx.simulate_click(select_tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -42374,7 +42552,7 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(cx: &mut Tes
         .expect("document A must have a rendered stable-ID tab");
     cx.simulate_click(a_tab.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_RECTANGLE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_RECTANGLE_TOOL_ID);
     let rectangle_tool = cx
         .debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID)
         .expect("the rendered Rectangle tool must be available");
@@ -43462,7 +43640,7 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
             .unwrap();
     });
     cx.run_until_parked();
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let centre = cx
         .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
@@ -43594,7 +43772,7 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_resize(size(px(800.), px(480.)));
     cx.run_until_parked();
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let centre = cx
         .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
@@ -45399,7 +45577,7 @@ fn signature_menu_opens_on_a_phone_qr_session_when_enabled(cx: &mut TestAppConte
         )
     });
     cx.run_until_parked();
-    scroll_annotation_target_into_view(cx, &workspace, DOCUMENT_SIGNATURE_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_tool.center(), Modifiers::default());

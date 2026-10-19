@@ -53,17 +53,20 @@ tooltip expands the instructions when the window truncates them.
 
 ## Selection and editing
 
-- *Native:* a selected markup gets a blue dashed outline 6px outside it, over
-  a white halo, so the markup itself stays visible. No resize or vertex
-  handles are painted; the markup's own corners, edges and vertices are the
-  grab targets. The rotation knob stays, with a dashed connector matching the outline.
-  Selection outlines and rotation knobs remain visible while moving, rotating
-  or resizing, including when snapping is enabled.
-- *Native:* the outline is a box turned to the markup: along a line for
-  Lines, Arrows, Lengths and Dimensions, at the rotation for boxes, else
-  upright. A Length or Dimension's box holds everything it draws: the
-  measured points, extension lines, arrows and caption. The band that moves
-  a markup follows the same box.
+- *Native:* selection never draws a line over or around a markup, so its
+  own colour, thickness and style stay visible. A selected or hovered markup
+  shows small square handles at the points that can be dragged: line and
+  leader ends and knees, vertices, arc controls, box corners and edges (an
+  aspect-locked Image's corners only), turned with the markup. Handles are
+  white with a blue border (the same for the focused markup), light blue
+  while hovered or a marquee candidate, filled under the pointer, and inert
+  grey on a locked markup. The rotation knob stays, on a thin solid stem. Handles and
+  knobs remain visible while moving, rotating or resizing, including when
+  snapping is enabled; creation previews show no handles.
+- *Native:* the band that moves a markup is a box turned to it: along a
+  line for Lines, Arrows, Lengths and Dimensions, at the rotation for boxes,
+  else upright. A Length or Dimension's box holds everything it draws: the
+  measured points, extension lines, arrows and caption.
 - *Native:* a Length or Dimension end is dragged from anywhere along its
   extension line, out to the arrow; the measured point follows the pointer
   from where it was grabbed, without jumping to it.
@@ -83,6 +86,10 @@ tooltip expands the instructions when the window truncates them.
   unselected markup's edge takes the press only where the cursor offers to
   resize it. Dragging along the band around a selected markup's outline,
   from outside it to 20px inside, moves it.
+- Pen and Highlight strokes resize from eight handles on their box, half
+  the line width outside the stroke: the stroke scales into the new box and
+  keeps its line width. A stroke flat along one axis has no handles across
+  it.
 - A markup is hit on its strokes, its fill and its text or image. The empty
   inside of an unfilled shape is not part of it: a press there reaches what
   is underneath, selected or not.
@@ -91,8 +98,13 @@ tooltip expands the instructions when the window truncates them.
 - Click selects; Shift-click toggles. Dragging away from page text draws a
   selection box: left to right selects what is fully inside (blue), right to
   left what it touches (green, dashed). Shift adds, Alt removes.
-- Double-clicking a text box edits it in place (*native*: no properties
-  panel). Double-clicking other markups opens properties.
+- Double-clicking a text box, or the caption of a Callout or Cloud+, edits
+  it in place (*native*: no properties panel). A Callout or Cloud+ caption
+  box fits its text and stays against its leader; a new Callout's box sits
+  beyond the drag end, away from the arrow tip. Dimension text and rotated
+  text boxes, which cannot be edited where they sit, edit in a sidebar
+  text panel holding only the text. Double-clicking other markups opens
+  properties.
 - Select All works on the current page. Locked markups cannot be moved,
   resized or deleted.
 

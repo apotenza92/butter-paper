@@ -4,6 +4,35 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Look
+
+- A squarer butterfly icon, so it fills its slot in the Windows taskbar,
+  Start menu and Dock instead of looking short beside other apps: four
+  angled wings on one central spine, with a darker top-left wingtip that
+  no longer fades into light backgrounds.
+
+### Markups
+
+- Editing a Cloud+ caption happens in place on the page, instead of in a
+  stray panel showing the file name and unrelated buttons.
+- A Cloud+ caption box fits its text and stays against its leader, so
+  text no longer sits far from the leader when the caption is to the left
+  of the cloud.
+- Callouts work the same way: their text is edited in place, and its box
+  fits the text and grows with extra lines instead of clipping them.
+  Double-clicking an existing Callout edits its text, which was not
+  possible before. A Callout drawn to the left puts its box on the left,
+  instead of over its own leader.
+- Dimension text and rotated text boxes are edited in a plain text panel,
+  instead of the panel of unrelated buttons.
+- Selecting or hovering a markup shows small handles at the points you can
+  drag, instead of blue dashed lines over and around it, so its own colour
+  and line weight stay visible. Leaders no longer turn into a dashed blue
+  line, and locked markups show grey handles.
+- Pen and Highlight strokes can be resized from handles on their box.
+- New Arrows start at 1 pt, like Lines and the other line tools, instead of
+  0.5 pt.
+
 ## [0.2.3]
 
 ### Windows

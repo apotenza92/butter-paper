@@ -6171,6 +6171,31 @@ fn unicode_text_lines(content: &str, font_family: &str) -> Result<Vec<UnicodeTex
         .collect()
 }
 
+/// The width in points of the widest line of annotation text as its saved
+/// appearance draws it, or `None` when no bundled font can draw one of its
+/// characters.
+pub(crate) fn appearance_text_block_width_pt(
+    content: &str,
+    font_size_pt: f64,
+    font_family: &str,
+) -> Option<f64> {
+    content
+        .split('\n')
+        .map(|line| {
+            if uses_helvetica_winansi_fast_path(line, font_family) {
+                Some(helvetica_text_width_pt(
+                    &text_appearance_line_bytes(line),
+                    font_size_pt,
+                ))
+            } else {
+                unicode_text_line(line, font_family)
+                    .ok()
+                    .map(|line| unicode_text_width_pt(&line, font_size_pt))
+            }
+        })
+        .try_fold(0_f64, |widest, width| Some(widest.max(width?)))
+}
+
 /// The width in em of a line of form field text (see [`crate::pdf_forms`]),
 /// or `None` when no bundled font can draw one of its characters. `family`
 /// is a bundled family, or any other name for the standard Helvetica.

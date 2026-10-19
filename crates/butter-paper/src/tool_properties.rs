@@ -130,7 +130,6 @@ impl ToolProperties {
             }
             .into(),
             width_pt: match tool {
-                AnnotationTool::Arrow => 0.5,
                 AnnotationTool::Highlight => 12.0,
                 _ => 1.0,
             },
@@ -391,7 +390,8 @@ mod tests {
     fn defaults_and_ranges_match_the_reference_contract() {
         assert_eq!(
             ToolProperties::for_tool(AnnotationTool::Arrow).width_pt,
-            0.5
+            ToolProperties::for_tool(AnnotationTool::Line).width_pt,
+            "an Arrow starts as heavy as a Line"
         );
         assert_eq!(
             ToolProperties::for_tool(AnnotationTool::Highlight).colour,
