@@ -31,7 +31,7 @@ The machine-readable source is [`assets/brand/palette.json`](../assets/brand/pal
 | Role | Name | Value | Use |
 | --- | --- | --- | --- |
 | Primary | Trace Teal | `#08756C` | Brand recognition, primary actions, stable identity |
-| Human accent | Markup Coral | `#E7654C` | Review marks, editorial emphasis, the stable icon fold |
+| Human accent | Markup Coral | `#E7654C` | Review marks, editorial emphasis, the stable icon spine |
 | Exploratory accent | Studio Violet | `#6756B3` | Beta identity and future-facing communication |
 | Ink | Carbon | `#182321` | Headings, body text, dark surfaces |
 | Ground | Vellum | `#F7F3EA` | Marketing backgrounds and warm open space |
@@ -45,15 +45,17 @@ Trace Teal leads the identity. Markup Coral represents the human act of review. 
 
 Release colours derive from the master palette. They are not separate brands.
 
-- **Stable:** Trace Teal planes with a Markup Coral central fold.
-- **Beta:** Studio Violet planes with a Trace Teal central fold.
+- **Stable:** Trace Teal wings with a Markup Coral central spine.
+- **Beta:** Studio Violet wings with a Trace Teal central spine.
 
 Stable and beta must use the same icon geometry. Use the canonical sources:
 
 - [`butter-paper-origami.svg`](../assets/icon-source/butter-paper-origami.svg)
 - [`butter-paper-origami-beta.svg`](../assets/icon-source/butter-paper-origami-beta.svg)
 
-Do not redraw or simplify the icon for marketing layouts. Preserve every approved fold and node.
+The butterfly has four wings, each an outer and an inner plane, joined to one central spine that runs from head to tail. Its outline is close to square so it fills a square icon slot: the upper wingtips, lower wingtips and spine tail meet the bounding box, the head is level with the top folds, and the lower wingtips are level with the tail.
+
+Do not redraw or simplify the icon for marketing layouts. Preserve every approved fold and node. After changing a master, regenerate every application icon with `python3 assets/icon-source/render_app_icons.py` (needs Inkscape and Pillow).
 
 ## Visual system
 

@@ -101,7 +101,7 @@ https://github.com/apotenza92/butter-paper/blob/main/PRIVACY.md
 
 ## Store images
 
-- Package images: `assets/app/windows-store`, rendered by
-  `assets/icon-source/render_store_assets.py`.
+- Package images: `assets/app/windows-store`, rendered with the other
+  application icons by `assets/icon-source/render_app_icons.py`.
 - Screenshots (1366×768 or larger, at least one): take them from the Store
   build on Windows.

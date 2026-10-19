@@ -1,7 +1,8 @@
 """Renders the Windows icons: the Microsoft Store package images in
 assets/app/windows-store and assets/app/icon.ico, which the executable embeds
 for its windows and taskbar button. The source's transparent margin is cropped
-off so the icon fills each image. Needs Pillow:
+off so the icon fills each image. render_app_icons.py runs it after
+rendering assets/app/linux/1024x1024.png; on its own it needs Pillow:
 
     python3 assets/icon-source/render_store_assets.py
 """
