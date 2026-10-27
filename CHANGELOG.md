@@ -4,14 +4,16 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.0]
+
 ### Pages
 
 - Add, delete, move, duplicate, copy and paste pages from Page Thumbnails:
   right-click a thumbnail for the page menu (which now also holds Rotate),
   drag thumbnails to reorder them, or use + for a blank page after the
   current page or at the end. With the thumbnails focused, Cmd-C, Cmd-X,
-  Cmd-V, Cmd-D and Delete work on pages. Cmd- or Shift-click selects
-  several. A page keeps its markups and edits; each change can be undone.
+  Cmd-V, Cmd-D and Delete work on pages (Ctrl on Windows). Cmd- or
+  Shift-click selects several. A page keeps its markups and edits; each change can be undone.
 - Merge documents: File ▸ Merge Documents… lists the open documents to
   tick and drag into order, and takes other PDFs added or dropped on it.
   The merge opens as a new tab; documents with unsaved changes are saved
@@ -42,7 +44,6 @@ All notable Butter Paper changes are recorded here.
 - A document with unsaved changes shows a larger asterisk in a grey
   circle the size of the close button, as far in from the tab's left edge
   as the close button is from its right.
-
 - A squarer butterfly icon, so it fills its slot in the Windows taskbar,
   Start menu and Dock instead of looking short beside other apps: four
   angled wings on one central spine, with a darker top-left wingtip that
@@ -175,7 +176,6 @@ All notable Butter Paper changes are recorded here.
   down straight away, not only once the new line has text.
 - A drawing inside its own small clipping area, such as an SVG graphic,
   moves as one piece with its clip and any text in it.
-
 - File > Convert and Open in Word has Microsoft Word convert the PDF,
   saves it beside the PDF with the same name as a .docx and opens it in
   Word. When that .docx is already there, it asks whether to replace it
@@ -192,9 +192,7 @@ All notable Butter Paper changes are recorded here.
   wraps at the cell's width, and its row grows to fit, moving the rows
   and borders below it down. Empty cells take typing too.
 - Tab and Shift+Tab move between cells, selecting the next cell's text.
-  Rows and columns aren't added, removed, moved or resized by hand, as in
-  Acrobat and Revu: a row's height follows its text. For bigger changes
-  to a table, convert the PDF to Word.
+  For bigger changes to a table, convert the PDF to Word.
 - Only the table changes as it grows: the text and drawings below it stay
   where they are. Where the table runs into other text, a small label
   under it says so and the text it covers is framed in amber; drag that
@@ -202,7 +200,6 @@ All notable Butter Paper changes are recorded here.
   A table that runs past the bottom of the page is labelled too, and so
   is an edited paragraph that does either.
 - Undo reaches back past a save on a page whose tables changed.
-- Tables drawn over a drawing's line work are found as tables.
 - Typing in a table on a page with a lot of drawing updates the page
   about four times faster.
 - Deleting text in a table cell shortens its row.
