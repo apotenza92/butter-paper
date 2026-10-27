@@ -1,7 +1,8 @@
 //! Tables with Edit PDF in the workspace, on a table Chrome wrote
 //! (`tests/fixtures/text-edit/chrome-table.pdf`): typing in a cell grows its
 //! row as one undoable edit, an empty cell takes typing, Tab moves between
-//! cells, and a table grown into the text below it is labelled.
+//! cells, a table grown into the text below it is labelled, and text no cell
+//! holds is edited as itself.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -630,4 +631,48 @@ fn table_typing_latency_in_the_app(cx: &mut TestAppContext) {
         times[times.len() / 2].as_secs_f64() * 1000.,
         times[times.len() - 1].as_secs_f64() * 1000.
     );
+}
+
+/// Text the page draws inside a table that no cell's tags hold is still
+/// hit as itself: a press on it edits it rather than the cell around it.
+#[gpui::test]
+fn untagged_text_inside_a_table_is_edited_as_itself(cx: &mut TestAppContext) {
+    let mut layer = chrome_table();
+    let quantity = layer
+        .lines
+        .iter_mut()
+        .find(|line| line.text.trim() == "200")
+        .unwrap();
+    quantity.marked_content_ids.clear();
+    quantity.paragraph = None;
+    let table = page_tables(&layer).remove(0);
+    assert!(table.cells.iter().all(|cell| {
+        cell.lines
+            .iter()
+            .all(|anchor| layer.line(anchor).unwrap().text.trim() != "200")
+    }));
+    let quantity = line_end(&layer, "200");
+    let (workspace, document_id, _shown, cx) = table_workspace(cx, layer);
+    click_page_point(cx, document_id, quantity);
+    type_text(cx, "0");
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let snapshot = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx).unwrap()
+    });
+    assert!(
+        snapshot
+            .page_table_edits
+            .iter()
+            .all(|edit| edit.cell_texts.is_empty()),
+        "{:#?}",
+        snapshot.page_table_edits
+    );
+    let edit = snapshot
+        .page_text_edits
+        .iter()
+        .find(|edit| edit.original_text() == "200")
+        .unwrap_or_else(|| panic!("{:#?}", snapshot.page_text_edits));
+    assert_eq!(edit.text(), "2000");
 }

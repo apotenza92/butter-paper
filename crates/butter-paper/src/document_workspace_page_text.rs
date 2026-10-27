@@ -1074,7 +1074,8 @@ impl DocumentWorkspace {
 
     /// The text under a page point, a table's cells first: inside a table
     /// as it is shown, its cells (their text, or a new cell's) are hit
-    /// rather than text outside the table that it now covers.
+    /// rather than text outside the table that it now covers. Text the page
+    /// draws inside a table that no cell declares is still its own text.
     pub(super) fn page_text_and_table_hit(
         &mut self,
         interaction: PageInteraction,
@@ -1082,10 +1083,29 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Option<PageTextHit> {
         let hit = self.page_text_hit(interaction, point, cx);
-        if hit.as_ref().is_some_and(|hit| hit.cell.is_some()) {
+        if hit.as_ref().is_some_and(|hit| {
+            hit.cell.is_some() || self.drawn_inside_a_table(interaction, &hit.line)
+        }) {
             return hit;
         }
         self.table_cell_hit(interaction, point, cx).or(hit)
+    }
+
+    /// Whether the page draws `line` inside one of its tables.
+    fn drawn_inside_a_table(&self, interaction: PageInteraction, line: &PageTextLine) -> bool {
+        let Some((_, _, tables)) =
+            self.loaded_page_text(interaction.document_id, interaction.page_index)
+        else {
+            return false;
+        };
+        let Some([left, bottom, right, top]) = crate::pdf_tables::line_core_box(line) else {
+            return false;
+        };
+        let (x, y) = ((left + right) / 2., (bottom + top) / 2.);
+        tables.iter().any(|table| {
+            let [left, bottom, right, top] = table.bounds();
+            (left..=right).contains(&x) && (bottom..=top).contains(&y)
+        })
     }
 
     /// The table cell a hit paragraph is in, in the table as it is shown.

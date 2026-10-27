@@ -342,7 +342,8 @@ top or bottom whose text is drawn on another page are that page's.
 - A press in a cell away from its text edits the cell's nearest paragraph.
   A cell with no text takes typing in its model cell's font, size and place; its text is kept
   with the table and drawn as new text. Inside a table, its cells take a
-  press rather than text outside the table that it now covers.
+  press rather than text outside the table that it now covers. Text the
+  page draws inside a table that no cell's tags hold is hit as itself.
 - Right-clicking a cell in Edit PDF puts Insert Row Above, Insert Row
   Below and Delete Row at the top of the page menu. A new row is empty,
   drawn like the clicked row (its borders and fills) and a line of its
