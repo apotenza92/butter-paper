@@ -4,15 +4,92 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Pages
+
+- Add, delete, move, duplicate, copy and paste pages from Page Thumbnails:
+  right-click a thumbnail for the page menu (which now also holds Rotate),
+  drag thumbnails to reorder them, or use + for a blank page after the
+  current page or at the end. With the thumbnails focused, Cmd-C, Cmd-X,
+  Cmd-V, Cmd-D and Delete work on pages. Cmd- or Shift-click selects
+  several. A page keeps its markups and edits; each change can be undone.
+- Merge documents: File ▸ Merge Documents… lists the open documents to
+  tick and drag into order, and takes other PDFs added or dropped on it.
+  The merge opens as a new tab; documents with unsaved changes are saved
+  first.
+
+### Saving
+
+- On Windows, Save As offers PDF as the file type and adds `.pdf` to a
+  name typed without it, instead of listing only "All files" and refusing
+  the save. A name typed without `.pdf` on any system now saves as a PDF.
+- Choosing the open file itself in Save As saves over it, as Save does,
+  instead of refusing.
+
 ### Look
+
+- Hovering a tab shows the document's whole name, which a narrow tab cuts
+  short.
+- The Open and New buttons at the right of the tab strip keep the same size
+  and spacing however wide the tool sidebar is, instead of growing when it
+  has three or more columns, and the divider before them no longer jumps
+  when the sidebar reaches three columns.
+- The Page Thumbnails header matches the Properties header, and each
+  thumbnail page has an edge so it stands out from the panel.
+- Rotating a page turns it in one step, instead of briefly showing the old
+  page stretched to its new shape.
+- Closing a tab with unsaved changes asks in a roomier box, with a
+  shorter explanation.
+- A document with unsaved changes shows a larger asterisk in a grey
+  circle the size of the close button, as far in from the tab's left edge
+  as the close button is from its right.
 
 - A squarer butterfly icon, so it fills its slot in the Windows taskbar,
   Start menu and Dock instead of looking short beside other apps: four
   angled wings on one central spine, with a darker top-left wingtip that
   no longer fades into light backgrounds.
+- New windows open centred in the part of the screen the Dock and menu
+  bar (or the Windows taskbar) leave free.
+
+### Measuring
+
+- Page Scale is redesigned. One list holds the standard metric,
+  architectural and engineering scales, searchable, with the scales the
+  drawing itself states (`1/4" = 1'-0"`, `1:100 @ A1`) first and offered as
+  buttons; a page without a scale starts at the one it states. The dialog
+  shows the page's paper size, what the scale means (`1 cm on paper is 1
+  m`), the unit and precision to measure in, and which pages to apply it to.
+- Calibrate is quicker and more accurate: the dialog steps aside, the line's
+  ends snap to the drawing, the line and its length follow the pointer,
+  Shift keeps it straight and Esc goes back. Then type its real length,
+  including feet and inches (`36'-6"`) or another unit (`3600 mm`), and use
+  the standard scale it is close to with one click.
+- A scale can be removed (No scale), and the status bar shows the page's
+  scale; click it to change it.
+- Imported imperial scales show their standard name (`1/4" = 1'-0"`)
+  rather than a ratio.
+- Saved scale presets are gone: they were lost when the document closed.
+
+### Opening documents
+
+- Unsaved changes left by a crash or forced quit reopen by themselves in a
+  tab when Butter Paper starts, without asking. If their PDF has changed
+  since, they open as a new PDF in their own tab instead. Only changes
+  that cannot be reopened are left in the Recovery panel, which opens to
+  show them.
+- Opening a PDF from Recently opened, File > Open or the Finder while
+  those changes are reopening no longer does nothing: it opens as soon as
+  they are back. A recovery that needs a decision no longer stops other
+  PDFs opening.
 
 ### Markups
 
+- Images keep their proportions as you resize them, from their corners.
+  Turn this off for one image with Lock proportions in its properties, or
+  for new images in Settings, which has a new Markups page. Locking a
+  stretched image puts it back in shape.
+- Drag a PNG or JPEG image onto a page and it is added there straight
+  away, selected, with no need to pick the Image tool or click to place it.
+  Before, dropping an image did nothing.
 - Editing a Cloud+ caption happens in place on the page, instead of in a
   stray panel showing the file name and unrelated buttons.
 - A Cloud+ caption box fits its text and stays against its leader, so
@@ -23,6 +100,9 @@ All notable Butter Paper changes are recorded here.
   Double-clicking an existing Callout edits its text, which was not
   possible before. A Callout drawn to the left puts its box on the left,
   instead of over its own leader.
+- Deleting several markups at once now removes any dimensions among them.
+  Before, a deleted dimension stayed on the page, and its unsaved changes
+  could not be recovered after a crash.
 - Dimension text and rotated text boxes are edited in a plain text panel,
   instead of the panel of unrelated buttons.
 - Selecting or hovering a markup shows small handles at the points you can
@@ -32,6 +112,87 @@ All notable Butter Paper changes are recorded here.
 - Pen and Highlight strokes can be resized from handles on their box.
 - New Arrows start at 1 pt, like Lines and the other line tools, instead of
   0.5 pt.
+- Undo works after saving. It did nothing once a document had been saved,
+  because the crash-recovery copy refused to go back past the saved state.
+
+### Editing PDFs
+
+- Edit PDF is now a switch at the left of the toolbar above the page (or
+  Shift+T) instead of a tool in the sidebar. While it is on, the Select
+  tool works on the PDF's own content wherever no markup or form field is,
+  so markups can still be selected and drawn without changing tools.
+- Edit PDF is also in the page's right-click menu, ticked while it is on.
+- Paragraphs, drawings and images can be moved: drag a drawing or image,
+  or a paragraph by the edge just outside its text (Shift-click to add
+  more, or drag a lasso around them), or nudge the selection with the arrow
+  keys. Inside a paragraph the pointer is a text cursor and a click types
+  there. The content itself follows the pointer smoothly as you drag or
+  resize it, and stays put when you let go while the page catches up;
+  markups on it move with it. Each move is one undo step and is saved into the page.
+- Holding an arrow key moves the selection smoothly, like dragging, and
+  the whole hold is one undo step. Shift with an arrow moves it 10 points
+  at a time. A hover box no longer stays behind where content was before
+  a keyboard move.
+- Moving content snaps like moving markups: to markups, other content and
+  the grids, with the same guides. The boxes round paragraphs, drawings
+  and images are snap targets too, along their sides as well as at their
+  corners, for content and markups, and a paragraph snaps by its box. Select's lasso selects content and
+  markups together, and they move together.
+- A dragged paragraph, drawing or image also lines up with the others on
+  the page: its sides or centre snap level with theirs from any distance,
+  with a green guide between them.
+- A line with a word in another colour, such as a bold name in black in a
+  grey sentence, is one line again. Before, it came apart into separate
+  pieces that moved and edited on their own.
+- Content is framed by one thin box only when the pointer reaches it,
+  without tinting it, and the same box shows it hovered, selected or
+  edited. Clicking away from text being edited only ends the edit.
+- A selected drawing or image has resize handles, which look and behave
+  like markups' handles; hovered and selected content use the same blues
+  as markups. Delete removes selected
+  content, and Copy, Cut and Paste make copies of it on the same page.
+- Escape ends a text edit and leaves the paragraph selected.
+- Pressing Return at the end of text moves the caret to the new line at
+  once, instead of leaving it beside the return mark until you type.
+- In a table cell, Return at the end grows the row and pushes its borders
+  down straight away, not only once the new line has text.
+- A drawing inside its own small clipping area, such as an SVG graphic,
+  moves as one piece with its clip and any text in it.
+
+- File > Convert and Open in Word has Microsoft Word convert the PDF,
+  saves it beside the PDF with the same name as a .docx and opens it in
+  Word. When that .docx is already there, it asks whether to replace it
+  or keep both (the new one as Name 2.docx and so on).
+  Unsaved changes are saved first. The first time, macOS asks to let
+  Butter Paper control Word. Needs Word on macOS or Windows.
+
+### Editing tables
+
+- Text typed into a narrow cell wraps onto new lines that show. In
+  documents printed from Google Chrome, a cell's text is clipped to its
+  first line's height, and the lines below were cut off.
+- Edit PDF edits tables like a word processor: text in a cell
+  wraps at the cell's width, and its row grows to fit, moving the rows
+  and borders below it down. Empty cells take typing too.
+- Tab and Shift+Tab move between cells, selecting the next cell's text.
+  Rows and columns aren't added, removed, moved or resized by hand, as in
+  Acrobat and Revu: a row's height follows its text. For bigger changes
+  to a table, convert the PDF to Word.
+- Only the table changes as it grows: the text and drawings below it stay
+  where they are. Where the table runs into other text, a small label
+  under it says so and the text it covers is framed in amber; drag that
+  text out of the way by its edge, even where it lies inside the table.
+  A table that runs past the bottom of the page is labelled too, and so
+  is an edited paragraph that does either.
+- Undo reaches back past a save on a page whose tables changed.
+- Tables drawn over a drawing's line work are found as tables.
+- Typing in a table on a page with a lot of drawing updates the page
+  about four times faster.
+- Deleting text in a table cell shortens its row.
+- Pressing Return at the end of a paragraph keeps empty lines, written as
+  a space, as word processors write them.
+- Typing is faster: the page you type on is redrawn before its
+  thumbnail, which follows once you pause.
 
 ## [0.2.3]
 

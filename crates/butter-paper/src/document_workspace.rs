@@ -5,22 +5,44 @@ mod alerts;
 mod bench;
 #[cfg(feature = "review-driver")]
 pub use bench::ThumbnailBenchProbe;
+#[path = "document_workspace_content.rs"]
+mod content;
 #[path = "document_workspace_forms.rs"]
 mod forms;
+#[path = "document_workspace_image_drop.rs"]
+mod image_drop;
+#[path = "document_workspace_merge.rs"]
+mod merge;
+#[path = "document_workspace_pages.rs"]
+mod pages;
+pub use merge::{
+    DOCUMENT_MERGE_ADD_ID, DOCUMENT_MERGE_CANCEL_ID, DOCUMENT_MERGE_CONFIRM_ID,
+    DOCUMENT_MERGE_DIALOG_ID, MergeDialog, MergeDocuments, MergeSource,
+};
+pub use pages::{
+    CopyPages, CutPages, DeletePages, DuplicatePages, InsertPageAfter, InsertPageAtEnd,
+    InsertPageBefore, PastePages, RotatePagesLeft, RotatePagesRight,
+};
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
+#[path = "document_workspace_page_scale.rs"]
+mod page_scale;
 #[path = "document_workspace_page_text.rs"]
 mod page_text;
 #[path = "document_workspace_recovery_notifications.rs"]
 mod recovery_notifications;
 #[path = "space_pan.rs"]
 mod space_pan;
+#[path = "document_workspace_tables.rs"]
+mod tables;
 #[path = "document_workspace_text_selection.rs"]
 mod text_selection;
 #[path = "document_workspace_thumbnails.rs"]
 mod thumbnail_sidebar;
 #[path = "document_workspace_viewport.rs"]
 mod viewport;
+#[path = "document_workspace_word.rs"]
+mod word;
 pub use forms::{
     DOCUMENT_FORM_CHOICE_MENU_ID, DOCUMENT_FORM_FIELD_EDITOR_ID, DOCUMENT_FORM_FIELD_FOCUS_ID,
     DOCUMENT_SIGNED_FORM_FILL_CANCEL_ID, DOCUMENT_SIGNED_FORM_FILL_CONFIRM_ID,
@@ -28,6 +50,9 @@ pub use forms::{
 use forms::{FormChoiceMenu, FormFieldEditor, FormOverlay, FormWidgetRef};
 use page_text::{PageTextDocumentState, PageTextEditing, PageTextHover, PageTextOverlay};
 use thumbnail_sidebar::{ThumbnailRowsShown, ThumbnailSidebarInputs};
+pub use word::{
+    DOCUMENT_WORD_KEEP_BOTH_ID, DOCUMENT_WORD_REPLACE_CANCEL_ID, DOCUMENT_WORD_REPLACE_ID,
+};
 #[path = "document_workspace_empty.rs"]
 mod empty;
 #[path = "document_workspace_settings_popovers.rs"]
@@ -112,7 +137,7 @@ use crate::{
         NativeDocumentViewState, RestartView, ViewerZoomPreset, WheelOutcome,
     },
     page_scale_control::{
-        CalibrationPointDisposition, PAGE_SCALE_PICK_ALERT_ID, PAGE_SCALE_PICK_CANCEL_ID,
+        CalibrationPointDisposition, PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID,
         PAGE_SCALE_TRIGGER_ID, PageScaleControl,
     },
     page_view_control::{PageViewControl, PageViewControlEvent, PageViewMode},
@@ -157,10 +182,9 @@ use crate::{
         LengthEndpoint, LineKind, MarkupId, MeasurementPathKind, PENDING_REDACTION_STATUS,
         PageRotation, PageRotationDirection, PageScale, PageScaleApplyTarget, PageTransform,
         PdfPoint, PdfRect, PenAppearance, PointerCancelReason, RectangleAppearance,
-        RectangleResizeHandle, ScalePreset, SceneArc, SceneCloudPlus, SceneDimension,
-        SceneRectangle, SceneRedact, StraightLineAppearance, StrokeStyle, TextAlignment,
-        TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, built_in_scale_presets,
-        ellipse_cubic_bezier_points, rectangle_world_corners,
+        RectangleResizeHandle, SceneArc, SceneCloudPlus, SceneDimension, SceneRectangle,
+        SceneRedact, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
+        TextBoxRichTextRun, TextBoxStyle, ellipse_cubic_bezier_points, rectangle_world_corners,
     },
     annotation_paint_path::{InkPaintPathSegment, build_ink_paint_path},
     generated_document::{
@@ -224,6 +248,7 @@ gpui::actions!(
         SaveDocumentAsTemplate,
         Save,
         SaveAs,
+        ConvertToWord,
         NavigateHome,
         NavigateEnd,
         NavigatePreviousPage,
@@ -232,6 +257,10 @@ gpui::actions!(
         NavigateDown,
         NavigateLeft,
         NavigateRight,
+        NudgeUpFar,
+        NudgeDownFar,
+        NudgeLeftFar,
+        NudgeRightFar,
         NavigatePageUp,
         NavigatePageDown,
         CloseDocument,
@@ -265,7 +294,7 @@ gpui::actions!(
         SelectHighlightTool,
         SelectImageTool,
         SelectSnapshotTool,
-        SelectEditPdfContentTool,
+        ToggleEditPdf,
         SelectLengthTool,
         FinishVertexPath
     ]
@@ -308,6 +337,14 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         KeyBinding::new("down", NavigateDown, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("left", NavigateLeft, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("right", NavigateRight, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new("shift-up", NudgeUpFar, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new("shift-down", NudgeDownFar, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new("shift-left", NudgeLeftFar, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new(
+            "shift-right",
+            NudgeRightFar,
+            Some(DOCUMENT_WORKSPACE_CONTEXT),
+        ),
         KeyBinding::new("pageup", NavigatePageUp, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new(
             "pagedown",
@@ -408,7 +445,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         ),
         KeyBinding::new(
             "shift-t",
-            SelectEditPdfContentTool,
+            ToggleEditPdf,
             Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
         #[cfg(target_os = "macos")]
@@ -442,6 +479,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
     ]);
     crate::page_text_editor::init_page_text_editor_actions(cx);
     forms::init_form_field_actions(cx);
+    pages::init_page_actions(cx);
 }
 
 pub fn register_document_workspace_global_actions(
@@ -495,6 +533,20 @@ pub fn register_document_workspace_actions_for(
             workspace.update(cx, |workspace, cx| workspace.save_active_document(cx));
         }
     });
+    let merge = resolve.clone();
+    cx.on_action(move |_: &MergeDocuments, cx| {
+        if let Some(workspace) = merge(true, cx) {
+            workspace.update(cx, |workspace, cx| workspace.request_merge_dialog(cx));
+        }
+    });
+    let convert_to_word = resolve.clone();
+    cx.on_action(move |_: &ConvertToWord, cx| {
+        if let Some(workspace) = convert_to_word(false, cx) {
+            workspace.update(cx, |workspace, cx| {
+                workspace.convert_active_document_to_word(cx)
+            });
+        }
+    });
     let save_as = resolve;
     cx.on_action(move |_: &SaveAs, cx| {
         if let Some(workspace) = save_as(false, cx) {
@@ -509,6 +561,7 @@ pub fn register_document_workspace_actions_for(
 
 pub const DOCUMENT_WORKSPACE_ID: &str = "document-workspace";
 pub const DOCUMENT_THUMBNAIL_STRIP_ID: &str = "document-thumbnail-strip";
+pub const DOCUMENT_THUMBNAIL_ADD_PAGE_ID: &str = "document-thumbnail-add-page";
 /// Thumbnails drawn ahead above and below the rows shown, once those are.
 const THUMBNAIL_PREFETCH_ROWS: u32 = 2;
 /// How long the thumbnail rows shown must stay put before thumbnails are
@@ -701,10 +754,7 @@ pub fn document_viewport_cursor_style(
         }
     } else if tool.uses_crosshair() {
         CursorStyle::Crosshair
-    } else if matches!(
-        tool,
-        AnnotationTool::Select | AnnotationTool::EditPdfContent
-    ) {
+    } else if tool == AnnotationTool::Select {
         select_hover_cursor.unwrap_or(CursorStyle::Arrow)
     } else {
         CursorStyle::Arrow
@@ -987,6 +1037,24 @@ pub fn save_as_prompt_spec(source_path: &Path) -> SaveAsPromptSpec {
     }
 }
 
+/// The PDF a Save As choice names. Pickers cannot insist on a type everywhere
+/// (Windows can list all files), so a name typed without `.pdf` gains it
+/// rather than failing the save.
+pub fn save_as_pdf_target(selected: PathBuf) -> PathBuf {
+    let is_pdf = selected
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+    match selected.file_name() {
+        Some(name) if !is_pdf => {
+            let mut name = name.to_os_string();
+            name.push(".pdf");
+            selected.with_file_name(name)
+        }
+        _ => selected,
+    }
+}
+
 pub const fn save_as_command_label(save_in_progress: bool) -> &'static str {
     if save_in_progress {
         "Saving…"
@@ -1259,9 +1327,92 @@ impl PdfDocumentSaver {
             (None, None) => PdfPersistenceSession::open(&request.source_path),
         }
         .map_err(|error| error.to_string())?;
+        // Pages as arranged first: every other change names pages so.
+        persistence
+            .arrange_pages(&request.annotations.page_slots)
+            .map_err(|error| format!("could not arrange the pages: {error}"))?;
+        // Pages this save rewrites, as the file has them now, so undo can
+        // reach back past the save. A page that cannot be kept is shown as
+        // saved by every undo state.
+        let kept_pages = request
+            .annotations
+            .pages_to_keep_when_saved
+            .iter()
+            .filter_map(|page| {
+                persistence
+                    .snapshot_page(*page)
+                    .ok()
+                    .map(|pdf| crate::pdf_page_base::PageBase::new(*page, Arc::new(pdf)))
+            })
+            .collect::<Vec<_>>();
+        // Pages shown as an earlier file had them: their edits apply there.
+        persistence
+            .restore_pages(&request.annotations.page_bases)
+            .map_err(|error| format!("could not restore an earlier page: {error}"))?;
+        // Where each edited line will be once saved: a table edit moves the
+        // lines of its page's tables, or removes them with a deleted row or
+        // column, and a move moves its lines.
+        let table_pages = request
+            .annotations
+            .page_table_edits
+            .iter()
+            .map(|edit| edit.page_index)
+            .chain(
+                request
+                    .annotations
+                    .page_content_moves
+                    .iter()
+                    .map(|item| item.page_index),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut moved_lines: HashMap<
+            (u32, crate::pdf_text_edit::TextLineAnchor),
+            Option<(f64, f64)>,
+        > = HashMap::new();
+        for page_index in &table_pages {
+            let tables = request
+                .annotations
+                .page_table_edits
+                .iter()
+                .filter(|edit| edit.page_index == *page_index)
+                .collect::<Vec<_>>();
+            let moves = request
+                .annotations
+                .page_content_moves
+                .iter()
+                .filter(|item| item.page_index == *page_index)
+                .cloned()
+                .collect::<Vec<_>>();
+            let layer = persistence
+                .page_text(*page_index)
+                .map_err(|error| format!("could not read page text to save: {error}"))?;
+            for edit in request
+                .annotations
+                .page_text_edits
+                .iter()
+                .filter(|edit| edit.page_index == *page_index)
+            {
+                let Some(line) = layer.line(&edit.anchor) else {
+                    continue;
+                };
+                let place = crate::pdf_tables::line_core_box(line)
+                    .map_or(Some((0., 0.)), |rect| {
+                        crate::pdf_content_moves::line_offset(&tables, &moves, rect)
+                    })
+                    .map(|(dx, dy)| {
+                        let (x, y) = line.origin();
+                        (x + dx, y + dy)
+                    });
+                moved_lines.insert((edit.page_index, edit.anchor), place);
+            }
+        }
         // Page text first: edits name lines of the unchanged source.
         persistence
-            .apply_page_text_edits(&request.annotations.page_text_edits)
+            .apply_page_content_edits(
+                &request.annotations.page_text_edits,
+                &request.annotations.page_table_edits,
+                &request.annotations.page_content_moves,
+            )
             .map_err(|error| format!("could not save edited page text: {error}"))?;
         persistence
             .apply_form_field_edits(&request.annotations.form_field_edits)
@@ -1861,15 +2012,50 @@ impl PdfDocumentSaver {
         }
         for edit in &request.annotations.page_text_edits {
             let text = edit.text();
-            let saved = reopened
+            let layer = reopened
                 .page_text(edit.page_index)
-                .map_err(|error| error.to_string())?
-                .line(&edit.anchor)
-                .map(|line| line.text.clone());
+                .map_err(|error| error.to_string())?;
+            let saved = match moved_lines.get(&(edit.page_index, edit.anchor)) {
+                // A line a deleted row or column removed.
+                Some(None) => continue,
+                // A line on a page whose tables changed: where it moved to.
+                Some(Some((x, y))) => layer
+                    .lines
+                    .iter()
+                    .find(|line| {
+                        let (line_x, line_y) = line.origin();
+                        (line_x - x).abs() < 0.05 && (line_y - y).abs() < 0.05 && line.text == text
+                    })
+                    .or_else(|| layer.line(&edit.anchor))
+                    .map(|line| line.text.clone()),
+                None => layer.line(&edit.anchor).map(|line| line.text.clone()),
+            };
             if saved.as_deref() != Some(text.as_str()) {
                 return Err(format!(
                     "saved PDF page text failed independent reopen validation: expected {text:?}, reopened {saved:?}"
                 ));
+            }
+        }
+        // New cell text reads back from the saved page.
+        for table in &request.annotations.page_table_edits {
+            if table.cell_texts.is_empty() {
+                continue;
+            }
+            let layer = reopened
+                .page_text(table.page_index)
+                .map_err(|error| error.to_string())?;
+            for line in table.cell_texts.iter().flat_map(|text| &text.lines) {
+                let text = line
+                    .runs
+                    .iter()
+                    .map(|run| run.text.as_str())
+                    .collect::<String>();
+                let text = text.trim();
+                if !text.is_empty() && !layer.lines.iter().any(|line| line.text.trim() == text) {
+                    return Err(format!(
+                        "saved PDF table text failed independent reopen validation: expected {text:?}"
+                    ));
+                }
             }
         }
         if !request.annotations.form_field_edits.is_empty() {
@@ -2450,7 +2636,6 @@ impl PdfDocumentSaver {
             path: validation_path,
         };
         let mut opened = self.opener.open(&reopen_request)?;
-        opened.scale_presets = request.annotations.scale_presets.clone();
         if request.current_page != 0 {
             opened.current_page = match opened
                 .resource
@@ -2493,7 +2678,8 @@ impl PdfDocumentSaver {
             .and_then(|name| name.to_str())
             .unwrap_or("Untitled PDF")
             .to_owned();
-        let saved = SavedNativeDocument::new(opened, request.annotation_revision);
+        let saved = SavedNativeDocument::new(opened, request.annotation_revision)
+            .with_kept_pages(kept_pages);
         Ok(match publication_outcome {
             PdfPublicationOutcome::Durable => saved,
             PdfPublicationOutcome::PublishedWithWarning { warning } => {
@@ -2560,12 +2746,20 @@ pub struct DocumentWorkspace {
     document_open_status: DocumentOpenBatchStatus,
     document_open_failures: Vec<DocumentOpenFailure>,
     session_recovery_warning: Option<String>,
+    /// The documents the last session left with unsaved edits, by path and
+    /// title, while their warning shows: one reopened by startup recovery
+    /// leaves it.
+    session_recovery_documents: Vec<(PathBuf, String)>,
     recovery_notifications_open: bool,
     recovery_notifications_focus: FocusHandle,
     startup_recovery_inspecting: bool,
     startup_recovery_items: Vec<StartupRecoveryItem>,
     startup_recovery_operation: Option<RecoveryDocumentId>,
     deferred_startup_open: Option<DeferredStartupOpen>,
+    /// Startup recoveries already tried automatically, with whether as a copy.
+    startup_recovery_attempted: HashSet<(RecoveryDocumentId, bool)>,
+    /// Opens asked for while recovery was pending, made once it is resolved.
+    opens_awaiting_recovery: Vec<DocumentOpenBatchRequest>,
     document_recovery_store: Option<Arc<DocumentRecoveryStore>>,
     document_recovery_store_error: Option<String>,
     recovery_confirmation_pending: HashSet<DocumentId>,
@@ -2587,6 +2781,13 @@ pub struct DocumentWorkspace {
     pending_close_document_id: Option<DocumentId>,
     pending_publication_warning_generation: Option<u64>,
     close_after_save_document_id: Option<DocumentId>,
+    /// The document to convert to Word once its save finishes.
+    word_after_save: Option<DocumentId>,
+    /// Documents Word is converting now.
+    word_conversions: HashSet<DocumentId>,
+    /// A conversion that would replace an existing Word document, waiting
+    /// for the next render to ask about it: the document and its PDF.
+    word_replace_prompt: Option<(DocumentId, PathBuf)>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
     session_tab_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
     session_tabs_overflow: bool,
@@ -2627,10 +2828,48 @@ pub struct DocumentWorkspace {
     /// between the clicks of a double-click, so the second press finds the
     /// knob here.
     workspace_focus: FocusHandle,
+    /// Page Thumbnails' list, whose focus makes Copy, Cut, Paste and Delete
+    /// act on pages.
+    thumbnail_focus: FocusHandle,
+    page_selection: Option<pages::PageSelection>,
+    page_clipboard: Option<pages::PageClipboard>,
+    /// Where dragged thumbnails would land: before this page.
+    page_drop_target: Option<(DocumentId, u32)>,
+    /// The open Merge Documents dialog: PDFs dropped on the window join it.
+    merge_dialog: Option<WeakEntity<merge::MergeDialog>>,
+    /// File ▸ Merge Documents… asked for the dialog, opened on the next
+    /// frame (menu actions have no window).
+    merge_dialog_requested: bool,
+    /// Pages waiting to turn, one after another, from Rotate on several
+    /// selected thumbnails.
+    queued_page_rotations: std::collections::VecDeque<(DocumentId, u32, PageRotationDirection)>,
     text_box_return_focus: FocusHandle,
     pending_text_box_editor: Option<PendingTextBoxEditor>,
     pending_text_box_subscriptions: Vec<Subscription>,
-    /// Edit PDF Content: each document's page text and rendered edits, the line
+    /// Documents in Edit PDF mode: with Select, a press edits or moves the
+    /// page's own content where no markup or form field takes it.
+    content_edit_mode: HashSet<DocumentId>,
+    /// The page content selected in Edit PDF mode, and its drag.
+    content_selection: Option<content::ContentSelection>,
+    content_drag: Option<content::ContentDrag>,
+    /// Counts arrow-key moves, so a move ends once none follows it.
+    content_nudges: u64,
+    /// Pages whose thumbnails wait for edits to pause, and the latest
+    /// wait's number.
+    thumbnail_refreshes: HashMap<DocumentId, std::collections::BTreeSet<u32>>,
+    thumbnail_refresh_generation: u64,
+    /// The picture of content being dragged, painted where the drag puts it.
+    content_sprite: Option<content::ContentSprite>,
+    /// The drawing or image under the pointer in Edit PDF mode, as shown.
+    content_hover: Option<content::ContentHover>,
+    /// Page content copied in Edit PDF mode.
+    content_clipboard: Option<content::ContentClipboard>,
+    /// The selected content's resize handle under the pointer.
+    content_handle_hover: Option<(DocumentId, RectangleResizeHandle)>,
+    /// Where a press on empty page began in Edit PDF mode: its marquee
+    /// selects the content inside it as well as markups.
+    content_marquee: Option<(DocumentId, u32, PdfPoint)>,
+    /// Edit PDF mode: each document's page text and rendered edits, the line
     /// being edited, its input and the line under the pointer.
     page_text: HashMap<DocumentId, PageTextDocumentState>,
     page_text_input: Option<(Entity<crate::page_text_editor::PageTextInput>, Subscription)>,
@@ -3196,6 +3435,7 @@ fn commit_saved_recovery_rebase(
     target_path: &Path,
     source_sha256: Option<[u8; 32]>,
     saved_revision: u64,
+    kept_pages: Vec<crate::pdf_page_base::PageBase>,
     cx: &mut Context<NativeDocumentSession>,
 ) -> Result<Option<String>, String> {
     let snapshot = session
@@ -3217,7 +3457,7 @@ fn commit_saved_recovery_rebase(
     };
     session
         .annotations
-        .mark_saved(document_id.value())
+        .mark_saved_keeping(document_id.value(), kept_pages)
         .map_err(|error| error.to_string())?;
     let Some(prior_authority) = prior_authority else {
         return Ok(None);
@@ -3318,12 +3558,15 @@ fn refresh_session_after_recovery_change(
     rotations_changed: bool,
     cx: &mut Context<NativeDocumentSession>,
 ) -> Result<(), String> {
-    if rotations_changed {
+    // Rearranged pages take their sizes, rotations and thumbnails along;
+    // the worker draws them again once it has the new order.
+    let rearranged = session.sync_page_arrangement();
+    if rotations_changed && !rearranged {
         session.sync_rotation_geometry();
     }
     let removed = session.sync_image_assets()?;
     defer_drop_images(removed, cx);
-    if rotations_changed {
+    if rotations_changed && !rearranged {
         session.refresh_rotation_presentations()?;
     }
     session.sync_stable_highlight_presentations()?;
@@ -4063,11 +4306,7 @@ impl DocumentWorkspace {
     }
 
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let template_control = cx.new(|cx| {
-            let mut control = TemplateSplitControl::new(cx);
-            control.set_segment_width(tabs::template_segment_width(DEFAULT_RIGHT_RAIL_COLUMNS), cx);
-            control
-        });
+        let template_control = cx.new(TemplateSplitControl::new);
         let template_subscription = cx.subscribe(
             &template_control,
             |workspace, _, event: &TemplateSplitEvent, cx| {
@@ -4129,12 +4368,15 @@ impl DocumentWorkspace {
             document_open_status: DocumentOpenBatchStatus::Idle,
             document_open_failures: Vec::new(),
             session_recovery_warning: None,
+            session_recovery_documents: Vec::new(),
             recovery_notifications_open: false,
             recovery_notifications_focus: cx.focus_handle(),
             startup_recovery_inspecting: false,
             startup_recovery_items: Vec::new(),
             startup_recovery_operation: None,
             deferred_startup_open: None,
+            startup_recovery_attempted: HashSet::new(),
+            opens_awaiting_recovery: Vec::new(),
             document_recovery_store: None,
             document_recovery_store_error: None,
             recovery_confirmation_pending: HashSet::new(),
@@ -4153,6 +4395,9 @@ impl DocumentWorkspace {
             pending_close_document_id: None,
             pending_publication_warning_generation: None,
             close_after_save_document_id: None,
+            word_after_save: None,
+            word_conversions: HashSet::new(),
+            word_replace_prompt: None,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
             session_tabs_overflow: false,
@@ -4181,12 +4426,30 @@ impl DocumentWorkspace {
             right_rail_resizable: cx.new(|_| ResizableState::default()),
             right_rail_scroll: ScrollHandle::new(),
             right_rail_overflow_hover: None,
+            content_edit_mode: HashSet::new(),
+            content_selection: None,
+            content_drag: None,
+            content_nudges: 0,
+            thumbnail_refreshes: HashMap::new(),
+            thumbnail_refresh_generation: 0,
+            content_sprite: None,
+            content_hover: None,
+            content_handle_hover: None,
+            content_clipboard: None,
+            content_marquee: None,
             pan_tool_active: false,
             pan_drag: None,
             space_pan_hold: space_pan::SpacePanHold::default(),
             middle_pan_held: false,
             last_middle_press: None,
             workspace_focus: cx.focus_handle(),
+            thumbnail_focus: cx.focus_handle(),
+            page_selection: None,
+            page_clipboard: None,
+            page_drop_target: None,
+            merge_dialog: None,
+            merge_dialog_requested: false,
+            queued_page_rotations: std::collections::VecDeque::new(),
             text_box_return_focus: cx.focus_handle(),
             pending_text_box_editor: None,
             pending_text_box_subscriptions: Vec::new(),
@@ -4370,7 +4633,58 @@ impl DocumentWorkspace {
     ) {
         self.startup_recovery_inspecting = false;
         self.startup_recovery_items = items;
+        self.continue_startup_recovery(cx);
         cx.notify();
+    }
+
+    /// Recovers the next unsaved changes found at startup into a tab: over
+    /// their own PDF while it is unchanged, otherwise as a new PDF. Each is
+    /// tried once; what cannot be recovered stays in the Recovery panel,
+    /// which opens to show it.
+    fn continue_startup_recovery(&mut self, cx: &mut Context<Self>) {
+        if self.startup_recovery_inspecting || self.startup_recovery_operation.is_some() {
+            return;
+        }
+        loop {
+            let next = self.startup_recovery_items.iter().find_map(|item| {
+                let copy = match item.availability {
+                    StartupRecoveryAvailability::OpenedSourceNeedsVerification => false,
+                    StartupRecoveryAvailability::GeneratedCopyRequired => true,
+                    StartupRecoveryAvailability::Unavailable(_) => return None,
+                };
+                (item.authority.is_some()
+                    && !self.startup_recovery_attempted.contains(&(item.id, copy)))
+                .then_some((item.id, copy))
+            });
+            let Some((id, copy)) = next else {
+                break;
+            };
+            self.startup_recovery_attempted.insert((id, copy));
+            if copy {
+                self.recover_startup_copy(id, cx);
+            } else {
+                self.recover_startup_opened_source(id, cx);
+            }
+            // One that could not start is left as it is; try the next.
+            if self.startup_recovery_operation.is_some() {
+                return;
+            }
+        }
+        if !self.startup_recovery_items.is_empty() {
+            // Nothing more is automatic: show what is left and let
+            // documents open again.
+            self.recovery_notifications_open = true;
+            self.resume_deferred_startup_open(cx);
+            cx.notify();
+        }
+    }
+
+    fn end_startup_recovery_operation(&mut self, cx: &mut Context<Self>) {
+        self.startup_recovery_operation = None;
+        let workspace = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = workspace.update(cx, |workspace, cx| workspace.continue_startup_recovery(cx));
+        });
     }
 
     pub fn startup_recovery_items(&self) -> &[StartupRecoveryItem] {
@@ -4381,26 +4695,47 @@ impl DocumentWorkspace {
         self.startup_recovery_inspecting
     }
 
+    /// Opens wait while startup recovery is still being inspected or
+    /// recovered automatically. A checkpoint left for the user to decide on
+    /// does not hold them: opening another PDF never replaces it.
     pub fn startup_recovery_blocks_open(&self) -> bool {
-        self.startup_recovery_inspecting || !self.startup_recovery_items.is_empty()
+        self.startup_recovery_inspecting
+            || self.startup_recovery_operation.is_some()
+            || self.startup_recovery_items.iter().any(|item| {
+                let copy = match item.availability {
+                    StartupRecoveryAvailability::OpenedSourceNeedsVerification => false,
+                    StartupRecoveryAvailability::GeneratedCopyRequired => true,
+                    StartupRecoveryAvailability::Unavailable(_) => return false,
+                };
+                item.authority.is_some()
+                    && !self.startup_recovery_attempted.contains(&(item.id, copy))
+            })
     }
 
     pub const fn startup_recovery_operation(&self) -> Option<RecoveryDocumentId> {
         self.startup_recovery_operation
     }
 
+    pub const fn recovery_notifications_open(&self) -> bool {
+        self.recovery_notifications_open
+    }
+
+    pub fn opens_awaiting_recovery(&self) -> &[DocumentOpenBatchRequest] {
+        &self.opens_awaiting_recovery
+    }
+
     fn resume_deferred_startup_open(&mut self, cx: &mut Context<Self>) {
-        let Some(open) = self.take_deferred_startup_open() else {
-            return;
-        };
-        match open {
-            DeferredStartupOpen::None => {}
-            DeferredStartupOpen::Explicit(request) => {
+        match self.take_deferred_startup_open() {
+            None | Some(DeferredStartupOpen::None) => {}
+            Some(DeferredStartupOpen::Explicit(request)) => {
                 self.open_documents(request, cx);
             }
-            DeferredStartupOpen::Restore(plan) => {
+            Some(DeferredStartupOpen::Restore(plan)) => {
                 self.restore_session(plan, cx);
             }
+        }
+        for request in std::mem::take(&mut self.opens_awaiting_recovery) {
+            self.open_documents(request, cx);
         }
     }
 
@@ -4473,7 +4808,7 @@ impl DocumentWorkspace {
                 if workspace.startup_recovery_operation != Some(id) {
                     return;
                 }
-                workspace.startup_recovery_operation = None;
+                workspace.end_startup_recovery_operation(cx);
                 match result {
                     StartupRecoveryDiscardResult::Discarded => {
                         workspace
@@ -4587,13 +4922,13 @@ impl DocumentWorkspace {
                                     },
                                 };
                             }
-                            workspace.startup_recovery_operation = None;
+                            workspace.end_startup_recovery_operation(cx);
                             cx.notify();
                             None
                         }
                         Ok(None) => {
                             workspace.startup_recovery_items.retain(|item| item.id != id);
-                            workspace.startup_recovery_operation = None;
+                            workspace.end_startup_recovery_operation(cx);
                             if workspace.startup_recovery_items.is_empty() {
                                 workspace.resume_deferred_startup_open(cx);
                             }
@@ -4610,7 +4945,7 @@ impl DocumentWorkspace {
                                     format!("the recovery could not be loaded: {error}"),
                                 );
                             }
-                            workspace.startup_recovery_operation = None;
+                            workspace.end_startup_recovery_operation(cx);
                             cx.notify();
                             None
                         }
@@ -4861,7 +5196,7 @@ impl DocumentWorkspace {
                             {
                                 *item = refreshed;
                             }
-                            workspace.startup_recovery_operation = None;
+                            workspace.end_startup_recovery_operation(cx);
                             cx.notify();
                             None
                         }
@@ -4869,7 +5204,7 @@ impl DocumentWorkspace {
                             workspace
                                 .startup_recovery_items
                                 .retain(|item| item.id != id);
-                            workspace.startup_recovery_operation = None;
+                            workspace.end_startup_recovery_operation(cx);
                             if workspace.startup_recovery_items.is_empty() {
                                 workspace.resume_deferred_startup_open(cx);
                             }
@@ -4952,14 +5287,15 @@ impl DocumentWorkspace {
 
     fn startup_recovery_message(&self) -> Option<String> {
         if self.startup_recovery_inspecting {
-            return Some("Checking for recoverable unsaved changes…".into());
+            return Some("Checking for unsaved changes…".into());
         }
-        let count = self.startup_recovery_items.len();
-        (count > 0).then(|| {
-            format!(
-                "Unsaved changes are available to recover for {count} {}. Opening documents is paused so the recovery data is not replaced.",
-                if count == 1 { "document" } else { "documents" }
-            )
+        if self.startup_recovery_items.is_empty() {
+            return None;
+        }
+        Some(if self.startup_recovery_blocks_open() {
+            "Reopening your unsaved changes…".into()
+        } else {
+            "These unsaved changes could not be reopened automatically.".into()
         })
     }
 
@@ -4976,7 +5312,7 @@ impl DocumentWorkspace {
         {
             item.availability = StartupRecoveryAvailability::Unavailable(message);
         }
-        self.startup_recovery_operation = None;
+        self.end_startup_recovery_operation(cx);
         cx.notify();
     }
 
@@ -4994,11 +5330,14 @@ impl DocumentWorkspace {
                 .w_full()
                 .gap_2()
                 .child(
-                    Alert::warning(
-                        "document-workspace-recovery-available-message",
-                        message,
-                    )
-                    .title("Unsaved changes are available"),
+                    gpui::div()
+                        .id("document-workspace-recovery-available-message")
+                        .w_full()
+                        .px_3()
+                        .whitespace_normal()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(message),
                 ),
             move |inbox, item| {
                 let id = item.id;
@@ -5006,11 +5345,11 @@ impl DocumentWorkspace {
                 let title = item.title();
                 let detail = match &item.availability {
                     StartupRecoveryAvailability::OpenedSourceNeedsVerification =>
-                        "Check the original PDF before recovering its unsaved changes.".to_owned(),
+                        "Unsaved changes to this PDF.".to_owned(),
                     StartupRecoveryAvailability::GeneratedCopyRequired =>
-                        "Recover these unsaved changes into a new PDF.".to_owned(),
+                        "Unsaved changes, reopened as a new PDF because the original changed.".to_owned(),
                     StartupRecoveryAvailability::Unavailable(error) => {
-                        format!("This recovery cannot be opened: {error}")
+                        format!("These changes cannot be reopened: {error}")
                     }
                 };
                 let recover_owner = owner.clone();
@@ -5562,10 +5901,21 @@ impl DocumentWorkspace {
         if snapshot.is_empty() {
             return;
         }
-        let mut titles = snapshot
+        self.session_recovery_documents = snapshot
             .documents()
             .iter()
-            .map(|document| document.title().to_owned())
+            .map(|document| (document.path().to_owned(), document.title().to_owned()))
+            .collect();
+        self.describe_session_recovery_warning(cx);
+    }
+
+    /// The warning for the documents in `session_recovery_documents`, or
+    /// none when all have been reopened.
+    fn describe_session_recovery_warning(&mut self, cx: &mut Context<Self>) {
+        let mut titles = self
+            .session_recovery_documents
+            .iter()
+            .map(|(_, title)| title.clone())
             .collect::<Vec<_>>();
         titles.sort();
         titles.dedup();
@@ -5575,10 +5925,14 @@ impl DocumentWorkspace {
             [first, second, rest @ ..] => {
                 format!("{first}, {second} and {} other documents", rest.len())
             }
-            [] => return,
+            [] => {
+                self.session_recovery_warning = None;
+                cx.notify();
+                return;
+            }
         };
         self.session_recovery_warning = Some(format!(
-            "Butter Paper found evidence of unsaved edits to {names}. Review any available recovery before opening documents; without recovery, the PDFs contain the last successfully saved version."
+            "Butter Paper found evidence of unsaved edits to {names} that could not be reopened. The PDFs contain the last successfully saved version."
         ));
         cx.notify();
     }
@@ -5588,6 +5942,7 @@ impl DocumentWorkspace {
         message: impl Into<String>,
         cx: &mut Context<Self>,
     ) {
+        self.session_recovery_documents.clear();
         self.session_recovery_warning = Some(message.into());
         cx.notify();
     }
@@ -5597,6 +5952,7 @@ impl DocumentWorkspace {
     }
 
     pub fn dismiss_session_recovery_warning(&mut self, cx: &mut Context<Self>) {
+        self.session_recovery_documents.clear();
         if self.session_recovery_warning.take().is_some() {
             cx.notify();
         }
@@ -6152,6 +6508,9 @@ impl DocumentWorkspace {
         }
         let owner = cx.entity().downgrade();
         let control = cx.new(|cx| PageScaleControl::new(owner, window, cx));
+        // The page draws the calibration line and the hint while it is
+        // picked.
+        cx.observe(&control, |_, _, cx| cx.notify()).detach();
         self.page_scale_control = Some(control.clone());
         control
     }
@@ -6506,6 +6865,15 @@ impl DocumentWorkspace {
             return Err(format!("markup {} is locked", event.annotation_id));
         }
         match &event.patch {
+            EngineeringVisualPropertyPatch::AspectLocked(aspect_locked)
+                if event.expected_kind == EngineeringVisualPropertyKind::Image =>
+            {
+                let annotation_id = event.annotation_id.clone();
+                let edit = AnnotationEdit::SetImageAspectLocked(*aspect_locked);
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.edit_primary_selected_annotation(id, &annotation_id, edit)
+                })?;
+            }
             EngineeringVisualPropertyPatch::Locked(locked) => {
                 let annotation_id = event.annotation_id.clone();
                 self.update_annotation_history(
@@ -7403,27 +7771,7 @@ impl DocumentWorkspace {
                 })?;
             }
             MeasurementPropertyAction::OpenPageScale => {
-                let current_scale = session_state
-                    .annotations
-                    .document_page_scale(event.document_id.value(), page_index)
-                    .cloned();
-                let mut presets = session_state
-                    .annotations
-                    .document_scale_presets(event.document_id.value())
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_default();
-                presets.extend(built_in_scale_presets());
-                self.ensure_page_scale_control(window, cx)
-                    .update(cx, |control, cx| {
-                        control.open_for_state(
-                            event.document_id,
-                            page_index,
-                            current_scale,
-                            presets,
-                            window,
-                            cx,
-                        )
-                    });
+                self.open_page_scale_dialog(event.document_id, page_index, window, cx);
             }
         }
         Ok(true)
@@ -7958,18 +8306,6 @@ impl DocumentWorkspace {
         })
     }
 
-    pub fn scale_presets(&self, document_id: DocumentId, cx: &App) -> Vec<ScalePreset> {
-        self.session(document_id, cx)
-            .and_then(|session| {
-                session
-                    .read(cx)
-                    .annotations
-                    .document_scale_presets(document_id.value())
-                    .map(ToOwned::to_owned)
-            })
-            .unwrap_or_default()
-    }
-
     pub fn page_count(&self, document_id: DocumentId, cx: &App) -> Option<u32> {
         self.session(document_id, cx)
             .and_then(|session| u32::try_from(session.read(cx).page_sizes.len()).ok())
@@ -8000,12 +8336,11 @@ impl DocumentWorkspace {
         Ok(changed)
     }
 
-    pub fn apply_page_scale_with_preset(
+    /// Removes the scale of the target pages, as one undoable change.
+    pub fn remove_page_scale(
         &mut self,
         document_id: DocumentId,
-        scale: PageScale,
         target: PageScaleApplyTarget,
-        saved_preset: Option<ScalePreset>,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
         let Some(session) = self.session(document_id, cx).cloned() else {
@@ -8017,36 +8352,7 @@ impl DocumentWorkspace {
             self.update_native_session_history_with_result(document_id, cx, move |session| {
                 session
                     .annotations
-                    .apply_document_page_scale_with_preset(
-                        document_id.value(),
-                        scale,
-                        target,
-                        page_count,
-                        saved_preset,
-                    )
-                    .map_err(|error| error.to_string())
-            })?;
-        if changed {
-            cx.notify();
-        }
-        Ok(changed)
-    }
-
-    pub fn delete_scale_preset(
-        &mut self,
-        document_id: DocumentId,
-        preset_id: &str,
-        cx: &mut Context<Self>,
-    ) -> Result<bool, String> {
-        let Some(_session) = self.session(document_id, cx).cloned() else {
-            return Err("document session is closed".into());
-        };
-        let preset_id = preset_id.to_owned();
-        let changed =
-            self.update_native_session_history_with_result(document_id, cx, move |session| {
-                session
-                    .annotations
-                    .delete_document_scale_preset(document_id.value(), &preset_id)
+                    .remove_document_page_scale(document_id.value(), target, page_count)
                     .map_err(|error| error.to_string())
             })?;
         if changed {
@@ -9046,18 +9352,29 @@ impl DocumentWorkspace {
         if !current {
             return ApplyDisposition::RejectedStale;
         }
+        // Edit PDF's boxes round paragraphs and objects are targets too.
+        let frames = self.content_snap_frames(document_id, page_index, cx);
+        // A page whose drawing cannot be read still has its boxes.
+        let result = match result {
+            Err(_) if !frames.is_empty() => Ok(crate::pdf_content_geometry::PageSnapGeometry {
+                page_index,
+                primitives: Vec::new(),
+            }),
+            result => result,
+        };
         session.update(cx, |state, cx| {
             let outcome = match result {
                 Ok(geometry) if geometry.page_index != page_index => Err(format!(
                     "PDF-content geometry returned page {} for requested page {page_index}",
                     geometry.page_index
                 )),
-                Ok(geometry) => state
-                    .annotations
-                    .set_semantic_snap_page_content(document_id.value(), geometry)
-                    .map_err(|error| {
-                        format!("PDF-content snap candidates were rejected: {error:?}")
-                    }),
+                Ok(mut geometry) => {
+                    geometry.primitives.extend(frames);
+                    state
+                        .annotations
+                        .set_semantic_snap_page_content(document_id.value(), geometry)
+                }
+                .map_err(|error| format!("PDF-content snap candidates were rejected: {error:?}")),
                 Err(error) => Err(error),
             };
             let succeeded = outcome.is_ok();
@@ -9225,11 +9542,16 @@ impl DocumentWorkspace {
         request: DocumentOpenBatchRequest,
         cx: &mut Context<Self>,
     ) -> DocumentOpenBatchDisposition {
-        if self.startup_recovery_blocks_open() {
-            return DocumentOpenBatchDisposition::DeferredForRecovery;
-        }
         if request.cancelled {
             return DocumentOpenBatchDisposition::Cancelled;
+        }
+        if self.startup_recovery_blocks_open() {
+            // Hold the open until recovery is settled rather than dropping it.
+            if !request.paths.is_empty() {
+                self.opens_awaiting_recovery.push(request);
+                cx.notify();
+            }
+            return DocumentOpenBatchDisposition::DeferredForRecovery;
         }
         let mut seen = std::collections::HashSet::new();
         let candidates = request
@@ -9708,6 +10030,7 @@ impl DocumentWorkspace {
             };
             let Some(path) = selected else {
                 let _ = entity.update(cx, |workspace, cx| {
+                    workspace.cancel_word_after_save(authority.document_id);
                     if workspace.finish_save_prompt(authority) {
                         cx.notify();
                     }
@@ -9737,32 +10060,20 @@ impl DocumentWorkspace {
                     cx.notify();
                     return;
                 }
-                if !path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-                {
-                    let message = "Save As requires a .pdf file name.".to_owned();
-                    if authority.close_after_save {
-                        workspace
-                            .annotation_statuses
-                            .insert(authority.document_id, message);
+                let path = save_as_pdf_target(path);
+                // Choosing the open file itself saves it, as Save does.
+                let result =
+                    if workspace.save_as_names_opened_source(authority.document_id, &path, cx) {
+                        if authority.close_after_save {
+                            workspace.dirty_close_save_path(cx)
+                        } else {
+                            workspace.save_path(authority.document_id, cx)
+                        }
+                    } else if authority.close_after_save {
+                        workspace.dirty_close_save_as_path(path, cx)
                     } else {
-                        workspace.record_document_save_failure(
-                            authority.document_id,
-                            DocumentSaveFailureOperation::SaveAs,
-                            message,
-                            cx,
-                        );
-                    }
-                    cx.notify();
-                    return;
-                }
-                let result = if authority.close_after_save {
-                    workspace.dirty_close_save_as_path(path, cx)
-                } else {
-                    workspace.save_as_path(authority.document_id, path, cx)
-                };
+                        workspace.save_as_path(authority.document_id, path, cx)
+                    };
                 if let Err(error) = result
                     && authority.close_after_save
                 {
@@ -9996,13 +10307,9 @@ impl DocumentWorkspace {
                         opened.resource.close(),
                         cx,
                     );
-                    session.update(cx, |session, cx| {
-                        session.status = NativeDocumentStatus::Failed(
-                            "The PDF changed after this recovery checkpoint. Recover the unsaved changes as a new PDF instead."
-                                .into(),
-                        );
-                        cx.notify();
-                    });
+                    // The changes are recovered as a new PDF next; this tab
+                    // has nothing to show.
+                    self.close_document(request.document_id, cx);
                     if let Some(item) = self
                         .startup_recovery_items
                         .iter_mut()
@@ -10010,7 +10317,7 @@ impl DocumentWorkspace {
                     {
                         item.availability = StartupRecoveryAvailability::GeneratedCopyRequired;
                     }
-                    self.startup_recovery_operation = None;
+                    self.end_startup_recovery_operation(cx);
                     cx.notify();
                     return ApplyDisposition::Applied;
                 }
@@ -10047,7 +10354,6 @@ impl DocumentWorkspace {
                                     .into_iter()
                                     .map(|scale| (scale.page_index, scale))
                                     .collect(),
-                                opened.scale_presets,
                                 page_rotations
                                     .iter()
                                     .copied()
@@ -10150,9 +10456,11 @@ impl DocumentWorkspace {
                     .collect();
                 session.update(cx, |session, cx| {
                     session.title = opened.title;
-                    session.source_page_sizes = opened.page_sizes;
-                    session.source_page_rotations = page_rotations;
-                    session.source_page_coordinate_spaces = page_coordinate_spaces;
+                    session.set_file_pages(
+                        opened.page_sizes,
+                        page_rotations,
+                        page_coordinate_spaces,
+                    );
                     for (page_index, (width, height)) in
                         session.source_page_sizes.iter().copied().enumerate()
                     {
@@ -10184,6 +10492,8 @@ impl DocumentWorkspace {
                     session.current_image = Some(page_image);
                     session.current_image_page = Some(session.current_page);
                     session.thumbnails = thumbnails;
+                    // Recovered rearranged pages: the worker drew them so.
+                    session.adopt_page_arrangement();
                     session.resource = Some(opened.resource);
                     session.resource_epoch = session.resource_epoch.saturating_add(1);
                     Self::reset_page_content_snap_geometry(session);
@@ -10218,9 +10528,25 @@ impl DocumentWorkspace {
                                     snapshot.annotation_order.iter(),
                                 ));
                     }
+                    // Its edits are back, so the last session's warning
+                    // about them goes.
+                    let source = self
+                        .startup_recovery_items
+                        .iter()
+                        .find(|item| item.id == recovered.id)
+                        .and_then(|item| item.source_path.clone());
+                    if let Some(source) = source
+                        && self.session_recovery_warning.is_some()
+                        && !self.session_recovery_documents.is_empty()
+                    {
+                        let key = normalized_document_path(&source);
+                        self.session_recovery_documents
+                            .retain(|(path, _)| normalized_document_path(path) != key);
+                        self.describe_session_recovery_warning(cx);
+                    }
                     self.startup_recovery_items
                         .retain(|item| item.id != recovered.id);
-                    self.startup_recovery_operation = None;
+                    self.end_startup_recovery_operation(cx);
                     if self.startup_recovery_items.is_empty() {
                         self.resume_deferred_startup_open(cx);
                     }
@@ -10924,7 +11250,13 @@ impl DocumentWorkspace {
         let Some(document_id) = self.active_ready_document_id(cx) else {
             return;
         };
-        let ViewerToolbarStripEvent::FitPresetChanged(preset) = event;
+        let preset = match event {
+            ViewerToolbarStripEvent::FitPresetChanged(preset) => preset,
+            ViewerToolbarStripEvent::EditPdfToggled => {
+                self.toggle_content_edit_mode(document_id, cx);
+                return;
+            }
+        };
         self.set_fit_preset(
             document_id,
             match preset {
@@ -10939,7 +11271,13 @@ impl DocumentWorkspace {
         let state = self
             .active_ready_document_id(cx)
             .and_then(|document_id| self.document_view_state(document_id, cx));
+        let edit_pdf = self
+            .active_ready_document_id(cx)
+            .map(|document_id| self.content_edit_mode(document_id));
         self.viewer_toolbar.update(cx, |toolbar, cx| {
+            // The switch shows while a document is open, disabled until
+            // one is ready.
+            toolbar.set_edit_pdf(Some(edit_pdf.unwrap_or(false)), cx);
             let Some(state) = state else {
                 toolbar.set_disabled(true, cx);
                 return;
@@ -12184,6 +12522,10 @@ impl DocumentWorkspace {
             .source_page_rotations
             .get(page_index as usize)
             .ok_or_else(|| "page rotation target is outside the document".to_owned())?;
+        let shown_rotation = session
+            .read(cx)
+            .page_rotation(page_index)
+            .unwrap_or(source_rotation);
         let generation = self.next_generation();
         let recovery_store = self.document_recovery_store.clone();
         let target_rotation = session.update(cx, |session, cx| {
@@ -12205,6 +12547,9 @@ impl DocumentWorkspace {
             session.requested_page = page_index;
             session.presentation_error = None;
             session.sync_rotation_geometry();
+            // The render that follows replaces these; a failure here only
+            // leaves the old pixels until it does.
+            let _ = session.turn_shown_page(page_index, shown_rotation);
             cx.notify();
             Ok::<_, String>(rotation)
         })?;
@@ -12320,6 +12665,7 @@ impl DocumentWorkspace {
                 {
                     workspace.activate_thumbnail_page(request.document_id, request.page_index, cx);
                 }
+                workspace.rotate_next_queued_page(cx);
             });
         })
         .detach();
@@ -13255,7 +13601,13 @@ impl DocumentWorkspace {
             session.current_image_page = Some(session.current_page);
             let old_thumbnails = std::mem::replace(&mut session.thumbnails, thumbnails);
             session.current_base_raster = Some(current_base_raster);
-            session.source_page_coordinate_spaces = opened.page_coordinate_spaces.clone();
+            session.file_page_coordinate_spaces = opened.page_coordinate_spaces.clone();
+            if crate::pdf_page_structure::is_unchanged(
+                &session.arranged_slots,
+                session.file_page_sizes.len(),
+            ) {
+                session.source_page_coordinate_spaces = opened.page_coordinate_spaces.clone();
+            }
             session.resource = Some(opened.resource);
             session.resource_epoch = session.resource_epoch.saturating_add(1);
             Self::reset_page_content_snap_geometry(session);
@@ -13459,6 +13811,7 @@ impl DocumentWorkspace {
                     cx.notify();
                 });
                 self.remember_recent_document(request.document_id, cx);
+                self.cancel_word_after_save(request.document_id);
                 if self.close_after_save_document_id == Some(request.document_id) {
                     self.close_after_save_document_id = None;
                     self.pending_close_document_id = Some(request.document_id);
@@ -13498,6 +13851,7 @@ impl DocumentWorkspace {
                 request.target_path(),
                 saved_source_sha256,
                 request.annotation_revision,
+                std::mem::take(&mut saved.kept_pages),
                 cx,
             )
         });
@@ -13601,9 +13955,12 @@ impl DocumentWorkspace {
             let old_resource = session.resource.replace(new_resource);
             session.path = request.target_path().to_path_buf();
             session.title = saved.opened.title;
-            session.source_page_sizes = saved.opened.page_sizes;
-            session.source_page_rotations = source_page_rotations;
-            session.source_page_coordinate_spaces = source_page_coordinate_spaces;
+            // The saved file has the pages as arranged.
+            session.set_file_pages(
+                saved.opened.page_sizes,
+                source_page_rotations,
+                source_page_coordinate_spaces,
+            );
             session.sync_rotation_geometry();
             session.generation = reopened_generation;
             session.pending_rotation_generation = None;
@@ -13682,6 +14039,7 @@ impl DocumentWorkspace {
                 self.pending_close_document_id = Some(request.document_id);
             }
         }
+        self.convert_saved_document_to_word(request.document_id, cx);
         cx.notify();
         ApplyDisposition::Applied
     }
@@ -14742,6 +15100,15 @@ impl DocumentWorkspace {
         undo: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        // Selected page content may be somewhere else in the other state.
+        if self
+            .content_selection
+            .as_ref()
+            .is_some_and(|selection| selection.document_id == document_id)
+        {
+            self.content_selection = None;
+            self.content_drag = None;
+        }
         let Some(session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
         };
@@ -15235,6 +15602,23 @@ impl DocumentWorkspace {
         })
     }
 
+    /// Whether a Save As choice is the opened PDF itself, which Save replaces.
+    fn save_as_names_opened_source(&self, document_id: DocumentId, path: &Path, cx: &App) -> bool {
+        if self.document_requires_save_as(document_id, cx) {
+            return false;
+        }
+        let Some(session) = self.session(document_id, cx) else {
+            return false;
+        };
+        match (
+            std::fs::canonicalize(path),
+            std::fs::canonicalize(&session.read(cx).path),
+        ) {
+            (Ok(chosen), Ok(source)) => chosen == source,
+            _ => false,
+        }
+    }
+
     pub fn document_requires_save_as(&self, document_id: DocumentId, cx: &App) -> bool {
         self.document_save_route(document_id, cx) == Some(DocumentSaveRoute::NewTargetRequired)
     }
@@ -15388,10 +15772,17 @@ impl DocumentWorkspace {
                 .annotations
                 .canonical_document_scene(document_id.value(), page_index)
         } else {
-            session.annotations.document_scene_with_routing_supplement(
+            // Markups on content being dragged move with it.
+            let dragged = self.dragged_content(document_id, page_index);
+            session.annotations.document_scene_with_table_preview(
                 document_id.value(),
                 page_index,
                 caption_supplement,
+                crate::annotation_adapter::ContentPreview {
+                    dragged: dragged.as_ref().map(|(groups, markups, delta)| {
+                        (groups.as_slice(), markups.as_slice(), *delta)
+                    }),
+                },
             )
         }
     }
@@ -15690,6 +16081,8 @@ impl DocumentWorkspace {
     ) -> Result<String, String> {
         let asset_id = decoded.asset().id().as_str().to_owned();
         let asset = decoded.into_asset();
+        // New images keep their proportions unless Settings says otherwise.
+        let aspect_locked = crate::application_shell::LockImageProportions::current(cx);
         let Some(session) = self.session(document_id, cx).cloned() else {
             return Err("document session is closed".into());
         };
@@ -15698,7 +16091,9 @@ impl DocumentWorkspace {
                 .annotation_page_geometry(session.current_page)
                 .map(|(page_size, _)| page_size)
                 .ok_or_else(|| "image placement page geometry is unavailable".to_owned())?;
-            session.annotations.set_image_asset(asset);
+            session
+                .annotations
+                .set_image_asset_with_aspect_lock(asset, aspect_locked);
             session
                 .annotations
                 .set_image_placement_page(f64::from(page_size.0), f64::from(page_size.1), 0.45)
@@ -16696,6 +17091,10 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter edits the selected paragraph in Edit PDF mode.
+        if self.edit_selected_paragraph(window, cx) {
+            return;
+        }
         let Some(document_id) = self.active_document_id else {
             return;
         };
@@ -16845,13 +17244,17 @@ impl DocumentWorkspace {
         self.select_available_annotation_tool(AnnotationTool::Snapshot, window, cx);
     }
 
-    fn select_edit_pdf_content_tool_from_action(
+    fn toggle_edit_pdf_from_action(
         &mut self,
-        _: &SelectEditPdfContentTool,
-        window: &mut Window,
+        _: &ToggleEditPdf,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::EditPdfContent, window, cx);
+        if let Some(document_id) = self.active_document_id
+            && self.content_edit_available(document_id, cx)
+        {
+            self.toggle_content_edit_mode(document_id, cx);
+        }
     }
 
     fn select_all_annotations_from_action(
@@ -16884,9 +17287,22 @@ impl DocumentWorkspace {
         if window.has_focused_input(cx) {
             return;
         }
+        if self.page_thumbnails_focused(window, cx) {
+            self.copy_pages_from_action(&CopyPages, window, cx);
+            return;
+        }
+        // Selected page content is copied (with any markups selected with
+        // it); copying markups alone forgets copied content.
+        let content = self.copy_content_selection(false, cx);
+        if !content {
+            self.content_clipboard = None;
+        }
         if let Some(document_id) = self.active_document_id
             && !self.copy_selected_page_text(document_id, cx)
         {
+            if content {
+                self.annotation_clipboard.clear();
+            }
             self.copy_selected_annotations(document_id, cx);
         }
     }
@@ -16900,6 +17316,15 @@ impl DocumentWorkspace {
         if window.has_focused_input(cx) {
             return;
         }
+        if self.page_thumbnails_focused(window, cx) {
+            self.cut_pages_from_action(&CutPages, window, cx);
+            return;
+        }
+        // Selected page content is cut with the markups selected with it.
+        if self.copy_content_selection(true, cx) {
+            return;
+        }
+        self.content_clipboard = None;
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.cut_selected_annotations(document_id, cx)
         {
@@ -16915,6 +17340,14 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) {
         if window.has_focused_input(cx) {
+            return;
+        }
+        if self.page_thumbnails_focused(window, cx) {
+            self.paste_pages_from_action(&PastePages, window, cx);
+            return;
+        }
+        // Copied page content pastes as copies in Edit PDF mode.
+        if self.paste_content(cx) && self.annotation_clipboard.is_empty() {
             return;
         }
         let Some(document_id) = self.active_document_id else {
@@ -16941,6 +17374,14 @@ impl DocumentWorkspace {
         if window.has_focused_input(cx) {
             return;
         }
+        if self.page_thumbnails_focused(window, cx) {
+            self.delete_pages_from_action(&DeletePages, window, cx);
+            return;
+        }
+        // Selected page content goes, with the markups selected with it.
+        if self.delete_content_selection(cx) {
+            return;
+        }
         if let Some(document_id) = self.active_document_id {
             let _ = self.delete_selected_annotation(document_id, cx);
         }
@@ -16955,8 +17396,11 @@ impl DocumentWorkspace {
         if window.has_focused_input(cx) {
             return;
         }
-        if let Some(document_id) = self.active_document_id {
-            let _ = self.undo_annotations(document_id, cx);
+        if let Some(document_id) = self.active_document_id
+            && let Err(error) = self.undo_annotations(document_id, cx)
+        {
+            self.annotation_statuses.insert(document_id, error);
+            cx.notify();
         }
     }
 
@@ -16969,8 +17413,11 @@ impl DocumentWorkspace {
         if window.has_focused_input(cx) {
             return;
         }
-        if let Some(document_id) = self.active_document_id {
-            let _ = self.redo_annotations(document_id, cx);
+        if let Some(document_id) = self.active_document_id
+            && let Err(error) = self.redo_annotations(document_id, cx)
+        {
+            self.annotation_statuses.insert(document_id, error);
+            cx.notify();
         }
     }
 
@@ -17252,35 +17699,15 @@ impl DocumentWorkspace {
             return false;
         };
         let viewport_point = Self::interaction_viewport_point(interaction, position);
-        if self
-            .page_scale_control
-            .as_ref()
-            .is_some_and(|control| control.read(cx).is_picking())
-        {
-            let control = self
-                .page_scale_control
-                .as_ref()
-                .expect("the picking calibration control is retained")
-                .clone();
-            let disposition = control.update(cx, |control, cx| {
-                control.record_point(
-                    interaction.document_id,
-                    interaction.page_index,
-                    point,
-                    modifiers.shift,
-                    window,
-                    cx,
-                )
-            });
-            if disposition == CalibrationPointDisposition::Ignored {
-                self.annotation_statuses.insert(
-                    interaction.document_id,
-                    "Pick both calibration points on the selected page.".into(),
-                );
-            } else {
-                self.annotation_statuses.remove(&interaction.document_id);
-            }
-            cx.notify();
+        if self.page_scale_picking(cx) {
+            self.press_calibration_point(
+                interaction.document_id,
+                interaction.page_index,
+                point,
+                modifiers.shift,
+                window,
+                cx,
+            );
             return true;
         }
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
@@ -17297,24 +17724,40 @@ impl DocumentWorkspace {
             return false;
         }
         let tool = session.read(cx).annotations.tool();
-        if tool == AnnotationTool::EditPdfContent {
-            return self.begin_page_text_press(
-                interaction,
-                point,
-                click_count,
-                modifiers,
-                window,
-                cx,
-            );
+        // A click that finishes an armed selection box goes to it, and in
+        // Edit PDF mode selects the page content in it too.
+        let box_armed = self
+            .active_selection_marquee(interaction.document_id, cx)
+            .is_some_and(|(_, marquee)| {
+                marquee.shape == crate::selection_geometry::SelectionShape::Box
+            });
+        if box_armed
+            && let Some((document_id, page_index, _)) = self.content_marquee.take()
+            && document_id == interaction.document_id
+        {
+            self.select_content_in_marquee(document_id, page_index, cx);
+        }
+        // In Edit PDF mode, page content takes a press no markup or form
+        // field does.
+        if !box_armed
+            && self.editing_content(interaction.document_id, cx)
+            && self.begin_content_press(interaction, point, click_count, modifiers, window, cx)
+        {
+            return true;
         }
         // Markups take a press first; a form field beneath none fills.
         if tool == AnnotationTool::Select
+            && !box_armed
             && self.begin_form_field_press(interaction, point, window, cx)
         {
             return true;
         }
-        // Then page text; a press away from text still selects markups.
+        // Then page text; a press away from text still selects markups. In
+        // Edit PDF mode text is edited instead, and a press on empty page
+        // draws a selection box.
         if tool == AnnotationTool::Select
+            && !box_armed
+            && !self.editing_content(interaction.document_id, cx)
             && self.begin_text_selection_press(interaction, point, click_count, modifiers, cx)
         {
             return true;
@@ -18230,21 +18673,27 @@ impl DocumentWorkspace {
         else {
             return self.clear_hover_candidate(cx);
         };
-        if self
-            .page_scale_control
-            .as_ref()
-            .is_some_and(|control| control.read(cx).is_picking())
-        {
-            return self.clear_hover_candidate(cx);
-        }
         let Some(point) = Self::interaction_point(interaction, position, true) else {
             return self.clear_hover_candidate(cx);
         };
+        if self.page_scale_picking(cx) {
+            self.clear_hover_candidate(cx);
+            self.hover_calibration_point(
+                interaction.document_id,
+                interaction.page_index,
+                point,
+                modifiers.shift,
+                cx,
+            );
+            return true;
+        }
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
             return self.clear_hover_candidate(cx);
         };
-        if session.read(cx).annotations.tool() == AnnotationTool::EditPdfContent {
-            return self.update_page_text_hover(interaction, point, cx);
+        if self.editing_content(interaction.document_id, cx)
+            && self.update_content_hover(interaction, point, cx)
+        {
+            return true;
         }
         let length_pending = session
             .read(cx)
@@ -18512,7 +18961,11 @@ impl DocumentWorkspace {
         let page_text_hover = self.page_text_hover.take();
         let form_field_hover = self.form_field_hover.take();
         let text_hover = self.text_selection_hover.take();
+        let content_hover = self.content_hover.take();
+        let handle_hover = self.content_handle_hover.take();
         if hovered.is_some()
+            || content_hover.is_some()
+            || handle_hover.is_some()
             || text_hover.is_some()
             || hot_handle.is_some()
             || select_hit.is_some()
@@ -18547,7 +19000,9 @@ impl DocumentWorkspace {
             self.pan_drag = None;
             return false;
         }
-        if self.update_page_text_drag(position, cx) || self.update_text_selection_drag(position, cx)
+        if self.update_content_drag(position, modifiers, cx)
+            || self.update_page_text_drag(position, cx)
+            || self.update_text_selection_drag(position, cx)
         {
             return true;
         }
@@ -18605,7 +19060,10 @@ impl DocumentWorkspace {
             self.pan_drag = None;
             return true;
         }
-        if self.finish_page_text_drag(cx) || self.finish_text_selection_drag(cx) {
+        if self.finish_content_drag(cx)
+            || self.finish_page_text_drag(cx)
+            || self.finish_text_selection_drag(cx)
+        {
             return true;
         }
         let Some(active) = self.active_annotation_pointer.take() else {
@@ -18624,6 +19082,14 @@ impl DocumentWorkspace {
             return false;
         };
         let viewport_point = Self::interaction_viewport_point(interaction, position);
+        // A marquee in Edit PDF mode also selects the page content in it;
+        // after a click, once the box it arms is finished.
+        if let Some(marquee) = self.content_marquee.take()
+            && (marquee.0, marquee.1) == (active.document_id, active.page_index)
+            && !self.select_content_in_marquee(marquee.0, marquee.1, cx)
+        {
+            self.content_marquee = Some(marquee);
+        }
         let Some(session) = self.session(active.document_id, cx).cloned() else {
             return false;
         };
@@ -20365,6 +20831,73 @@ fn semantic_snap_debug_marker(
     )
 }
 
+/// The calibration line: a line with a tick across each end.
+fn paint_calibration_line(
+    preview: &crate::page_scale_control::CalibrationPreview,
+    page_bounds: Bounds<Pixels>,
+    transform: &PageTransform,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    let project = |point: PdfPoint| {
+        let local = transform.point_to_local_pixels(point);
+        gpui::point(
+            page_bounds.origin.x + px(local.x as f32),
+            page_bounds.origin.y + px(local.y as f32),
+        )
+    };
+    let (start, end) = (project(preview.start), project(preview.end));
+    let (dx, dy) = (f32::from(end.x - start.x), f32::from(end.y - start.y));
+    let length = dx.hypot(dy);
+    let mut builder = PathBuilder::stroke(px(2.));
+    builder.move_to(start);
+    builder.line_to(end);
+    if length > 0. {
+        // Ticks 12 px long, square to the line.
+        let (nx, ny) = (-dy / length * 6., dx / length * 6.);
+        for at in [start, end] {
+            builder.move_to(gpui::point(at.x + px(nx), at.y + px(ny)));
+            builder.line_to(gpui::point(at.x - px(nx), at.y - px(ny)));
+        }
+    }
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, color);
+    }
+}
+
+/// The calibration line's length, beside its middle.
+fn calibration_label(
+    preview: &crate::page_scale_control::CalibrationPreview,
+    page_size: (f32, f32),
+    coordinate_space: PageCoordinateSpace,
+    color: gpui::Hsla,
+) -> Option<gpui::AnyElement> {
+    // The page's own space: its origin need not be at its corner.
+    let transform = PageTransform::from_page_coordinate_space(coordinate_space, 1.).ok()?;
+    if page_size.0 <= 0. || page_size.1 <= 0. {
+        return None;
+    }
+    let start = transform.point_to_local_pixels(preview.start);
+    let end = transform.point_to_local_pixels(preview.end);
+    let middle = ((start.x + end.x) / 2., (start.y + end.y) / 2.);
+    Some(
+        gpui::div()
+            .absolute()
+            .left(relative((middle.0 as f32 / page_size.0).clamp(0., 1.)))
+            .top(relative((middle.1 as f32 / page_size.1).clamp(0., 1.)))
+            .ml(px(8.))
+            .mt(px(8.))
+            .px_1p5()
+            .rounded_sm()
+            .bg(color)
+            .text_color(gpui::white())
+            .text_xs()
+            .whitespace_nowrap()
+            .child(preview.label.clone())
+            .into_any_element(),
+    )
+}
+
 fn paint_semantic_snap_indicator(
     decision: &SemanticSnapDecision,
     page_bounds: Bounds<Pixels>,
@@ -20432,7 +20965,7 @@ fn paint_semantic_snap_indicator(
                 window.paint_path(path, color);
             }
         }
-        SemanticSnapRole::Nearest => {
+        SemanticSnapRole::Nearest | SemanticSnapRole::Edge => {
             let mut builder = PathBuilder::stroke(px(2.));
             builder.move_to(point(center.x, center.y - half));
             builder.line_to(point(center.x + half, center.y));
@@ -21003,9 +21536,11 @@ fn annotation_layer(
     selection_marquee: Option<SelectionMarquee>,
     interaction_control: Option<WeakEntity<DocumentWorkspace>>,
     painted_viewer: Option<PaintedViewerAuthority>,
+    calibration: Option<crate::page_scale_control::CalibrationPreview>,
 ) -> impl IntoElement {
     let stable_id = document_annotation_layer_id(document_id, page_index);
     let selector = stable_id.clone();
+    let context_control = interaction_control.clone();
     let redact_debug_markers = if interaction_control.is_some() {
         selected_redact_debug_markers(&scene, page_size, pdf_page_size, rotation)
     } else {
@@ -21048,6 +21583,10 @@ fn annotation_layer(
         })
         .flatten();
     let painted_semantic_snap_decision = semantic_snap_decision.clone();
+    let calibration_label = calibration.as_ref().and_then(|preview| {
+        calibration_label(preview, page_size, coordinate_space, selection_color)
+    });
+    let painted_calibration = calibration;
     let painted_object_snap_tracking_result = object_snap_tracking_result.clone();
     let painted_relationship_snap_guides = relationship_snap_guides.clone();
     let painted_construction_grid_spacing_mm = construction_grid_spacing_mm;
@@ -21075,7 +21614,7 @@ fn annotation_layer(
             pending.display_scale,
         ))
     });
-    gpui::div()
+    let layer = gpui::div()
         .id(stable_id)
         .debug_selector(move || selector.clone())
         .absolute()
@@ -22451,6 +22990,9 @@ fn annotation_layer(
                         };
                         interaction_chrome::paint_marquee(&marquee, project, window);
                     }
+                    if let Some(preview) = painted_calibration.as_ref() {
+                        paint_calibration_line(preview, page_bounds, &transform, selection_color, window);
+                    }
                     if let Some(decision) = painted_semantic_snap_decision.as_ref() {
                         paint_semantic_snap_indicator(decision, page_bounds, &transform, window);
                     }
@@ -22469,6 +23011,7 @@ fn annotation_layer(
             )
             .size_full(),
         )
+        .children(calibration_label)
         .children(redact_debug_markers)
         .children(snapshot_debug_markers)
         .children(engineering_debug_markers)
@@ -22537,9 +23080,32 @@ fn annotation_layer(
                 )
             },
         )
-        .context_menu(move |menu, _, _| {
+        ;
+    // Thumbnails draw this layer too; a thumbnail has its own menu.
+    if context_control.is_none() {
+        return layer.into_any_element();
+    }
+    layer
+        .context_menu(move |menu, _, cx| {
+            // Edit PDF as the document is now, as its switch shows it.
+            let (editing_pdf, edit_pdf_available) = context_control
+                .as_ref()
+                .and_then(WeakEntity::upgrade)
+                .map_or((false, false), |workspace| {
+                    let workspace = workspace.read(cx);
+                    (
+                        workspace.content_edit_mode(document_id),
+                        workspace.content_edit_available(document_id, cx),
+                    )
+                });
             menu.menu("Select tool", Box::new(SelectTool))
                 .menu("Hand tool", Box::new(PanTool))
+                .menu_with_check_and_disabled(
+                    "Edit PDF",
+                    editing_pdf,
+                    Box::new(ToggleEditPdf),
+                    !edit_pdf_available,
+                )
                 .separator()
                 .menu("Zoom in", Box::new(ZoomIn))
                 .menu("Zoom out", Box::new(ZoomOut))
@@ -22551,6 +23117,7 @@ fn annotation_layer(
                 .menu("Rotate left", Box::new(RotatePageLeft))
                 .menu("Rotate right", Box::new(RotatePageRight))
         })
+        .into_any_element()
 }
 
 fn normalized_signature_point(
@@ -22959,6 +23526,10 @@ fn recovered_document_edits(timeline: &[u8]) -> crate::pdf_worker::DocumentEdits
         .map(|document| crate::pdf_worker::DocumentEdits {
             text: document.page_text_edits().to_vec(),
             forms: document.form_field_edits().to_vec(),
+            tables: document.page_table_edits().to_vec(),
+            moves: document.page_content_moves().to_vec(),
+            bases: document.page_bases().to_vec(),
+            pages: document.page_slots().to_vec(),
         })
         .unwrap_or_default()
 }
@@ -23254,7 +23825,6 @@ fn annotation_tool_group(
     recent_signatures: Vec<RecentSignaturePreview>,
     recent_signatures_loading: bool,
     recent_signature_storage_issue: Option<String>,
-    page_scale_control: WeakEntity<PageScaleControl>,
     dim_chrome: bool,
     cx: &mut Context<DocumentWorkspace>,
 ) -> gpui::AnyElement {
@@ -23688,33 +24258,6 @@ fn annotation_tool_group(
             cx,
         ))
         .child(rail_tool_section(
-            "Edit",
-            vec![
-                rail_tool_button(
-                    DOCUMENT_EDIT_PDF_CONTENT_TOOL_ID,
-                    "Edit PDF Content",
-                    "text-cursor-input",
-                )
-                .disabled(save_busy)
-                .tooltip(AnnotationTool::EditPdfContent.tooltip_label())
-                .selected(annotation_tool == AnnotationTool::EditPdfContent && !pan_active)
-                .toggled(annotation_tool == AnnotationTool::EditPdfContent && !pan_active)
-                .on_click(cx.listener(move |workspace, event, _, cx| {
-                    if rail_tool_secondary_click(workspace, event, cx) {
-                        return;
-                    }
-                    let _ = workspace.set_annotation_tool(
-                        document_id,
-                        AnnotationTool::EditPdfContent,
-                        cx,
-                    );
-                }))
-                .into_any_element(),
-            ],
-            columns,
-            cx,
-        ))
-        .child(rail_tool_section(
             "Review",
             vec![
                 rail_tool_button(DOCUMENT_TEXT_BOX_TOOL_ID, "Text Box", "type")
@@ -23994,15 +24537,12 @@ fn annotation_tool_group(
         .child(rail_tool_section(
             "Measure",
             vec![
-                rail_tool_button(PAGE_SCALE_TRIGGER_ID, "Set Page Scale", "scan-line")
-                    .disabled(save_busy)
+                rail_tool_button(PAGE_SCALE_TRIGGER_ID, "Page Scale", "scan-line")
                     .debug_selector(|| PAGE_SCALE_TRIGGER_ID.into())
                     .disabled(save_busy)
-                    .on_click(move |_, window, cx| {
-                        let _ = page_scale_control.update(cx, |control, cx| {
-                            control.open_for(document_id, current_page, window, cx);
-                        });
-                    })
+                    .on_click(cx.listener(move |workspace, _, window, cx| {
+                        workspace.open_page_scale_dialog(document_id, current_page, window, cx);
+                    }))
                     .into_any_element(),
                 rail_tool_button(DOCUMENT_LENGTH_TOOL_ID, "Length", "ruler-dimension-line")
                     .disabled(save_busy)
@@ -24062,25 +24602,31 @@ fn annotation_tool_group(
 // Both visible states share one leading anchor; only the trailing clip changes.
 fn session_tab_overlay_label(
     label: String,
+    title: String,
     group: String,
     revealed: bool,
     dirty: bool,
     cx: &App,
 ) -> impl IntoElement {
+    // The close button's size, centred as far from the tab's left edge as
+    // the close button is from its right ([`session_tab_close_lane`]): it
+    // reaches back over the tab's padding.
+    let (disc, mark) = (cx.theme().muted, cx.theme().foreground);
     let indicator = |id: String| {
         h_flex()
             .id(id.clone())
             .debug_selector(move || id.clone())
             .flex_none()
-            .size_4()
+            .size(px(SESSION_TAB_CLOSE_SIZE))
+            .ml(px(-SESSION_TAB_INDICATOR_OVERHANG))
             .justify_center()
             .rounded_full()
-            .bg(cx.theme().muted)
-            .text_color(cx.theme().foreground)
+            .bg(disc)
+            .text_color(mark)
             .tooltip(|window, cx| {
                 gpui_component::tooltip::Tooltip::new("Unsaved changes").build(window, cx)
             })
-            .child(gpui_component::Icon::new(IconName::Asterisk).size_3())
+            .child(gpui_component::Icon::new(IconName::Asterisk).size(px(18.)))
     };
     gpui::div()
         .relative()
@@ -24090,7 +24636,11 @@ fn session_tab_overlay_label(
             h_flex()
                 .gap_1()
                 .opacity(0.)
-                .children(dirty.then(|| gpui::div().flex_none().size_4()))
+                .children(dirty.then(|| {
+                    gpui::div()
+                        .flex_none()
+                        .w(px(SESSION_TAB_CLOSE_SIZE - SESSION_TAB_INDICATOR_OVERHANG))
+                }))
                 .child(
                     gpui::div()
                         .whitespace_nowrap()
@@ -24107,15 +24657,37 @@ fn session_tab_overlay_label(
                 .children(dirty.then(|| indicator(format!("{group}-unsaved-indicator"))))
                 .child(
                     gpui::div()
+                        .id(format!("{group}-visible-label"))
                         .flex_1()
                         .min_w_0()
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .debug_selector(move || format!("{group}-visible-label"))
+                        // The whole name, which a narrow tab cuts short.
+                        .tooltip(move |window, cx| {
+                            let title = title.clone();
+                            gpui_component::tooltip::Tooltip::element(move |window, _| {
+                                gpui::div()
+                                    .max_w(
+                                        (window.viewport_size().width - px(64.))
+                                            .min(window.rem_size() * 24.),
+                                    )
+                                    .whitespace_normal()
+                                    .child(title.clone())
+                            })
+                            .build(window, cx)
+                        })
                         .child(label),
                 ),
         )
 }
+
+/// The stock small close button's size.
+const SESSION_TAB_CLOSE_SIZE: f32 = 24.;
+/// How far the unsaved-changes indicator reaches back over the tab's
+/// 12px leading padding, so its centre is 15px from the tab's inner left
+/// edge, as the close button's is from its inner right edge.
+const SESSION_TAB_INDICATOR_OVERHANG: f32 = 12. + SESSION_TAB_CLOSE_SIZE / 2. - 15.;
 
 fn session_tab_close_lane() -> gpui::Div {
     // The pinned medium Outline tab is 32 physical px high with 1px borders.
@@ -24154,6 +24726,28 @@ impl Render for DocumentWorkspace {
         }
         self.reconcile_page_text_editing(cx);
         self.reconcile_form_filling(cx);
+        if self.page_scale_control.as_ref().is_some_and(|control| {
+            control
+                .read(cx)
+                .target()
+                .is_some_and(|(document_id, page_index)| {
+                    control
+                        .read(cx)
+                        .wants_stated_scales(document_id, page_index)
+                })
+        }) {
+            // The dialog lists the scales its page states once the page's
+            // text is read.
+            cx.defer_in(window, Self::feed_page_scale_text);
+        }
+        if self.merge_dialog_requested {
+            cx.defer_in(window, Self::open_merge_dialog);
+        }
+        if self.word_replace_prompt.is_some() {
+            // After this frame: a dialog opened while rendering does not
+            // take the keyboard focus.
+            cx.defer_in(window, Self::open_word_replace_prompt);
+        }
         if let Some(document_id) = self.active_document_id {
             self.sync_document_edits(document_id, cx);
             self.prefetch_page_text(document_id, cx);
@@ -24347,6 +24941,7 @@ impl Render for DocumentWorkspace {
                     annotation.id.clone(),
                     EngineeringVisualPropertyValues::Image {
                         opacity: annotation.opacity(),
+                        aspect_locked: annotation.aspect_locked,
                     },
                     annotation.locked,
                 )),
@@ -24575,7 +25170,7 @@ impl Render for DocumentWorkspace {
                         session
                             .annotations
                             .document_page_scale(document_id.value(), page_index)
-                            .map(PageScale::ratio_label),
+                            .map(crate::page_scale_catalog::scale_label),
                         session
                             .thumbnail_requests
                             .get(&page_index)
@@ -24757,8 +25352,15 @@ impl Render for DocumentWorkspace {
             .filter(|active| active.document_id == document_id)
             .and(self.gesture_cursor)
             .or(select_hover_cursor);
-        let select_hover_cursor = if annotation_tool == AnnotationTool::EditPdfContent {
-            self.page_text_cursor(document_id)
+        let editing_content = self.editing_content(document_id, cx);
+        let select_hover_cursor = if editing_content {
+            // A drag in progress keeps its cursor; otherwise markups and
+            // form fields come before the page's content, as presses do.
+            self.content_drag_cursor(document_id).or_else(|| {
+                select_hover_cursor
+                    .or_else(|| self.form_field_cursor(document_id, cx))
+                    .or_else(|| self.content_cursor(document_id))
+            })
         } else if self
             .text_selection
             .as_ref()
@@ -24775,7 +25377,8 @@ impl Render for DocumentWorkspace {
                 })
         };
         let form_overlays = self.form_overlays(document_id, cx);
-        let page_text_overlays = if annotation_tool == AnnotationTool::EditPdfContent
+        let content_sprite = self.content_sprite_paint(document_id, cx);
+        let page_text_overlays = if editing_content
             || self
                 .page_text_editing
                 .is_some_and(|editing| editing.document_id == document_id)
@@ -25236,7 +25839,6 @@ impl Render for DocumentWorkspace {
             self.recent_signatures.clone(),
             self.recent_signatures_loading,
             self.recent_signature_storage_issue.clone(),
-            page_scale_control.downgrade(),
             dim_inactive_window_chrome(window),
             cx,
         );
@@ -25244,8 +25846,11 @@ impl Render for DocumentWorkspace {
         let inspector_range = window.rem_size() * 13.75..window.rem_size() * 26.25;
         let inline_selection =
             self.right_rail_actions_open && annotation_tool == AnnotationTool::Select;
-        let edit_pdf_content_properties = annotation_tool == AnnotationTool::EditPdfContent
-            && self.edit_pdf_content_properties_visible(cx);
+        // In Edit PDF mode the inspector shows the content being edited;
+        // with none, a selected markup's.
+        let edit_pdf_content_properties = editing_content
+            && self.edit_pdf_content_properties_visible(cx)
+            && self.content_in_hand(document_id);
         if edit_pdf_content_properties {
             self.sync_edit_pdf_content_property_inspector(window, cx);
         }
@@ -25454,7 +26059,6 @@ impl Render for DocumentWorkspace {
                     })),
             )
         });
-        let page_scale_cancel_control = page_scale_control.downgrade();
         let save_failure_title = format!("Couldn’t save “{title}”");
         let text_box_commit_error = self.text_box_commit_error.clone();
         let properties_visible =
@@ -25757,10 +26361,12 @@ impl Render for DocumentWorkspace {
                 pending_image_preview,
                 pending_text_box_presentation,
                 page_text_overlays,
+                content_sprite,
                 form_overlays,
                 relationship_snap_guides,
                 selection_color,
                 semantic_snap_decision,
+                calibration_preview: self.calibration_preview(cx),
                 viewer_pages,
                 viewer_pan_margin,
                 viewer_plan,
@@ -25826,8 +26432,6 @@ impl Render for DocumentWorkspace {
                         recovery_preparation_issue,
                         presentation_error,
                         recovery_pending,
-                        page_scale_pick_instruction,
-                        page_scale_cancel_control: Some(page_scale_cancel_control),
                     },
                     false,
                     cx,
@@ -25835,7 +26439,17 @@ impl Render for DocumentWorkspace {
             })
             // Without a zero minimum height the canvas grows to its scrolled
             // content and pushes the viewport past the bottom of the window.
-            .child(gpui::div().flex_1().min_h_0().w_full().child(canvas))
+            .child(
+                gpui::div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(canvas)
+                    .when_some(page_scale_pick_instruction, |canvas, instruction| {
+                        canvas.child(self.render_calibration_hint(instruction, cx))
+                    }),
+            )
             .child(pointer_event_bridge)
             .child(
                 gpui::div()
@@ -26053,6 +26667,8 @@ fn engineering_visual_patch_matches(
 ) -> bool {
     match patch {
         EngineeringVisualPropertyPatch::Locked(value) => locked == *value,
+        // Applied as an edit, which leaves an unchanged image as it is.
+        EngineeringVisualPropertyPatch::AspectLocked(_) => false,
         EngineeringVisualPropertyPatch::ColorAndOpacity { color, opacity } => {
             appearance.stroke_color() == color && appearance.opacity() == *opacity
         }

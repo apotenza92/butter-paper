@@ -245,7 +245,7 @@ impl DocumentWorkspace {
                 .is_some_and(|menu| on_page(menu.target))
     }
 
-    fn form_widget_hit(
+    pub(super) fn form_widget_hit(
         &self,
         interaction: &PageInteraction,
         point: PdfPoint,
@@ -1273,8 +1273,8 @@ pub(super) fn form_overlay_element(
                         window.paint_path(path, stroke);
                     }
                 };
-                // As Edit PDF Content outlines paragraphs: fields are
-                // outlined, and filled only when hovered or focused.
+                // Fields are outlined, and filled only when hovered or
+                // focused.
                 for rect in &painted.outlines {
                     if Some(*rect) != painted.hover && Some(*rect) != painted.focus {
                         paint(rect, None, accent.opacity(0.35), window);

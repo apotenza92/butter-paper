@@ -17,7 +17,7 @@ use butter_paper::{
         ToggleApplicationFullScreen, ToggleApplicationMenuBar,
     },
     document_workspace::{
-        ActualSize, CloseDocument, ContinuousView, DOCUMENT_OPEN_PROGRESS_ID,
+        ActualSize, CloseDocument, ContinuousView, ConvertToWord, DOCUMENT_OPEN_PROGRESS_ID,
         DOCUMENT_OPEN_STATUS_ID, DocumentOpenBatchDisposition, DocumentOpenBatchRequest,
         DocumentOpenBatchStatus, DocumentOpenOrigin, DocumentWorkspace, FitPage, FitWidth,
         NativeDocumentOpener, NativeDocumentResource, NativeDocumentSaver, NavigateNextPage,
@@ -98,6 +98,10 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert!(!item(file, "Save").is_disabled());
     assert!(!item(file, "Save As…").is_disabled());
     assert!(!item(file, "Save Document as Template…").is_disabled());
+    assert_action(item(file, "Convert and Open in Word"), |action| {
+        action.as_any().is::<ConvertToWord>()
+    });
+    assert!(!item(file, "Convert and Open in Word").is_disabled());
 
     let edit = menu(&menus, "Edit");
     assert_eq!(
@@ -344,6 +348,9 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             "Save",
             "Save As…",
             "Save Document as Template…",
+            "<separator>",
+            "Merge Documents…",
+            "Convert and Open in Word",
         ]
     );
     assert_eq!(
@@ -825,11 +832,13 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
         cx.debug_bounds("document-tabs-overflow-lane").is_none(),
         "no overflow lane when tabs fit"
     );
-    assert_eq!(
-        cx.debug_bounds("document-tab-open").unwrap().left() - viewport.right(),
-        gap,
-        "action group inset must match tab gap"
-    );
+    // The actions lane's divider closes the tabs, and Open and New sit in
+    // the lane at its trailing inset.
+    let actions = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
+        .unwrap();
+    assert_eq!(actions.left(), viewport.right());
+    assert!(cx.debug_bounds("document-tab-open").unwrap().left() > actions.left());
     cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     for appearance in [gpui::WindowAppearance::Light, gpui::WindowAppearance::Dark] {
@@ -1046,15 +1055,14 @@ fn workspace_integration_crowded_tabs_keep_actions_pinned_for_both_wheel_axes(
     );
     assert_eq!(overflow.top(), before[0].top());
     let lane = cx.debug_bounds("document-tabs-overflow-lane").unwrap();
+    let actions = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
+        .unwrap();
+    assert_eq!(actions.left(), lane.right(), "the actions lane follows");
     assert_eq!(
-        lane.right() - px(1.) - overflow.right(),
+        actions.left() - overflow.right(),
         overflow.left() - cut.right(),
         "overflow has equal clearance to both dividers"
-    );
-    assert_eq!(
-        before[0].left() - lane.right(),
-        overflow.left() - cut.right(),
-        "equal spacing outside lane"
     );
     for boundary in [cut, lane] {
         assert_eq!(
@@ -1174,11 +1182,27 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
             let first = cx.debug_bounds("viewer-zoom-controls").unwrap();
             let last = cx.debug_bounds("single-page-view-split").unwrap();
             let content = cx.debug_bounds(VIEWER_TOOLBAR_CONTENT_ID).unwrap();
-            if content.size.width <= toolbar.size.width {
+            // The Edit PDF switch leads the toolbar: the view controls centre
+            // when there is room for its slot either side of them, follow it
+            // when there is room for it once, and scroll with it otherwise.
+            let edit_pdf = cx.debug_bounds("viewer-edit-pdf").unwrap();
+            let slot = px(16. * butter_paper::viewer_toolbar_strip::EDIT_PDF_SLOT_MIN_REMS);
+            let controls =
+                px(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH);
+            assert!(
+                edit_pdf.right() <= first.left(),
+                "Edit PDF switch overlaps at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, first={first:?}"
+            );
+            if controls + slot * 2. <= toolbar.size.width {
                 let centre = (first.left() + last.right()) / 2.;
                 assert!(
                     (centre - toolbar.center().x).abs() <= px(0.5),
                     "toolbar controls not centred at width {width}: toolbar={toolbar:?}, content={content:?}, first={first:?}, last={last:?}",
+                );
+            } else if controls + slot <= toolbar.size.width {
+                assert!(
+                    edit_pdf.left() >= toolbar.left() && last.right() <= toolbar.right(),
+                    "toolbar controls do not follow the Edit PDF switch at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, last={last:?}",
                 );
             } else {
                 let reveal_delta = (last.right() - toolbar.right()).max(px(0.));
@@ -1571,18 +1595,27 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
             .unwrap()
             .revision
     });
-    for selector in ["thumbnail-0-rotate-left", "thumbnail-0-rotate-right"] {
-        let bounds = cx.debug_bounds(selector).unwrap();
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    // Rotate in the thumbnail menu waits its turn behind a rotation under
+    // way, and is refused while saving.
+    let rotate = |cx: &mut gpui::VisualTestContext| {
+        observed.update(cx, |workspace, cx| {
+            workspace.rotate_pages(
+                rotation.document_id,
+                vec![0],
+                butter_paper::annotation_model::PageRotationDirection::Left,
+                cx,
+            )
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
-    }
+    };
+    rotate(cx);
     assert_eq!(
         observed.read_with(cx, |workspace, cx| workspace
             .annotation_snapshot(rotation.document_id, cx)
             .unwrap()
             .revision),
         revision,
-        "busy rotation buttons cannot submit another mutation"
+        "a busy rotation holds the next one back"
     );
     observed.update(cx, |workspace, cx| {
         workspace.apply_page_rotation_result(
@@ -1592,16 +1625,15 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
         );
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let rotate_left = cx.debug_bounds("thumbnail-0-rotate-left").unwrap();
-    cx.simulate_click(rotate_left.center(), gpui::Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // The waiting rotation goes once the failed one is done with.
+    rotate(cx);
     let recovered = observed.read_with(cx, |workspace, cx| {
         workspace
             .annotation_snapshot(rotation.document_id, cx)
             .unwrap()
             .revision
     });
-    assert!(recovered > revision, "row actions recover after failure");
+    assert!(recovered > revision, "rotation recovers after failure");
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let save = observed.update(cx, |workspace, cx| {
@@ -1614,11 +1646,7 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
             .revision
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    for selector in ["thumbnail-0-rotate-left", "thumbnail-0-rotate-right"] {
-        let bounds = cx.debug_bounds(selector).unwrap();
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-    }
+    rotate(cx);
     assert_eq!(
         observed.read_with(cx, |workspace, cx| workspace
             .annotation_snapshot(rotation.document_id, cx)
@@ -1855,7 +1883,16 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
     );
     // Drag the stock divider, not an application setter. Include a threshold
     // move and a frame before the destination so GPUI starts its drag session.
-    for (requested_width, expected_width) in [(170., 164.), (20., 44.), (600., 324.), (84., 84.)] {
+    // Open and New: their sizes, the gap between them, and how far New
+    // ends from the window's edge, the same at every rail width.
+    let mut tab_action_layouts = Vec::new();
+    for (requested_width, expected_width) in [
+        (170., 164.),
+        (20., 44.),
+        (124., 124.),
+        (600., 324.),
+        (84., 84.),
+    ] {
         let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
         let start = point(rail.left(), rail.top() + px(100.));
         let end = point(rail.right() - px(requested_width), start.y);
@@ -1886,22 +1923,30 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
             cx.debug_bounds("viewer-toolbar").unwrap().right(),
             resized.left()
         );
-        // From three columns, Open and New sit over the rail's last three
-        // columns and the tab strip's divider continues the rail's edge.
-        let tab_actions =
-            cx.debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID);
-        if expected_width >= 124. {
-            let tab_actions = tab_actions.expect("actions over a wide rail");
-            assert_eq!(
-                (tab_actions.left(), tab_actions.right()),
-                (resized.left(), resized.right())
-            );
-            let open = cx.debug_bounds("document-tab-open").unwrap();
-            let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
-            assert!(open.left() > resized.left() && picker.right() < resized.right());
-        } else {
-            assert!(tab_actions.is_none());
-        }
+        // The actions lane is never narrower than a three-column rail: from
+        // three columns its divider continues the rail's edge, and below
+        // that it stays where a three-column rail's edge would be.
+        let tab_actions = cx
+            .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
+            .unwrap();
+        let open = cx.debug_bounds("document-tab-open").unwrap();
+        let primary = cx.debug_bounds("document-tab-new-pdf").unwrap();
+        let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
+        assert_eq!(tab_actions.right(), resized.right());
+        assert_eq!(
+            tab_actions.size.width,
+            resized.size.width.max(px(124.)),
+            "requested {requested_width}"
+        );
+        assert!(open.left() > tab_actions.left() && picker.right() < tab_actions.right());
+        let window_right = cx.update(|window, _| window.viewport_size().width);
+        tab_action_layouts.push((
+            open.size,
+            primary.size,
+            picker.size,
+            primary.left() - open.right(),
+            window_right - picker.right(),
+        ));
         let select = cx.debug_bounds("document-workspace-select-tool").unwrap();
         let hand = cx.debug_bounds("document-workspace-pan-tool").unwrap();
         let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
@@ -1922,20 +1967,17 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
                 (select.left() + hand.right()) / 2.,
                 resized.center().x + px(0.5)
             );
-            // Edit PDF Content has its own section between General and Review.
-            let edit_pdf_content = cx
-                .debug_bounds("document-workspace-edit-pdf-content-tool")
-                .unwrap();
-            let text_box = cx
-                .debug_bounds(butter_paper::document_workspace::DOCUMENT_TEXT_BOX_TOOL_ID)
-                .unwrap();
+            // Edit PDF is a switch in the viewer toolbar, not a rail tool.
             assert!(
-                edit_pdf_content.top() > hand.bottom()
-                    && edit_pdf_content.bottom() < text_box.top()
+                cx.debug_bounds("document-workspace-edit-pdf-content-tool")
+                    .is_none()
             );
-            assert_eq!(edit_pdf_content.center().x, resized.center().x + px(0.5));
         }
     }
+    assert!(
+        tab_action_layouts.windows(2).all(|pair| pair[0] == pair[1]),
+        "Open and New keep their size and spacing at every rail width: {tab_action_layouts:?}"
+    );
     let document_id =
         observed.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
     for (selector, tool) in [
@@ -2653,8 +2695,9 @@ fn clicking_a_drawn_thumbnail_moves_to_its_page_at_once(cx: &mut TestAppContext)
 }
 
 #[test]
-fn sidebar_scale_ratio_uses_units_not_preset_name() {
+fn sidebar_scale_label_uses_the_ratio_not_the_name() {
     use butter_paper::annotation_model::{PageScale, ScalePrecision, ScaleUnit};
+    use butter_paper::page_scale_catalog::{STANDARD_SCALES, scale_label};
     let scale = PageScale::custom(
         0,
         "A custom scale",
@@ -2666,7 +2709,7 @@ fn sidebar_scale_ratio_uses_units_not_preset_name() {
         ScalePrecision::default(),
     )
     .unwrap();
-    assert_eq!(scale.ratio_label(), "1:50");
+    assert_eq!(scale_label(&scale), "1:50");
     let imperial = PageScale::custom(
         0,
         "Feet",
@@ -2678,20 +2721,15 @@ fn sidebar_scale_ratio_uses_units_not_preset_name() {
         ScalePrecision::default(),
     )
     .unwrap();
-    assert_eq!(imperial.ratio_label(), "1:12");
-    for preset in butter_paper::annotation_model::built_in_scale_presets() {
-        let scale = PageScale::from_factors(
-            0,
-            preset.source,
-            preset.name.clone(),
-            preset.pdf_units,
-            preset.real_units,
-            preset.scale_x,
-            preset.scale_y,
-            ScalePrecision::default(),
-        )
-        .unwrap();
-        assert_eq!(scale.ratio_label(), preset.name);
+    assert_eq!(scale_label(&imperial), "1\" = 1'-0\"");
+    for standard in STANDARD_SCALES {
+        let unit = if standard.system.imperial() {
+            ScaleUnit::Ft
+        } else {
+            ScaleUnit::M
+        };
+        let scale = standard.page_scale(0, unit, ScalePrecision::default());
+        assert_eq!(scale_label(&scale), standard.label);
     }
 }
 

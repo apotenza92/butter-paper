@@ -244,8 +244,7 @@ fn open_settings_category(category: SettingsCategory, window: &mut Window, cx: &
     {
         return;
     }
-    let bounds = gpui::Bounds::centered(
-        None,
+    let bounds = crate::window_title_bar::centered_window_bounds(
         gpui::size(px(960.), px(640.)).min(&window.viewport_size()),
         cx,
     );
@@ -287,15 +286,20 @@ pub fn review_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
         .map(|state| state.handle.into())
 }
 
+/// The Settings switch for new images' proportions.
+pub const SETTINGS_LOCK_IMAGE_PROPORTIONS_ID: &str = "settings-lock-image-proportions";
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SettingsCategory {
     Updates,
+    Markups,
 }
 
 struct SettingsView {
     category: SettingsCategory,
     scroll: ScrollHandle,
     _updates: Subscription,
+    _markups: Subscription,
     focus: gpui::FocusHandle,
 }
 impl SettingsView {
@@ -304,8 +308,51 @@ impl SettingsView {
             category,
             scroll: ScrollHandle::new(),
             _updates: cx.observe_global::<ApplicationUpdatePresentation>(|_, cx| cx.notify()),
+            _markups: cx.observe_global::<crate::application_shell::LockImageProportions>(
+                |_, cx| cx.notify(),
+            ),
             focus: cx.focus_handle(),
         }
+    }
+
+    /// Markups: how new images are placed and resized.
+    fn render_markup_sections(&self, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
+        let locked = crate::application_shell::LockImageProportions::current(cx);
+        let images = v_flex()
+            .id("settings-images-section")
+            .debug_selector(|| "settings-images-section".into())
+            .gap_3()
+            .pb_6()
+            .child(div().font_semibold().child("Images"))
+            .child(
+                div()
+                    .id(SETTINGS_LOCK_IMAGE_PROPORTIONS_ID)
+                    .debug_selector(|| SETTINGS_LOCK_IMAGE_PROPORTIONS_ID.into())
+                    .child(
+                        gpui_component::switch::Switch::new(
+                            "settings-lock-image-proportions-switch",
+                        )
+                        .label("Keep proportions when resizing")
+                        .checked(locked)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(
+                                Box::new(crate::application_shell::ToggleLockImageProportions),
+                                cx,
+                            );
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "New images resize from their corners and keep their shape. \
+                         Change it for one image with Lock proportions in its properties.",
+                    ),
+            )
+            .into_any_element();
+        vec![("Images", images)]
     }
 
     fn render_update_sections(&self, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
@@ -443,12 +490,20 @@ impl SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = window.viewport_size().width < window.rem_size() * 48.;
-        let categories = [(
-            SettingsCategory::Updates,
-            Icon::default().path(crate::application_assets::DOWNLOAD_ICON),
-            "Updates",
-            "settings-category-updates",
-        )];
+        let categories = [
+            (
+                SettingsCategory::Updates,
+                Icon::default().path(crate::application_assets::DOWNLOAD_ICON),
+                "Updates",
+                "settings-category-updates",
+            ),
+            (
+                SettingsCategory::Markups,
+                Icon::default().path("icons/rail/image.svg"),
+                "Markups",
+                "settings-category-markups",
+            ),
+        ];
         let category_buttons = categories.map(|(category, icon, label, id)| {
             let button = Button::new(id)
                 .debug_selector(move || id.into())
@@ -474,6 +529,7 @@ impl Render for SettingsView {
         });
         let (title, sections) = match self.category {
             SettingsCategory::Updates => ("Updates", self.render_update_sections(cx)),
+            SettingsCategory::Markups => ("Markups", self.render_markup_sections(cx)),
         };
         let (headings, sections): (Vec<&str>, Vec<AnyElement>) = sections.into_iter().unzip();
         let headings = headings.as_slice();

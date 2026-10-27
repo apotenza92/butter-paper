@@ -99,22 +99,87 @@ impl DocumentWorkspace {
                             let thumbnail_control = cx.entity().downgrade();
                             let thumbnail_images = image_assets.clone();
                             let rows_shown = self.thumbnail_rows_shown.clone();
+                            let selected_pages = Arc::new(
+                                self.page_selection
+                                    .as_ref()
+                                    .filter(|selection| selection.document_id == document_id)
+                                    .map(|selection| selection.pages.clone())
+                                    .unwrap_or_default(),
+                            );
+                            // Shown only while thumbnails are dragged.
+                            let drop_before = self
+                                .page_drop_target
+                                .filter(|(owner, _)| *owner == document_id && cx.has_active_drag())
+                                .map(|(_, page)| page);
+                            let can_paste = self.can_paste_pages(document_id, cx);
+                            let thumbnail_focus = self.thumbnail_focus.clone();
+                            let strip_scroll = thumbnail_scroll.clone();
+                            let strip_control = cx.entity().downgrade();
                             v_flex().id("document-left-sidebar")
                                 .on_prepaint(self.left_sidebar_sizing.measure())
                                 .debug_selector(|| "document-left-sidebar".into())
                                 .size_full().min_h_0()
                                 .bg(cx.theme().background)
-                                .child(h_flex()
-                                    .id("document-left-sidebar-header")
-                                    .debug_selector(|| "document-left-sidebar-header".into())
-                                    .w_full().h_12().flex_shrink_0()
-                                    .justify_center().px_2().text_xs().font_semibold()
-                                    .border_b_1().border_color(cx.theme().border)
-                                    .child("Page Thumbnails"))
+                                .child(crate::property_controls::PropertyInspectorHeader::new(
+                                    "document-left-sidebar-header",
+                                    "Page Thumbnails",
+                                ).trailing({
+                                    let focus = self.thumbnail_focus.clone();
+                                    accessible_icon_button(
+                                        Button::new(DOCUMENT_THUMBNAIL_ADD_PAGE_ID)
+                                            .debug_selector(|| DOCUMENT_THUMBNAIL_ADD_PAGE_ID.into())
+                                            .icon(IconName::Plus)
+                                            .ghost()
+                                            .small()
+                                            .disabled(ink_mutation_disabled)
+                                            .tooltip("Add page"),
+                                        "Add page",
+                                    )
+                                    .dropdown_menu(move |menu, _, _| {
+                                        menu.action_context(focus.clone())
+                                            .menu("After Current Page", Box::new(InsertPageAfter))
+                                            .menu("At End of Document", Box::new(InsertPageAtEnd))
+                                    })
+                                }))
                                 .child(
                             gpui::div()
                                 .id(DOCUMENT_THUMBNAIL_STRIP_ID)
                                 .debug_selector(|| DOCUMENT_THUMBNAIL_STRIP_ID.into())
+                                .track_focus(&self.thumbnail_focus)
+                                .key_context(pages::PAGE_THUMBNAILS_CONTEXT)
+                                // A press elsewhere gives the keyboard back to
+                                // the page, so Copy and Delete act on markups.
+                                .on_mouse_down_out({
+                                    let control = strip_control.clone();
+                                    move |_, window, cx| {
+                                        let _ = control.update(cx, |workspace, cx| {
+                                            if workspace.thumbnail_focus.contains_focused(window, cx) {
+                                                workspace.workspace_focus.focus(window, cx);
+                                            }
+                                        });
+                                    }
+                                })
+                                // Dragged thumbnails scroll the list near its
+                                // top and bottom edges.
+                                .on_drag_move::<pages::PageDrag>(move |event, window, _| {
+                                    let edge = px(48.);
+                                    let y = event.event.position.y;
+                                    let step = if y < event.bounds.top() + edge && y >= event.bounds.top() {
+                                        px(16.)
+                                    } else if y > event.bounds.bottom() - edge && y <= event.bounds.bottom() {
+                                        px(-16.)
+                                    } else {
+                                        return;
+                                    };
+                                    let handle = strip_scroll.0.borrow().base_handle.clone();
+                                    let offset = handle.offset();
+                                    let max = handle.max_offset();
+                                    handle.set_offset(point(
+                                        offset.x,
+                                        (offset.y + step).clamp(-max.y, px(0.)),
+                                    ));
+                                    window.refresh();
+                                })
                                 .role(Role::List)
                                 .aria_label("Document pages")
                                 .relative()
@@ -160,7 +225,34 @@ impl DocumentWorkspace {
                                                         thumbnail_control.clone();
                                                     let page_label =
                                                         format!("Page {}", page_index + 1);
-                                                    gpui::div().pb_2().child(v_flex()
+                                                    // Selected thumbnails, or the current page
+                                                    // when none are.
+                                                    let selected = selected_pages.contains(&page_index)
+                                                        || (selected_pages.is_empty() && page_index == current_page);
+                                                    let dragged = if selected_pages.contains(&page_index) {
+                                                        selected_pages.iter().copied().collect::<Vec<_>>()
+                                                    } else {
+                                                        vec![page_index]
+                                                    };
+                                                    let drop_line = |top: bool| {
+                                                        gpui::div()
+                                                            .absolute()
+                                                            .left_0()
+                                                            .right_0()
+                                                            .h(px(2.))
+                                                            .when(top, |line| line.top(px(1.)))
+                                                            .when(!top, |line| line.bottom(px(1.)))
+                                                            .rounded_full()
+                                                            .bg(cx.theme().primary)
+                                                    };
+                                                    // Each row keeps a gap above and below its
+                                                    // page for the line, inside the row, as the
+                                                    // list clips anything outside its rows.
+                                                    let last = page_index + 1 == thumbnail_count as u32;
+                                                    gpui::div().py_1().relative()
+                                                        .when(drop_before == Some(page_index), |row| row.child(drop_line(true)))
+                                                        .when(last && drop_before == Some(page_index + 1), |row| row.child(drop_line(false)))
+                                                        .child(v_flex()
                                                         .id(stable_id.clone())
                                                         .debug_selector(move || {
                                                             selector.clone()
@@ -185,23 +277,59 @@ impl DocumentWorkspace {
                                                         })
                                                         .rounded(cx.theme().radius)
                                                         .border_1()
-                                                        .border_color(if page_index == current_page {
+                                                        .border_color(if selected {
                                                             cx.theme().primary
                                                         } else {
                                                             cx.theme().border
                                                         })
-                                                        .on_click(move |_, _, cx| {
-                                                            let _ = click_control.update(
-                                                                cx,
-                                                                |workspace, cx| {
-                                                                    workspace
-                                                                        .activate_thumbnail_page(
+                                                        .when(selected_pages.len() > 1 && selected, |row| {
+                                                            row.bg(cx.theme().muted)
+                                                        })
+                                                        .on_click({
+                                                            let focus = thumbnail_focus.clone();
+                                                            move |event, window, cx| {
+                                                                focus.focus(window, cx);
+                                                                let modifiers = event.modifiers();
+                                                                let _ = click_control.update(
+                                                                    cx,
+                                                                    |workspace, cx| {
+                                                                        workspace.click_thumbnail(
                                                                             document_id,
                                                                             page_index,
+                                                                            modifiers,
                                                                             cx,
                                                                         );
-                                                                },
-                                                            );
+                                                                    },
+                                                                );
+                                                            }
+                                                        })
+                                                        .on_mouse_down(gpui::MouseButton::Right, {
+                                                            let focus = thumbnail_focus.clone();
+                                                            let control = thumbnail_control.clone();
+                                                            move |_, window, cx| {
+                                                                focus.focus(window, cx);
+                                                                let _ = control.update(cx, |workspace, cx| {
+                                                                    workspace.select_thumbnail_for_menu(document_id, page_index, cx);
+                                                                });
+                                                            }
+                                                        })
+                                                        .when(!ink_mutation_disabled, |row| {
+                                                            let control = thumbnail_control.clone();
+                                                            let drop_control = thumbnail_control.clone();
+                                                            row.on_drag(
+                                                                pages::PageDrag { document_id, pages: dragged.clone() },
+                                                                |drag, _, _, cx| drag.ghost(cx),
+                                                            )
+                                                            .on_drag_move::<pages::PageDrag>(move |event, _, cx| {
+                                                                let _ = control.update(cx, |workspace, cx| {
+                                                                    workspace.update_page_drop_target(event, page_index, cx);
+                                                                });
+                                                            })
+                                                            .on_drop::<pages::PageDrag>(move |drag, _, cx| {
+                                                                let _ = drop_control.update(cx, |workspace, cx| {
+                                                                    workspace.drop_pages(drag, cx);
+                                                                });
+                                                            })
                                                         })
                                                         .child(h_flex().w_full().gap_1()
                                                             .child(h_flex().flex_1().min_w_0().child(accessible_icon_button(
@@ -211,8 +339,11 @@ impl DocumentWorkspace {
                                                                     .toggled(page_index == current_page)
                                                                     .on_click({
                                                                         let owner = thumbnail_control.clone();
-                                                                        move |_, _, cx| {
-                                                                            let _ = owner.update(cx, |workspace, cx| workspace.activate_thumbnail_page(document_id, page_index, cx));
+                                                                        let focus = thumbnail_focus.clone();
+                                                                        move |event, window, cx| {
+                                                                            focus.focus(window, cx);
+                                                                            let modifiers = event.modifiers();
+                                                                            let _ = owner.update(cx, |workspace, cx| workspace.click_thumbnail(document_id, page_index, modifiers, cx));
                                                                             cx.stop_propagation();
                                                                         }
                                                                     }), format!("Open page {}", page_index + 1)))
@@ -223,20 +354,7 @@ impl DocumentWorkspace {
                                                                             .child(gpui_component::tag::Tag::secondary().small().child(label))
                                                                     )
                                                                 )))
-                                                            .children([PageRotationDirection::Left, PageRotationDirection::Right].into_iter().map(|direction| {
-                                                                let control = thumbnail_control.clone();
-                                                                let left = direction == PageRotationDirection::Left;
-                                                                let label = if left { "Rotate left" } else { "Rotate right" };
-                                                                accessible_icon_button(
-                                                                    Button::new(format!("thumbnail-{page_index}-rotate-{}", if left { "left" } else { "right" }))
-                                                                        .debug_selector(move || format!("thumbnail-{page_index}-rotate-{}", if left { "left" } else { "right" }))
-                                                                        .icon(gpui_component::Icon::default().path(if left { "icons/thumbnail-rotate-left.svg" } else { "icons/thumbnail-rotate-right.svg" }))
-                                                                        .ghost().disabled(ink_mutation_disabled).tooltip(label)
-                                                                        .on_click(move |_, _, cx| {
-                                                                            let _ = control.update(cx, |workspace, cx| workspace.rotate_thumbnail_page_async(document_id, page_index, direction, cx));
-                                                                            cx.stop_propagation();
-                                                                        }), label)
-                                                            })))
+                                                        )
                                                         .child(
                                                             h_flex()
                                                                 .id(format!("thumbnail-preview-{page_index}"))
@@ -248,10 +366,14 @@ impl DocumentWorkspace {
                                                                 .when_some(
                                                                     image.clone(),
                                                                     |page, image| {
+                                                                        // The page's edge, so a white page reads
+                                                                        // as paper against the panel.
+                                                                        let edge = cx.theme().border;
                                                                         page.child(
                                                                             canvas(|_, _, _| (), move |bounds, _, window, _| {
                                                                                 if let Some((page_bounds, _)) = contained_page_bounds_for_space(bounds, page_size, coordinate_space) {
                                                                                     let _ = window.paint_image(page_bounds, page_bounds, Default::default(), image.clone(), 0, false);
+                                                                                    window.paint_quad(gpui::outline(page_bounds, edge, gpui::BorderStyle::Solid));
                                                                                 }
                                                                             }).size_full()
                                                                         )
@@ -278,6 +400,7 @@ impl DocumentWorkspace {
                                                                             None,
                                                                             None,
                                                                             Vec::new(),
+                                                                            None,
                                                                             None,
                                                                             None,
                                                                             None,
@@ -310,7 +433,34 @@ impl DocumentWorkspace {
                                                                                 cx.stop_propagation();
                                                                             })))
                                                                 }),
-                                                        ))
+                                                        )
+                                                        .context_menu({
+                                                            let focus = thumbnail_focus.clone();
+                                                            let control = thumbnail_control.clone();
+                                                            move |menu, _, cx| {
+                                                                let selected = control
+                                                                    .upgrade()
+                                                                    .map_or(1, |workspace| workspace.read(cx).selected_pages(document_id, cx).len());
+                                                                let delete = if selected == 1 {
+                                                                    "Delete Page".to_owned()
+                                                                } else {
+                                                                    format!("Delete {selected} Pages")
+                                                                };
+                                                                menu.action_context(focus.clone())
+                                                                    .menu("Insert Blank Page Before", Box::new(InsertPageBefore))
+                                                                    .menu("Insert Blank Page After", Box::new(InsertPageAfter))
+                                                                    .menu("Duplicate", Box::new(DuplicatePages))
+                                                                    .separator()
+                                                                    .menu("Cut", Box::new(CutPages))
+                                                                    .menu("Copy", Box::new(CopyPages))
+                                                                    .menu_with_disabled("Paste After", Box::new(PastePages), !can_paste)
+                                                                    .separator()
+                                                                    .menu("Rotate Left", Box::new(RotatePagesLeft))
+                                                                    .menu("Rotate Right", Box::new(RotatePagesRight))
+                                                                    .separator()
+                                                                    .menu_with_disabled(delete, Box::new(DeletePages), selected >= thumbnail_count)
+                                                            }
+                                                        }))
                                                 })
                                                 .collect::<Vec<_>>()
                                         },

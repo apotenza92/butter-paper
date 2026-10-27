@@ -12,7 +12,8 @@ use gpui::{
     Styled as _, Window, div,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, button::Button, form::Field, switch::Switch, v_flex,
+    ActiveTheme as _, Disableable as _, Sizable as _, button::Button, form::Field, h_flex,
+    switch::Switch, v_flex,
 };
 
 use crate::document_workspace::DocumentId;
@@ -171,15 +172,34 @@ impl Render for MeasurementPropertyInspector {
                 .gap_3()
                 .p_3()
                 .child(
-                    Button::new(MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID)
-                        .debug_selector(|| MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID.into())
-                        .label("Set page scale…")
-                        .disabled(snapshot.mutation_disabled)
-                        .on_click(move |_, _, cx| {
-                            let _ = page_scale.update(cx, |inspector, cx| {
-                                inspector.emit_action(MeasurementPropertyAction::OpenPageScale, cx)
-                            });
-                        }),
+                    Field::new().label("Page scale").child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().min_w_0().truncate().text_sm().child(
+                                snapshot.page_scale.as_ref().map_or_else(
+                                    || "None (paper size)".to_owned(),
+                                    crate::page_scale_catalog::scale_label,
+                                ),
+                            ))
+                            .child(
+                                Button::new(MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID)
+                                    .debug_selector(|| {
+                                        MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID.into()
+                                    })
+                                    .label("Change")
+                                    .small()
+                                    .outline()
+                                    .disabled(snapshot.mutation_disabled)
+                                    .on_click(move |_, _, cx| {
+                                        let _ = page_scale.update(cx, |inspector, cx| {
+                                            inspector.emit_action(
+                                                MeasurementPropertyAction::OpenPageScale,
+                                                cx,
+                                            )
+                                        });
+                                    }),
+                            ),
+                    ),
                 )
                 .child(read_only(
                     MEASUREMENT_INSPECTOR_KIND_ID,

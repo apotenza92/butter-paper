@@ -37,6 +37,7 @@ gpui::actions!(
     [
         ToggleApplicationMenuBar,
         ToggleReverseScrollZoom,
+        ToggleLockImageProportions,
         NewWindow,
         MoveDocumentToNewWindow,
         MinimiseWindow,
@@ -73,6 +74,13 @@ pub struct ApplicationShellPreferences {
     /// utility such as LinearMouse, which apps cannot detect.
     #[serde(default)]
     reverse_scroll_zoom: bool,
+    /// New images keep their proportions as they are resized.
+    #[serde(default = "locked_by_default")]
+    lock_image_proportions: bool,
+}
+
+fn locked_by_default() -> bool {
+    true
 }
 
 /// Application-wide copy of the Reverse Scroll Zoom preference.
@@ -81,12 +89,33 @@ pub struct ReverseScrollZoom(pub bool);
 
 impl gpui::Global for ReverseScrollZoom {}
 
+/// Application-wide copy of the Lock Image Proportions preference: whether
+/// new images keep their proportions. Locked when unset.
+#[derive(Clone, Copy, Debug)]
+pub struct LockImageProportions(pub bool);
+
+impl Default for LockImageProportions {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+impl gpui::Global for LockImageProportions {}
+
+impl LockImageProportions {
+    /// The preference as the application holds it.
+    pub fn current(cx: &gpui::App) -> bool {
+        cx.try_global::<Self>().copied().unwrap_or_default().0
+    }
+}
+
 impl Default for ApplicationShellPreferences {
     fn default() -> Self {
         Self {
             menu_bar_visible: true,
             ui_zoom_level: APPLICATION_UI_ZOOM_DEFAULT_LEVEL,
             reverse_scroll_zoom: false,
+            lock_image_proportions: true,
         }
     }
 }
@@ -106,6 +135,14 @@ impl ApplicationShellPreferences {
 
     pub fn set_reverse_scroll_zoom(&mut self, reverse: bool) {
         self.reverse_scroll_zoom = reverse;
+    }
+
+    pub fn lock_image_proportions(&self) -> bool {
+        self.lock_image_proportions
+    }
+
+    pub fn set_lock_image_proportions(&mut self, locked: bool) {
+        self.lock_image_proportions = locked;
     }
 
     pub fn set_menu_bar_visible(&mut self, visible: bool) {
@@ -365,6 +402,19 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn preferences_saved_before_the_image_setting_lock_images() {
+        let saved = br#"{"menu_bar_visible":true,"ui_zoom_level":0,"reverse_scroll_zoom":false}"#;
+        let preferences: ApplicationShellPreferences = serde_json::from_slice(saved).unwrap();
+        assert!(preferences.lock_image_proportions());
+        assert!(ApplicationShellPreferences::default().lock_image_proportions());
+        let mut free = preferences;
+        free.set_lock_image_proportions(false);
+        let round_trip: ApplicationShellPreferences =
+            serde_json::from_slice(&serde_json::to_vec(&free).unwrap()).unwrap();
+        assert!(!round_trip.lock_image_proportions());
+    }
 
     #[cfg(target_os = "macos")]
     #[gpui::test]

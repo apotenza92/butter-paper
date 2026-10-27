@@ -192,16 +192,15 @@ fn edit_pdf_content_types_shortcut_letters_into_the_line_and_commits_one_undoabl
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    workspace
-        .update(cx, |workspace, cx| {
-            workspace.set_annotation_tool(document_id, AnnotationTool::EditPdfContent, cx)
-        })
-        .unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_content_edit_mode(document_id, true, cx);
+    });
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
-        Some(AnnotationTool::EditPdfContent)
+        Some(AnnotationTool::Select)
     );
+    assert!(workspace.read_with(cx, |workspace, _| workspace.content_edit_mode(document_id)));
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
     // Just after "Hello" (five 40pt Helvetica glyphs from x = 50), on the
@@ -223,6 +222,9 @@ fn edit_pdf_content_types_shortcut_letters_into_the_line_and_commits_one_undoabl
     cx.run_until_parked();
     cx.simulate_mouse_move(at, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // A double click edits a paragraph (a single click selects it); a
+    // click in it then places the caret.
+    double_click(cx, at);
     cx.simulate_click(at, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -234,12 +236,22 @@ fn edit_pdf_content_types_shortcut_letters_into_the_line_and_commits_one_undoabl
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
-        Some(AnnotationTool::EditPdfContent),
+        Some(AnnotationTool::Select),
         "typed letters must not switch tools"
     );
+    assert!(workspace.read_with(cx, |workspace, _| workspace.content_edit_mode(document_id)));
     let live = shown.lock().unwrap().last().cloned().unwrap();
     assert_eq!(live.len(), 1);
     assert_eq!(live[0].text(), "Hello galvanise world");
+    // The thumbnail is drawn again once typing pauses, after the page.
+    assert_eq!(
+        thumbnail_renders.load(Ordering::Acquire),
+        renders_before,
+        "typing draws the page, not its thumbnail"
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
     let renders_after_typing = thumbnail_renders.load(Ordering::Acquire);
     assert!(
         renders_after_typing > renders_before,
@@ -282,6 +294,9 @@ fn edit_pdf_content_types_shortcut_letters_into_the_line_and_commits_one_undoabl
         &Vec::<PageTextEdit>::new(),
         "undo restores the rendered page"
     );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
     assert!(
         thumbnail_renders.load(Ordering::Acquire) > renders_after_typing,
         "undo restores the thumbnail"
@@ -352,17 +367,63 @@ fn edit_pdf_content_workspace(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    workspace
-        .update(cx, |workspace, cx| {
-            workspace.set_annotation_tool(document_id, AnnotationTool::EditPdfContent, cx)
-        })
-        .unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_content_edit_mode(document_id, true, cx);
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     (workspace, document_id, shown, cx)
 }
 
 /// Clicks page point (`x`, `y`) on a page shown with `space`, computing the
 /// window position from the page's rotation, view box and user unit.
+fn double_click(cx: &mut gpui::VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+    for click_count in [1, 2] {
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+    }
+}
+
+/// A Select lasso traced round the rectangle from `from` to `to`, as a
+/// person drags round content.
+fn lasso(
+    cx: &mut gpui::VisualTestContext,
+    from: gpui::Point<gpui::Pixels>,
+    to: gpui::Point<gpui::Pixels>,
+) {
+    cx.simulate_mouse_move(from, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: from,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    for corner in [point(to.x, from.y), to, point(from.x, to.y), from] {
+        cx.simulate_mouse_move(corner, Some(gpui::MouseButton::Left), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    cx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position: from,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+}
+
 fn click_page_point(
     cx: &mut gpui::VisualTestContext,
     document_id: butter_paper::document_workspace::DocumentId,
@@ -399,8 +460,524 @@ fn click_page_point(
     cx.run_until_parked();
     cx.simulate_mouse_move(at, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // A double click edits a paragraph (a single click selects it); a
+    // click in it then places the caret.
+    double_click(cx, at);
     cx.simulate_click(at, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+/// The window position of page point (`x`, `y`) on an unrotated page with
+/// no crop, and the page's scale.
+fn plain_page_point(
+    cx: &mut gpui::VisualTestContext,
+    document_id: butter_paper::document_workspace::DocumentId,
+    (x, y): (f64, f64),
+) -> (gpui::Point<gpui::Pixels>, f32) {
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + (layer.size.width - px(612. * scale)) / 2.,
+        layer.origin.y + (layer.size.height - px(792. * scale)) / 2.,
+    );
+    (
+        point(
+            origin.x + px(x as f32 * scale),
+            origin.y + px((792. - y) as f32 * scale),
+        ),
+        scale,
+    )
+}
+
+/// Edit PDF mode, from the toolbar switch: text shows a text cursor, a
+/// press on the band round a paragraph selects it and a drag from there
+/// moves it (shown by the worker while dragging, then one undoable change);
+/// a double click edits it.
+#[gpui::test]
+fn edit_pdf_mode_selects_drags_and_double_click_edits_a_paragraph(cx: &mut TestAppContext) {
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let (workspace, document_id, shown, cx) =
+        edit_pdf_content_workspace(cx, page_text_layer(), space, PageRotation::Degrees0, false);
+    // The switch turns the mode off and on again.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_content_edit_mode(document_id, false, cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    click_selector(cx, "viewer-edit-pdf");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, _| workspace.content_edit_mode(document_id)));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Select)
+    );
+
+    // Inside "Hello" a press would edit its text.
+    let (inside, scale) = plain_page_point(cx, document_id, (70., 410.));
+    cx.simulate_mouse_move(inside, None, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(inside, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.viewport_cursor()),
+        gpui::CursorStyle::IBeam
+    );
+    // Just outside its left end, a press moves it; away from content,
+    // nothing.
+    let (at, _) = plain_page_point(cx, document_id, (50. - 6.5 / f64::from(scale), 410.));
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.viewport_cursor()),
+        butter_paper::canvas_cursors::move_cursor(false)
+    );
+    let (empty, _) = plain_page_point(cx, document_id, (400., 150.));
+    cx.simulate_mouse_move(empty, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.viewport_cursor()),
+        gpui::CursorStyle::Arrow
+    );
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: at,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        1,
+        "a press on a paragraph's band selects it"
+    );
+    let to = point(at.x + px(30. * scale), at.y + px(20. * scale));
+    for step in 1..=3 {
+        let fraction = step as f32 / 3.;
+        let position = point(
+            at.x + (to.x - at.x) * fraction,
+            at.y + (to.y - at.y) * fraction,
+        );
+        cx.simulate_mouse_move(
+            position,
+            Some(gpui::MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    // The paragraph's picture follows the pointer while the page is shown
+    // without it.
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .content_drag_picture_pieces(document_id)),
+        Some(1)
+    );
+    cx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position: to,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let moves = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .page_content_moves
+    });
+    assert_eq!(moves.len(), 1, "{moves:?}");
+    assert!(
+        (moves[0].offset[0] - 30.).abs() < 0.5 && (moves[0].offset[1] + 20.).abs() < 0.5,
+        "{moves:?}"
+    );
+    assert!(
+        shown.lock().unwrap().iter().all(Vec::is_empty),
+        "nothing typed"
+    );
+    drop(shown);
+
+    // Double click the moved paragraph where it is shown: its text edits.
+    let (moved_at, _) = plain_page_point(cx, document_id, (100., 390.));
+    cx.simulate_mouse_move(moved_at, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    double_click(cx, moved_at);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx))
+            .is_some(),
+        "a double click edits the paragraph"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // Escape leaves it selected; a second Escape ends the selection.
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        1
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        0
+    );
+
+    // One undo puts it back.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        0,
+        "undo ends the selection: its content may be elsewhere"
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx)
+                .unwrap()
+                .page_content_moves)
+            .is_empty()
+    );
+
+    // A lasso dragged from empty page round the paragraph selects it, as
+    // it selects markups.
+    let (from, _) = plain_page_point(cx, document_id, (30., 470.));
+    let (to, _) = plain_page_point(cx, document_id, (360., 370.));
+    lasso(cx, from, to);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        1
+    );
+
+    // A single click in the text edits it at once, ending the selection.
+    let (inside, _) = plain_page_point(cx, document_id, (70., 410.));
+    cx.simulate_mouse_move(inside, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_click(inside, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx))
+            .is_some(),
+        "a click in text edits it"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        0
+    );
+    // A click off it only ends the edit: no selection lasso starts, and
+    // the next press on empty page is free to draw one.
+    let (empty, _) = plain_page_point(cx, document_id, (400., 150.));
+    cx.simulate_mouse_move(empty, None, Modifiers::default());
+    cx.simulate_mouse_down(empty, gpui::MouseButton::Left, Modifiers::default());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx))
+            .is_none(),
+        "a click away ends the edit"
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .active_selection_marquee(document_id, cx))
+            .is_none(),
+        "the press that ends the edit draws no lasso"
+    );
+    cx.simulate_mouse_up(empty, gpui::MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.viewport_cursor()),
+        gpui::CursorStyle::Arrow
+    );
+    // With nothing in hand, a click arms a selection box, and a second
+    // click finishes it, selecting the paragraph it crosses.
+    cx.simulate_click(empty, Modifiers::default());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .active_selection_marquee(document_id, cx))
+            .is_some_and(|(_, marquee)| marquee.shape
+                == butter_paper::selection_geometry::SelectionShape::Box)
+    );
+    let (corner, _) = plain_page_point(cx, document_id, (30., 470.));
+    cx.simulate_mouse_move(corner, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_click(corner, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        1,
+        "the box's second click selects the content it crosses"
+    );
+}
+
+/// Edit PDF mode on a drawing: its handles resize it, Copy and Paste add a
+/// copy beside it (selected), and Delete removes that copy, each one
+/// undoable change.
+#[gpui::test]
+fn edit_pdf_mode_resizes_copies_and_deletes_a_drawing(cx: &mut TestAppContext) {
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let layer = text_page(
+        b"BT /F1 40 Tf 50 400 Td (Hello world) Tj ET 0.9 g 300 200 60 40 re f",
+        lopdf::Dictionary::new(),
+    );
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let moves = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_snapshot(document_id, cx)
+                .unwrap()
+                .page_content_moves
+        })
+    };
+    let press = |cx: &mut gpui::VisualTestContext, at, to: Option<gpui::Point<gpui::Pixels>>| {
+        cx.simulate_mouse_move(at, None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        let end = to.unwrap_or(at);
+        if let Some(to) = to {
+            for step in 1..=3 {
+                let fraction = step as f32 / 3.;
+                cx.simulate_mouse_move(
+                    point(
+                        at.x + (to.x - at.x) * fraction,
+                        at.y + (to.y - at.y) * fraction,
+                    ),
+                    Some(gpui::MouseButton::Left),
+                    Modifiers::default(),
+                );
+            }
+        }
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: end,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    let (inside, _) = plain_page_point(cx, document_id, (330., 220.));
+    press(cx, inside, None);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        1
+    );
+    // Drag the north-east handle out: twice as wide, 1.75 times as tall.
+    let (corner, _) = plain_page_point(cx, document_id, (360., 240.));
+    let (out, _) = plain_page_point(cx, document_id, (420., 270.));
+    press(cx, corner, Some(out));
+    let resized = moves(cx);
+    assert_eq!(resized.len(), 1, "{resized:?}");
+    assert!(
+        (resized[0].scale[0] - 2.).abs() < 0.02 && (resized[0].scale[1] - 1.75).abs() < 0.02,
+        "{resized:?}"
+    );
+    // Copy and paste: a copy, selected.
+    let (copy, paste) = if cfg!(target_os = "macos") {
+        ("cmd-c", "cmd-v")
+    } else {
+        ("ctrl-c", "ctrl-v")
+    };
+    cx.simulate_keystrokes(copy);
+    cx.simulate_keystrokes(paste);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let pasted = moves(cx);
+    assert_eq!(pasted.len(), 2, "{pasted:?}");
+    let copy_move = pasted.iter().find(|item| item.copy.is_some()).unwrap();
+    assert_eq!(copy_move.scale, resized[0].scale);
+    assert!((copy_move.offset[0] - resized[0].offset[0] - 10.).abs() < 0.01);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        1
+    );
+    // Delete removes the copy only.
+    cx.simulate_keystrokes("backspace");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after = moves(cx);
+    assert_eq!(after.len(), 1);
+    assert!(after[0].copy.is_none() && !after[0].removed);
+    // Undo brings the copy back.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(moves(cx).len(), 2);
+}
+
+/// In Edit PDF mode a lasso dragged from empty page, below text and after
+/// drawing a markup, selects the content and markups in it.
+#[gpui::test]
+fn edit_pdf_mode_box_selects_content_and_markups(cx: &mut TestAppContext) {
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let layer = text_page(
+        b"BT /F1 20 Tf 50 600 Td (Site works) Tj ET 0.9 g 60 500 60 40 re f",
+        lopdf::Dictionary::new(),
+    );
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let drag = |cx: &mut gpui::VisualTestContext,
+                from: gpui::Point<gpui::Pixels>,
+                to: gpui::Point<gpui::Pixels>| {
+        cx.simulate_mouse_move(from, None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: from,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        for step in 1..=4 {
+            let fraction = step as f32 / 4.;
+            cx.simulate_mouse_move(
+                point(
+                    from.x + (to.x - from.x) * fraction,
+                    from.y + (to.y - from.y) * fraction,
+                ),
+                Some(gpui::MouseButton::Left),
+                Modifiers::default(),
+            );
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: to,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    // An ellipse markup beside the drawing, drawn with the Ellipse tool.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(document_id, AnnotationTool::Ellipse, cx)
+        })
+        .unwrap();
+    let (a, _) = plain_page_point(cx, document_id, (200., 500.));
+    let (b, _) = plain_page_point(cx, document_id, (260., 540.));
+    drag(cx, a, b);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .ellipses
+            .len()),
+        1,
+        "the ellipse is drawn"
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    // A press on empty page ends the markup's selection, as with Select
+    // everywhere; then a lasso from below the text, clear of the band that
+    // moves it, round the drawing and markup.
+    let (from, _) = plain_page_point(cx, document_id, (45., 580.));
+    cx.simulate_click(from, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (to, _) = plain_page_point(cx, document_id, (300., 480.));
+    lasso(cx, from, to);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace
+            .selected_content_count(document_id)),
+        1,
+        "the drawing is selected"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .selected_annotation_ids(document_id, cx)
+            .len()),
+        1,
+        "the markup is selected"
+    );
+    // Dragging the drawing moves the markup with it, as one change.
+    let ellipse_before = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .ellipses[0]
+            .rect
+    });
+    let (on, scale) = plain_page_point(cx, document_id, (90., 520.));
+    let to = point(on.x + px(50. * scale), on.y);
+    cx.simulate_mouse_move(on, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: on,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    for step in 1..=3 {
+        let fraction = step as f32 / 3.;
+        cx.simulate_mouse_move(
+            point(on.x + (to.x - on.x) * fraction, on.y),
+            Some(gpui::MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position: to,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (moves, ellipse_after) = workspace.read_with(cx, |workspace, cx| {
+        let snapshot = workspace.annotation_snapshot(document_id, cx).unwrap();
+        (snapshot.page_content_moves, snapshot.ellipses[0].rect)
+    });
+    assert_eq!(moves.len(), 1, "{moves:?}");
+    let dx = moves[0].offset[0];
+    assert!(dx > 30., "{moves:?}");
+    assert!((ellipse_after.x - ellipse_before.x - dx).abs() < 0.01);
 }
 
 /// Edit PDF Content on a page with `rotation`, a crop box and a user unit: a click
@@ -1190,4 +1767,85 @@ fn select_tool_selects_page_text_by_dragging_and_double_click_and_copies_it(
     // A press away from text clears the selection; Escape would too.
     cx.simulate_click(at(300.), Modifiers::default());
     assert_eq!(selected(cx), None);
+}
+
+/// Edit PDF's boxes round paragraphs and objects are snapped to: a drawing
+/// dragged beside a paragraph's box meets its edge.
+#[gpui::test]
+fn content_snaps_to_the_box_round_a_paragraph(cx: &mut TestAppContext) {
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let layer = text_page(
+        b"BT /F1 40 Tf 50 400 Td (Hello world) Tj ET 0.9 g 300 200 60 40 re f",
+        lopdf::Dictionary::new(),
+    );
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    // A planned view reads the page's content for snapping.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_view_configuration(document_id, PageViewMode::Continuous, 100., cx);
+        workspace
+            .refresh_viewport_async(document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    let (inside, scale) = plain_page_point(cx, document_id, (330., 220.));
+    cx.simulate_mouse_move(inside, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    // Once the view settles, the page is read again with its boxes.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    cx.run_until_parked();
+    cx.simulate_mouse_move(inside, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: inside,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    // Beside the paragraph, its left edge 3 points right of the box's
+    // right edge (at 247.8, from 392 to 432).
+    let (dx, dy) = (250.8 - 300., 400. - 200.);
+    let to = point(inside.x + px(dx * scale), inside.y - px(dy * scale));
+    for step in 1..=4 {
+        let fraction = step as f32 / 4.;
+        cx.simulate_mouse_move(
+            point(
+                inside.x + (to.x - inside.x) * fraction,
+                inside.y + (to.y - inside.y) * fraction,
+            ),
+            Some(gpui::MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position: to,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let moves = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .page_content_moves
+    });
+    assert_eq!(moves.len(), 1, "{moves:?}");
+    let left = 300. + moves[0].offset[0];
+    assert!((left - 247.8).abs() < 0.01, "{moves:?}");
 }

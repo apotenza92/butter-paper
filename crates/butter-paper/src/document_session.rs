@@ -105,6 +105,9 @@ pub struct SavedNativeDocument {
     pub(crate) opened: OpenedNativeDocument,
     pub(crate) validated_revision: u64,
     pub(crate) publication_warning: Option<String>,
+    /// Pages as the file had them before the save, which undo reaches back
+    /// to ([`crate::annotation_model::AnnotationDocument::mark_saved_keeping`]).
+    pub(crate) kept_pages: Vec<crate::pdf_page_base::PageBase>,
 }
 
 impl SavedNativeDocument {
@@ -113,7 +116,13 @@ impl SavedNativeDocument {
             opened,
             validated_revision,
             publication_warning: None,
+            kept_pages: Vec::new(),
         }
+    }
+
+    pub fn with_kept_pages(mut self, pages: Vec<crate::pdf_page_base::PageBase>) -> Self {
+        self.kept_pages = pages;
+        self
     }
 
     pub fn with_publication_warning(mut self, warning: impl Into<String>) -> Self {
@@ -123,6 +132,10 @@ impl SavedNativeDocument {
 
     pub fn publication_warning(&self) -> Option<&str> {
         self.publication_warning.as_deref()
+    }
+
+    pub fn kept_pages(&self) -> &[crate::pdf_page_base::PageBase] {
+        &self.kept_pages
     }
 
     pub fn opened(&self) -> &OpenedNativeDocument {
@@ -309,6 +322,13 @@ pub struct NativeDocumentSession {
     pub(crate) source_page_sizes: Vec<(f32, f32)>,
     pub(crate) source_page_rotations: Vec<PageRotation>,
     pub(crate) source_page_coordinate_spaces: Vec<PageCoordinateSpace>,
+    /// The file's own pages, which the `source_page_*` lists show as
+    /// arranged ([`Self::sync_page_arrangement`]).
+    pub(crate) file_page_sizes: Vec<(f32, f32)>,
+    pub(crate) file_page_rotations: Vec<PageRotation>,
+    pub(crate) file_page_coordinate_spaces: Vec<PageCoordinateSpace>,
+    /// The arrangement the `source_page_*` lists show, one slot a page.
+    pub(crate) arranged_slots: Vec<crate::pdf_page_structure::PageSlot>,
     pub(crate) presentation_error: Option<String>,
     pub(crate) recovery_generation: Option<u64>,
     pub(crate) recovery_preparation_generation: u64,
@@ -390,6 +410,10 @@ impl NativeDocumentSession {
             source_page_sizes: Vec::new(),
             source_page_rotations: Vec::new(),
             source_page_coordinate_spaces: Vec::new(),
+            file_page_sizes: Vec::new(),
+            file_page_rotations: Vec::new(),
+            file_page_coordinate_spaces: Vec::new(),
+            arranged_slots: Vec::new(),
             presentation_error: None,
             recovery_generation: None,
             recovery_preparation_generation: 0,
@@ -637,6 +661,220 @@ impl NativeDocumentSession {
         Ok(())
     }
 
+    /// The file's pages, as a file just opened or saved has them: shown as
+    /// the file has them until [`Self::sync_page_arrangement`].
+    pub(crate) fn set_file_pages(
+        &mut self,
+        sizes: Vec<(f32, f32)>,
+        rotations: Vec<PageRotation>,
+        coordinate_spaces: Vec<PageCoordinateSpace>,
+    ) {
+        self.arranged_slots = (0..sizes.len() as u32)
+            .map(|index| crate::pdf_page_structure::PageSlot::Source { index })
+            .collect();
+        self.source_page_sizes = sizes.clone();
+        self.source_page_rotations = rotations.clone();
+        self.source_page_coordinate_spaces = coordinate_spaces.clone();
+        self.file_page_sizes = sizes;
+        self.file_page_rotations = rotations;
+        self.file_page_coordinate_spaces = coordinate_spaces;
+    }
+
+    /// Shows the pages as the document arranges them, when the page images
+    /// and thumbnails shown were already drawn so (a recovered document
+    /// opens with its arrangement).
+    pub(crate) fn adopt_page_arrangement(&mut self) {
+        if self
+            .annotations
+            .document_page_slots(self.id.value())
+            .is_empty()
+        {
+            return;
+        }
+        let thumbnails = std::mem::take(&mut self.thumbnails);
+        let current = (
+            self.current_image.take(),
+            self.current_base_raster.take(),
+            self.current_image_page,
+            self.current_page,
+        );
+        self.sync_page_arrangement();
+        let count = self.source_page_sizes.len() as u32;
+        self.thumbnails = thumbnails
+            .into_iter()
+            .filter(|thumbnail| thumbnail.page_index < count)
+            .collect();
+        let (image, raster, image_page, page) = current;
+        self.current_image = image;
+        self.current_base_raster = raster;
+        self.current_image_page = image_page;
+        self.current_page = page.min(count.saturating_sub(1));
+        self.requested_page = self.current_page;
+    }
+
+    /// Shows the pages as the document arranges them now: each page's size,
+    /// rotation and thumbnail follow it, a new blank page shows white, and
+    /// the current page stays the page it was. Returns whether the
+    /// arrangement changed.
+    pub(crate) fn sync_page_arrangement(&mut self) -> bool {
+        use crate::pdf_page_structure::PageSlot;
+        let file_count = self.file_page_sizes.len();
+        if file_count == 0 {
+            return false;
+        }
+        let mut slots = self
+            .annotations
+            .document_page_slots(self.id.value())
+            .to_vec();
+        if slots.is_empty() {
+            slots = (0..file_count as u32)
+                .map(|index| PageSlot::Source { index })
+                .collect();
+        }
+        if slots == self.arranged_slots
+            || crate::pdf_page_structure::validate(&slots, file_count).is_err()
+        {
+            return false;
+        }
+        let previous = std::mem::replace(&mut self.arranged_slots, slots.clone());
+        // Where each page was shown before: the same slot, else another
+        // copy of the same file page, whose thumbnail stands in until the
+        // page is drawn again.
+        let was_at = |slot: PageSlot| {
+            previous
+                .iter()
+                .position(|old| *old == slot)
+                .or_else(|| {
+                    slot.file_page().and_then(|page| {
+                        previous
+                            .iter()
+                            .position(|old| old.file_page() == Some(page))
+                    })
+                })
+                .map(|index| index as u32)
+        };
+        let blank_size = |slot: PageSlot| match slot {
+            PageSlot::Blank { width, height } => (width as f32, height as f32),
+            _ => (612., 792.),
+        };
+        self.source_page_sizes = slots
+            .iter()
+            .map(|slot| {
+                slot.file_page()
+                    .and_then(|page| self.file_page_sizes.get(page as usize).copied())
+                    .unwrap_or_else(|| blank_size(*slot))
+            })
+            .collect();
+        self.source_page_rotations = slots
+            .iter()
+            .map(|slot| {
+                slot.file_page()
+                    .and_then(|page| self.file_page_rotations.get(page as usize).copied())
+                    .unwrap_or(PageRotation::Degrees0)
+            })
+            .collect();
+        self.source_page_coordinate_spaces = if self.file_page_coordinate_spaces.len() == file_count
+        {
+            slots
+                .iter()
+                .filter_map(|slot| match slot.file_page() {
+                    Some(page) => self.file_page_coordinate_spaces.get(page as usize).copied(),
+                    None => {
+                        let (width, height) = blank_size(*slot);
+                        let rect = CoordinateRect::new(0., 0., f64::from(width), f64::from(height))
+                            .ok()?;
+                        PageCoordinateSpace::new(
+                            rect,
+                            rect,
+                            crate::page_geometry::Rotation::Degrees0,
+                            1.,
+                        )
+                        .ok()
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut thumbnails = Vec::new();
+        for (index, slot) in slots.iter().enumerate() {
+            let index = index as u32;
+            let shown = was_at(*slot).and_then(|old| self.thumbnail(old));
+            if let Some(old) = shown {
+                thumbnails.push(ThumbnailPresentation {
+                    page_index: index,
+                    base_raster: old.base_raster.clone(),
+                    image: old.image.clone(),
+                    highlight_pixels: old.highlight_pixels,
+                    rotation: old.rotation,
+                });
+            } else if let PageSlot::Blank { .. } = slot {
+                let size = blank_size(*slot);
+                let width = crate::document_resource::thumbnail_width(size);
+                let height = ((width as f32 * size.1 / size.0).round() as u32).max(1);
+                let raster = RasterSurface::new(
+                    width,
+                    height,
+                    vec![0xff; width as usize * height as usize * 4],
+                );
+                if let Ok(raster) = raster
+                    && let Ok(image) = raster.clone().into_render_image()
+                {
+                    thumbnails.push(ThumbnailPresentation {
+                        page_index: index,
+                        base_raster: raster,
+                        image,
+                        highlight_pixels: 0,
+                        rotation: PageRotation::Degrees0,
+                    });
+                }
+            }
+        }
+        let retired = std::mem::replace(&mut self.thumbnails, thumbnails);
+        self.retired_images
+            .extend(retired.into_iter().map(|thumbnail| thumbnail.image));
+        self.thumbnail_requests.clear();
+        self.thumbnail_content_revisions.clear();
+        self.page_content_geometry_requests.clear();
+        self.page_content_geometry_lru.clear();
+        // The current page stays the page it was, or the nearest left.
+        let follow = |page: u32| {
+            previous.get(page as usize).and_then(|slot| {
+                slots
+                    .iter()
+                    .position(|candidate| candidate == slot)
+                    .map(|index| index as u32)
+            })
+        };
+        let last = slots.len().saturating_sub(1) as u32;
+        let current = follow(self.current_page).unwrap_or(self.current_page.min(last));
+        self.current_image_page = self
+            .current_image_page
+            .and_then(follow)
+            .filter(|page| *page == current);
+        if self.current_image_page.is_none()
+            && let Some(image) = self.current_image.take()
+        {
+            self.retired_images.push(image);
+            self.current_base_raster = None;
+        }
+        self.current_page = current;
+        self.requested_page = current;
+        self.placeholder_page = None;
+        self.pending_navigation_scroll = None;
+        self.navigation_from_below = None;
+        for (index, size) in self.source_page_sizes.iter().enumerate() {
+            self.annotations.set_semantic_snap_page_size(
+                self.id.value(),
+                index as u32,
+                f64::from(size.0),
+                f64::from(size.1),
+            );
+        }
+        self.sync_rotation_geometry();
+        true
+    }
+
     pub(crate) fn sync_rotation_geometry(&mut self) {
         self.page_sizes = self
             .source_page_sizes
@@ -666,6 +904,47 @@ impl NativeDocumentSession {
             })
             .collect();
         self.viewer.invalidate_raster();
+    }
+
+    /// Turns the pixels already shown for `page_index`, its page image and
+    /// thumbnail, from `previous` to the page's rotation now, so a rotated
+    /// page never shows its old image stretched to its new shape while the
+    /// fresh render is on the way.
+    pub(crate) fn turn_shown_page(
+        &mut self,
+        page_index: u32,
+        previous: PageRotation,
+    ) -> Result<(), String> {
+        let target = self
+            .page_rotation(page_index)
+            .ok_or_else(|| "page rotation is unavailable".to_owned())?;
+        if self.current_image_page == Some(page_index)
+            && let Some(raster) = self.current_base_raster.as_ref()
+        {
+            let raster = raster.rotated(target.delta_from(previous))?;
+            let image = raster.clone().into_render_image()?;
+            self.current_base_raster = Some(raster);
+            if let Some(previous) = self.current_image.replace(image) {
+                self.retired_images.push(previous);
+            }
+        }
+        if let Ok(index) = self
+            .thumbnails
+            .binary_search_by_key(&page_index, |thumbnail| thumbnail.page_index)
+        {
+            let thumbnail = &mut self.thumbnails[index];
+            if thumbnail.rotation != target {
+                let raster = thumbnail
+                    .base_raster
+                    .rotated(target.delta_from(thumbnail.rotation))?;
+                let image = raster.clone().into_render_image()?;
+                thumbnail.base_raster = raster;
+                thumbnail.rotation = target;
+                let previous = std::mem::replace(&mut thumbnail.image, image);
+                self.retired_images.push(previous);
+            }
+        }
+        self.rebuild_stable_highlight_presentations()
     }
 
     pub(crate) fn page_rotation_quarter_turns(&self) -> Vec<u8> {

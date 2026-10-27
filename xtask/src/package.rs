@@ -661,6 +661,8 @@ pub fn info_plist(channel: Channel, version: Version) -> String {
   <string>Butter Paper uses the camera only when you choose to take a signature photo.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Butter Paper uses your local network only when you choose to transfer a signature from your phone.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Butter Paper asks Microsoft Word to convert a PDF only when you choose Convert and Open in Word.</string>
 </dict>
 </plist>
 "#
@@ -679,12 +681,14 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
     }
     let profile = std::env::var("BP_NOTARY_PROFILE").map_err(|_| "BP_NOTARY_PROFILE is not set")?;
     let identifier = channel.bundle_identifier();
-    let entitlements = |name: &str, camera: bool| -> Result<PathBuf> {
+    // `camera` for the signature camera; `app` for the app itself, which
+    // asks Word to convert a PDF (Convert and Open in Word).
+    let entitlements = |name: &str| -> Result<PathBuf> {
         let path = work.join(format!("{name}.entitlements"));
-        let body = if camera {
-            "\n\t<key>com.apple.security.device.camera</key>\n\t<true/>\n"
-        } else {
-            ""
+        let body = match name {
+            "camera" => "\n\t<key>com.apple.security.device.camera</key>\n\t<true/>\n",
+            "app" => "\n\t<key>com.apple.security.automation.apple-events</key>\n\t<true/>\n",
+            _ => "",
         };
         write(
             &path,
@@ -712,7 +716,7 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
                 .arg(path),
         )
     };
-    let plain = entitlements("plain", false)?;
+    let plain = entitlements("plain")?;
     codesign(
         &contents.join("Frameworks/libpdfium.dylib"),
         format!("{identifier}.pdfium"),
@@ -731,9 +735,9 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
     codesign(
         &contents.join("MacOS").join(CAMERA),
         format!("{identifier}.signature-camera"),
-        &entitlements("camera", true)?,
+        &entitlements("camera")?,
     )?;
-    codesign(app, identifier.to_string(), &plain)?;
+    codesign(app, identifier.to_string(), &entitlements("app")?)?;
 
     let submission = work.join("notarisation.zip");
     exec(

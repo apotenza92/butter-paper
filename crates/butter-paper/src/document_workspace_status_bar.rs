@@ -1,6 +1,8 @@
 //! Full-width contextual guidance, outside the document's scroll and sidebars.
 use super::*;
 
+pub const DOCUMENT_STATUS_SCALE_ID: &str = "document-status-scale";
+
 impl DocumentWorkspace {
     pub(super) fn render_status_bar(
         &self,
@@ -11,15 +13,28 @@ impl DocumentWorkspace {
             .active_document_id
             .and_then(|id| self.session(id, cx))
             .map(|session| session.read(cx).annotations.tool());
-        let context = if self.pending_text_box_editor.is_some() {
-            "Edit PDF Content · Click away to finish".to_owned()
+        let editing_content = self
+            .active_document_id
+            .is_some_and(|id| self.editing_content(id, cx));
+        let editing_text = self
+            .page_text_editing
+            .is_some_and(|editing| Some(editing.document_id) == self.active_document_id);
+        let context = if self.page_scale_picking(cx) {
+            "Calibrate · Click both ends of a length you know · Shift keeps it straight · Esc to go back"
+                .to_owned()
+        } else if self.pending_text_box_editor.is_some() {
+            "Text Box · Click away to finish".to_owned()
+        } else if editing_content && editing_text {
+            "Edit PDF · Type to edit · Esc or click away to finish".to_owned()
+        } else if editing_content {
+            "Edit PDF · Click text to edit it · Drag its edge, a drawing or an image to move it"
+                .to_owned()
         } else if self.pan_tool_active {
             "Pan · Drag to move the page".to_owned()
         } else if let Some(tool) = tool {
             let help = match tool {
-                AnnotationTool::Select => "Click to select · Drag empty space to select several",
-                AnnotationTool::EditPdfContent => {
-                    "Click text to edit it · Drag to select · Esc or click away to finish"
+                AnnotationTool::Select => {
+                    "Click to select · Drag to lasso · Click empty space to start a box"
                 }
                 AnnotationTool::Polyline
                 | AnnotationTool::Polygon
@@ -90,6 +105,26 @@ impl DocumentWorkspace {
             || context.clone(),
             |details| format!("{context}. {details}"),
         );
+        // The current page's scale, shown once it has one or while measuring.
+        let scale = self.active_document_id.and_then(|document_id| {
+            let session = self.session(document_id, cx)?.read(cx);
+            let page_index = session.current_page;
+            let scale = session
+                .annotations
+                .document_page_scale(document_id.value(), page_index)
+                .map(crate::page_scale_catalog::scale_label);
+            let measuring = matches!(
+                tool,
+                Some(AnnotationTool::Length | AnnotationTool::Polylength | AnnotationTool::Area)
+            );
+            (scale.is_some() || measuring).then(|| {
+                (
+                    document_id,
+                    page_index,
+                    scale.unwrap_or_else(|| "No scale".to_owned()),
+                )
+            })
+        });
         let navigation_tooltip = "Hold Space and drag to pan. Two-finger trackpad scrolling always scrolls. Pinch or Ctrl + trackpad scroll zooms. Mouse-wheel behaviour follows the view dropdown; Ctrl + wheel does the opposite.";
         let accessible_help = format!("{context_tooltip}. {navigation_tooltip}");
         h_flex()
@@ -129,6 +164,21 @@ impl DocumentWorkspace {
                     })
                     .child(context),
             )
+            .when_some(scale, |bar, (document_id, page_index, label)| {
+                bar.child(
+                    Button::new(DOCUMENT_STATUS_SCALE_ID)
+                        .debug_selector(|| DOCUMENT_STATUS_SCALE_ID.into())
+                        .flex_none()
+                        .xsmall()
+                        .ghost()
+                        .icon(gpui_component::Icon::default().path("icons/rail/scan-line.svg"))
+                        .label(label)
+                        .tooltip("Page scale. Click to change it.")
+                        .on_click(cx.listener(move |workspace, _, window, cx| {
+                            workspace.open_page_scale_dialog(document_id, page_index, window, cx);
+                        })),
+                )
+            })
             .child(
                 gpui::div()
                     .id("document-navigation-help")

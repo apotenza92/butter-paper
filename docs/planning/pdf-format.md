@@ -137,7 +137,7 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
 
 ## Edited page text
 
-Edit PDF Content changes the page content stream, not an annotation
+Edit PDF changes the page content stream, not an annotation
 (`pdf_text_edit.rs`). An edit names a line by its origin and original text
 and always applies to the unedited file.
 
@@ -243,6 +243,115 @@ and always applies to the unedited file.
   whole file as before.
 - Saving checks every edited line in the reopened file. After a save the
   undo history is rebased onto the saved text.
+
+### Edited tables
+
+A table edit (`pdf_tables.rs`, `PageTableEdit`) is kept with the page's
+text edits and applied in the same pass to the unedited file. It records
+the base table's row and column boundaries and its rows and columns as
+edited: each a base band at a size, or a new band like a base one (a row
+dragged to a height also keeps that height as `set_size`), plus new cell
+text. Content outside the table never moves with it. The app now only
+writes base bands at the size their text needs; new, deleted, moved and
+set-height bands are still read and drawn as described here.
+
+- Only the page's own content streams change. A path construction operator
+  in the table is rewritten with its points moved. A subpath that runs
+  from one band boundary to another (a border, a cell's fill) stretches:
+  each point keeps its offset from its band's start, or stays at its
+  band's end when within 1.5 points of it. Any other subpath (a border
+  below a band, a drawing's stroke, even one over a border) moves whole:
+  with its band's end when it lies at the end, otherwise with the start of
+  the band at its middle. A deleted band's content collapses to zero size.
+  Clips move but are never copied.
+- A new band's borders and fills are copies of its model band's subpaths,
+  written after the original's painting operator with the same operator,
+  so they draw in its colour, width and clip.
+- A text line in the table is redrawn by its first operator from its text
+  matrix moved by its band's offset (`Tm`), then the line's own matrices
+  are restored, as for added lines; a deleted band's lines are emptied.
+  Images and forms the page draws in the table are wrapped in
+  `q 1 0 0 1 tx ty cm … Q`.
+- New cell text is drawn after the page's content in its own text object,
+  the content wrapped in `q`/`Q` first so it starts from the default state:
+  each line placed by `Tm` at its cell's top left plus its offsets, sizes in
+  page units, in the table's page font or a bundled one.
+- Saving checks each edited line where the table moved it, and that new
+  cell text reads back.
+- A save that rewrites a page around its tables keeps the page as the file
+  had it (`pdf_page_base.rs`): a one-page PDF of its content streams and
+  resources, named by its SHA-256 and kept at most 16 MB. Undo and redo
+  states before the save apply their edits of that page to it: it replaces
+  the saved page's `/Contents` and `/Resources` first (its annotations,
+  boxes and rotation stay). Kept pages are part of recovery; the PDF worker
+  is sent each once. A page too large to keep is shown as saved by every
+  state, as before.
+
+### Moved page content
+
+A move (`pdf_content_moves.rs`, `ContentMove`) is kept with the page's
+text and table edits and applied in the same pass to the unedited file.
+It names a piece of content by its kind (`text`, `drawing` or `image`) and
+where the unedited page draws it (`rect`: a text line's core box, a painted
+path's bounds or the bounds of the small clip it is drawn in, an image's
+or form's placed bounds), and records how it is placed: scaled by `scale`
+(drawings and images only) from `rect`'s bottom-left corner, then moved by
+`offset`. `removed` deletes it. With `copy` (a number), it is instead a copy
+of that content, placed the same way, drawn as well as the original.
+
+- Only the page's own content streams change. A moved text line is redrawn
+  by its first operator at its moved place, as a table moves its lines; a
+  moved or scaled path's construction operators are rewritten with every
+  point placed; a moved or scaled image or form is wrapped in `q … cm … Q`.
+  A removed line is emptied, a removed path's painting operator becomes
+  `n`, and a removed image's `Do` goes.
+- A copy is drawn again right after its original, in its graphics state
+  (colour, line width, clip): a path's construction operators and painting
+  operator, or an image's `Do`, are repeated inside `q <matrix> cm … Q`. A
+  copied drawing in a small clip repeats the whole `q`…`Q` block around its
+  clip after that block. A copied text line is drawn as new text, as new
+  cell text is, in its fonts and fill.
+- What a clip covering under half of the page box clips is one drawing,
+  named by the clip's bounds: the clip, its paths and its images move
+  together, and the app moves the text lines it clips as text moves.
+- A moved piece moves by its move alone: table edits do not move it.
+- Markups are annotations, not page content: the app moves those whose
+  centre is on moved content itself, in the same undo step.
+- A page with moves is kept as the file had it when a save rewrites it, as
+  for tables, so undo and redo reach back past the save.
+
+## Arranged pages
+
+Pages added, deleted, moved or copied in Page Thumbnails
+(`pdf_page_structure.rs`) are saved by rebuilding the page tree; every
+other change of the save then names pages in their new order.
+
+- The page tree becomes one `/Pages` node listing the pages in order. Each
+  page takes the attributes it inherited (`/Resources`, `/MediaBox`,
+  `/CropBox`, `/Rotate`).
+- A new blank page is a `/Page` with a `/MediaBox` and empty resources.
+- A copied page has its own content streams and top-level resource
+  dictionaries (fonts and images are shared), so editing one copy's text
+  leaves the other's alone. It leaves out the page's markups the app edits,
+  which the save writes again as copies under new `/NM` names, and its form
+  widgets; other annotations (links, popups) are copied with it. It has no
+  `/StructParents`.
+- A deleted page is removed with the form fields whose widgets are all on
+  it; outline entries and links to it become null, and the save drops the
+  page's objects from the file.
+- Renders apply the same arrangement (`DocumentEdits::pages`) before the
+  other edits.
+
+## Merged documents
+
+`pdf_merge.rs` merges saved PDFs into a new one: the first file's catalog
+(outline, metadata) stays, and each later file's pages, with their
+annotations, join its page tree in order. Form fields join the first
+file's `/AcroForm`; a top-level field whose name is taken is renamed
+`Name (2)`, so fields keep their own values, and the form's `/DR` gains the
+fonts it lacks. A file with a markup `/NM` the files before it use has its
+markups renamed `merged-N:name`. Protected (encrypted) files are not
+merged.
 
 ## Filled form fields
 

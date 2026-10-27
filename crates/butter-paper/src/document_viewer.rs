@@ -1096,6 +1096,25 @@ impl DocumentViewerState {
             .collect()
     }
 
+    /// Whether every tile planned for `page` shows the page as last
+    /// rendered: none is a tile kept from before its content changed, or a
+    /// preview. A page drawn without tiles has none to wait for.
+    pub fn shows_fresh_tiles(&self, page: usize) -> bool {
+        let Some(plan) = self.plan.as_ref() else {
+            return true;
+        };
+        plan.tiles
+            .iter()
+            .copied()
+            .filter(|request| request.page == page)
+            .all(|request| {
+                let detail = tile_job(request, ViewerRenderQuality::Detail);
+                let full = tile_job(request, ViewerRenderQuality::Full);
+                self.detail_cache.peek(detail.raster).is_some()
+                    || self.cache.peek(full.raster).is_some()
+            })
+    }
+
     pub fn visible_tile_quality(&self, request: TileRequest) -> Option<ViewerRenderQuality> {
         let detail = tile_job(request, ViewerRenderQuality::Detail);
         if self.detail_cache.contains(detail.raster) {
@@ -1802,6 +1821,12 @@ mod tests {
             .position(|tile| *tile == jobs[0].authority)
             .unwrap();
         assert!(Arc::ptr_eq(&viewer.visible_tiles(0)[tile].1, &fresh));
+        // The page shows its new content once every tile is replaced.
+        assert_eq!(viewer.shows_fresh_tiles(0), jobs.len() == 1);
+        for job in &jobs[1..] {
+            assert!(viewer.finish_at(*job, Ok((test_image(), 16)), now));
+        }
+        assert!(viewer.shows_fresh_tiles(0));
     }
 
     #[test]

@@ -13,8 +13,6 @@ pub(super) struct DocumentAlerts {
     pub recovery_preparation_issue: Option<(String, bool, bool)>,
     pub presentation_error: Option<String>,
     pub recovery_pending: bool,
-    pub page_scale_pick_instruction: Option<&'static str>,
-    pub page_scale_cancel_control: Option<WeakEntity<PageScaleControl>>,
 }
 
 impl DocumentWorkspace {
@@ -64,8 +62,6 @@ impl DocumentWorkspace {
             recovery_preparation_issue,
             presentation_error,
             recovery_pending,
-            page_scale_pick_instruction,
-            page_scale_cancel_control,
         } = alerts;
         column
         .when(redact_pending && !recovery_only, |root| {
@@ -256,32 +252,6 @@ impl DocumentWorkspace {
                                     cx.notify();
                                 }
                             })),
-                    ),
-            )
-        })
-        .when_some(page_scale_pick_instruction.filter(|_| !recovery_only), |root, instruction| {
-            root.child(
-                h_flex()
-                    .id(PAGE_SCALE_PICK_ALERT_ID)
-                    .debug_selector(|| PAGE_SCALE_PICK_ALERT_ID.into())
-                    .w_full()
-                    .gap_2()
-                    .p_2()
-                    .child(
-                        Alert::info("page-scale-pick-instructions", instruction)
-                            .title("Set Page Scale")
-                            .flex_1().min_w_0(),
-                    )
-                    .child(
-                        Button::new(PAGE_SCALE_PICK_CANCEL_ID)
-                            .debug_selector(|| PAGE_SCALE_PICK_CANCEL_ID.into())
-                            .label("Cancel")
-                            .outline()
-                            .on_click(move |_, _, cx| {
-                                if let Some(control) = &page_scale_cancel_control {
-                                    let _ = control.update(cx, |control, cx| { control.cancel_pick(cx); });
-                                }
-                            }),
                     ),
             )
         })

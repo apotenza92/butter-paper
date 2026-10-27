@@ -308,20 +308,9 @@ pub struct TemplateSplitControl {
     creating: bool,
     save_document_enabled: bool,
     picker_focus: FocusHandle,
-    /// Each half's width, when the control lines up with tool columns.
-    segment_width: Option<gpui::Rems>,
 }
 
 impl TemplateSplitControl {
-    /// Gives each half a fixed width (`None` for their natural width), so
-    /// the control can line up with the tool rail's columns.
-    pub fn set_segment_width(&mut self, width: Option<gpui::Rems>, cx: &mut Context<Self>) {
-        if self.segment_width != width {
-            self.segment_width = width;
-            cx.notify();
-        }
-    }
-
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             picker_open: false,
@@ -331,7 +320,6 @@ impl TemplateSplitControl {
             creating: false,
             save_document_enabled: false,
             picker_focus: cx.focus_handle(),
-            segment_width: None,
         }
     }
 
@@ -443,7 +431,6 @@ impl Render for TemplateSplitControl {
                 .debug_selector(|| TEMPLATE_PRIMARY_ID.into())
                 .accessibility_id(TEMPLATE_PRIMARY_ID)
                 .icon(IconName::File)
-                .when_some(self.segment_width, |button, width| button.w(width))
                 .disabled(self.creating)
                 .tooltip(format!("{primary_label}. Click to create."))
                 .on_click(move |_: &ClickEvent, _, cx| {
@@ -463,7 +450,6 @@ impl Render for TemplateSplitControl {
                 .outline()
                 .rounded_l_none()
                 .border_l_0()
-                .when_some(self.segment_width, |button, width| button.w(width))
                 .debug_selector(|| TEMPLATE_PICKER_ID.into())
                 .accessibility_id(TEMPLATE_PICKER_ID)
                 .dropdown_caret(true)

@@ -123,6 +123,23 @@ impl DocumentWorkspace {
                     let keyboard_tab_focus = tab_focus.clone();
                     let reveal_close = self.session_tab_hovered == Some(tab_document_id)
                         || tab_focus.contains_focused(window, cx);
+                    // Under the label and close button: a right-click
+                    // anywhere else on the tab opens its menu.
+                    let menu_control = cx.entity().downgrade();
+                    let tab_menu_area = gpui::div()
+                        .id(SharedString::from(format!("document-tab-menu-{tab_document_id}")))
+                        .absolute()
+                        .inset_0()
+                        .context_menu(move |menu, _, _| {
+                            let merge_control = menu_control.clone();
+                            menu.item(PopupMenuItem::new("Merge Documents…").on_click(
+                                move |_, window, cx| {
+                                    let _ = merge_control.update(cx, |workspace, cx| {
+                                        workspace.open_merge_dialog(window, cx);
+                                    });
+                                },
+                            ))
+                        });
                     let tab = Tab::new()
                         // Short titles still leave a grab area clear of the
                         // close button, as browsers keep a minimum tab width.
@@ -139,8 +156,10 @@ impl DocumentWorkspace {
                         }))
                         .group(tab_id.clone())
                         .debug_selector(move || tab_selector.clone())
+                        .child(tab_menu_area)
                         .child(session_tab_overlay_label(
                             format_document_tab_label(&tab_title).to_owned(),
+                            tab_title.clone(),
                             tab_id.clone(), reveal_close, dirty, cx,
                         ))
                         .aria_label(accessibility_label)
@@ -369,7 +388,7 @@ impl DocumentWorkspace {
                                     }
                                 });
                             })
-                            .w_80()
+                            .w_96()
                             .trigger(close)
                             .content(move |_, _window, cx| {
                                 let popover = cx.entity();
@@ -384,12 +403,15 @@ impl DocumentWorkspace {
                                     .w_full()
                                     .min_w_0()
                                     .whitespace_normal()
-                                    .gap_3()
+                                    // Room inside the popover's own inset, as a
+                                    // dialog has.
+                                    .p_1()
+                                    .gap_4()
                                     .child(
                                         v_flex()
                                             .w_full()
                                             .min_w_0()
-                                            .gap_1()
+                                            .gap_1p5()
                                             .child(
                                                 gpui::div()
                                                     .w_full()
@@ -405,8 +427,10 @@ impl DocumentWorkspace {
                                                     .debug_selector(|| "dirty-close-explanation".into())
                                                     .w_full()
                                                     .whitespace_normal()
+                                                    .text_sm()
+                                                    .line_height(gpui::relative(1.45))
                                                     .text_color(cx.theme().muted_foreground)
-                                                    .child("Your changes will be lost if you close this tab without saving."),
+                                                    .child("Closing without saving loses your changes."),
                                             ),
                                     )
                                     .child(
@@ -540,15 +564,11 @@ impl DocumentWorkspace {
         let update_button = cx
             .try_global::<crate::application_settings::ApplicationUpdatePresentation>()
             .and_then(|presentation| crate::application_settings::update_button(presentation, cx));
-        // With three or more tool columns, Open and New sit above the rail's
-        // last three columns, and the strip's divider continues the rail's
-        // edge. Narrower rails cannot fit them, so they keep a padded row.
-        let rail_columns = self.right_rail_columns;
-        let aligned = rail_columns >= 3;
-        let rem = window.rem_size();
-        self.template_control.update(cx, |control, cx| {
-            control.set_segment_width(template_segment_width(rail_columns), cx)
-        });
+        // Open and New keep one size and spacing, the same distance from the
+        // window's right edge, however many tool columns the rail has. Their
+        // lane is never narrower than a three-column rail, so its divider
+        // stays put below three columns and follows the rail's edge above.
+        let actions_width = right_rail_width(self.right_rail_columns.max(3), window.rem_size());
         let has_extras = recovery_button.is_some() || update_button.is_some();
         let overflow_lane = self.session_tabs_overflow.then(|| {
             let control = cx.entity().downgrade();
@@ -556,9 +576,9 @@ impl DocumentWorkspace {
                 .id("document-tabs-overflow-lane")
                 .debug_selector(|| "document-tabs-overflow-lane".into())
                 .flex_shrink_0()
-                .when(aligned, |lane| lane.pl_3())
+                .pl_3()
                 .pr_3()
-                .when(!aligned || has_extras, |lane| lane.border_r_1())
+                .when(has_extras, |lane| lane.border_r_1())
                 .border_color(cx.theme().border)
                 .child(
                     accessible_icon_button(
@@ -593,53 +613,32 @@ impl DocumentWorkspace {
                     }),
                 )
         });
-        let document_actions = if aligned {
-            let extras = has_extras.then(|| {
-                h_flex()
-                    .flex_shrink_0()
-                    // Full height, so the update lane's divider spans the strip.
-                    .self_stretch()
-                    .px_3()
-                    .gap_2()
-                    .children(recovery_button)
-                    .children(update_button)
-            });
-            let start = (rail_columns - 2) as i16;
-            h_flex().flex_shrink_0().children(extras).child(
-                h_flex()
-                    .id(DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-                    .debug_selector(|| DOCUMENT_WORKSPACE_TAB_ACTIONS_ID.into())
-                    .flex_none()
-                    .self_stretch()
-                    .w(right_rail_width(rail_columns, rem))
-                    .border_l_1()
-                    .border_color(cx.theme().border)
-                    .justify_center()
-                    .child(
-                        gpui::div()
-                            .grid()
-                            .w(gpui::rems(2.5 * rail_columns as f32 - 0.5))
-                            .grid_cols(rail_columns as u16)
-                            .gap_2()
-                            .items_center()
-                            .child(gpui::div().col_start(start).child(open_document))
-                            .child(
-                                gpui::div()
-                                    .col_start(start + 1)
-                                    .col_span(2)
-                                    .child(self.template_control.clone()),
-                            ),
-                    ),
-            )
-        } else {
+        let extras = has_extras.then(|| {
             h_flex()
                 .flex_shrink_0()
+                // Full height, so the update lane's divider spans the strip.
+                .self_stretch()
+                .px_3()
                 .gap_2()
                 .children(recovery_button)
-                .child(open_document)
-                .child(self.template_control.clone())
                 .children(update_button)
-        };
+        });
+        let document_actions = h_flex().flex_shrink_0().children(extras).child(
+            h_flex()
+                .id(DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
+                .debug_selector(|| DOCUMENT_WORKSPACE_TAB_ACTIONS_ID.into())
+                .flex_none()
+                .self_stretch()
+                .w(actions_width)
+                .border_l_1()
+                .border_color(cx.theme().border)
+                .justify_end()
+                .items_center()
+                .pr_3()
+                .gap_2()
+                .child(open_document)
+                .child(self.template_control.clone()),
+        );
         let tab_bar_click_control = cx.entity().downgrade();
         let tab_bar_click_ids = session_tab_ids.clone();
         let tab_bar_focus_handles = self.session_tab_focus_handles.clone();
@@ -856,9 +855,6 @@ impl DocumentWorkspace {
             .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
             .w_full()
             .pl_3()
-            // Aligned actions meet the strip directly, so the divider lands
-            // on the rail's edge.
-            .when(!aligned, |strip| strip.pr_3().gap_3())
             .items_stretch()
             .border_b_1()
             .border_color(cx.theme().border)
@@ -894,10 +890,9 @@ impl DocumentWorkspace {
                     .py_2()
                     .pr_3()
                     .overflow_hidden()
-                    .when(
-                        !aligned || self.session_tabs_overflow || has_extras,
-                        |strip| strip.border_r_1(),
-                    )
+                    .when(self.session_tabs_overflow || has_extras, |strip| {
+                        strip.border_r_1()
+                    })
                     .border_color(cx.theme().border)
                     .on_prepaint(move |_, _, cx| {
                         // Read after child prepaint has refreshed the tab bounds.
@@ -955,9 +950,4 @@ impl DocumentWorkspace {
             .child(reorder_status)
             .child(pointer_event_bridge)
     }
-}
-
-/// Each half of the New split button when it spans two tool columns.
-pub(super) fn template_segment_width(rail_columns: usize) -> Option<gpui::Rems> {
-    (rail_columns >= 3).then(|| gpui::rems(2.25))
 }

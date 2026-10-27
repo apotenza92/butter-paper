@@ -27,8 +27,8 @@ use crate::{
         ApplicationCloseTransition, ApplicationCloseTransitionStatus, SaveDestination,
     },
     document_workspace::{
-        ApplyDisposition, DocumentId, DocumentOpenBatchRequest, DocumentOpenOrigin,
-        DocumentWorkspace, NativeDocumentSaver, SaveDocumentRequest, SavedNativeDocument,
+        ApplyDisposition, DocumentId, DocumentWorkspace, NativeDocumentSaver, SaveDocumentRequest,
+        SavedNativeDocument, save_as_pdf_target,
     },
     session_manifest::{SessionManifestError, SessionManifestStore, SessionSnapshot},
 };
@@ -602,7 +602,11 @@ impl ApplicationCloseWorkspace {
                 owner.pending_save_as_prompt = None;
                 match selected {
                     Ok(Some(target_path)) => {
-                        owner.resolve_save_as(pending.token, Some(target_path), cx);
+                        owner.resolve_save_as(
+                            pending.token,
+                            Some(save_as_pdf_target(target_path)),
+                            cx,
+                        );
                         owner.dispatch_pending_save_with_window(window_handle, cx);
                         owner.prompt_for_pending_save_as(window_handle, cx);
                     }
@@ -1404,12 +1408,11 @@ impl ApplicationCloseShell {
         if paths.is_empty() {
             return;
         }
+        // Images go onto the page under the pointer; PDFs open.
+        let position = window.mouse_position();
         let document_workspace = self.workspace.read(cx).workspace().clone();
         document_workspace.update(cx, |workspace, cx| {
-            workspace.open_documents(
-                DocumentOpenBatchRequest::new(DocumentOpenOrigin::Drop, paths),
-                cx,
-            );
+            workspace.drop_paths(paths, position, cx);
         });
         window.activate_window();
     }

@@ -49,8 +49,8 @@ use crate::annotation_model::{
     RetainedAnnotationObstacle, ScalePrecision, ScalePrecisionMode, ScaleSource, ScaleUnit,
     SnapshotAnnotation, StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment,
     TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
-    built_in_scale_presets, cloud_curl_radius, ellipse_cubic_bezier_points,
-    measurement_line_layout, rectangle_world_corners, sample_cloud_appearance_path,
+    cloud_curl_radius, ellipse_cubic_bezier_points, measurement_line_layout,
+    rectangle_world_corners, sample_cloud_appearance_path,
 };
 use crate::image_asset_decode::MAX_ENCODED_IMAGE_BYTES;
 #[cfg(any(unix, windows))]
@@ -1223,6 +1223,25 @@ impl PdfPersistenceSession {
         })
     }
 
+    /// Rebuilds the file's pages as `slots` arranges them, then reads the
+    /// file again as if opened that way, so the other changes of a save
+    /// name pages as arranged.
+    pub fn arrange_pages(
+        &mut self,
+        slots: &[crate::pdf_page_structure::PageSlot],
+    ) -> Result<(), PdfPersistenceError> {
+        if crate::pdf_page_structure::is_unchanged(slots, self.page_count()) {
+            return Ok(());
+        }
+        let managed = managed_annotation_slots(&self.document)?;
+        crate::pdf_page_structure::restructure_pages(&mut self.document, slots, &managed)
+            .map_err(PdfPersistenceError::InvalidDocument)?;
+        let document = std::mem::replace(&mut self.document, Document::with_version("1.7"));
+        let source_guard = self.source_guard.take();
+        *self = Self::from_document(self.source_path.clone(), document, source_guard)?;
+        Ok(())
+    }
+
     pub fn page_count(&self) -> usize {
         self.document.get_pages().len()
     }
@@ -1676,15 +1695,46 @@ impl PdfPersistenceSession {
         &mut self,
         edits: &[crate::pdf_text_edit::PageTextEdit],
     ) -> Result<(), PdfPersistenceError> {
-        if edits.is_empty() {
+        self.apply_page_content_edits(edits, &[], &[])
+    }
+
+    /// Applies edits to existing page text and to tables' rows, and moves
+    /// page content. Edits name lines, tables and content of this
+    /// session's source document.
+    pub fn apply_page_content_edits(
+        &mut self,
+        edits: &[crate::pdf_text_edit::PageTextEdit],
+        tables: &[crate::pdf_tables::PageTableEdit],
+        moves: &[crate::pdf_content_moves::ContentMove],
+    ) -> Result<(), PdfPersistenceError> {
+        if edits.is_empty() && tables.is_empty() && moves.is_empty() {
             return Ok(());
         }
-        crate::pdf_text_edit::apply_text_edits(
+        crate::pdf_text_edit::apply_content_edits(
             &mut self.document,
             edits,
+            tables,
+            moves,
             &crate::pdf_text_edit::TextEditLimits::default(),
         )
         .map_err(|error| PdfPersistenceError::InvalidDocument(error.to_string()))
+    }
+
+    /// Page `page_index` as the session's source has it, kept as a one-page
+    /// PDF.
+    pub fn snapshot_page(&self, page_index: u32) -> Result<Vec<u8>, PdfPersistenceError> {
+        crate::pdf_page_base::snapshot_page(&self.document, page_index)
+            .map_err(PdfPersistenceError::InvalidDocument)
+    }
+
+    /// Shows kept pages in place of the source's: edits of those pages
+    /// apply to them.
+    pub fn restore_pages(
+        &mut self,
+        bases: &[crate::pdf_page_base::PageBase],
+    ) -> Result<(), PdfPersistenceError> {
+        crate::pdf_page_base::restore_pages(&mut self.document, bases)
+            .map_err(PdfPersistenceError::InvalidDocument)
     }
 
     /// Writes filled form field values, with their new appearances.
@@ -10330,6 +10380,23 @@ fn annotation_is_hidden_by_default_optional_content(
     Ok(!visible)
 }
 
+/// Each page's `/Annots` slots holding markups the app edits itself (by
+/// page object), which a copy of the page leaves out: the app adds copies
+/// of those markups under new names.
+pub fn managed_annotation_slots(
+    document: &Document,
+) -> Result<BTreeMap<ObjectId, HashSet<usize>>, PdfPersistenceError> {
+    let calibrations = import_page_scales(document)
+        .iter()
+        .filter_map(|scale| {
+            LengthCalibration::from_page_scale(scale)
+                .ok()
+                .map(|value| (scale.page_index, value))
+        })
+        .collect();
+    Ok(import_annotations(document, &calibrations)?.managed_annotation_slots)
+}
+
 /// Prepares the retained PDF annotation channel using the actual import admission
 /// result. Exact page/array slots, not names or subtype guesses, define ownership.
 /// The bytes are for rendering only and must never replace the persistence source.
@@ -10647,13 +10714,12 @@ fn import_viewport_scale(
             .and_then(|format| number_format_precision(&format))
             .or_else(|| number_format_precision(&x))
             .unwrap_or_else(|| ScalePrecision::decimal(0.01).expect("valid precision"));
-        let preset = built_in_scale_presets().into_iter().find(|preset| {
-            preset.pdf_units == pdf_units
-                && preset.real_units == real_units
-                && ((preset.scale_x - scale_x) / scale_x).abs() < 1e-6
-        });
-        let (source, name) = match preset {
-            Some(preset) => (ScaleSource::Preset, preset.name),
+        // A standard scale is named as drawings name it; any other keeps
+        // Revu's ratio text.
+        let standard =
+            crate::page_scale_catalog::standard_for(scale_x * real_units.points(), real_units);
+        let (source, name) = match standard {
+            Some(standard) => (ScaleSource::Preset, standard.label.to_owned()),
             None => (
                 ScaleSource::Custom,
                 if ratio.is_empty() {

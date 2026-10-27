@@ -65,6 +65,8 @@ pub struct Paragraph {
     breaks: Vec<bool>,
     /// Settings chosen in place of the page's.
     format: ParagraphFormat,
+    /// The table cell the paragraph is in.
+    cell: Option<crate::pdf_text_blocks::BlockCell>,
 }
 
 /// A line of the wrapped paragraph: its characters, and where it is drawn.
@@ -149,6 +151,12 @@ fn starts_item(text: &[StyledChar], position: usize) -> bool {
 }
 
 /// The largest font size in `chars`, at least `floor`.
+/// Whether `text` ends in a hard break that no line of `wrapped` follows.
+fn ends_in_break(text: &[StyledChar], wrapped: &[WrappedLine]) -> bool {
+    text.last().is_some_and(|(character, _)| *character == '\n')
+        && !wrapped.iter().any(|line| line.range.start == text.len())
+}
+
 fn largest_size(chars: &[StyledChar], floor: f64) -> f64 {
     chars
         .iter()
@@ -237,8 +245,9 @@ impl Paragraph {
             }
         }
         // A single line (a heading, a label) grows rather than wraps, as in
-        // Revu; only a hard break starts a new line.
-        let grows = lines.len() == 1;
+        // Revu; only a hard break starts a new line. A table cell's text
+        // wraps at the cell's width, as in a word processor.
+        let grows = lines.len() == 1 && block.cell.is_none();
         let last = lines.last()?;
         let em = last
             .chars
@@ -315,7 +324,22 @@ impl Paragraph {
                 .filter(|start| *start > end)
                 .fold(f64::MAX, f64::min)
         };
-        if block.alignment == TextBlockAlignment::Left && columns.len() == 1 {
+        if let Some(cell) = block.cell {
+            // A cell's text runs within the cell: left-aligned and justified
+            // text from where it starts to the cell's right, right-aligned
+            // text from the cell's left to where it ends, centred text
+            // across the cell.
+            for edges in &mut page_edges {
+                *edges = match block.alignment {
+                    TextBlockAlignment::Left | TextBlockAlignment::Justified => {
+                        (edges.0, cell.right.max(edges.0 + 1.))
+                    }
+                    TextBlockAlignment::Right | TextBlockAlignment::Center => {
+                        (cell.left, cell.right.max(cell.left + 1.))
+                    }
+                };
+            }
+        } else if block.alignment == TextBlockAlignment::Left && columns.len() == 1 {
             for (line, edges) in lines.iter().zip(&mut page_edges) {
                 let Some((_, end)) = span(line) else {
                     continue;
@@ -374,7 +398,13 @@ impl Paragraph {
             joined_by_space,
             breaks,
             format: ParagraphFormat::default(),
+            cell: block.cell,
         })
+    }
+
+    /// The table cell the paragraph is in.
+    pub fn cell(&self) -> Option<crate::pdf_text_blocks::BlockCell> {
+        self.cell
     }
 
     /// The paragraph with settings chosen in place of the page's.
@@ -759,7 +789,12 @@ impl Paragraph {
                 added = true;
             }
             if position >= text.len() {
-                // The text ran out: remaining lines are emptied.
+                // The text ran out: no line is drawn on the remaining base
+                // lines, which `edits` empties, but for one to hold the
+                // caret after a hard break at the end, or in emptied text.
+                if !wrapped.is_empty() && !ends_in_break(text, &wrapped) {
+                    break;
+                }
                 let layout = self.measure(&line, &[])?;
                 wrapped.push(WrappedLine {
                     range: position..position,
@@ -821,6 +856,21 @@ impl Paragraph {
             position = next;
             slot += 1;
         }
+        // A hard break at the end starts an empty line, for the caret.
+        if ends_in_break(text, &wrapped) {
+            let (line, _, below) = self.place(slot);
+            let layout = self.measure(&line, &[])?;
+            wrapped.push(WrappedLine {
+                range: text.len()..text.len(),
+                slot,
+                line,
+                layout,
+                fit: LineFit::default(),
+                unchanged: false,
+                added: slot >= count,
+                below,
+            });
+        }
         Ok(wrapped)
     }
 
@@ -854,7 +904,9 @@ impl Paragraph {
                     "the paragraph is too long".into(),
                 ));
             }
-            if slot > 0 && position >= text.len() {
+            // Text ending in a hard break ends on an empty line, for the
+            // caret.
+            if slot > 0 && position >= text.len() && !ends_in_break(text, &wrapped) {
                 break;
             }
             let item = starts_item(text, position);

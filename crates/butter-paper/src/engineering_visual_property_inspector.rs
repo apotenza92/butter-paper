@@ -29,6 +29,8 @@ use crate::document_workspace::DocumentId;
 pub const ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID: &str = "engineering-visual-property-inspector";
 pub const ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID: &str =
     "engineering-visual-property-inspector-locked";
+pub const ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID: &str =
+    "engineering-visual-property-inspector-aspect-locked";
 pub const ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID: &str =
     "engineering-visual-property-inspector-color-trigger";
 pub const ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID: &str =
@@ -84,6 +86,8 @@ pub enum EngineeringVisualPropertyValues {
     },
     Image {
         opacity: f64,
+        /// Resizing keeps its proportions.
+        aspect_locked: bool,
     },
 }
 
@@ -107,7 +111,7 @@ impl EngineeringVisualPropertyValues {
     fn opacity(&self) -> f64 {
         match self {
             Self::Arc { appearance } | Self::Cloud { appearance, .. } => appearance.opacity(),
-            Self::Image { opacity } | Self::Snapshot { opacity } => *opacity,
+            Self::Image { opacity, .. } | Self::Snapshot { opacity } => *opacity,
         }
     }
 }
@@ -125,6 +129,8 @@ pub struct EngineeringVisualPropertySnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineeringVisualPropertyPatch {
     Locked(bool),
+    /// An image's proportions locked or freed.
+    AspectLocked(bool),
     ColorAndOpacity {
         color: String,
         opacity: f64,
@@ -525,6 +531,40 @@ impl Render for EngineeringVisualPropertyInspector {
                         ),
                 ),
             );
+        // An image's proportions, kept as it is resized from a corner.
+        let details = match snapshot.values {
+            EngineeringVisualPropertyValues::Image { aspect_locked, .. } => {
+                let aspect_control = cx.entity().downgrade();
+                details.child(
+                    Field::new()
+                        .description("Resizing keeps the image's shape.")
+                        .child(
+                            div()
+                                .id(ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID)
+                                .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID.into())
+                                .child(
+                                    Switch::new(
+                                        "engineering-visual-property-inspector-aspect-locked-switch",
+                                    )
+                                    .label("Lock proportions")
+                                    .checked(aspect_locked)
+                                    .disabled(disabled)
+                                    .on_click(move |locked, _, cx| {
+                                        let _ = aspect_control.update(cx, |inspector, cx| {
+                                            inspector.emit_patch(
+                                                EngineeringVisualPropertyPatch::AspectLocked(
+                                                    *locked,
+                                                ),
+                                                cx,
+                                            );
+                                        });
+                                    }),
+                                ),
+                        ),
+                )
+            }
+            _ => details,
+        };
         let mut appearance = v_flex().gap_3();
         if let Some(value) = snapshot.values.appearance() {
             appearance = appearance
@@ -708,6 +748,10 @@ fn patch_matches_snapshot(
 ) -> bool {
     match patch {
         EngineeringVisualPropertyPatch::Locked(value) => snapshot.locked == *value,
+        EngineeringVisualPropertyPatch::AspectLocked(value) => matches!(
+            snapshot.values,
+            EngineeringVisualPropertyValues::Image { aspect_locked, .. } if aspect_locked == *value
+        ),
         EngineeringVisualPropertyPatch::ColorAndOpacity { color, opacity } => {
             snapshot.values.appearance().is_some_and(|appearance| {
                 appearance.stroke_color() == color && appearance.opacity() == *opacity

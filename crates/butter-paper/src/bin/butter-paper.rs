@@ -8,10 +8,11 @@ use butter_paper::application_close_workspace::{
 use butter_paper::application_shell::application_data_directory;
 use butter_paper::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
-    MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow, MoveDocumentToNewWindow, NewWindow,
-    OpenReleasePage, ResetInterfaceSize, ReverseScrollZoom, SetAsDefaultPdfApp,
-    ToggleApplicationFullScreen, ToggleApplicationMenuBar, ToggleReverseScrollZoom, ZoomWindow,
-    apply_application_ui_zoom, focus_initial_command_context, init_application_shell_actions,
+    LockImageProportions, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
+    MoveDocumentToNewWindow, NewWindow, OpenReleasePage, ResetInterfaceSize, ReverseScrollZoom,
+    SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+    ToggleLockImageProportions, ToggleReverseScrollZoom, ZoomWindow, apply_application_ui_zoom,
+    focus_initial_command_context, init_application_shell_actions,
     resolve_application_ui_zoom_level,
 };
 use butter_paper::document_recovery_store::{DocumentRecoveryStore, RecoverySourceKind};
@@ -1508,6 +1509,20 @@ fn register_application_shell_actions(cx: &mut App) {
         .detach();
     });
 
+    // From Settings, with or without a document window: every window's new
+    // images follow it.
+    cx.on_action(|_: &ToggleLockImageProportions, cx| {
+        let shared = shared_application(cx);
+        let mut preferences = shared.preferences.get();
+        let locked = !preferences.lock_image_proportions();
+        preferences.set_lock_image_proportions(locked);
+        shared.preferences.set(preferences);
+        if let Err(error) = shared.preferences_store.save(preferences) {
+            eprintln!("unable to save Butter Paper application preferences: {error}");
+        }
+        cx.set_global(LockImageProportions(locked));
+        cx.refresh_windows();
+    });
     cx.on_action(|_: &ToggleReverseScrollZoom, cx| {
         defer_to_active_story(cx, |story, _, cx| story.toggle_reverse_scroll_zoom(cx));
     });
@@ -2168,6 +2183,7 @@ fn main() {
 
         let preferences = startup_preferences;
         cx.set_global(ReverseScrollZoom(preferences.reverse_scroll_zoom()));
+        cx.set_global(LockImageProportions(preferences.lock_image_proportions()));
         let worker_executable = perf.as_ref().map_or_else(
             || {
                 native_runtime_layout
@@ -2622,7 +2638,10 @@ fn next_window_bounds(cx: &mut App) -> WindowBounds {
             origin: origin + gpui::point(px(28.), px(28.)),
             size: content,
         }),
-        None => WindowBounds::centered(size(px(1200.), px(800.)), cx),
+        None => WindowBounds::Windowed(butter_paper::window_title_bar::centered_window_bounds(
+            size(px(1200.), px(800.)),
+            cx,
+        )),
     }
 }
 
@@ -3390,13 +3409,19 @@ fn begin_startup_launch(
                         });
                     }
                     Err(error) => {
+                        // Checkpoints it cannot read stay where they are;
+                        // opening documents never replaces them.
                         let _ = workspace.update(cx, |workspace, cx| {
+                            workspace.finish_startup_recovery_inspection(Vec::new(), cx);
                             workspace.show_session_recovery_warning_message(
                                 format!(
-                                    "Butter Paper could not inspect recoverable unsaved changes. Opening documents is paused to protect them. Details: {error}"
+                                    "Butter Paper could not check for unsaved changes to reopen. Details: {error}"
                                 ),
                                 cx,
                             );
+                            if let Some(open) = workspace.take_deferred_startup_open() {
+                                apply_deferred_startup_open(workspace, open, cx);
+                            }
                         });
                     }
                 }
@@ -3935,6 +3960,7 @@ mod review_driver {
             pause(cx, 2500).await;
             let script_started = std::time::Instant::now();
             let mut frames_saved = 0usize;
+            let mut recorder: Option<(std::rc::Rc<std::cell::Cell<bool>>, gpui::Task<()>)> = None;
             for line in script.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
                 writeln!(log, "> {line}").unwrap();
                 if let Ok(mut trace) = TRACE.lock() {
@@ -3965,6 +3991,31 @@ mod review_driver {
                     "toggle-menu-bar" => {
                         cx.update(|cx| cx.dispatch_action(&ToggleApplicationMenuBar));
                         pause(cx, 800).await;
+                    }
+                    "convert-to-word" => {
+                        cx.update(|cx| {
+                            cx.dispatch_action(&butter_paper::document_workspace::ConvertToWord)
+                        });
+                        pause(cx, 800).await;
+                    }
+                    "appearance" => {
+                        // appearance light|dark: every window's theme, as the
+                        // system's would set it.
+                        let appearance = if words[1] == "dark" {
+                            gpui::WindowAppearance::Dark
+                        } else {
+                            gpui::WindowAppearance::Light
+                        };
+                        cx.update(|cx| {
+                            for entry in document_window_entries(cx) {
+                                let _ = entry.handle.update(cx, |_, window, cx| {
+                                    butter_paper::system_theme::apply_window_appearance(
+                                        appearance, window, cx,
+                                    );
+                                });
+                            }
+                        });
+                        pause(cx, 500).await;
                     }
                     "settings" => {
                         cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenSettings));
@@ -4295,6 +4346,326 @@ mod review_driver {
                         );
                         pause(cx, 400).await;
                     }
+                    "right-click" => {
+                        // right-click W X Y: a right click at window
+                        // coordinates.
+                        let position = point(px(number(2)), px(number(3)));
+                        for down in [true, false] {
+                            let event = if down {
+                                PlatformInput::MouseDown(MouseDownEvent {
+                                    button: MouseButton::Right,
+                                    position,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                    first_mouse: false,
+                                })
+                            } else {
+                                PlatformInput::MouseUp(MouseUpEvent {
+                                    button: MouseButton::Right,
+                                    position,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                })
+                            };
+                            dispatch(cx, number(1) as usize, event);
+                            pause(cx, 50).await;
+                        }
+                        pause(cx, 400).await;
+                    }
+                    "down" | "up" => {
+                        // down W X Y / up W X Y: the left button pressed or
+                        // released at window coordinates.
+                        let position = point(px(number(2)), px(number(3)));
+                        let event = if words[0] == "down" {
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            })
+                        } else {
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                            })
+                        };
+                        dispatch(cx, number(1) as usize, event);
+                        pause(cx, 50).await;
+                    }
+                    "hold-move" => {
+                        // hold-move W X Y: the pointer moves to window
+                        // coordinates with the left button held.
+                        dispatch(
+                            cx,
+                            number(1) as usize,
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position: point(px(number(2)), px(number(3))),
+                                pressed_button: Some(MouseButton::Left),
+                                modifiers: Modifiers::default(),
+                            }),
+                        );
+                        pause(cx, 16).await;
+                    }
+                    "page-click" | "page-move" => {
+                        // page-click W PAGE X Y [shift], page-move W PAGE X Y
+                        // [shift]: a left click at, or a move to, a point of
+                        // the active document's page PAGE (1-based), in PDF
+                        // points.
+                        let window = number(1) as usize;
+                        let page_index = number(2) as u32 - 1;
+                        let pdf_point = butter_paper::annotation_model::PdfPoint {
+                            x: f64::from(number(3)),
+                            y: f64::from(number(4)),
+                        };
+                        let modifiers = Modifiers {
+                            shift: words.get(5) == Some(&"shift"),
+                            ..Modifiers::default()
+                        };
+                        let position = cx.update(|cx| {
+                            let entry = document_window_entries(cx).into_iter().nth(window)?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let position = workspace.page_point_in_window(
+                                workspace.active_document_id()?,
+                                page_index,
+                                pdf_point,
+                            )?;
+                            Some(script_point(&entry, position, cx))
+                        });
+                        let Some(position) = position else {
+                            writeln!(log, "{line}: page {} is not painted", page_index + 1).unwrap();
+                            continue;
+                        };
+                        dispatch(
+                            cx,
+                            window,
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                pressed_button: None,
+                                modifiers,
+                            }),
+                        );
+                        pause(cx, 100).await;
+                        if words[0] == "page-click" {
+                            dispatch(
+                                cx,
+                                window,
+                                PlatformInput::MouseDown(MouseDownEvent {
+                                    button: MouseButton::Left,
+                                    position,
+                                    modifiers,
+                                    click_count: 1,
+                                    first_mouse: false,
+                                }),
+                            );
+                            pause(cx, 50).await;
+                            dispatch(
+                                cx,
+                                window,
+                                PlatformInput::MouseUp(MouseUpEvent {
+                                    button: MouseButton::Left,
+                                    position,
+                                    modifiers,
+                                    click_count: 1,
+                                }),
+                            );
+                        }
+                        pause(cx, 400).await;
+                    }
+                    "drop-files" => {
+                        // drop-files W X Y PATH...: files dragged in from the
+                        // system and dropped at window point (X, Y), through
+                        // the same events a real drop sends.
+                        let window = number(1) as usize;
+                        let position = point(px(number(2)), px(number(3)));
+                        let paths = words[4..].iter().map(PathBuf::from).collect::<Vec<_>>();
+                        let events = [
+                            gpui::FileDropEvent::Entered {
+                                position,
+                                paths: gpui::ExternalPaths(paths.into()),
+                            },
+                            gpui::FileDropEvent::Pending { position },
+                            gpui::FileDropEvent::Submit { position },
+                        ];
+                        for event in events {
+                            dispatch(cx, window, PlatformInput::FileDrop(event));
+                            pause(cx, 50).await;
+                        }
+                    }
+                    "page-drag" => {
+                        // page-drag W PAGE X1 Y1 X2 Y2: a left drag between
+                        // two points of the active document's page PAGE
+                        // (1-based), in PDF points, in twelve steps.
+                        let window = number(1) as usize;
+                        let page_index = number(2) as u32 - 1;
+                        let ends = cx.update(|cx| {
+                            let entry = document_window_entries(cx).into_iter().nth(window)?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let document_id = workspace.active_document_id()?;
+                            let at = |x: f32, y: f32| {
+                                workspace.page_point_in_window(
+                                    document_id,
+                                    page_index,
+                                    butter_paper::annotation_model::PdfPoint {
+                                        x: f64::from(x),
+                                        y: f64::from(y),
+                                    },
+                                )
+                            };
+                            let (start, end) = (at(number(3), number(4))?, at(number(5), number(6))?);
+                            Some((script_point(&entry, start, cx), script_point(&entry, end, cx)))
+                        });
+                        let Some((start, end)) = ends else {
+                            writeln!(log, "{line}: page {} is not painted", page_index + 1).unwrap();
+                            continue;
+                        };
+                        dispatch(cx, window, PlatformInput::MouseMove(MouseMoveEvent {
+                            position: start,
+                            pressed_button: None,
+                            modifiers: Modifiers::default(),
+                        }));
+                        pause(cx, 150).await;
+                        dispatch(cx, window, PlatformInput::MouseDown(MouseDownEvent {
+                            button: MouseButton::Left,
+                            position: start,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                            first_mouse: false,
+                        }));
+                        for step in 1..=12 {
+                            pause(cx, 30).await;
+                            dispatch(cx, window, PlatformInput::MouseMove(MouseMoveEvent {
+                                position: start + (end - start) * (step as f32 / 12.),
+                                pressed_button: Some(MouseButton::Left),
+                                modifiers: Modifiers::default(),
+                            }));
+                        }
+                        pause(cx, 30).await;
+                        dispatch(cx, window, PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: end,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                        }));
+                        pause(cx, 600).await;
+                    }
+                    "log-document" => {
+                        // log-document W LABEL: the active document's pages,
+                        // text boxes, page text and table edits, and path.
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(window)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                let workspace = workspace.read(cx);
+                                let id = workspace.active_document_id();
+                                let snapshot = id.and_then(|id| workspace.annotation_snapshot(id, cx));
+                                let text_boxes = snapshot.as_ref().map(|snapshot| {
+                                    snapshot
+                                        .text_boxes
+                                        .iter()
+                                        .map(|text_box| {
+                                            format!(
+                                                "{}@p{}[{:.0},{:.0} {:.0}x{:.0}]{:?}",
+                                                text_box.id.as_str(),
+                                                text_box.page_index + 1,
+                                                text_box.layout_rect.x,
+                                                text_box.layout_rect.y,
+                                                text_box.layout_rect.width,
+                                                text_box.layout_rect.height,
+                                                text_box.content(),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                });
+                                writeln!(
+                                    log,
+                                    "document {} pages={:?} markups={:?} text_boxes={:?} text_edits={:?} table_edits={:?} content_moves={:?} dirty={:?} path={:?} status={:?} file_error={:?}",
+                                    words.get(2).copied().unwrap_or_default(),
+                                    id.and_then(|id| workspace.page_count(id, cx)),
+                                    snapshot.as_ref().map(|snapshot| snapshot.annotation_order.len()),
+                                    text_boxes,
+                                    snapshot.as_ref().map(|snapshot| snapshot.page_text_edits.len()),
+                                    snapshot.as_ref().map(|snapshot| snapshot.page_table_edits.len()),
+                                    snapshot.as_ref().map(|snapshot| snapshot.page_content_moves.len()),
+                                    snapshot.as_ref().map(|snapshot| snapshot.dirty),
+                                    id.and_then(|id| workspace.session(id, cx)).map(|session| session.read(cx).path().to_owned()),
+                                    workspace.annotation_status(),
+                                    workspace.last_file_error(),
+                                )
+                                .unwrap();
+                            }
+                        });
+                    }
+                    "page-scale" => {
+                        // page-scale: opens Page Scale for the current page.
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).into_iter().next() {
+                                let _ = entry.handle.update(cx, |_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(butter_paper::document_workspace::SetPageScale),
+                                        cx,
+                                    )
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
+                    }
+                    "log-scale" => {
+                        // log-scale W LABEL: each page's scale and every
+                        // measurement's caption in the active document.
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            let Some(workspace) = document_window_entries(cx)
+                                .get(window)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            else {
+                                return;
+                            };
+                            let workspace = workspace.read(cx);
+                            let Some(snapshot) = workspace
+                                .active_document_id()
+                                .and_then(|id| workspace.annotation_snapshot(id, cx))
+                            else {
+                                return;
+                            };
+                            let scales = snapshot
+                                .page_scales
+                                .iter()
+                                .map(|scale| {
+                                    format!(
+                                        "p{}={} ({} per pt {})",
+                                        scale.page_index + 1,
+                                        butter_paper::page_scale_catalog::scale_label(scale),
+                                        scale.scale_x,
+                                        scale.real_units.as_str()
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            let lengths = snapshot
+                                .lengths
+                                .iter()
+                                .map(|length| format!("p{} {}", length.page_index + 1, length.caption()))
+                                .chain(snapshot.measurement_paths.iter().map(|path| {
+                                    format!("p{} {}", path.page_index + 1, path.caption())
+                                }))
+                                .collect::<Vec<_>>();
+                            writeln!(
+                                log,
+                                "scale {} scales={scales:?} measurements={lengths:?} dirty={} revision={} status={:?}",
+                                words.get(2).copied().unwrap_or_default(),
+                                snapshot.dirty,
+                                snapshot.revision,
+                                workspace.annotation_status(),
+                            )
+                            .unwrap();
+                        });
+                    }
                     "move" => {
                         // move W X Y: the pointer moves to window coordinates.
                         dispatch(
@@ -4346,7 +4717,7 @@ mod review_driver {
                         }));
                     }
                     "frames" => {
-                        // frames W wheel LINES|key KEYSTROKE COUNT GAP_MS AFTER_MS NAME:
+                        // frames W wheel LINES|key KEYSTROKE|drag X,Y,DX,DY COUNT GAP_MS AFTER_MS NAME:
                         // COUNT wheel notches (at the viewport, negative turns
                         // down) or key presses GAP_MS apart, saving every frame
                         // drawn until AFTER_MS after the last. Times are from
@@ -4356,8 +4727,24 @@ mod review_driver {
                         let gap = Duration::from_millis(number(5) as u64);
                         let after = Duration::from_millis(number(6) as u64);
                         let name = words[7];
-                        let input = match words[2] {
-                            "wheel" => PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        // drag X,Y,DX,DY: each step moves the held pointer
+                        // DX,DY on from X,Y.
+                        let drag = (words[2] == "drag").then(|| {
+                            words[3]
+                                .split(',')
+                                .map(|value| value.parse::<f32>().unwrap())
+                                .collect::<Vec<_>>()
+                        });
+                        let input = |step: usize| match (words[2], &drag) {
+                            ("drag", Some(drag)) => PlatformInput::MouseMove(MouseMoveEvent {
+                                position: point(
+                                    px(drag[0] + drag[2] * (step + 1) as f32),
+                                    px(drag[1] + drag[3] * (step + 1) as f32),
+                                ),
+                                pressed_button: Some(MouseButton::Left),
+                                modifiers: Modifiers::default(),
+                            }),
+                            ("wheel", _) => PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
                                 position: point(px(800.), px(450.)),
                                 delta: gpui::ScrollDelta::Lines(point(0., number(3))),
                                 touch_phase: gpui::TouchPhase::Moved,
@@ -4371,7 +4758,7 @@ mod review_driver {
                         };
                         for step in 0..count {
                             writeln!(log, "input {name} {} {} at={}", words[2], words[3], script_started.elapsed().as_millis()).unwrap();
-                            dispatch(cx, index, input.clone());
+                            dispatch(cx, index, input(step));
                             let until = std::time::Instant::now() + if step + 1 == count { after } else { gap };
                             while std::time::Instant::now() < until {
                                 cx.update(|cx| {
@@ -4404,6 +4791,29 @@ mod review_driver {
                                 pause(cx, 16).await;
                             }
                         }
+                    }
+                    "record-start" => {
+                        // record-start W NAME: records window W to NAME.mp4
+                        // as fast as frames draw (up to 120 a second), timed
+                        // by the wall clock, with the pointer and its presses
+                        // drawn on, until record-stop. Inputs and frame times
+                        // go to NAME-events.log.
+                        let index = number(1) as usize;
+                        let running = std::rc::Rc::new(std::cell::Cell::new(true));
+                        start_recording(&out.join(format!("{}-events.log", words[2])));
+                        let task = cx.spawn({
+                            let running = running.clone();
+                            let video = out.join(format!("{}.mp4", words[2]));
+                            async move |cx| record(cx, index, video, running).await
+                        });
+                        recorder = Some((running, task));
+                    }
+                    "record-stop" => {
+                        if let Some((running, task)) = recorder.take() {
+                            running.set(false);
+                            task.await;
+                        }
+                        stop_recording();
                     }
                     "caption" => {
                         // caption TEXT: labels the frames that follow.
@@ -4507,6 +4917,47 @@ mod review_driver {
                         }
                         pause(cx, 800).await;
                     }
+                    "hold-key" => {
+                        // hold-key W KEYSTROKE COUNT MS: holds a key in window W,
+                        // repeating COUNT times MS apart, then lets it go.
+                        let window = number(1) as usize;
+                        let (count, every) = (number(3) as usize, number(4) as u64);
+                        if let Ok(keystroke) = gpui::Keystroke::parse(words[2]) {
+                            for repeat in 0..count.max(1) {
+                                dispatch(
+                                    cx,
+                                    window,
+                                    PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                        keystroke: keystroke.clone(),
+                                        is_held: repeat > 0,
+                                        prefer_character_input: false,
+                                    }),
+                                );
+                                pause(cx, every).await;
+                            }
+                            dispatch(
+                                cx,
+                                window,
+                                PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+                            );
+                        }
+                        pause(cx, 300).await;
+                    }
+                    "settings-click" => {
+                        // settings-click X Y: a left click at a point of the
+                        // Settings window.
+                        let position = point(px(number(1)), px(number(2)));
+                        cx.update(|cx| {
+                            if let Some(handle) = butter_paper::application_settings::review_window(cx) {
+                                let _ = handle.update(cx, |_, window, cx| {
+                                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }), cx);
+                                    window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }), cx);
+                                    window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position, modifiers: Modifiers::default(), click_count: 1 }), cx);
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
+                    }
                     "settings-key" => {
                         if let Ok(keystroke) = gpui::Keystroke::parse(words[1]) {
                             cx.update(|cx| {
@@ -4536,6 +4987,37 @@ mod review_driver {
                             }
                         });
                         pause(cx, 1000).await;
+                    }
+                    "type-paced" => {
+                        // type-paced W MS TEXT: characters one at a time, MS
+                        // apart, as a person types; logs how long each took.
+                        let window = number(1) as usize;
+                        let gap = number(2) as u64;
+                        let text = line.splitn(4, ' ').nth(3).unwrap_or_default().to_string();
+                        for character in text.chars() {
+                            let started = std::time::Instant::now();
+                            cx.update(|cx| {
+                                if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                                    let _ = entry.handle.update(cx, |_, window, cx| {
+                                        window.dispatch_keystroke(
+                                            gpui::Keystroke {
+                                                modifiers: gpui::Modifiers::default(),
+                                                key: if character == ' ' {
+                                                    "space".into()
+                                                } else {
+                                                    character.to_lowercase().to_string()
+                                                },
+                                                key_char: Some(character.to_string()),
+                                            },
+                                            cx,
+                                        );
+                                    });
+                                }
+                            });
+                            writeln!(log, "keystroke {character:?} handled in {:.2} ms", started.elapsed().as_secs_f64() * 1000.).unwrap();
+                            pause(cx, gap).await;
+                        }
+                        pause(cx, 800).await;
                     }
                     "type" => {
                         // type W TEXT: characters into the focused text input of
@@ -4889,7 +5371,263 @@ mod review_driver {
             .await;
     }
 
+    /// The input a recording draws: the pointer, whether it is pressed,
+    /// and when each press began.
+    struct Recording {
+        started: std::time::Instant,
+        events: std::fs::File,
+        pointer: Option<Point<Pixels>>,
+        pressed: bool,
+        presses: Vec<(std::time::Instant, Point<Pixels>)>,
+    }
+
+    static RECORDING: std::sync::Mutex<Option<Recording>> = std::sync::Mutex::new(None);
+
+    fn start_recording(events: &std::path::Path) {
+        *RECORDING.lock().unwrap() = Some(Recording {
+            started: std::time::Instant::now(),
+            events: std::fs::File::create(events).unwrap(),
+            pointer: None,
+            pressed: false,
+            presses: Vec::new(),
+        });
+    }
+
+    fn stop_recording() {
+        RECORDING.lock().unwrap().take();
+    }
+
+    fn note_input(event: &PlatformInput) {
+        let mut recording = RECORDING.lock().unwrap();
+        let Some(recording) = recording.as_mut() else {
+            return;
+        };
+        let at = recording.started.elapsed().as_millis();
+        let (kind, position) = match event {
+            PlatformInput::MouseDown(event) => {
+                recording.pressed = true;
+                recording
+                    .presses
+                    .push((std::time::Instant::now(), event.position));
+                (format!("down {:?}", event.button), Some(event.position))
+            }
+            PlatformInput::MouseUp(event) => {
+                recording.pressed = false;
+                (format!("up {:?}", event.button), Some(event.position))
+            }
+            PlatformInput::MouseMove(event) => (
+                if event.pressed_button.is_some() {
+                    "drag"
+                } else {
+                    "move"
+                }
+                .to_owned(),
+                Some(event.position),
+            ),
+            PlatformInput::ScrollWheel(event) => {
+                (format!("wheel {:?}", event.delta), Some(event.position))
+            }
+            PlatformInput::KeyDown(event) => (format!("key {}", event.keystroke), None),
+            _ => return,
+        };
+        if let Some(position) = position {
+            recording.pointer = Some(position);
+        }
+        let _ = writeln!(
+            recording.events,
+            "t={at} {kind} {}",
+            position.map_or(String::new(), |p| format!(
+                "{:.0},{:.0}",
+                f32::from(p.x),
+                f32::from(p.y)
+            ))
+        );
+    }
+
+    /// What the pointer was doing when a frame was captured.
+    struct PointerMarks {
+        pointer: Option<Point<Pixels>>,
+        pressed: bool,
+        /// Each press's age, in seconds, and place.
+        presses: Vec<(f32, Point<Pixels>)>,
+    }
+
+    fn pointer_marks() -> Option<PointerMarks> {
+        let recording = RECORDING.lock().unwrap();
+        let recording = recording.as_ref()?;
+        Some(PointerMarks {
+            pointer: recording.pointer,
+            pressed: recording.pressed,
+            presses: recording
+                .presses
+                .iter()
+                .map(|(at, position)| (at.elapsed().as_secs_f32(), *position))
+                .filter(|(age, _)| *age < 0.5)
+                .collect(),
+        })
+    }
+
+    /// Draws the pointer (red while pressed) and a ring that grows from
+    /// each press for half a second.
+    fn draw_pointer(image: &mut image::RgbaImage, marks: &PointerMarks) {
+        let mut disc = |center: Point<Pixels>, inner: f32, outer: f32, color: [u8; 4]| {
+            let (cx, cy) = (f32::from(center.x), f32::from(center.y));
+            let (width, height) = (image.width() as i64, image.height() as i64);
+            for y in (cy - outer) as i64..=(cy + outer) as i64 {
+                for x in (cx - outer) as i64..=(cx + outer) as i64 {
+                    if x < 0 || y < 0 || x >= width || y >= height {
+                        continue;
+                    }
+                    let distance = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+                    if distance >= inner && distance <= outer {
+                        let pixel = image.get_pixel_mut(x as u32, y as u32);
+                        let alpha = color[3] as f32 / 255.;
+                        for channel in 0..3 {
+                            pixel.0[channel] = (pixel.0[channel] as f32 * (1. - alpha)
+                                + color[channel] as f32 * alpha)
+                                as u8;
+                        }
+                    }
+                }
+            }
+        };
+        for (age, position) in &marks.presses {
+            let radius = 8. + age * 40.;
+            disc(
+                *position,
+                radius - 2.,
+                radius,
+                [230, 40, 40, ((1. - age * 2.) * 220.) as u8],
+            );
+        }
+        if let Some(pointer) = marks.pointer {
+            disc(pointer, 0., 7., [255, 255, 255, 230]);
+            let colour = if marks.pressed {
+                [230, 40, 40, 255]
+            } else {
+                [20, 20, 20, 255]
+            };
+            disc(pointer, 0., 5., colour);
+        }
+    }
+
+    /// Records window `index` until `running` is cleared: see record-start.
+    /// Frames are scaled, marked and encoded on a thread of their own, so
+    /// the app never waits on the encoder; a frame the encoder has no room
+    /// for is dropped and counted.
+    async fn record(
+        cx: &mut AsyncApp,
+        index: usize,
+        video: PathBuf,
+        running: std::rc::Rc<std::cell::Cell<bool>>,
+    ) {
+        let (send, receive) =
+            std::sync::mpsc::sync_channel::<(image::RgbaImage, f32, Option<PointerMarks>)>(6);
+        let encoder = std::thread::spawn(move || {
+            let mut child: Option<(std::process::Child, u32, u32)> = None;
+            let mut encoded = 0usize;
+            for (image, scale, marks) in receive {
+                // At logical size, to keep the video light.
+                let mut image = image::imageops::resize(
+                    &image,
+                    (image.width() as f32 / scale) as u32 & !1,
+                    (image.height() as f32 / scale) as u32 & !1,
+                    image::imageops::FilterType::Triangle,
+                );
+                if let Some(marks) = &marks {
+                    draw_pointer(&mut image, marks);
+                }
+                let (width, height) = image.dimensions();
+                if child.is_none() {
+                    let spawned = std::process::Command::new("ffmpeg")
+                        .args([
+                            "-y",
+                            "-loglevel",
+                            "error",
+                            "-use_wallclock_as_timestamps",
+                            "1",
+                        ])
+                        .args([
+                            "-f",
+                            "rawvideo",
+                            "-pix_fmt",
+                            "rgba",
+                            "-s",
+                            &format!("{width}x{height}"),
+                        ])
+                        .args([
+                            "-i", "-", "-vf", "fps=120", "-c:v", "libx264", "-preset", "veryfast",
+                        ])
+                        .args(["-pix_fmt", "yuv420p", "-crf", "16"])
+                        .arg(&video)
+                        .stdin(std::process::Stdio::piped())
+                        .spawn()
+                        .expect("ffmpeg");
+                    child = Some((spawned, width, height));
+                }
+                if let Some((process, w, h)) = child.as_mut()
+                    && (*w, *h) == (width, height)
+                    && let Some(stdin) = process.stdin.as_mut()
+                    && stdin.write_all(image.as_raw()).is_ok()
+                {
+                    encoded += 1;
+                }
+            }
+            if let Some((mut process, _, _)) = child {
+                drop(process.stdin.take());
+                let _ = process.wait();
+            }
+            encoded
+        });
+        let (mut captured, mut dropped) = (0usize, 0usize);
+        let started = std::time::Instant::now();
+        while running.get() {
+            let next = std::time::Instant::now() + Duration::from_micros(8_333);
+            let frame = cx.update(|cx| {
+                let entry = document_window_entries(cx).get(index).cloned()?;
+                let workspace = entry.workspace.upgrade()?;
+                entry
+                    .handle
+                    .update(cx, |_, window, cx| {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.run_scheduled_viewport_refresh(window, cx)
+                        });
+                        window.draw(cx).clear(cx);
+                        let scale = window.scale_factor();
+                        window.render_to_image().ok().map(|image| (image, scale))
+                    })
+                    .ok()
+                    .flatten()
+            });
+            if let Some((image, scale)) = frame {
+                captured += 1;
+                if send.try_send((image, scale, pointer_marks())).is_err() {
+                    dropped += 1;
+                }
+            }
+            // Always let the app's own work run between frames.
+            let wait = next
+                .saturating_duration_since(std::time::Instant::now())
+                .max(Duration::from_millis(2));
+            cx.background_executor().timer(wait).await;
+        }
+        drop(send);
+        let seconds = started.elapsed().as_secs_f32();
+        let encoded = cx
+            .background_executor()
+            .spawn(async move { encoder.join().unwrap_or(0) })
+            .await;
+        if let Some(recording) = RECORDING.lock().unwrap().as_mut() {
+            let _ = writeln!(
+                recording.events,
+                "recorded {captured} frames in {seconds:.2}s ({:.1} a second), {dropped} dropped, {encoded} encoded",
+                captured as f32 / seconds
+            );
+        }
+    }
+
     fn dispatch(cx: &mut AsyncApp, window: usize, event: PlatformInput) {
+        note_input(&event);
         cx.update(|cx| {
             if let Some(entry) = document_window_entries(cx).get(window).cloned() {
                 let _ = entry.handle.update(cx, |_, window, cx| {
@@ -4897,6 +5635,25 @@ mod review_driver {
                 });
             }
         });
+    }
+
+    /// A window point as a script measures it: `dispatch` adds the title
+    /// bar back.
+    fn script_point(
+        entry: &DocumentWindowEntry,
+        mut position: Point<Pixels>,
+        cx: &mut App,
+    ) -> Point<Pixels> {
+        let drawn = entry
+            .handle
+            .update(cx, |_, window, _| {
+                butter_paper::window_title_bar::uses_window_title_bar(window)
+            })
+            .unwrap_or(false);
+        if drawn {
+            position.y -= gpui_component::TITLE_BAR_HEIGHT;
+        }
+        position
     }
 
     /// Script points are measured from below the title bar, so one script

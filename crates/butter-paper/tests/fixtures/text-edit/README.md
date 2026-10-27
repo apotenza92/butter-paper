@@ -17,4 +17,9 @@ real-PDFium Edit PDF Content test. All three are made from files in this folder:
   encrypted by `qpdf --encrypt "" owner 256` (AES-256, no user password),
   the first with `--modify=none`.
 
+- `chrome-table.pdf`: `table.html` printed by headless Chrome. Table
+  borders are thin filled rectangles per cell edge, under a y-down matrix.
+- `libreoffice-table.pdf`: `table.fodt` converted by LibreOffice. Borders
+  are stroked full-length lines; the header row has a filled background.
+
 Regenerate a file only to add coverage; the tests assert on its text.

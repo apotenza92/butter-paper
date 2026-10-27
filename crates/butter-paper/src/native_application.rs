@@ -11,10 +11,10 @@ use crate::{
         ToggleApplicationFullScreen, ToggleApplicationMenuBar, ToggleReverseScrollZoom, ZoomWindow,
     },
     document_workspace::{
-        ActualSize, CloseDocument, ContinuousView, DocumentOpenBatchRequest, DocumentOpenOrigin,
-        FitPage, FitWidth, NavigateNextPage, NavigatePreviousPage, NewFromTemplate, OpenPdf,
-        RotatePageLeft, RotatePageRight, Save, SaveAs, SaveDocumentAsTemplate, SinglePageView,
-        ZoomIn, ZoomOut,
+        ActualSize, CloseDocument, ContinuousView, ConvertToWord, DocumentOpenBatchRequest,
+        DocumentOpenOrigin, FitPage, FitWidth, MergeDocuments, NavigateNextPage,
+        NavigatePreviousPage, NewFromTemplate, OpenPdf, RotatePageLeft, RotatePageRight, Save,
+        SaveAs, SaveDocumentAsTemplate, SinglePageView, ZoomIn, ZoomOut,
     },
 };
 
@@ -185,6 +185,9 @@ fn build_file_menu(
         MenuItem::action("Save As…", SaveAs).disabled(save_disabled),
         MenuItem::action("Save Document as Template…", SaveDocumentAsTemplate)
             .disabled(save_disabled),
+        MenuItem::separator(),
+        MenuItem::action("Merge Documents…", MergeDocuments),
+        MenuItem::action("Convert and Open in Word", ConvertToWord).disabled(save_disabled),
     ];
     if include_close_document {
         items.extend([

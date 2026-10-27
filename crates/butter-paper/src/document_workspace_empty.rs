@@ -245,6 +245,7 @@ impl DocumentWorkspace {
                     .debug_selector(move || debug_selector.clone())
                     .child(session_tab_overlay_label(
                         visual_title,
+                        title.clone(),
                         tab_selector,
                         reveal_close,
                         *dirty,

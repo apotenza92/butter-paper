@@ -2174,63 +2174,42 @@ fn generated_save_all_user_action_prompts_and_continues_until_the_next_picker_is
 }
 
 #[gpui::test]
-fn generated_application_close_rejects_a_non_pdf_picker_result_without_saving_or_duplicate_prompt(
-    cx: &mut TestAppContext,
-) {
+fn generated_application_close_saves_a_name_typed_without_pdf_as_a_pdf(cx: &mut TestAppContext) {
     let (workspace, close, _, document_ids) = dirty_two_generated_documents(cx);
+    let typed = owned_target("generated-typed-without-extension");
+    let saved = owned_target("generated-typed-without-extension.pdf");
     close
         .update(cx, |close, cx| close.request_close(cx))
         .unwrap();
     close.update(cx, |close, cx| {
         close.choose_and_dispatch(ApplicationCloseAction::SaveAll, cx)
     });
-    close.update(cx, |close, cx| {
-        close.choose_and_dispatch(ApplicationCloseAction::SaveAll, cx)
-    });
     assert!(cx.did_prompt_for_new_path());
-    cx.simulate_new_path_selection(|_| Some(owned_target("generated-not-a-pdf.txt")));
+    cx.simulate_new_path_selection(move |_| Some(typed));
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
     cx.run_until_parked();
 
-    assert!(!cx.did_prompt_for_new_path());
     assert!(workspace.read_with(cx, |workspace, cx| {
-        document_ids.iter().all(|document_id| {
-            workspace.session(*document_id, cx).is_some()
-                && workspace
-                    .document_dirty_revision(*document_id, cx)
-                    .is_some()
-        })
-    }));
-    assert!(close.read_with(cx, |close, _| {
-        close.effects().iter().any(|effect| {
-            matches!(
-                effect,
-                ApplicationCloseEffect::SaveFailureReported {
-                    document_id,
-                    message,
-                    ..
-                } if document_id == "document-1"
-                    && message == "Save As requires a .pdf file name."
-            )
-        }) && !close.effects().iter().any(|effect| {
-            matches!(
-                effect,
-                ApplicationCloseEffect::SaveStarted { .. }
-                    | ApplicationCloseEffect::SaveApplied { .. }
-                    | ApplicationCloseEffect::QuitRequested { .. }
-            )
-        })
-    }));
-    assert!(close.read_with(cx, |close, _| {
-        close
-            .effects()
-            .iter()
-            .any(|effect| matches!(effect, ApplicationCloseEffect::CloseCancelled { .. }))
+        workspace
+            .document_dirty_revision(document_ids[0], cx)
+            .is_none()
     }));
     assert_eq!(
-        close.read_with(cx, |close, _| close
-            .recovery()
-            .map(|recovery| recovery.kind)),
-        Some(ApplicationCloseRecoveryKind::TargetRejected)
+        close.read_with(cx, |close, _| {
+            close
+                .effects()
+                .iter()
+                .filter_map(|effect| match effect {
+                    ApplicationCloseEffect::SaveApplied { target_path, .. } => {
+                        Some(target_path.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        }),
+        [saved],
     );
 }
 
@@ -5775,6 +5754,8 @@ fn application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_an
 fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_reopens(
     cx: &mut TestAppContext,
 ) {
+    // Free images: these steps resize the image out of its own shape.
+    cx.update(|cx| cx.set_global(butter_paper::application_shell::LockImageProportions(false)));
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let test_executable = std::env::current_exe().unwrap();
     let worker = test_executable

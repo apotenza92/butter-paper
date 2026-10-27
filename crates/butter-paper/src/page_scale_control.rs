@@ -1,22 +1,34 @@
+//! The Page Scale dialog: which scale a page is drawn at (a standard scale,
+//! one the page states, a custom ratio, or one measured from a line of
+//! known length), what measurements read in, and which pages it applies to.
+//!
+//! The workspace owns each page's scale and its undo history; this owns the
+//! dialog and, while one is picked, the calibration line.
+
 use crate::accessible_button::close_icon_button;
 use crate::annotation_model::{
-    PageScale, PageScaleApplyTarget, PdfPoint, ScalePrecision, ScalePrecisionMode, ScalePreset,
-    ScaleSource, ScaleUnit, built_in_scale_presets, parse_page_scale_ranges,
+    PageScale, PageScaleApplyTarget, PdfPoint, ScalePrecision, ScalePrecisionMode, ScaleSource,
+    ScaleUnit, parse_page_scale_ranges,
 };
 use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
+use crate::page_scale_catalog::{
+    STANDARD_SCALES, ScaleSystem, StandardScale, imperial_unit, nearest_standard, paper_label,
+    paper_length_label, parse_length, ratio_label, ratio_of, scale_from_ratio, scale_label,
+    standard_for, stated_scales, trimmed, with_unit,
+};
 use gpui::{
-    App, AppContext as _, Context, InteractiveElement as _, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity,
+    Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, IndexPath, Selectable as _, WindowExt as _,
+    ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
-    checkbox::Checkbox,
     dialog::{DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle},
     form::Field,
-    input::{Input, InputState, NumberInput},
-    select::{Select, SelectEvent, SelectState},
+    h_flex,
+    input::{Input, InputState},
+    select::{SearchableVec, Select, SelectEvent, SelectGroup, SelectItem, SelectState},
     v_flex,
 };
 
@@ -24,37 +36,41 @@ use crate::document_workspace::{DocumentId, DocumentWorkspace};
 
 pub const PAGE_SCALE_TRIGGER_ID: &str = "measure-set-page-scale";
 pub const PAGE_SCALE_DIALOG_ID: &str = "page-scale-dialog";
-pub const PAGE_SCALE_DIALOG_BODY_ID: &str = "page-scale-dialog-body";
 pub const PAGE_SCALE_CLOSE_ID: &str = "page-scale-close";
-pub const PAGE_SCALE_METHOD_PRESET_ID: &str = "page-scale-method-preset";
-pub const PAGE_SCALE_METHOD_CUSTOM_ID: &str = "page-scale-method-custom";
-pub const PAGE_SCALE_METHOD_CALIBRATE_ID: &str = "page-scale-method-calibrate";
-pub const PAGE_SCALE_PRESET_SELECT_ID: &str = "page-scale-preset-select";
-pub const PAGE_SCALE_DELETE_PRESET_ID: &str = "page-scale-delete-preset";
-pub const PAGE_SCALE_CUSTOM_PDF_LENGTH_ID: &str = "page-scale-custom-pdf-length";
-pub const PAGE_SCALE_CUSTOM_PDF_UNITS_ID: &str = "page-scale-custom-pdf-units";
-pub const PAGE_SCALE_CUSTOM_REAL_LENGTH_ID: &str = "page-scale-custom-real-length";
-pub const PAGE_SCALE_CUSTOM_REAL_UNITS_ID: &str = "page-scale-custom-real-units";
-pub const PAGE_SCALE_SEPARATE_Y_ID: &str = "page-scale-separate-y";
-pub const PAGE_SCALE_Y_PDF_LENGTH_ID: &str = "page-scale-y-custom-pdf-length";
-pub const PAGE_SCALE_Y_REAL_LENGTH_ID: &str = "page-scale-y-custom-real-length";
-pub const PAGE_SCALE_PAGES_ID: &str = "page-scale-pages";
+pub const PAGE_SCALE_SELECT_ID: &str = "page-scale-select";
+pub const PAGE_SCALE_CALIBRATE_ID: &str = "page-scale-calibrate";
+pub const PAGE_SCALE_STATED_ID: &str = "page-scale-stated";
+pub const PAGE_SCALE_CUSTOM_PAPER_ID: &str = "page-scale-custom-paper";
+pub const PAGE_SCALE_CUSTOM_PAPER_UNIT_ID: &str = "page-scale-custom-paper-unit";
+pub const PAGE_SCALE_CUSTOM_REAL_ID: &str = "page-scale-custom-real";
+pub const PAGE_SCALE_KNOWN_LENGTH_ID: &str = "page-scale-known-length";
+pub const PAGE_SCALE_RESULT_ID: &str = "page-scale-result";
+pub const PAGE_SCALE_USE_NEAREST_ID: &str = "page-scale-use-nearest";
+pub const PAGE_SCALE_UNIT_ID: &str = "page-scale-unit";
+pub const PAGE_SCALE_PRECISION_ID: &str = "page-scale-precision";
+pub const PAGE_SCALE_PAGES_THIS_ID: &str = "page-scale-pages-this";
+pub const PAGE_SCALE_PAGES_ALL_ID: &str = "page-scale-pages-all";
+pub const PAGE_SCALE_PAGES_RANGE_ID: &str = "page-scale-pages-range";
 pub const PAGE_SCALE_RANGE_ID: &str = "page-scale-range";
-pub const PAGE_SCALE_PRECISION_MODE_ID: &str = "page-scale-precision-mode";
-pub const PAGE_SCALE_PRECISION_VALUE_ID: &str = "page-scale-precision-value";
-pub const PAGE_SCALE_SAVE_PRESET_ID: &str = "page-scale-save-preset";
-pub const PAGE_SCALE_PICK_ID: &str = "page-scale-pick-calibration";
-pub const PAGE_SCALE_KNOWN_LENGTH_ID: &str = "page-scale-calibrate-real-length";
-pub const PAGE_SCALE_UNIT_GROUP_ID: &str = "page-scale-calibrate-real-units";
-pub const PAGE_SCALE_UNIT_M_ID: &str = "page-scale-unit-m";
-pub const PAGE_SCALE_UNIT_CM_ID: &str = "page-scale-unit-cm";
-pub const PAGE_SCALE_UNIT_MM_ID: &str = "page-scale-unit-mm";
+pub const PAGE_SCALE_ERROR_ID: &str = "page-scale-error";
 pub const PAGE_SCALE_CANCEL_ID: &str = "page-scale-cancel";
 pub const PAGE_SCALE_APPLY_ID: &str = "page-scale-apply";
-pub const PAGE_SCALE_ERROR_ID: &str = "page-scale-error";
-pub const PAGE_SCALE_PICK_STATUS_ID: &str = "page-scale-pick-status";
-pub const PAGE_SCALE_PICK_ALERT_ID: &str = "page-scale-pick-alert";
+pub const PAGE_SCALE_PICK_HINT_ID: &str = "page-scale-pick-hint";
 pub const PAGE_SCALE_PICK_CANCEL_ID: &str = "page-scale-pick-cancel";
+
+const KEY_CUSTOM: &str = "custom";
+const KEY_MEASURED: &str = "measured";
+const KEY_NONE: &str = "none";
+const UNITS: [ScaleUnit; 5] = [
+    ScaleUnit::Mm,
+    ScaleUnit::Cm,
+    ScaleUnit::M,
+    ScaleUnit::In,
+    ScaleUnit::Ft,
+];
+const PAPER_UNITS: [ScaleUnit; 3] = [ScaleUnit::Mm, ScaleUnit::Cm, ScaleUnit::In];
+const DECIMALS: [f64; 4] = [1., 0.1, 0.01, 0.001];
+const FRACTIONS: [u16; 6] = [2, 4, 8, 16, 32, 64];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CalibrationPointDisposition {
@@ -63,1428 +79,149 @@ pub enum CalibrationPointDisposition {
     Completed,
 }
 
+/// The scale the dialog will apply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PageScaleMode {
-    Preset,
+pub enum ScaleChoice {
+    /// Nothing chosen yet, on a page without a scale.
+    Unset,
+    /// Remove the scale: measurements read paper size.
+    None,
+    /// An index into [`STANDARD_SCALES`].
+    Standard(usize),
     Custom,
-    Calibrate,
+    /// From the calibration line and its known length.
+    Measured,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PageScalePagesMode {
-    Current,
+pub enum PageScalePages {
+    This,
     All,
-    Custom,
+    Range,
 }
 
+/// Everything about the page the dialog is for, read by the workspace
+/// (the dialog cannot read the workspace while it is updating).
 #[derive(Clone, Debug, PartialEq)]
-struct PageScaleInputSnapshot {
-    mode: PageScaleMode,
-    pdf_units: ScaleUnit,
-    real_units: ScaleUnit,
-    separate_y: bool,
-    precision_mode: ScalePrecisionMode,
-    precision_value: f64,
-    selected_preset_id: String,
-    pdf_length: String,
-    known_length: String,
-    y_pdf_length: String,
-    y_real_length: String,
-    start: Option<PdfPoint>,
-    end: Option<PdfPoint>,
+pub struct PageScaleRequest {
+    pub document_id: DocumentId,
+    pub page_index: u32,
+    pub page_count: u32,
+    /// The page as shown, in points.
+    pub page_size: (f64, f64),
+    pub current: Option<PageScale>,
 }
 
-/// Application-owned transient state for the calibration journey. GPUI
-/// Component owns only the dialog, buttons, and numeric-input presentation.
-pub struct PageScaleControl {
-    owner: WeakEntity<DocumentWorkspace>,
-    target: Option<(DocumentId, u32)>,
-    pick_document_id: Option<DocumentId>,
-    start: Option<PdfPoint>,
-    end: Option<PdfPoint>,
-    picking: bool,
-    mode: PageScaleMode,
-    pages_mode: PageScalePagesMode,
-    pdf_units: ScaleUnit,
-    real_units: ScaleUnit,
-    separate_y: bool,
-    precision_mode: ScalePrecisionMode,
-    precision_value: f64,
-    save_preset: bool,
-    selected_preset_id: String,
-    next_preset_sequence: u64,
-    pdf_length: gpui::Entity<InputState>,
-    known_length: gpui::Entity<InputState>,
-    y_pdf_length: gpui::Entity<InputState>,
-    y_real_length: gpui::Entity<InputState>,
-    custom_range: gpui::Entity<InputState>,
-    preset_select: gpui::Entity<SelectState<Vec<SharedString>>>,
-    pages_select: gpui::Entity<SelectState<Vec<SharedString>>>,
-    pdf_units_select: gpui::Entity<SelectState<Vec<SharedString>>>,
-    real_units_select: gpui::Entity<SelectState<Vec<SharedString>>>,
-    precision_mode_select: gpui::Entity<SelectState<Vec<SharedString>>>,
-    precision_value_select: gpui::Entity<SelectState<Vec<SharedString>>>,
-    original_scale: Option<PageScale>,
-    opened_scale_inputs: Option<PageScaleInputSnapshot>,
-    error: Option<String>,
-    applied_count: usize,
+/// The calibration line as the page draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalibrationPreview {
+    pub document_id: DocumentId,
+    pub page_index: u32,
+    pub start: PdfPoint,
+    pub end: PdfPoint,
+    pub label: String,
 }
 
-impl PageScaleControl {
-    pub fn new(
-        owner: WeakEntity<DocumentWorkspace>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let pdf_length = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value("1")
-                .min(0.000_001)
-        });
-        let known_length = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value("1")
-                .min(0.000_001)
-                .step(1.)
-        });
-        let y_pdf_length = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value("1")
-                .min(0.000_001)
-        });
-        let y_real_length = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value("1")
-                .min(0.000_001)
-        });
-        let custom_range = cx.new(|cx| InputState::new(window, cx).placeholder("1-3, 5, 9"));
-        let preset_select = cx.new(|cx| {
-            SelectState::new(
-                built_in_scale_presets()
-                    .into_iter()
-                    .map(|preset| SharedString::from(preset.name))
-                    .collect::<Vec<_>>(),
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-        let pages_select = cx.new(|cx| {
-            SelectState::new(
-                vec!["Current (1)".into(), "All Pages".into(), "Custom".into()],
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-        let unit_items = || -> Vec<SharedString> {
-            vec![
-                "in".into(),
-                "ft".into(),
-                "mm".into(),
-                "cm".into(),
-                "m".into(),
-            ]
-        };
-        let pdf_units_select = cx.new(|cx| {
-            SelectState::new(unit_items(), Some(IndexPath::default().row(3)), window, cx)
-        });
-        let real_units_select = cx.new(|cx| {
-            SelectState::new(unit_items(), Some(IndexPath::default().row(4)), window, cx)
-        });
-        let precision_mode_select = cx.new(|cx| {
-            SelectState::new(
-                vec!["Decimal".into(), "Fraction".into()],
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-        let precision_value_select = cx.new(|cx| {
-            SelectState::new(
-                decimal_precision_labels(),
-                Some(IndexPath::default().row(3)),
-                window,
-                cx,
-            )
-        });
+/// What the dialog's scale inputs held when it opened.
+#[derive(Clone, Debug, PartialEq)]
+struct OpenedInputs {
+    choice: ScaleChoice,
+    display_unit: ScaleUnit,
+    precision: (ScalePrecisionMode, u64),
+    custom_paper_unit: ScaleUnit,
+    custom_paper: String,
+    custom_real: String,
+}
 
-        cx.subscribe_in(&pages_select, window, |control, _, event, _, cx| {
-            let SelectEvent::Confirm(value) = event;
-            control.pages_mode = match value.as_deref() {
-                Some("All Pages") => PageScalePagesMode::All,
-                Some("Custom") => PageScalePagesMode::Custom,
-                _ => PageScalePagesMode::Current,
-            };
-            control.error = None;
-            cx.notify();
-        })
-        .detach();
-        cx.subscribe_in(&pdf_units_select, window, |control, _, event, _, cx| {
-            let SelectEvent::Confirm(value) = event;
-            if let Some(value) = value
-                && let Ok(unit) = ScaleUnit::parse(value.as_ref())
-            {
-                control.pdf_units = unit;
-            }
-            control.error = None;
-            cx.notify();
-        })
-        .detach();
-        cx.subscribe_in(&real_units_select, window, |control, _, event, _, cx| {
-            let SelectEvent::Confirm(value) = event;
-            if let Some(value) = value
-                && let Ok(unit) = ScaleUnit::parse(value.as_ref())
-            {
-                control.real_units = unit;
-            }
-            control.error = None;
-            cx.notify();
-        })
-        .detach();
-        cx.subscribe_in(
-            &precision_mode_select,
-            window,
-            |control, _, event, window, cx| {
-                let SelectEvent::Confirm(value) = event;
-                control.precision_mode = if value.as_deref() == Some("Fraction") {
-                    ScalePrecisionMode::Fraction
-                } else {
-                    ScalePrecisionMode::Decimal
-                };
-                control.precision_value = if control.precision_mode == ScalePrecisionMode::Fraction
-                {
-                    16.
-                } else {
-                    0.001
-                };
-                let labels = if control.precision_mode == ScalePrecisionMode::Fraction {
-                    fraction_precision_labels()
-                } else {
-                    decimal_precision_labels()
-                };
-                control.precision_value_select.update(cx, |select, cx| {
-                    select.set_items(labels, window, cx);
-                    select.set_selected_index(Some(IndexPath::default().row(3)), window, cx);
-                });
-                control.error = None;
-                cx.notify();
-            },
-        )
-        .detach();
-        cx.subscribe_in(
-            &precision_value_select,
-            window,
-            |control, _, event, _, cx| {
-                let SelectEvent::Confirm(value) = event;
-                if let Some(value) = value {
-                    let raw = value.as_ref().strip_prefix("1/").unwrap_or(value.as_ref());
-                    if let Ok(parsed) = raw.parse::<f64>() {
-                        control.precision_value = parsed;
-                    }
-                }
-                control.error = None;
-                cx.notify();
-            },
-        )
-        .detach();
-        cx.subscribe_in(&preset_select, window, |control, _, event, _, cx| {
-            let SelectEvent::Confirm(value) = event;
-            if let Some(label) = value
-                && let Some(document_id) = control.target.map(|target| target.0)
-                && let Some(preset) = control
-                    .available_presets(document_id, cx)
-                    .into_iter()
-                    .find(|preset| preset_label(preset) == label.as_ref())
-            {
-                control.selected_preset_id = preset.id;
-            }
-            control.error = None;
-            cx.notify();
-        })
-        .detach();
-        Self {
-            owner,
-            target: None,
-            pick_document_id: None,
-            start: None,
-            end: None,
-            picking: false,
-            mode: PageScaleMode::Preset,
-            pages_mode: PageScalePagesMode::Current,
-            pdf_units: ScaleUnit::Cm,
-            real_units: ScaleUnit::M,
-            separate_y: false,
-            precision_mode: ScalePrecisionMode::Decimal,
-            precision_value: 0.001,
-            save_preset: false,
-            selected_preset_id: "one-to-1".into(),
-            next_preset_sequence: 1,
-            pdf_length,
-            known_length,
-            y_pdf_length,
-            y_real_length,
-            custom_range,
-            preset_select,
-            pages_select,
-            pdf_units_select,
-            real_units_select,
-            precision_mode_select,
-            precision_value_select,
-            original_scale: None,
-            opened_scale_inputs: None,
-            error: None,
-            applied_count: 0,
-        }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ErrorPlace {
+    Scale,
+    Pages,
+    Apply,
+}
+
+#[derive(Clone, Debug)]
+struct ScaleItem {
+    key: SharedString,
+    title: SharedString,
+}
+
+impl SelectItem for ScaleItem {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.title.clone()
     }
 
-    pub fn known_length_input(&self) -> gpui::Entity<InputState> {
-        self.known_length.clone()
-    }
-
-    pub fn pdf_length_input(&self) -> gpui::Entity<InputState> {
-        self.pdf_length.clone()
-    }
-
-    pub fn y_pdf_length_input(&self) -> gpui::Entity<InputState> {
-        self.y_pdf_length.clone()
-    }
-
-    pub fn y_real_length_input(&self) -> gpui::Entity<InputState> {
-        self.y_real_length.clone()
-    }
-
-    pub fn custom_range_input(&self) -> gpui::Entity<InputState> {
-        self.custom_range.clone()
-    }
-
-    pub fn mode(&self) -> PageScaleMode {
-        self.mode
-    }
-
-    pub fn pages_mode(&self) -> PageScalePagesMode {
-        self.pages_mode
-    }
-
-    /// Deterministic mirror of the conditional stable-ID branches rendered by
-    /// the real GPUI Component dialog. GPUI's modal test host does not expose
-    /// nested dialog children through `debug_bounds`, so this seam keeps the
-    /// conditional render contract testable without claiming native pixels.
-    pub fn visible_stable_ids(&self) -> Vec<&'static str> {
-        let mut ids = vec![
-            PAGE_SCALE_DIALOG_ID,
-            PAGE_SCALE_DIALOG_BODY_ID,
-            PAGE_SCALE_METHOD_PRESET_ID,
-            PAGE_SCALE_METHOD_CUSTOM_ID,
-            PAGE_SCALE_METHOD_CALIBRATE_ID,
-        ];
-        match self.mode {
-            PageScaleMode::Preset => ids.push(PAGE_SCALE_PRESET_SELECT_ID),
-            PageScaleMode::Custom => {
-                ids.extend([
-                    PAGE_SCALE_CUSTOM_PDF_LENGTH_ID,
-                    PAGE_SCALE_CUSTOM_PDF_UNITS_ID,
-                    PAGE_SCALE_CUSTOM_REAL_LENGTH_ID,
-                    PAGE_SCALE_CUSTOM_REAL_UNITS_ID,
-                    PAGE_SCALE_SEPARATE_Y_ID,
-                ]);
-                if self.separate_y {
-                    ids.extend([PAGE_SCALE_Y_PDF_LENGTH_ID, PAGE_SCALE_Y_REAL_LENGTH_ID]);
-                }
-            }
-            PageScaleMode::Calibrate => ids.extend([
-                PAGE_SCALE_PICK_STATUS_ID,
-                PAGE_SCALE_PICK_ID,
-                PAGE_SCALE_KNOWN_LENGTH_ID,
-                PAGE_SCALE_UNIT_GROUP_ID,
-            ]),
-        }
-        ids.push(PAGE_SCALE_PAGES_ID);
-        if self.pages_mode == PageScalePagesMode::Custom {
-            ids.push(PAGE_SCALE_RANGE_ID);
-        }
-        ids.extend([PAGE_SCALE_PRECISION_MODE_ID, PAGE_SCALE_PRECISION_VALUE_ID]);
-        if self.mode != PageScaleMode::Preset {
-            ids.push(PAGE_SCALE_SAVE_PRESET_ID);
-        }
-        ids.extend([PAGE_SCALE_CANCEL_ID, PAGE_SCALE_APPLY_ID]);
-        ids
-    }
-
-    pub fn is_picking(&self) -> bool {
-        self.picking
-    }
-
-    pub fn target(&self) -> Option<(DocumentId, u32)> {
-        self.target
-    }
-
-    pub fn points(&self) -> (Option<PdfPoint>, Option<PdfPoint>) {
-        (self.start, self.end)
-    }
-
-    pub fn applied_count(&self) -> usize {
-        self.applied_count
-    }
-
-    pub fn pick_instruction(&self) -> Option<&'static str> {
-        self.picking.then_some(if self.start.is_some() {
-            "Click the second point of the known distance. Hold Shift to constrain the line."
-        } else {
-            "Click the first point of a known distance."
-        })
-    }
-
-    pub fn open_for(
-        &mut self,
-        document_id: DocumentId,
-        page_index: u32,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let current_scale = self
-            .owner
-            .read_with(cx, |workspace, cx| {
-                workspace.page_scale(document_id, page_index, cx)
-            })
-            .ok()
-            .flatten();
-        let presets = self.available_presets(document_id, cx);
-        self.open_for_state(document_id, page_index, current_scale, presets, window, cx);
-    }
-
-    pub fn open_for_state(
-        &mut self,
-        document_id: DocumentId,
-        page_index: u32,
-        current_scale: Option<PageScale>,
-        presets: Vec<ScalePreset>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.target = Some((document_id, page_index));
-        self.pick_document_id = Some(document_id);
-        self.original_scale = current_scale.clone();
-        self.opened_scale_inputs = None;
-        self.start = None;
-        self.end = None;
-        self.picking = false;
-        self.mode = PageScaleMode::Preset;
-        self.pages_mode = PageScalePagesMode::Current;
-        self.pdf_units = ScaleUnit::Cm;
-        self.real_units = ScaleUnit::M;
-        self.separate_y = false;
-        self.precision_mode = ScalePrecisionMode::Decimal;
-        self.precision_value = 0.001;
-        self.save_preset = false;
-        self.selected_preset_id = "one-to-1".into();
-        self.error = None;
-        self.pdf_length
-            .update(cx, |input, cx| input.set_value("1", window, cx));
-        self.known_length
-            .update(cx, |input, cx| input.set_value("1", window, cx));
-        self.y_pdf_length
-            .update(cx, |input, cx| input.set_value("1", window, cx));
-        self.y_real_length
-            .update(cx, |input, cx| input.set_value("1", window, cx));
-        self.custom_range
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        if let Some(scale) = current_scale {
-            let matching_preset_id = presets
-                .iter()
-                .find(|preset| {
-                    preset.source == ScaleSource::Preset
-                        && preset.pdf_units == scale.pdf_units
-                        && preset.real_units == scale.real_units
-                        && preset.scale_x == scale.scale_x
-                        && preset.scale_y == scale.scale_y
-                })
-                .map(|preset| preset.id.clone());
-            self.mode = if scale.source == ScaleSource::Preset && matching_preset_id.is_some() {
-                PageScaleMode::Preset
-            } else {
-                PageScaleMode::Custom
-            };
-            self.pdf_units = scale.pdf_units;
-            self.real_units = scale.real_units;
-            self.separate_y = (scale.scale_x - scale.scale_y).abs() > 0.000_000_1;
-            self.precision_mode = scale.precision.mode;
-            self.precision_value = scale.precision.value;
-            let points = pdf_unit_points(scale.pdf_units);
-            self.pdf_length
-                .update(cx, |input, cx| input.set_value("1", window, cx));
-            self.known_length.update(cx, |input, cx| {
-                input.set_value(format_scale_number(scale.scale_x * points), window, cx)
-            });
-            self.y_pdf_length
-                .update(cx, |input, cx| input.set_value("1", window, cx));
-            self.y_real_length.update(cx, |input, cx| {
-                input.set_value(format_scale_number(scale.scale_y * points), window, cx)
-            });
-            self.selected_preset_id = matching_preset_id.unwrap_or_else(|| "one-to-1".into());
-        } else {
-            self.selected_preset_id = presets
-                .first()
-                .map(|preset| preset.id.clone())
-                .unwrap_or_else(|| "one-to-1".into());
-        }
-        let preset_labels = presets
-            .iter()
-            .map(preset_label)
-            .map(SharedString::from)
-            .collect::<Vec<_>>();
-        self.preset_select.update(cx, |select, cx| {
-            select.set_items(preset_labels, window, cx);
-            let selected = presets
-                .iter()
-                .position(|preset| preset.id == self.selected_preset_id)
-                .unwrap_or(0);
-            select.set_selected_index(Some(IndexPath::default().row(selected)), window, cx);
-        });
-        self.pages_select.update(cx, |select, cx| {
-            select.set_items(
-                vec![
-                    format!("Current ({})", page_index + 1).into(),
-                    "All Pages".into(),
-                    "Custom".into(),
-                ],
-                window,
-                cx,
-            );
-            select.set_selected_index(Some(IndexPath::default()), window, cx);
-        });
-        let unit_index = |unit: ScaleUnit| match unit {
-            ScaleUnit::In => 0,
-            ScaleUnit::Ft => 1,
-            ScaleUnit::Mm => 2,
-            ScaleUnit::Cm => 3,
-            ScaleUnit::M => 4,
-        };
-        self.pdf_units_select.update(cx, |select, cx| {
-            select.set_selected_index(
-                Some(IndexPath::default().row(unit_index(self.pdf_units))),
-                window,
-                cx,
-            )
-        });
-        self.real_units_select.update(cx, |select, cx| {
-            select.set_selected_index(
-                Some(IndexPath::default().row(unit_index(self.real_units))),
-                window,
-                cx,
-            )
-        });
-        self.precision_mode_select.update(cx, |select, cx| {
-            select.set_selected_index(
-                Some(IndexPath::default().row(usize::from(
-                    self.precision_mode == ScalePrecisionMode::Fraction,
-                ))),
-                window,
-                cx,
-            )
-        });
-        let precision_labels = if self.precision_mode == ScalePrecisionMode::Fraction {
-            fraction_precision_labels()
-        } else {
-            decimal_precision_labels()
-        };
-        let selected_precision = precision_labels
-            .iter()
-            .position(|label| precision_label(self.precision_mode, self.precision_value) == *label)
-            .unwrap_or(0);
-        self.precision_value_select.update(cx, |select, cx| {
-            select.set_items(precision_labels, window, cx);
-            select.set_selected_index(
-                Some(IndexPath::default().row(selected_precision)),
-                window,
-                cx,
-            );
-        });
-        self.opened_scale_inputs = Some(self.scale_input_snapshot(cx));
-        self.open_dialog(window, cx);
-    }
-
-    pub fn cancel_pick(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.picking {
-            return false;
-        }
-        self.picking = false;
-        self.pick_document_id = None;
-        self.start = None;
-        self.end = None;
-        cx.notify();
-        true
-    }
-
-    pub fn record_point(
-        &mut self,
-        document_id: DocumentId,
-        page_index: u32,
-        point: PdfPoint,
-        constrain_orthogonal: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> CalibrationPointDisposition {
-        if !self.picking {
-            return CalibrationPointDisposition::Ignored;
-        }
-        if self.pick_document_id != Some(document_id) {
-            return CalibrationPointDisposition::Ignored;
-        }
-        if self.start.is_some() && self.target.map(|target| target.1) != Some(page_index) {
-            self.error = Some("Pick both calibration points on the same page.".into());
-            cx.notify();
-            return CalibrationPointDisposition::Ignored;
-        }
-        if self.start.is_none() {
-            self.target = Some((document_id, page_index));
-            self.start = Some(point);
-            cx.notify();
-            return CalibrationPointDisposition::FirstPoint;
-        }
-        let start = self.start.expect("the first calibration point is retained");
-        let end = if constrain_orthogonal {
-            constrain_point(start, point)
-        } else {
-            point
-        };
-        self.end = Some(end);
-        self.picking = false;
-        self.pick_document_id = None;
-        self.error = None;
-        self.open_dialog(window, cx);
-        cx.notify();
-        CalibrationPointDisposition::Completed
-    }
-
-    pub fn begin_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.mode = PageScaleMode::Calibrate;
-        self.pick_document_id = self.target.map(|target| target.0);
-        self.target = None;
-        self.start = None;
-        self.end = None;
-        self.picking = true;
-        self.error = None;
-        window.close_dialog(cx);
-        cx.notify();
-    }
-
-    fn select_mode(&mut self, mode: PageScaleMode, cx: &mut Context<Self>) {
-        self.mode = mode;
-        self.error = None;
-        cx.notify();
-    }
-
-    pub fn configure_custom_for_test(
-        &mut self,
-        pdf_units: ScaleUnit,
-        real_units: ScaleUnit,
-        separate_y: bool,
-        precision: ScalePrecision,
-        pages_mode: PageScalePagesMode,
-        save_preset: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.mode = PageScaleMode::Custom;
-        self.pdf_units = pdf_units;
-        self.real_units = real_units;
-        self.separate_y = separate_y;
-        self.precision_mode = precision.mode;
-        self.precision_value = precision.value;
-        self.pages_mode = pages_mode;
-        self.save_preset = save_preset;
-        self.sync_selects(window, cx);
-        self.error = None;
-        cx.notify();
-    }
-
-    pub fn configure_pages_for_test(
-        &mut self,
-        pages_mode: PageScalePagesMode,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pages_mode = pages_mode;
-        self.sync_selects(window, cx);
-        self.error = None;
-        cx.notify();
-    }
-
-    pub fn apply(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some((document_id, page_index)) = self.target else {
-            self.error = Some("Choose a document page before applying scale.".into());
-            cx.notify();
-            return false;
-        };
-        let page_count = self
-            .owner
-            .read_with(cx, |workspace, cx| workspace.page_count(document_id, cx))
-            .ok()
-            .flatten()
-            .unwrap_or(0);
-        let scale = match self.scale_for_apply(document_id, page_index, cx) {
-            Ok(scale) => scale,
-            Err(error) => {
-                self.error = Some(error);
-                cx.notify();
-                return false;
-            }
-        };
-        let target = match self.build_target(page_index, page_count, cx) {
-            Ok(target) => target,
-            Err(error) => {
-                self.error = Some(error);
-                cx.notify();
-                return false;
-            }
-        };
-        let saved_preset = self.save_preset.then(|| {
-            let id = format!("scale-native-{}", self.next_preset_sequence);
-            ScalePreset {
-                id,
-                name: scale.name.clone(),
-                pdf_units: scale.pdf_units,
-                real_units: scale.real_units,
-                scale_x: scale.scale_x,
-                scale_y: scale.scale_y,
-                source: scale.source,
-                built_in: false,
-            }
-        });
-        let result = self.owner.update(cx, |workspace, cx| {
-            workspace.apply_page_scale_with_preset(document_id, scale, target, saved_preset, cx)
-        });
-        match result {
-            Ok(Ok(_)) => {
-                self.error = None;
-                self.applied_count = self.applied_count.saturating_add(1);
-                if self.save_preset {
-                    self.next_preset_sequence = self.next_preset_sequence.saturating_add(1);
-                }
-                cx.notify();
-                true
-            }
-            Ok(Err(error)) => {
-                self.error = Some(error);
-                cx.notify();
-                false
-            }
-            Err(_) => {
-                self.error = Some("The document workspace is no longer available.".into());
-                cx.notify();
-                false
-            }
-        }
-    }
-
-    fn available_presets(&self, document_id: DocumentId, cx: &App) -> Vec<ScalePreset> {
-        let mut presets = self
-            .owner
-            .read_with(cx, |workspace, cx| workspace.scale_presets(document_id, cx))
-            .unwrap_or_default();
-        presets.extend(built_in_scale_presets());
-        presets
-    }
-
-    fn selected_user_preset_id(&self, cx: &App) -> Option<String> {
-        let document_id = self.target?.0;
-        self.available_presets(document_id, cx)
-            .into_iter()
-            .find(|preset| preset.id == self.selected_preset_id && !preset.built_in)
-            .map(|preset| preset.id)
-    }
-
-    fn delete_selected_preset(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some((document_id, _)) = self.target else {
-            return false;
-        };
-        let Some(preset_id) = self.selected_user_preset_id(cx) else {
-            return false;
-        };
-        let result = self.owner.update(cx, |workspace, cx| {
-            workspace.delete_scale_preset(document_id, &preset_id, cx)
-        });
-        match result {
-            Ok(Ok(true)) => {
-                self.selected_preset_id = "one-to-1".into();
-                let labels = self
-                    .available_presets(document_id, cx)
-                    .iter()
-                    .map(preset_label)
-                    .map(SharedString::from)
-                    .collect::<Vec<_>>();
-                self.preset_select.update(cx, |select, cx| {
-                    select.set_items(labels, window, cx);
-                    let selected: SharedString = "1:1".into();
-                    select.set_selected_value(&selected, window, cx);
-                });
-                self.error = None;
-                cx.notify();
-                true
-            }
-            Ok(Ok(false)) => false,
-            Ok(Err(error)) => {
-                self.error = Some(error);
-                cx.notify();
-                false
-            }
-            Err(_) => {
-                self.error = Some("The document workspace is no longer available.".into());
-                cx.notify();
-                false
-            }
-        }
-    }
-
-    fn build_scale(
-        &self,
-        document_id: DocumentId,
-        page_index: u32,
-        cx: &App,
-    ) -> Result<PageScale, String> {
-        let precision = match self.precision_mode {
-            ScalePrecisionMode::Decimal => ScalePrecision::decimal(self.precision_value),
-            ScalePrecisionMode::Fraction => {
-                ScalePrecision::fraction(self.precision_value.round() as u16)
-            }
-        }
-        .map_err(|error| error.to_string())?;
-        match self.mode {
-            PageScaleMode::Preset => {
-                let presets = self.available_presets(document_id, cx);
-                let preset = presets
-                    .iter()
-                    .find(|preset| {
-                        preset.id == self.selected_preset_id
-                            || preset.name == self.selected_preset_id
-                    })
-                    .or_else(|| presets.first())
-                    .ok_or_else(|| "Select a scale preset.".to_owned())?;
-                PageScale::from_factors(
-                    page_index,
-                    ScaleSource::Preset,
-                    preset.name.clone(),
-                    preset.pdf_units,
-                    preset.real_units,
-                    preset.scale_x,
-                    preset.scale_y,
-                    precision,
-                )
-                .map_err(|error| error.to_string())
-            }
-            PageScaleMode::Custom => {
-                let pdf_length =
-                    read_positive(self.pdf_length.read(cx).value().as_ref(), "PDF length")?;
-                let real_length =
-                    read_positive(self.known_length.read(cx).value().as_ref(), "Real length")?;
-                let y_lengths = if self.separate_y {
-                    Some((
-                        read_positive(self.y_pdf_length.read(cx).value().as_ref(), "Y PDF length")?,
-                        read_positive(
-                            self.y_real_length.read(cx).value().as_ref(),
-                            "Y real length",
-                        )?,
-                    ))
-                } else {
-                    None
-                };
-                PageScale::custom(
-                    page_index,
-                    format!(
-                        "{} {} = {} {}",
-                        format_scale_number(pdf_length),
-                        self.pdf_units.as_str(),
-                        format_scale_number(real_length),
-                        self.real_units.as_str()
-                    ),
-                    self.pdf_units,
-                    self.real_units,
-                    pdf_length,
-                    real_length,
-                    y_lengths,
-                    precision,
-                )
-                .map_err(|error| error.to_string())
-            }
-            PageScaleMode::Calibrate => {
-                let (Some(start), Some(end)) = (self.start, self.end) else {
-                    return Err("Pick two points on the current PDF page.".into());
-                };
-                let known_length =
-                    read_positive(self.known_length.read(cx).value().as_ref(), "Real length")?;
-                PageScale::calibrated(
-                    page_index,
-                    start,
-                    end,
-                    known_length,
-                    self.real_units,
-                    precision,
-                )
-                .map_err(|error| error.to_string())
-            }
-        }
-    }
-
-    fn scale_for_apply(
-        &self,
-        document_id: DocumentId,
-        page_index: u32,
-        cx: &App,
-    ) -> Result<PageScale, String> {
-        if self.scale_inputs_unchanged(cx)
-            && let Some(scale) = &self.original_scale
-        {
-            return Ok(scale.clone());
-        }
-        self.build_scale(document_id, page_index, cx)
-    }
-
-    fn scale_inputs_unchanged(&self, cx: &App) -> bool {
-        self.opened_scale_inputs
-            .as_ref()
-            .is_some_and(|opened| *opened == self.scale_input_snapshot(cx))
-    }
-
-    fn scale_input_snapshot(&self, cx: &App) -> PageScaleInputSnapshot {
-        PageScaleInputSnapshot {
-            mode: self.mode,
-            pdf_units: self.pdf_units,
-            real_units: self.real_units,
-            separate_y: self.separate_y,
-            precision_mode: self.precision_mode,
-            precision_value: self.precision_value,
-            selected_preset_id: self.selected_preset_id.clone(),
-            pdf_length: self.pdf_length.read(cx).value().to_string(),
-            known_length: self.known_length.read(cx).value().to_string(),
-            y_pdf_length: self.y_pdf_length.read(cx).value().to_string(),
-            y_real_length: self.y_real_length.read(cx).value().to_string(),
-            start: self.start,
-            end: self.end,
-        }
-    }
-
-    fn build_target(
-        &self,
-        page_index: u32,
-        page_count: u32,
-        cx: &App,
-    ) -> Result<PageScaleApplyTarget, String> {
-        match self.pages_mode {
-            PageScalePagesMode::Current => Ok(PageScaleApplyTarget::Current(page_index)),
-            PageScalePagesMode::All => Ok(PageScaleApplyTarget::All),
-            PageScalePagesMode::Custom => {
-                parse_page_scale_ranges(self.custom_range.read(cx).value().as_ref(), page_count)
-                    .map(PageScaleApplyTarget::Ranges)
-                    .map_err(|error| error.to_string())
-            }
-        }
-    }
-
-    fn sync_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let pdf_units = SharedString::from(self.pdf_units.as_str());
-        self.pdf_units_select.update(cx, |select, cx| {
-            select.set_selected_value(&pdf_units, window, cx)
-        });
-        let real_units = SharedString::from(self.real_units.as_str());
-        self.real_units_select.update(cx, |select, cx| {
-            select.set_selected_value(&real_units, window, cx)
-        });
-        let precision_mode: SharedString = match self.precision_mode {
-            ScalePrecisionMode::Decimal => "Decimal".into(),
-            ScalePrecisionMode::Fraction => "Fraction".into(),
-        };
-        self.precision_mode_select.update(cx, |select, cx| {
-            select.set_selected_value(&precision_mode, window, cx)
-        });
-        let precision_labels = if self.precision_mode == ScalePrecisionMode::Fraction {
-            fraction_precision_labels()
-        } else {
-            decimal_precision_labels()
-        };
-        let precision_value = precision_label(self.precision_mode, self.precision_value);
-        self.precision_value_select.update(cx, |select, cx| {
-            select.set_items(precision_labels, window, cx);
-            select.set_selected_value(&precision_value, window, cx);
-        });
-        let pages_label: SharedString = match self.pages_mode {
-            PageScalePagesMode::Current => self
-                .target
-                .map(|(_, page_index)| format!("Current ({})", page_index + 1).into())
-                .unwrap_or_else(|| "Current (1)".into()),
-            PageScalePagesMode::All => "All Pages".into(),
-            PageScalePagesMode::Custom => "Custom".into(),
-        };
-        self.pages_select.update(cx, |select, cx| {
-            select.set_selected_value(&pages_label, window, cx)
-        });
-    }
-
-    pub fn cancel_for_document(&mut self, document_id: DocumentId, cx: &mut Context<Self>) -> bool {
-        let owns_document = self.target.is_some_and(|target| target.0 == document_id)
-            || self.pick_document_id == Some(document_id);
-        if !owns_document {
-            return false;
-        }
-        self.target = None;
-        self.pick_document_id = None;
-        self.start = None;
-        self.end = None;
-        self.picking = false;
-        self.original_scale = None;
-        self.opened_scale_inputs = None;
-        self.error = None;
-        cx.notify();
-        true
-    }
-
-    fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let control = cx.weak_entity();
-        let action_control = control.clone();
-        let content_control = control.clone();
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .close_button(false)
-                .w(px(520.))
-                .max_w_full()
-                .on_ok({
-                    let action_control = action_control.clone();
-                    move |_, _, cx| {
-                        action_control
-                            .update(cx, |control, cx| control.apply(cx))
-                            .unwrap_or(false)
-                    }
-                })
-                .content({
-                    let content_control = content_control.clone();
-                    move |content, window, cx| {
-                        build_dialog_content(content, &content_control, window, cx)
-                    }
-                })
-        });
+    fn value(&self) -> &SharedString {
+        &self.key
     }
 }
 
-fn build_dialog_content(
-    content: gpui_component::dialog::DialogContent,
-    control: &WeakEntity<PageScaleControl>,
-    _window: &mut Window,
-    cx: &mut App,
-) -> gpui_component::dialog::DialogContent {
-    let snapshot = control
-        .read_with(cx, |control, _| {
-            (
-                control.target,
-                control.start,
-                control.end,
-                control.error.clone(),
-            )
-        })
-        .expect("the page scale control must outlive its dialog");
-    let (target, start, end, error) = snapshot;
-    let page_label = target.map_or_else(
-        || "No page selected".to_owned(),
-        |(_, page_index)| format!("Page {}", page_index + 1),
-    );
-    let point_label = match (start, end) {
-        (Some(start), Some(end)) => format!(
-            "From ({:.2}, {:.2}) to ({:.2}, {:.2})",
-            start.x, start.y, end.x, end.y
-        ),
-        _ => "Pick two endpoints on the PDF.".to_owned(),
-    };
-    content
-        .child(
-            v_flex()
-                .id(PAGE_SCALE_DIALOG_ID)
-                .debug_selector(|| PAGE_SCALE_DIALOG_ID.into())
-                .relative()
-                .gap_4()
-                .child(
-                    DialogHeader::new()
-                        .child(DialogTitle::new().child("Set Page Scale"))
-                        .child(DialogDescription::new().child(format!(
-                            "{page_label}. Choose a scale and the pages it applies to."
-                        )))
-                        .child(
-                            // Inside the dialog content: the stock body clips anything
-                            // above it, which left the top half of an outset close
-                            // button unhoverable.
-                            div().absolute().top_0().right_0().child(
-                                DialogClose::new()
-                                    .child(close_icon_button(PAGE_SCALE_CLOSE_ID, "Close")),
-                            ),
-                        ),
-                )
-                .child(build_page_scale_dialog_body(control, point_label, cx))
-                .when_some(error, |this, error| {
-                    this.child(
-                        div()
-                            .id(PAGE_SCALE_ERROR_ID)
-                            .debug_selector(|| PAGE_SCALE_ERROR_ID.into())
-                            .text_sm()
-                            .text_color(cx.theme().danger)
-                            .child(error),
-                    )
-                }),
-        )
-        .child(
-            DialogFooter::new()
-                .child(dialog_close_button(
-                    Button::new(PAGE_SCALE_CANCEL_ID)
-                        .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
-                        .label("Cancel")
-                        .outline(),
-                ))
-                .child(dialog_action_button(
-                    Button::new(PAGE_SCALE_APPLY_ID)
-                        .debug_selector(|| PAGE_SCALE_APPLY_ID.into())
-                        .label("Apply Scale")
-                        .primary(),
-                )),
-        )
+type ScaleList = SearchableVec<SelectGroup<ScaleItem>>;
+
+fn standard_key(index: usize) -> SharedString {
+    format!("standard-{index}").into()
 }
 
-fn build_page_scale_dialog_body(
-    control: &WeakEntity<PageScaleControl>,
-    point_label: String,
-    cx: &mut App,
-) -> impl gpui::IntoElement {
-    let (
-        mode,
-        can_delete_preset,
-        pages_mode,
-        separate_y,
-        save_preset,
-        pdf_length,
-        known_length,
-        y_pdf_length,
-        y_real_length,
-        custom_range,
-        preset_select,
-        pages_select,
-        pdf_units_select,
-        real_units_select,
-        precision_mode_select,
-        precision_value_select,
-    ) = control
-        .read_with(cx, |control, app| {
-            (
-                control.mode,
-                control.selected_user_preset_id(app).is_some(),
-                control.pages_mode,
-                control.separate_y,
-                control.save_preset,
-                control.pdf_length.clone(),
-                control.known_length.clone(),
-                control.y_pdf_length.clone(),
-                control.y_real_length.clone(),
-                control.custom_range.clone(),
-                control.preset_select.clone(),
-                control.pages_select.clone(),
-                control.pdf_units_select.clone(),
-                control.real_units_select.clone(),
-                control.precision_mode_select.clone(),
-                control.precision_value_select.clone(),
-            )
-        })
-        .expect("the page scale control must outlive its dialog");
-    let preset_mode_control = control.clone();
-    let custom_mode_control = control.clone();
-    let calibrate_mode_control = control.clone();
-    let delete_preset_control = control.clone();
-    let pick_control = control.clone();
-    let separate_y_control = control.clone();
-    let save_preset_control = control.clone();
-    let custom_real_length = known_length.clone();
-
-    v_flex()
-        .id(PAGE_SCALE_DIALOG_BODY_ID)
-        .debug_selector(|| PAGE_SCALE_DIALOG_BODY_ID.into())
-        .max_h(px(560.))
-        .overflow_y_scroll()
-        .gap_4()
-        .child(
-            ButtonGroup::new("page-scale-method")
-                .child(
-                    Button::new(PAGE_SCALE_METHOD_PRESET_ID)
-                        .debug_selector(|| PAGE_SCALE_METHOD_PRESET_ID.into())
-                        .label("Preset")
-                        .selected(mode == PageScaleMode::Preset)
-                        .on_click(move |_, _, cx| {
-                            let _ = preset_mode_control.update(cx, |control, cx| {
-                                control.select_mode(PageScaleMode::Preset, cx)
-                            });
-                        }),
-                )
-                .child(
-                    Button::new(PAGE_SCALE_METHOD_CUSTOM_ID)
-                        .debug_selector(|| PAGE_SCALE_METHOD_CUSTOM_ID.into())
-                        .label("Custom")
-                        .selected(mode == PageScaleMode::Custom)
-                        .on_click(move |_, _, cx| {
-                            let _ = custom_mode_control.update(cx, |control, cx| {
-                                control.select_mode(PageScaleMode::Custom, cx)
-                            });
-                        }),
-                )
-                .child(
-                    Button::new(PAGE_SCALE_METHOD_CALIBRATE_ID)
-                        .debug_selector(|| PAGE_SCALE_METHOD_CALIBRATE_ID.into())
-                        .label("Calibrate")
-                        .selected(mode == PageScaleMode::Calibrate)
-                        .on_click(move |_, _, cx| {
-                            let _ = calibrate_mode_control.update(cx, |control, cx| {
-                                control.select_mode(PageScaleMode::Calibrate, cx)
-                            });
-                        }),
-                ),
-        )
-        .when(mode == PageScaleMode::Preset, |this| {
-            this.child(
-                Field::new()
-                    .label("Scale")
-                    .child(
-                        div()
-                            .id(PAGE_SCALE_PRESET_SELECT_ID)
-                            .debug_selector(|| PAGE_SCALE_PRESET_SELECT_ID.into())
-                            .child(Select::new(&preset_select)),
-                    )
-                    .when(can_delete_preset, |this| {
-                        this.child(
-                            Button::new(PAGE_SCALE_DELETE_PRESET_ID)
-                                .debug_selector(|| PAGE_SCALE_DELETE_PRESET_ID.into())
-                                .label("Delete")
-                                .outline()
-                                .on_click(move |_, window, cx| {
-                                    let _ = delete_preset_control.update(cx, |control, cx| {
-                                        control.delete_selected_preset(window, cx)
-                                    });
-                                }),
-                        )
-                    }),
-            )
-        })
-        .when(mode == PageScaleMode::Custom, |this| {
-            this.child(
-                v_flex()
-                    .gap_3()
-                    .child(div().text_sm().child("Scale equation"))
-                    .child(
-                        Field::new().label("PDF length").child(
-                            div()
-                                .id(PAGE_SCALE_CUSTOM_PDF_LENGTH_ID)
-                                .debug_selector(|| PAGE_SCALE_CUSTOM_PDF_LENGTH_ID.into())
-                                .child(NumberInput::new(&pdf_length)),
-                        ),
-                    )
-                    .child(
-                        Field::new().label("PDF units").child(
-                            div()
-                                .id(PAGE_SCALE_CUSTOM_PDF_UNITS_ID)
-                                .debug_selector(|| PAGE_SCALE_CUSTOM_PDF_UNITS_ID.into())
-                                .child(Select::new(&pdf_units_select)),
-                        ),
-                    )
-                    .child(
-                        Field::new().label("Real length").child(
-                            div()
-                                .id(PAGE_SCALE_CUSTOM_REAL_LENGTH_ID)
-                                .debug_selector(|| PAGE_SCALE_CUSTOM_REAL_LENGTH_ID.into())
-                                .child(NumberInput::new(&custom_real_length)),
-                        ),
-                    )
-                    .child(
-                        Field::new().label("Real units").child(
-                            div()
-                                .id(PAGE_SCALE_CUSTOM_REAL_UNITS_ID)
-                                .debug_selector(|| PAGE_SCALE_CUSTOM_REAL_UNITS_ID.into())
-                                .child(Select::new(&real_units_select)),
-                        ),
-                    )
-                    .child(
-                        Checkbox::new(PAGE_SCALE_SEPARATE_Y_ID)
-                            .debug_selector(|| PAGE_SCALE_SEPARATE_Y_ID.into())
-                            .checked(separate_y)
-                            .label("Separate Y scale")
-                            .on_click(move |checked, _, cx| {
-                                let checked = *checked;
-                                let _ = separate_y_control.update(cx, |control, cx| {
-                                    control.separate_y = checked;
-                                    control.error = None;
-                                    cx.notify();
-                                });
-                            }),
-                    )
-                    .when(separate_y, |this| {
-                        this.child(
-                            Field::new().label("Y PDF length").child(
-                                div()
-                                    .id(PAGE_SCALE_Y_PDF_LENGTH_ID)
-                                    .debug_selector(|| PAGE_SCALE_Y_PDF_LENGTH_ID.into())
-                                    .child(NumberInput::new(&y_pdf_length)),
-                            ),
-                        )
-                        .child(
-                            Field::new().label("Y real length").child(
-                                div()
-                                    .id(PAGE_SCALE_Y_REAL_LENGTH_ID)
-                                    .debug_selector(|| PAGE_SCALE_Y_REAL_LENGTH_ID.into())
-                                    .child(NumberInput::new(&y_real_length)),
-                            ),
-                        )
-                    }),
-            )
-        })
-        .when(mode == PageScaleMode::Calibrate, |this| {
-            this.child(
-                v_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id(PAGE_SCALE_PICK_STATUS_ID)
-                            .debug_selector(|| PAGE_SCALE_PICK_STATUS_ID.into())
-                            .text_sm()
-                            .child(point_label),
-                    )
-                    .child(
-                        Button::new(PAGE_SCALE_PICK_ID)
-                            .debug_selector(|| PAGE_SCALE_PICK_ID.into())
-                            .label("Pick Two Points")
-                            .on_click(move |_, window, cx| {
-                                let _ = pick_control.update(cx, |control, cx| {
-                                    control.begin_pick(window, cx);
-                                });
-                            }),
-                    )
-                    .child(
-                        Field::new().label("Known length").child(
-                            div()
-                                .id(PAGE_SCALE_KNOWN_LENGTH_ID)
-                                .debug_selector(|| PAGE_SCALE_KNOWN_LENGTH_ID.into())
-                                .child(NumberInput::new(&known_length)),
-                        ),
-                    )
-                    .child(
-                        Field::new().label("Units").child(
-                            div()
-                                .id(PAGE_SCALE_UNIT_GROUP_ID)
-                                .debug_selector(|| PAGE_SCALE_UNIT_GROUP_ID.into())
-                                .child(Select::new(&real_units_select)),
-                        ),
-                    ),
-            )
-        })
-        .child(
-            Field::new().label("Pages").child(
-                div()
-                    .id(PAGE_SCALE_PAGES_ID)
-                    .debug_selector(|| PAGE_SCALE_PAGES_ID.into())
-                    .child(Select::new(&pages_select)),
-            ),
-        )
-        .when(pages_mode == PageScalePagesMode::Custom, |this| {
-            this.child(
-                Field::new().label("Custom page range").child(
-                    div()
-                        .id(PAGE_SCALE_RANGE_ID)
-                        .debug_selector(|| PAGE_SCALE_RANGE_ID.into())
-                        .child(Input::new(&custom_range)),
-                ),
-            )
-        })
-        .child(
-            Field::new().label("Precision mode").child(
-                div()
-                    .id(PAGE_SCALE_PRECISION_MODE_ID)
-                    .debug_selector(|| PAGE_SCALE_PRECISION_MODE_ID.into())
-                    .child(Select::new(&precision_mode_select)),
-            ),
-        )
-        .child(
-            Field::new().label("Precision").child(
-                div()
-                    .id(PAGE_SCALE_PRECISION_VALUE_ID)
-                    .debug_selector(|| PAGE_SCALE_PRECISION_VALUE_ID.into())
-                    .child(Select::new(&precision_value_select)),
-            ),
-        )
-        .when(mode != PageScaleMode::Preset, |this| {
-            this.child(
-                Checkbox::new(PAGE_SCALE_SAVE_PRESET_ID)
-                    .debug_selector(|| PAGE_SCALE_SAVE_PRESET_ID.into())
-                    .checked(save_preset)
-                    .label("Add preset")
-                    .on_click(move |checked, _, cx| {
-                        let checked = *checked;
-                        let _ = save_preset_control.update(cx, |control, cx| {
-                            control.save_preset = checked;
-                            control.error = None;
-                            cx.notify();
-                        });
-                    }),
-            )
-        })
-}
-
-fn decimal_precision_labels() -> Vec<SharedString> {
-    ["1", "0.1", "0.01", "0.001", "0.0001", "0.00001", "0.000001"]
-        .into_iter()
-        .map(SharedString::from)
-        .collect()
-}
-
-fn fraction_precision_labels() -> Vec<SharedString> {
-    ["1/2", "1/4", "1/8", "1/16", "1/32", "1/64"]
-        .into_iter()
-        .map(SharedString::from)
-        .collect()
-}
-
-fn precision_label(mode: ScalePrecisionMode, value: f64) -> SharedString {
-    match mode {
-        ScalePrecisionMode::Decimal => format_scale_number(value).into(),
-        ScalePrecisionMode::Fraction => format!("1/{}", value.round() as u16).into(),
-    }
-}
-
-fn preset_label(preset: &ScalePreset) -> String {
-    if preset.built_in {
-        preset.name.clone()
-    } else {
-        format!("{} (saved)", preset.name)
-    }
-}
-
-fn read_positive(value: &str, label: &str) -> Result<f64, String> {
-    let value = value
-        .parse::<f64>()
-        .map_err(|_| format!("{label} must be a positive number."))?;
-    if !value.is_finite() || value <= 0. {
-        return Err(format!("{label} must be a positive number."));
-    }
-    Ok(value)
-}
-
-fn format_scale_number(value: f64) -> String {
-    if value.fract().abs() < f64::EPSILON {
-        format!("{value:.0}")
-    } else {
-        value.to_string()
-    }
-}
-
-fn pdf_unit_points(unit: ScaleUnit) -> f64 {
+fn unit_title(unit: ScaleUnit) -> &'static str {
     match unit {
-        ScaleUnit::In => 72.,
-        ScaleUnit::Ft => 864.,
-        ScaleUnit::Mm => 72. / 25.4,
-        ScaleUnit::Cm => 72. / 2.54,
-        ScaleUnit::M => 72. / 0.0254,
+        ScaleUnit::Mm => "Millimetres",
+        ScaleUnit::Cm => "Centimetres",
+        ScaleUnit::M => "Metres",
+        ScaleUnit::In => "Inches",
+        ScaleUnit::Ft => "Feet",
     }
 }
 
-fn constrain_point(start: PdfPoint, end: PdfPoint) -> PdfPoint {
+fn precision_choices(unit: ScaleUnit) -> Vec<ScalePrecision> {
+    let mut choices = DECIMALS
+        .iter()
+        .map(|value| ScalePrecision::decimal(*value).expect("a positive precision"))
+        .collect::<Vec<_>>();
+    if imperial_unit(unit) {
+        choices.extend(
+            FRACTIONS
+                .iter()
+                .map(|denominator| ScalePrecision::fraction(*denominator).expect("a fraction")),
+        );
+    }
+    choices
+}
+
+fn precision_title(precision: ScalePrecision, unit: ScaleUnit) -> SharedString {
+    match precision.mode {
+        ScalePrecisionMode::Decimal => {
+            format!("{} {}", trimmed(precision.value, 3), unit.as_str()).into()
+        }
+        ScalePrecisionMode::Fraction => {
+            format!("1/{} {}", precision.value.round(), unit.as_str()).into()
+        }
+    }
+}
+
+/// A unit's own default precision: whole millimetres, centimetres to the
+/// millimetre, metres and feet to the hundredth, inches to the sixteenth.
+fn unit_default_precision(unit: ScaleUnit) -> ScalePrecision {
+    match unit {
+        ScaleUnit::Mm => ScalePrecision::decimal(1.),
+        ScaleUnit::Cm => ScalePrecision::decimal(0.1),
+        ScaleUnit::M | ScaleUnit::Ft => ScalePrecision::decimal(0.01),
+        ScaleUnit::In => ScalePrecision::fraction(16),
+    }
+    .expect("a positive precision")
+}
+
+fn same_precision(left: ScalePrecision, right: ScalePrecision) -> bool {
+    left.mode == right.mode && (left.value - right.value).abs() < 1e-9
+}
+
+fn distance(start: PdfPoint, end: PdfPoint) -> f64 {
+    (end.x - start.x).hypot(end.y - start.y)
+}
+
+/// The end of a line from `start` held horizontal or vertical (Shift).
+pub fn constrain_point(start: PdfPoint, end: PdfPoint) -> PdfPoint {
     if (end.x - start.x).abs() >= (end.y - start.y).abs() {
         PdfPoint {
             x: end.x,
@@ -1498,13 +235,1339 @@ fn constrain_point(start: PdfPoint, end: PdfPoint) -> PdfPoint {
     }
 }
 
+/// A length in `unit`, written for a field: up to six decimals.
+fn length_text(value: f64) -> String {
+    trimmed(value, 6)
+}
+
+pub struct PageScaleControl {
+    owner: WeakEntity<DocumentWorkspace>,
+    request: Option<PageScaleRequest>,
+    choice: ScaleChoice,
+    /// The page's text has been searched for the scales it states.
+    stated_read: bool,
+    stated: Vec<usize>,
+    display_unit: ScaleUnit,
+    precision: ScalePrecision,
+    custom_paper_unit: ScaleUnit,
+    pages: PageScalePages,
+    picking: bool,
+    start: Option<PdfPoint>,
+    end: Option<PdfPoint>,
+    hover: Option<PdfPoint>,
+    /// The choice before Calibrate, restored when the pick is abandoned.
+    choice_before_pick: ScaleChoice,
+    error: Option<(ErrorPlace, String)>,
+    /// The inputs as opened on a page with a scale: unchanged, Apply keeps
+    /// that scale exactly, including what the dialog cannot show (a
+    /// different vertical scale, an unlisted precision).
+    opened: Option<OpenedInputs>,
+    applied_count: usize,
+    scale_select: Entity<SelectState<ScaleList>>,
+    unit_select: Entity<SelectState<Vec<SharedString>>>,
+    precision_select: Entity<SelectState<Vec<SharedString>>>,
+    paper_unit_select: Entity<SelectState<Vec<SharedString>>>,
+    custom_paper: Entity<InputState>,
+    custom_real: Entity<InputState>,
+    known_length: Entity<InputState>,
+    range: Entity<InputState>,
+}
+
+impl PageScaleControl {
+    pub fn new(
+        owner: WeakEntity<DocumentWorkspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let scale_select = cx.new(|cx| {
+            SelectState::new(scale_list(&[], false, false), None, window, cx).searchable(true)
+        });
+        let unit_select = cx.new(|cx| {
+            SelectState::new(
+                UNITS
+                    .iter()
+                    .map(|unit| SharedString::from(unit_title(*unit)))
+                    .collect::<Vec<_>>(),
+                None,
+                window,
+                cx,
+            )
+        });
+        let precision_select = cx.new(|cx| SelectState::new(Vec::new(), None, window, cx));
+        let paper_unit_select = cx.new(|cx| {
+            SelectState::new(
+                PAPER_UNITS
+                    .iter()
+                    .map(|unit| SharedString::from(unit.as_str()))
+                    .collect::<Vec<_>>(),
+                None,
+                window,
+                cx,
+            )
+        });
+        let custom_paper = cx.new(|cx| InputState::new(window, cx).default_value("1"));
+        let custom_real = cx.new(|cx| InputState::new(window, cx).placeholder("Real length"));
+        let known_length = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 3600 mm"));
+        let range = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 1-3, 5"));
+
+        cx.subscribe_in(
+            &scale_select,
+            window,
+            |control, _, event: &SelectEvent<ScaleList>, window, cx| {
+                let SelectEvent::Confirm(Some(key)) = event else {
+                    return;
+                };
+                let choice = match key.as_ref() {
+                    KEY_CUSTOM => ScaleChoice::Custom,
+                    KEY_MEASURED => ScaleChoice::Measured,
+                    KEY_NONE => ScaleChoice::None,
+                    key => match key
+                        .strip_prefix("standard-")
+                        .and_then(|index| index.parse().ok())
+                    {
+                        Some(index) => ScaleChoice::Standard(index),
+                        None => return,
+                    },
+                };
+                control.choose(choice, window, cx);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &unit_select,
+            window,
+            |control, _, event: &SelectEvent<Vec<SharedString>>, window, cx| {
+                let SelectEvent::Confirm(Some(title)) = event else {
+                    return;
+                };
+                if let Some(unit) = UNITS
+                    .iter()
+                    .find(|unit| unit_title(**unit) == title.as_ref())
+                {
+                    control.set_display_unit(*unit, window, cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &precision_select,
+            window,
+            |control, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                let SelectEvent::Confirm(Some(title)) = event else {
+                    return;
+                };
+                if let Some(precision) = precision_choices(control.display_unit)
+                    .into_iter()
+                    .find(|precision| precision_title(*precision, control.display_unit) == *title)
+                {
+                    control.precision = precision;
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &paper_unit_select,
+            window,
+            |control, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                let SelectEvent::Confirm(Some(title)) = event else {
+                    return;
+                };
+                if let Ok(unit) = ScaleUnit::parse(title.as_ref()) {
+                    control.custom_paper_unit = unit;
+                    control.error = None;
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        for input in [&custom_paper, &custom_real, &known_length, &range] {
+            cx.observe(input, |control, _, cx| {
+                if control.error.is_some() {
+                    control.error = None;
+                }
+                cx.notify();
+            })
+            .detach();
+        }
+
+        Self {
+            owner,
+            request: None,
+            choice: ScaleChoice::Unset,
+            stated_read: false,
+            stated: Vec::new(),
+            display_unit: ScaleUnit::M,
+            precision: unit_default_precision(ScaleUnit::M),
+            custom_paper_unit: ScaleUnit::Cm,
+            pages: PageScalePages::This,
+            picking: false,
+            start: None,
+            end: None,
+            hover: None,
+            choice_before_pick: ScaleChoice::Unset,
+            error: None,
+            opened: None,
+            applied_count: 0,
+            scale_select,
+            unit_select,
+            precision_select,
+            paper_unit_select,
+            custom_paper,
+            custom_real,
+            known_length,
+            range,
+        }
+    }
+
+    pub fn request(&self) -> Option<&PageScaleRequest> {
+        self.request.as_ref()
+    }
+
+    pub fn target(&self) -> Option<(DocumentId, u32)> {
+        self.request
+            .as_ref()
+            .map(|request| (request.document_id, request.page_index))
+    }
+
+    pub fn choice(&self) -> ScaleChoice {
+        self.choice
+    }
+
+    pub fn pages(&self) -> PageScalePages {
+        self.pages
+    }
+
+    pub fn display(&self) -> (ScaleUnit, ScalePrecision) {
+        (self.display_unit, self.precision)
+    }
+
+    pub fn stated(&self) -> Vec<&'static StandardScale> {
+        self.stated
+            .iter()
+            .map(|index| &STANDARD_SCALES[*index])
+            .collect()
+    }
+
+    pub fn is_picking(&self) -> bool {
+        self.picking
+    }
+
+    pub fn points(&self) -> (Option<PdfPoint>, Option<PdfPoint>) {
+        (self.start, self.end)
+    }
+
+    pub fn applied_count(&self) -> usize {
+        self.applied_count
+    }
+
+    pub fn known_length_input(&self) -> Entity<InputState> {
+        self.known_length.clone()
+    }
+
+    pub fn custom_paper_input(&self) -> Entity<InputState> {
+        self.custom_paper.clone()
+    }
+
+    pub fn custom_real_input(&self) -> Entity<InputState> {
+        self.custom_real.clone()
+    }
+
+    pub fn range_input(&self) -> Entity<InputState> {
+        self.range.clone()
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_ref().map(|(_, error)| error.as_str())
+    }
+
+    /// Whether the dialog still waits for the page's text, to look for the
+    /// scales it states.
+    pub fn wants_stated_scales(&self, document_id: DocumentId, page_index: u32) -> bool {
+        !self.stated_read && self.target() == Some((document_id, page_index))
+    }
+
+    /// What the page says while a line is picked.
+    pub fn pick_instruction(&self) -> Option<&'static str> {
+        self.picking.then_some(if self.start.is_some() {
+            "Click the other end. Hold Shift to keep the line straight."
+        } else {
+            "Click one end of a length you know, like a dimensioned wall."
+        })
+    }
+
+    /// The calibration line: following the pointer while it is picked, and
+    /// finished while its length is asked for.
+    pub fn preview(&self) -> Option<CalibrationPreview> {
+        let request = self.request.as_ref()?;
+        let start = self.start?;
+        let end = if self.picking {
+            self.hover?
+        } else {
+            self.end.filter(|_| self.choice == ScaleChoice::Measured)?
+        };
+        let imperial = imperial_unit(self.display_unit);
+        let paper = distance(start, end);
+        let label = match request.current.as_ref().filter(|_| self.picking) {
+            Some(current) => format!(
+                "{} {}",
+                trimmed(paper * current.scale_x, 2),
+                current.real_units.as_str()
+            ),
+            None => paper_length_label(paper, imperial),
+        };
+        Some(CalibrationPreview {
+            document_id: request.document_id,
+            page_index: request.page_index,
+            start,
+            end,
+            label,
+        })
+    }
+
+    pub fn open(&mut self, request: PageScaleRequest, window: &mut Window, cx: &mut Context<Self>) {
+        let reopened_page = self.target() == Some((request.document_id, request.page_index));
+        if !reopened_page {
+            self.stated_read = false;
+            self.stated.clear();
+        }
+        self.picking = false;
+        self.start = None;
+        self.end = None;
+        self.hover = None;
+        self.error = None;
+        self.pages = PageScalePages::This;
+        self.range.update(cx, |input, cx| {
+            input.set_value((request.page_index + 1).to_string(), window, cx)
+        });
+        self.known_length
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        match request.current.as_ref() {
+            Some(current) => {
+                self.display_unit = current.real_units;
+                self.precision = current.precision;
+                let ratio = ratio_of(current);
+                self.choice = match standard_for(ratio, current.real_units)
+                    .filter(|_| (current.scale_y - current.scale_x).abs() <= current.scale_x * 1e-4)
+                {
+                    Some(standard) => ScaleChoice::Standard(standard_index(standard)),
+                    None => {
+                        self.fill_custom_from_ratio(ratio, window, cx);
+                        ScaleChoice::Custom
+                    }
+                };
+            }
+            None => {
+                // The scale the page states, when its text has been read.
+                self.choice = match self.stated.first() {
+                    Some(index) if reopened_page => ScaleChoice::Standard(*index),
+                    _ => ScaleChoice::Unset,
+                };
+                let imperial = paper_is_imperial(request.page_size);
+                self.display_unit = if imperial {
+                    ScaleUnit::Ft
+                } else {
+                    ScaleUnit::M
+                };
+                self.precision = unit_default_precision(self.display_unit);
+                if let ScaleChoice::Standard(index) = self.choice {
+                    (self.display_unit, self.precision) = STANDARD_SCALES[index].default_display();
+                }
+                self.custom_paper_unit = if imperial {
+                    ScaleUnit::In
+                } else {
+                    ScaleUnit::Cm
+                };
+                self.custom_paper
+                    .update(cx, |input, cx| input.set_value("1", window, cx));
+                self.custom_real
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+            }
+        }
+        let has_scale = request.current.is_some();
+        self.request = Some(request);
+        self.opened = has_scale.then(|| self.opened_inputs(cx));
+        self.sync_selects(window, cx);
+        self.open_dialog(window, cx);
+        cx.notify();
+    }
+
+    fn opened_inputs(&self, cx: &App) -> OpenedInputs {
+        OpenedInputs {
+            choice: self.choice,
+            display_unit: self.display_unit,
+            precision: (self.precision.mode, self.precision.value.to_bits()),
+            custom_paper_unit: self.custom_paper_unit,
+            custom_paper: self.custom_paper.read(cx).value().to_string(),
+            custom_real: self.custom_real.read(cx).value().to_string(),
+        }
+    }
+
+    /// The scales the page's text states, once it has been read.
+    pub fn set_page_text(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.wants_stated_scales(document_id, page_index) {
+            return;
+        }
+        let Some(request) = self.request.as_ref() else {
+            return;
+        };
+        self.stated_read = true;
+        self.stated = stated_scales(text, request.page_size)
+            .into_iter()
+            .take(4)
+            .map(|stated| standard_index(stated.scale))
+            .collect();
+        // A page without a scale starts at the scale it states most, which
+        // the list and its chip show; anything chosen already is kept.
+        if self.choice == ScaleChoice::Unset
+            && let Some(index) = self.stated.first().copied()
+        {
+            let (unit, precision) = STANDARD_SCALES[index].default_display();
+            self.display_unit = unit;
+            self.precision = precision;
+            self.choice = ScaleChoice::Standard(index);
+        }
+        self.sync_selects(window, cx);
+        cx.notify();
+    }
+
+    fn choose(&mut self, choice: ScaleChoice, window: &mut Window, cx: &mut Context<Self>) {
+        if choice == ScaleChoice::Custom && self.choice != ScaleChoice::Custom {
+            // Custom starts from the scale chosen so far.
+            if let Some(ratio) = self.ratio(cx) {
+                self.fill_custom_from_ratio(ratio, window, cx);
+            }
+        }
+        if let ScaleChoice::Standard(index) = choice {
+            let standard = &STANDARD_SCALES[index];
+            if standard.system.imperial() != imperial_unit(self.display_unit) {
+                let (unit, precision) = standard.default_display();
+                self.display_unit = unit;
+                self.precision = precision;
+            }
+        }
+        self.choice = choice;
+        self.error = None;
+        self.sync_selects(window, cx);
+        cx.notify();
+    }
+
+    /// Measures in `unit`, keeping the scale: typed real lengths are
+    /// converted, so `1 cm = 1 m` stays 1:100 when metres become millimetres.
+    fn set_display_unit(&mut self, unit: ScaleUnit, window: &mut Window, cx: &mut Context<Self>) {
+        if unit == self.display_unit {
+            return;
+        }
+        let previous = self.display_unit;
+        for input in [&self.custom_real, &self.known_length] {
+            let value = input.read(cx).value().to_string();
+            if let Ok(length) = parse_length(&value, previous) {
+                let converted = length * previous.points() / unit.points();
+                input.update(cx, |input, cx| {
+                    input.set_value(length_text(converted), window, cx)
+                });
+            }
+        }
+        self.display_unit = unit;
+        self.precision = unit_default_precision(unit);
+        self.error = None;
+        self.sync_selects(window, cx);
+        cx.notify();
+    }
+
+    pub fn choose_for_test(
+        &mut self,
+        choice: ScaleChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose(choice, window, cx);
+    }
+
+    pub fn set_display_for_test(
+        &mut self,
+        unit: ScaleUnit,
+        precision: ScalePrecision,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_display_unit(unit, window, cx);
+        self.precision = precision;
+        self.sync_selects(window, cx);
+    }
+
+    pub fn set_pages(
+        &mut self,
+        pages: PageScalePages,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pages = pages;
+        self.error = None;
+        if pages == PageScalePages::Range {
+            // Ready to type the pages over the suggested one.
+            let range = self.range.clone();
+            window.defer(cx, move |window, cx| {
+                range.update(cx, |input, cx| {
+                    input.focus(window, cx);
+                    input.select_all(window, cx);
+                });
+            });
+        }
+        cx.notify();
+    }
+
+    fn fill_custom_from_ratio(&mut self, ratio: f64, window: &mut Window, cx: &mut Context<Self>) {
+        let paper_unit = if imperial_unit(self.display_unit) {
+            ScaleUnit::In
+        } else {
+            ScaleUnit::Cm
+        };
+        self.custom_paper_unit = paper_unit;
+        let real = ratio * paper_unit.points() / self.display_unit.points();
+        self.custom_paper
+            .update(cx, |input, cx| input.set_value("1", window, cx));
+        self.custom_real.update(cx, |input, cx| {
+            input.set_value(length_text(real), window, cx)
+        });
+    }
+
+    /// Real lengths per paper length for the current choice.
+    fn ratio_result(&self, cx: &App) -> Result<f64, String> {
+        match self.choice {
+            ScaleChoice::Unset => {
+                Err("Choose a scale, or calibrate one from a known length.".into())
+            }
+            ScaleChoice::None => Err("No scale".into()),
+            ScaleChoice::Standard(index) => Ok(STANDARD_SCALES[index].ratio),
+            ScaleChoice::Custom => {
+                let paper = parse_length(
+                    self.custom_paper.read(cx).value().as_ref(),
+                    self.custom_paper_unit,
+                )
+                .map_err(|_| "Enter the paper length, like 1.".to_owned())?;
+                let real = parse_length(
+                    self.custom_real.read(cx).value().as_ref(),
+                    self.display_unit,
+                )
+                .map_err(|_| "Enter the real length that paper length stands for.".to_owned())?;
+                Ok(real * self.display_unit.points() / (paper * self.custom_paper_unit.points()))
+            }
+            ScaleChoice::Measured => {
+                let (Some(start), Some(end)) = (self.start, self.end) else {
+                    return Err("Calibrate: click both ends of a length you know.".into());
+                };
+                let known = parse_length(
+                    self.known_length.read(cx).value().as_ref(),
+                    self.display_unit,
+                )?;
+                Ok(known * self.display_unit.points() / distance(start, end))
+            }
+        }
+    }
+
+    fn ratio(&self, cx: &App) -> Option<f64> {
+        self.ratio_result(cx).ok()
+    }
+
+    /// The scale Apply sets on the dialog's page; `None` removes it.
+    pub fn resolved_scale(&self, cx: &App) -> Result<Option<PageScale>, String> {
+        let Some(request) = self.request.as_ref() else {
+            return Err("The page is no longer open.".into());
+        };
+        if self.choice == ScaleChoice::None {
+            return Ok(None);
+        }
+        if let Some(current) = request.current.as_ref()
+            && self.opened.as_ref() == Some(&self.opened_inputs(cx))
+        {
+            return Ok(Some(current.clone()));
+        }
+        let ratio = self.ratio_result(cx)?;
+        let (source, name) = match self.choice {
+            ScaleChoice::Standard(index) => {
+                (ScaleSource::Preset, STANDARD_SCALES[index].label.to_owned())
+            }
+            ScaleChoice::Measured => (
+                ScaleSource::Calibrated,
+                ratio_label(ratio, self.display_unit),
+            ),
+            _ => (ScaleSource::Custom, ratio_label(ratio, self.display_unit)),
+        };
+        let scale = scale_from_ratio(
+            request.page_index,
+            source,
+            &name,
+            ratio,
+            self.display_unit,
+            self.precision,
+        );
+        // The same scale chosen again is kept exactly as the page has it,
+        // so applying it changes nothing.
+        if let Some(current) = request.current.as_ref()
+            && same_scale(current, &scale)
+        {
+            return Ok(Some(current.clone()));
+        }
+        Ok(Some(scale))
+    }
+
+    fn target_pages(&self, cx: &App) -> Result<PageScaleApplyTarget, String> {
+        let request = self.request.as_ref().ok_or("The page is no longer open.")?;
+        match self.pages {
+            PageScalePages::This => Ok(PageScaleApplyTarget::Current(request.page_index)),
+            PageScalePages::All => Ok(PageScaleApplyTarget::All),
+            PageScalePages::Range => {
+                parse_page_scale_ranges(self.range.read(cx).value().as_ref(), request.page_count)
+                    .map(PageScaleApplyTarget::Ranges)
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    /// Sets (or removes) the scale on the chosen pages, as one undoable
+    /// change. Returns whether the dialog may close.
+    pub fn apply(&mut self, cx: &mut Context<Self>) -> bool {
+        let scale = match self.resolved_scale(cx) {
+            Ok(scale) => scale,
+            Err(error) => return self.fail(ErrorPlace::Scale, error, cx),
+        };
+        let target = match self.target_pages(cx) {
+            Ok(target) => target,
+            Err(error) => return self.fail(ErrorPlace::Pages, error, cx),
+        };
+        let Some(request) = self.request.clone() else {
+            return false;
+        };
+        let result = self.owner.update(cx, |workspace, cx| match scale {
+            Some(scale) => workspace.apply_page_scale(request.document_id, scale, target, cx),
+            None => workspace.remove_page_scale(request.document_id, target, cx),
+        });
+        match result {
+            Ok(Ok(_)) => {
+                self.error = None;
+                self.applied_count = self.applied_count.saturating_add(1);
+                self.start = None;
+                self.end = None;
+                cx.notify();
+                true
+            }
+            Ok(Err(error)) => self.fail(ErrorPlace::Apply, error, cx),
+            Err(_) => self.fail(
+                ErrorPlace::Apply,
+                "The document is no longer open.".into(),
+                cx,
+            ),
+        }
+    }
+
+    fn fail(&mut self, place: ErrorPlace, error: String, cx: &mut Context<Self>) -> bool {
+        self.error = Some((place, error));
+        cx.notify();
+        false
+    }
+
+    /// Hides the dialog so both ends of a known length can be clicked.
+    pub fn begin_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.request.is_none() {
+            return;
+        }
+        if !self.picking {
+            self.choice_before_pick = self.choice;
+        }
+        self.picking = true;
+        self.start = None;
+        self.end = None;
+        self.hover = None;
+        self.error = None;
+        window.close_dialog(cx);
+        cx.notify();
+    }
+
+    /// Abandons the line being picked and shows the dialog as it was.
+    pub fn cancel_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.picking {
+            return false;
+        }
+        self.picking = false;
+        self.start = None;
+        self.end = None;
+        self.hover = None;
+        if self.choice == ScaleChoice::Measured {
+            self.choice = self.choice_before_pick;
+        }
+        self.sync_selects(window, cx);
+        self.open_dialog(window, cx);
+        cx.notify();
+        true
+    }
+
+    /// Whether a first calibration click on `page_index` would move the
+    /// dialog to that page.
+    pub fn picking_from(&self, document_id: DocumentId, page_index: u32) -> bool {
+        self.picking
+            && self.start.is_none()
+            && self.request.as_ref().is_some_and(|request| {
+                request.document_id == document_id && request.page_index != page_index
+            })
+    }
+
+    /// Moves the dialog to another page of its document, keeping what is
+    /// chosen: the calibration line's first end was clicked there.
+    pub fn retarget(&mut self, request: PageScaleRequest, cx: &mut Context<Self>) {
+        if self.request.as_ref().map(|current| current.document_id) != Some(request.document_id) {
+            return;
+        }
+        self.stated_read = false;
+        self.stated.clear();
+        self.opened = None;
+        self.request = Some(request);
+        cx.notify();
+    }
+
+    /// Where the pointer is on the page while a line is picked.
+    pub fn hover_point(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        point: PdfPoint,
+        constrain: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.picking || self.target() != Some((document_id, page_index)) {
+            return;
+        }
+        let point = match (self.start, constrain) {
+            (Some(start), true) => constrain_point(start, point),
+            _ => point,
+        };
+        if self.hover != Some(point) {
+            self.hover = Some(point);
+            cx.notify();
+        }
+    }
+
+    /// One end of the line: the first starts it, the second finishes it and
+    /// asks for its length. Both must be on the dialog's page.
+    pub fn record_point(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        point: PdfPoint,
+        constrain: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> CalibrationPointDisposition {
+        if !self.picking || self.target() != Some((document_id, page_index)) {
+            return CalibrationPointDisposition::Ignored;
+        }
+        let Some(start) = self.start else {
+            self.start = Some(point);
+            self.hover = Some(point);
+            cx.notify();
+            return CalibrationPointDisposition::FirstPoint;
+        };
+        let end = if constrain {
+            constrain_point(start, point)
+        } else {
+            point
+        };
+        if distance(start, end) < 1. {
+            return CalibrationPointDisposition::Ignored;
+        }
+        self.end = Some(end);
+        self.hover = None;
+        self.picking = false;
+        self.choice = ScaleChoice::Measured;
+        // With a scale already set, the field starts at what the line
+        // measures now: correcting it is often all that is needed.
+        let current = self
+            .request
+            .as_ref()
+            .and_then(|request| request.current.as_ref())
+            .map(|current| with_unit(current, self.display_unit))
+            .map(|current| trimmed(distance(start, end) * current.scale_x, 3))
+            .unwrap_or_default();
+        self.known_length
+            .update(cx, |input, cx| input.set_value(current, window, cx));
+        self.sync_selects(window, cx);
+        self.open_dialog(window, cx);
+        let known_length = self.known_length.clone();
+        window.defer(cx, move |window, cx| {
+            known_length.update(cx, |input, cx| {
+                input.focus(window, cx);
+                input.select_all(window, cx);
+            });
+        });
+        cx.notify();
+        CalibrationPointDisposition::Completed
+    }
+
+    /// Forgets the dialog's page when its document closes or loses focus.
+    pub fn cancel_for_document(&mut self, document_id: DocumentId, cx: &mut Context<Self>) -> bool {
+        if self.request.as_ref().map(|request| request.document_id) != Some(document_id) {
+            return false;
+        }
+        self.request = None;
+        self.picking = false;
+        self.start = None;
+        self.end = None;
+        self.hover = None;
+        self.error = None;
+        cx.notify();
+        true
+    }
+
+    fn sync_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let measured = self.start.is_some() && self.end.is_some();
+        let imperial_first = self
+            .request
+            .as_ref()
+            .is_some_and(|request| paper_is_imperial(request.page_size));
+        let list = scale_list(&self.stated, measured, imperial_first);
+        let key: Option<SharedString> = match self.choice {
+            ScaleChoice::Unset => None,
+            ScaleChoice::None => Some(KEY_NONE.into()),
+            ScaleChoice::Standard(index) => Some(standard_key(index)),
+            ScaleChoice::Custom => Some(KEY_CUSTOM.into()),
+            ScaleChoice::Measured => Some(KEY_MEASURED.into()),
+        };
+        self.scale_select.update(cx, |select, cx| {
+            select.set_items(list, window, cx);
+            match &key {
+                Some(key) => select.set_selected_value(key, window, cx),
+                None => select.set_selected_index(None, window, cx),
+            }
+        });
+        let unit = SharedString::from(unit_title(self.display_unit));
+        self.unit_select.update(cx, |select, cx| {
+            select.set_selected_value(&unit, window, cx)
+        });
+        let precisions = precision_choices(self.display_unit);
+        let titles = precisions
+            .iter()
+            .map(|precision| precision_title(*precision, self.display_unit))
+            .collect::<Vec<_>>();
+        let selected = precision_title(self.precision, self.display_unit);
+        self.precision_select.update(cx, |select, cx| {
+            select.set_items(titles, window, cx);
+            select.set_selected_value(&selected, window, cx);
+        });
+        let paper_unit = SharedString::from(self.custom_paper_unit.as_str());
+        self.paper_unit_select.update(cx, |select, cx| {
+            select.set_selected_value(&paper_unit, window, cx)
+        });
+    }
+
+    fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let control = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let apply_control = control.clone();
+            let content_control = control.clone();
+            dialog
+                .close_button(false)
+                .w(px(560.))
+                .max_w_full()
+                .on_ok(move |_, _, cx| {
+                    apply_control
+                        .update(cx, |control, cx| control.apply(cx))
+                        .unwrap_or(false)
+                })
+                .content(move |content, _, cx| dialog_content(content, &content_control, cx))
+        });
+    }
+}
+
+fn standard_index(scale: &StandardScale) -> usize {
+    STANDARD_SCALES
+        .iter()
+        .position(|candidate| candidate == scale)
+        .expect("a standard scale is in the list")
+}
+
+/// Letter, Tabloid and the ARCH and ANSI sheets are drawn in inches.
+fn paper_is_imperial(page_size: (f64, f64)) -> bool {
+    let label = paper_label(page_size.0, page_size.1);
+    label.ends_with(" in") && !label.starts_with(|c: char| c.is_ascii_digit())
+}
+
+fn same_scale(left: &PageScale, right: &PageScale) -> bool {
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 * a.abs().max(b.abs());
+    left.real_units == right.real_units
+        && close(left.scale_x, right.scale_x)
+        && close(left.scale_y, right.scale_y)
+        && same_precision(left.precision, right.precision)
+}
+
+fn scale_list(stated: &[usize], measured: bool, imperial_first: bool) -> ScaleList {
+    let item = |key: SharedString, title: String| ScaleItem {
+        key,
+        title: title.into(),
+    };
+    let group = |system: ScaleSystem| {
+        SelectGroup::new(system.title()).items(
+            STANDARD_SCALES
+                .iter()
+                .enumerate()
+                .filter(|(_, scale)| scale.system == system)
+                .map(|(index, scale)| item(standard_key(index), scale.label.to_owned())),
+        )
+    };
+    let mut groups = Vec::new();
+    if !stated.is_empty() {
+        groups.push(
+            SelectGroup::new("Stated on this page").items(stated.iter().map(|index| {
+                item(
+                    standard_key(*index),
+                    STANDARD_SCALES[*index].label.to_owned(),
+                )
+            })),
+        );
+    }
+    let systems = if imperial_first {
+        [
+            ScaleSystem::Architectural,
+            ScaleSystem::Engineering,
+            ScaleSystem::Metric,
+        ]
+    } else {
+        [
+            ScaleSystem::Metric,
+            ScaleSystem::Architectural,
+            ScaleSystem::Engineering,
+        ]
+    };
+    groups.extend(systems.into_iter().map(group));
+    let mut other = SelectGroup::new("Other");
+    if measured {
+        other = other.item(item(
+            KEY_MEASURED.into(),
+            "Calibrated from your line".into(),
+        ));
+    }
+    other = other
+        .item(item(KEY_CUSTOM.into(), "Custom ratio".into()))
+        .item(item(KEY_NONE.into(), "No scale".into()));
+    groups.push(other);
+    SearchableVec::new(groups)
+}
+
+fn dialog_content(
+    content: gpui_component::dialog::DialogContent,
+    control: &WeakEntity<PageScaleControl>,
+    cx: &mut App,
+) -> gpui_component::dialog::DialogContent {
+    let Some(entity) = control.upgrade() else {
+        return content;
+    };
+    let state = entity.read(cx);
+    let Some(request) = state.request.clone() else {
+        return content;
+    };
+    let description = {
+        let mut parts = vec![
+            format!("Page {} of {}", request.page_index + 1, request.page_count),
+            paper_label(request.page_size.0, request.page_size.1),
+        ];
+        if let Some(current) = request.current.as_ref() {
+            parts.push(format!("Currently {}", scale_label(current)));
+        }
+        parts.join(" · ")
+    };
+    content
+        .child(
+            v_flex()
+                .id(PAGE_SCALE_DIALOG_ID)
+                .debug_selector(|| PAGE_SCALE_DIALOG_ID.into())
+                .relative()
+                .gap_4()
+                .child(
+                    DialogHeader::new()
+                        .child(DialogTitle::new().child("Page Scale"))
+                        .child(DialogDescription::new().child(description))
+                        .child(
+                            // Inside the content: the stock body clips anything
+                            // above it, leaving an outset X half unhoverable.
+                            div().absolute().top_0().right_0().child(
+                                DialogClose::new()
+                                    .child(close_icon_button(PAGE_SCALE_CLOSE_ID, "Close")),
+                            ),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .id("page-scale-dialog-body")
+                        .gap_5()
+                        .max_h(px(520.))
+                        .overflow_y_scroll()
+                        .child(scale_section(&entity, &request, cx))
+                        .when(entity.read(cx).choice != ScaleChoice::None, |body| {
+                            body.child(display_section(&entity, cx))
+                        })
+                        .when(request.page_count > 1, |body| {
+                            body.child(pages_section(&entity, &request, cx))
+                        }),
+                ),
+        )
+        .child(
+            DialogFooter::new()
+                .child(dialog_close_button(
+                    Button::new(PAGE_SCALE_CANCEL_ID)
+                        .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
+                        .label("Cancel")
+                        .outline(),
+                ))
+                .child(dialog_action_button(
+                    Button::new(PAGE_SCALE_APPLY_ID)
+                        .debug_selector(|| PAGE_SCALE_APPLY_ID.into())
+                        .label("Apply")
+                        .primary(),
+                )),
+        )
+}
+
+fn error_text(
+    state: &PageScaleControl,
+    place: ErrorPlace,
+    cx: &App,
+) -> Option<impl IntoElement + use<>> {
+    let (error_place, error) = state.error.as_ref()?;
+    (*error_place == place).then(|| {
+        div()
+            .id(PAGE_SCALE_ERROR_ID)
+            .debug_selector(|| PAGE_SCALE_ERROR_ID.into())
+            .text_sm()
+            .text_color(cx.theme().danger)
+            .child(error.clone())
+    })
+}
+
+fn scale_section(
+    entity: &Entity<PageScaleControl>,
+    request: &PageScaleRequest,
+    cx: &App,
+) -> impl IntoElement {
+    let state = entity.read(cx);
+    let choice = state.choice;
+    let calibrate = entity.downgrade();
+    let stated = state.stated.clone();
+    let measured_line = state.start.zip(state.end).map(|(start, end)| {
+        paper_length_label(distance(start, end), imperial_unit(state.display_unit))
+    });
+    let result = state.ratio(cx).map(|ratio| {
+        let (paper_unit, paper_name) = if imperial_unit(state.display_unit) {
+            (ScaleUnit::In, "1 in")
+        } else {
+            (ScaleUnit::Cm, "1 cm")
+        };
+        let real = ratio * paper_unit.points() / state.display_unit.points();
+        (
+            ratio,
+            format!(
+                "{paper_name} on paper is {} {}",
+                trimmed(real, 4),
+                state.display_unit.as_str()
+            ),
+        )
+    });
+    let nearest = result
+        .as_ref()
+        .filter(|_| matches!(choice, ScaleChoice::Measured | ScaleChoice::Custom))
+        .and_then(|(ratio, _)| nearest_standard(*ratio, state.display_unit))
+        .filter(|(_, off)| *off > 1e-4);
+    let unit = state.display_unit.as_str();
+    Field::new().label("Scale").child(
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(PAGE_SCALE_SELECT_ID)
+                            .debug_selector(|| PAGE_SCALE_SELECT_ID.into())
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                Select::new(&state.scale_select)
+                                    .placeholder("Choose a scale")
+                                    .search_placeholder("Search scales"),
+                            ),
+                    )
+                    .child(
+                        Button::new(PAGE_SCALE_CALIBRATE_ID)
+                            .debug_selector(|| PAGE_SCALE_CALIBRATE_ID.into())
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/rail/ruler-dimension-line.svg"),
+                            )
+                            .label("Calibrate")
+                            .outline()
+                            .tooltip("Click both ends of a length you know on the page")
+                            .on_click(move |_, window, cx| {
+                                let _ = calibrate
+                                    .update(cx, |control, cx| control.begin_pick(window, cx));
+                            }),
+                    ),
+            )
+            .when(!stated.is_empty(), |section| {
+                section.child(
+                    h_flex()
+                        .id(PAGE_SCALE_STATED_ID)
+                        .debug_selector(|| PAGE_SCALE_STATED_ID.into())
+                        .flex_wrap()
+                        .gap_1p5()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Stated on this page:"),
+                        )
+                        .children(stated.into_iter().map(|index| {
+                            let choose = entity.downgrade();
+                            Button::new(("page-scale-stated", index))
+                                .label(STANDARD_SCALES[index].label)
+                                .small()
+                                .outline()
+                                .selected(choice == ScaleChoice::Standard(index))
+                                .on_click(move |_, window, cx| {
+                                    let _ = choose.update(cx, |control, cx| {
+                                        control.choose(ScaleChoice::Standard(index), window, cx)
+                                    });
+                                })
+                        })),
+                )
+            })
+            .when(choice == ScaleChoice::Custom, |section| {
+                section.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .id(PAGE_SCALE_CUSTOM_PAPER_ID)
+                                .debug_selector(|| PAGE_SCALE_CUSTOM_PAPER_ID.into())
+                                .w(px(72.))
+                                .child(Input::new(&state.custom_paper)),
+                        )
+                        .child(
+                            div()
+                                .id(PAGE_SCALE_CUSTOM_PAPER_UNIT_ID)
+                                .debug_selector(|| PAGE_SCALE_CUSTOM_PAPER_UNIT_ID.into())
+                                .w(px(80.))
+                                .child(Select::new(&state.paper_unit_select)),
+                        )
+                        .child(div().text_sm().child("on paper ="))
+                        .child(
+                            div()
+                                .id(PAGE_SCALE_CUSTOM_REAL_ID)
+                                .debug_selector(|| PAGE_SCALE_CUSTOM_REAL_ID.into())
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    Input::new(&state.custom_real).suffix(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(unit),
+                                    ),
+                                ),
+                        ),
+                )
+            })
+            .when_some(
+                measured_line.filter(|_| choice == ScaleChoice::Measured),
+                |section, line| {
+                    let again = entity.downgrade();
+                    section.child(
+                        v_flex()
+                            .gap_1p5()
+                            .child(div().text_sm().child(format!(
+                                "Your line is {line} long on paper. How long is it really?"
+                            )))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .id(PAGE_SCALE_KNOWN_LENGTH_ID)
+                                            .debug_selector(|| PAGE_SCALE_KNOWN_LENGTH_ID.into())
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(
+                                                Input::new(&state.known_length).suffix(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(unit),
+                                                ),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("page-scale-measure-again")
+                                            .label("Measure Again")
+                                            .ghost()
+                                            .on_click(move |_, window, cx| {
+                                                let _ = again.update(cx, |control, cx| {
+                                                    control.begin_pick(window, cx)
+                                                });
+                                            }),
+                                    ),
+                            ),
+                    )
+                },
+            )
+            .when(
+                choice == ScaleChoice::None && request.current.is_some(),
+                |section| {
+                    section.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Measurements made already keep their values."),
+                    )
+                },
+            )
+            .when_some(
+                result.filter(|_| choice != ScaleChoice::Unset),
+                |section, (_, text)| {
+                    section.child(
+                        h_flex()
+                            .id(PAGE_SCALE_RESULT_ID)
+                            .debug_selector(|| PAGE_SCALE_RESULT_ID.into())
+                            .flex_wrap()
+                            .gap_x_1()
+                            .items_center()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if nearest.is_some() {
+                                format!("{text},")
+                            } else {
+                                text
+                            })
+                            .when_some(nearest, |row, (standard, off)| {
+                                let index = standard_index(standard);
+                                let snap = entity.downgrade();
+                                row.child(format!("{:.1}% from {}.", off * 100., standard.label))
+                                    .child(
+                                        Button::new(PAGE_SCALE_USE_NEAREST_ID)
+                                            .debug_selector(|| PAGE_SCALE_USE_NEAREST_ID.into())
+                                            .label(format!("Use {}", standard.label))
+                                            .small()
+                                            .link()
+                                            .on_click(move |_, window, cx| {
+                                                let _ = snap.update(cx, |control, cx| {
+                                                    control.choose(
+                                                        ScaleChoice::Standard(index),
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            }),
+                                    )
+                            }),
+                    )
+                },
+            )
+            .children(error_text(state, ErrorPlace::Scale, cx)),
+    )
+}
+
+fn display_section(entity: &Entity<PageScaleControl>, cx: &App) -> impl IntoElement {
+    let state = entity.read(cx);
+    Field::new().label("Measure in").child(
+        h_flex()
+            .gap_2()
+            .child(
+                div()
+                    .id(PAGE_SCALE_UNIT_ID)
+                    .debug_selector(|| PAGE_SCALE_UNIT_ID.into())
+                    .flex_1()
+                    .child(Select::new(&state.unit_select)),
+            )
+            .child(
+                div()
+                    .id(PAGE_SCALE_PRECISION_ID)
+                    .debug_selector(|| PAGE_SCALE_PRECISION_ID.into())
+                    .flex_1()
+                    .child(Select::new(&state.precision_select)),
+            ),
+    )
+}
+
+fn pages_section(
+    entity: &Entity<PageScaleControl>,
+    request: &PageScaleRequest,
+    cx: &App,
+) -> impl IntoElement {
+    let state = entity.read(cx);
+    let pages = state.pages;
+    let page_button = |id: &'static str, label: String, value: PageScalePages| {
+        let set = entity.downgrade();
+        Button::new(id)
+            .debug_selector(move || id.into())
+            .label(label)
+            .selected(pages == value)
+            .on_click(move |_, window, cx| {
+                let _ = set.update(cx, |control, cx| control.set_pages(value, window, cx));
+            })
+    };
+    Field::new().label("Apply to").child(
+        v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        ButtonGroup::new("page-scale-pages")
+                            .outline()
+                            .child(page_button(
+                                PAGE_SCALE_PAGES_THIS_ID,
+                                format!("Page {}", request.page_index + 1),
+                                PageScalePages::This,
+                            ))
+                            .child(page_button(
+                                PAGE_SCALE_PAGES_ALL_ID,
+                                format!("All {} Pages", request.page_count),
+                                PageScalePages::All,
+                            ))
+                            .child(page_button(
+                                PAGE_SCALE_PAGES_RANGE_ID,
+                                "Some Pages".into(),
+                                PageScalePages::Range,
+                            )),
+                    )
+                    .when(pages == PageScalePages::Range, |row| {
+                        row.child(
+                            div()
+                                .id(PAGE_SCALE_RANGE_ID)
+                                .debug_selector(|| PAGE_SCALE_RANGE_ID.into())
+                                .flex_1()
+                                .min_w_0()
+                                .child(Input::new(&state.range)),
+                        )
+                    }),
+            )
+            .children(error_text(state, ErrorPlace::Pages, cx))
+            .children(error_text(state, ErrorPlace::Apply, cx)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::constrain_point;
-    use crate::annotation_model::PdfPoint;
+    use super::*;
+    use gpui_component::IndexPath;
 
     #[test]
-    fn calibration_shift_constraint_uses_the_dominant_axis() {
+    fn shift_holds_a_calibration_line_to_its_longer_axis() {
         let start = PdfPoint { x: 10., y: 20. };
         assert_eq!(
             constrain_point(start, PdfPoint { x: 80., y: 40. }),
@@ -1513,6 +1576,38 @@ mod tests {
         assert_eq!(
             constrain_point(start, PdfPoint { x: 20., y: 100. }),
             PdfPoint { x: 10., y: 100. }
+        );
+    }
+
+    #[test]
+    fn imperial_sheets_list_imperial_scales_first() {
+        assert!(paper_is_imperial((2592., 1728.)));
+        assert!(paper_is_imperial((612., 792.)));
+        assert!(!paper_is_imperial((2384., 1684.)));
+        assert!(!paper_is_imperial((1000., 700.)));
+        let list = scale_list(&[], false, true);
+        let titles = (0..4)
+            .filter_map(|section| {
+                use gpui_component::select::SelectDelegate as _;
+                list.item(IndexPath::default().section(section).row(0))
+                    .map(|item| item.title.to_string())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(titles[0], "12\" = 1'-0\"");
+        assert_eq!(titles[3], "Custom ratio");
+    }
+
+    #[test]
+    fn precision_lists_fractions_only_for_imperial_units() {
+        assert_eq!(precision_choices(ScaleUnit::M).len(), 4);
+        assert_eq!(precision_choices(ScaleUnit::Ft).len(), 10);
+        assert_eq!(
+            precision_title(ScalePrecision::fraction(16).unwrap(), ScaleUnit::In),
+            "1/16 in"
+        );
+        assert_eq!(
+            precision_title(ScalePrecision::decimal(0.01).unwrap(), ScaleUnit::M),
+            "0.01 m"
         );
     }
 }

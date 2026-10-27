@@ -55,6 +55,8 @@ actions!(
         UndoText,
         RedoText,
         FinishEditing,
+        NextCell,
+        PreviousCell,
     ]
 );
 
@@ -119,6 +121,10 @@ pub fn init_page_text_editor_actions(cx: &mut App) {
         KeyBinding::new("enter", InsertNewline, context),
         KeyBinding::new("shift-enter", InsertNewline, context),
         KeyBinding::new("escape", FinishEditing, context),
+        // In a table cell, Tab and Shift-Tab go to the next and previous
+        // cell; elsewhere Tab types a space.
+        KeyBinding::new("tab", NextCell, context),
+        KeyBinding::new("shift-tab", PreviousCell, context),
     ]);
 }
 
@@ -272,6 +278,46 @@ impl PageTextEditState {
     /// The edits that make the page show this paragraph.
     pub fn edits(&self) -> Vec<PageTextEdit> {
         self.paragraph.edits(&self.styled(), &self.wrapped)
+    }
+
+    /// Each wrapped line with visible text as new text: where its first
+    /// character starts on its baseline in page space, its runs with sizes
+    /// and spacing in page units, and whether a hard break ends it.
+    pub fn laid_out_lines(&self) -> Vec<((f64, f64), Vec<TextEditRun>, bool)> {
+        let styled = self.styled();
+        let mut lines = Vec::new();
+        for line in &self.wrapped {
+            let Some(first) = line.layout.chars.first() else {
+                continue;
+            };
+            let chars = &styled[line.range.clone()];
+            if chars.iter().all(|(character, _)| character.is_whitespace()) {
+                continue;
+            }
+            let m = line.line.matrix;
+            let origin = (m[0] * first.x + m[4], m[1] * first.x + m[5]);
+            let scale = (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
+            let in_page_units = |style: &TextRunStyle| TextRunStyle {
+                font_size: style.font_size * scale,
+                char_spacing: style.char_spacing * scale,
+                word_spacing: style.word_spacing * scale,
+                ..style.clone()
+            };
+            let mut runs: Vec<TextEditRun> = Vec::new();
+            for (character, style) in chars {
+                let style = in_page_units(style);
+                match runs.last_mut() {
+                    Some(run) if run.style == style => run.text.push(*character),
+                    _ => runs.push(TextEditRun {
+                        style,
+                        text: character.to_string(),
+                    }),
+                }
+            }
+            let hard_break = self.chars.get(line.range.end) == Some(&'\n');
+            lines.push((origin, runs, hard_break));
+        }
+        lines
     }
 
     /// The wrapped line that shows `index`: the line it is in, or that it
@@ -1069,6 +1115,11 @@ pub enum PageTextInputEvent {
     Finish,
     /// The line's fonts cannot draw a typed character.
     Rejected(char),
+    /// Tab (`back`: Shift-Tab): the next or previous table cell.
+    Tab { back: bool },
+    /// Backspace in an empty paragraph: remove it and continue the
+    /// paragraph before.
+    JoinPrevious,
 }
 
 /// Receives keyboard and IME input for the line being edited.
@@ -1133,6 +1184,10 @@ impl PageTextInput {
     }
 
     pub fn backspace(&mut self, _: &Backspace, _: &mut Window, cx: &mut Context<Self>) {
+        if self.state.as_ref().is_some_and(PageTextEditState::is_empty) {
+            cx.emit(PageTextInputEvent::JoinPrevious);
+            return;
+        }
         self.edit_with(cx, PageTextEditState::backspace);
     }
 
@@ -1287,6 +1342,39 @@ impl PageTextInput {
 
     pub fn finish(&mut self, _: &FinishEditing, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(PageTextInputEvent::Finish);
+    }
+
+    pub fn next_cell(&mut self, _: &NextCell, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(PageTextInputEvent::Tab { back: false });
+    }
+
+    pub fn previous_cell(&mut self, _: &PreviousCell, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(PageTextInputEvent::Tab { back: true });
+    }
+
+    /// Types `text` at the caret, as one undoable step.
+    pub fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let changed = self.state.as_mut().is_some_and(|state| state.insert(text));
+        if changed {
+            cx.emit(PageTextInputEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// Puts the caret at the end of the paragraph.
+    pub fn move_to_end(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.state.as_mut() {
+            state.move_to(state.len(), false);
+            cx.notify();
+        }
+    }
+
+    /// Selects all of the paragraph's text.
+    pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.state.as_mut() {
+            state.select_all();
+            cx.notify();
+        }
     }
 }
 
@@ -1486,6 +1574,8 @@ mod tests {
             descent: -2.,
             fill: None,
             read_only: None,
+            in_form: false,
+            clip_bounds: None,
         }
     }
 
@@ -1508,6 +1598,9 @@ mod tests {
             fonts: vec![font(b"F1"), font(b"F2")],
             lines,
             page_box: None,
+            rules: Vec::new(),
+            fills: Vec::new(),
+            objects: Vec::new(),
         })
     }
 
@@ -1521,6 +1614,7 @@ mod tests {
             pitch: (lines.len() > 1).then_some(14.),
             edges: Vec::new(),
             list: None,
+            cell: None,
         };
         let layer = layer(lines);
         let paragraph = Paragraph::new(layer, &block).unwrap();
@@ -1556,6 +1650,29 @@ mod tests {
             .find(|character| !character.character.is_whitespace())
             .unwrap()
             .x
+    }
+
+    #[test]
+    fn enter_at_the_end_moves_the_caret_to_a_new_line_at_once() {
+        let mut state = editor(vec![line("Hello", 700., usize::MAX)], 400., 5);
+        let before = state.caret_segment().unwrap();
+        assert!(state.insert_newline());
+        assert_eq!(state.text(), "Hello\n");
+        // An empty line follows the break before anything is typed: the
+        // caret is on it, at the start, a line below.
+        assert_eq!(state.wrapped().len(), 2);
+        assert_eq!(state.wrapped()[1].range, 6..6);
+        let after = state.caret_segment().unwrap();
+        assert!(after[0].1 < before[0].1 - 5., "{before:?} {after:?}");
+        assert!(after[0].0 < before[0].0, "{before:?} {after:?}");
+        assert_eq!(state.frame_quads().len(), 2);
+        // Typing fills that line.
+        assert!(state.insert("x"));
+        assert_eq!(state.wrapped().len(), 2);
+        assert_eq!(state.wrapped()[1].range, 6..7);
+        // Undoing the break leaves one line again.
+        while state.undo() {}
+        assert_eq!(state.wrapped().len(), 1);
     }
 
     #[test]

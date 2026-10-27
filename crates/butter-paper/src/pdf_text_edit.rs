@@ -53,6 +53,10 @@ pub struct TextEditLimits {
     pub max_lines_per_page: usize,
     pub max_chars_per_line: usize,
     pub max_cmap_entries: usize,
+    /// Rewritten content streams are compressed. A document only shown
+    /// while editing, never written, leaves them uncompressed: compressing
+    /// a large page's content costs more than the rest of an edit.
+    pub compress_streams: bool,
 }
 
 impl Default for TextEditLimits {
@@ -63,6 +67,17 @@ impl Default for TextEditLimits {
             max_lines_per_page: 50_000,
             max_chars_per_line: 4_096,
             max_cmap_entries: 65_536,
+            compress_streams: true,
+        }
+    }
+}
+
+impl TextEditLimits {
+    /// The limits for a document only shown, never written.
+    pub fn for_display() -> Self {
+        Self {
+            compress_streams: false,
+            ..Self::default()
         }
     }
 }
@@ -221,6 +236,13 @@ pub struct PageTextLine {
     pub fill: Option<[f64; 3]>,
     /// Why the line cannot be edited, if it cannot.
     pub read_only: Option<String>,
+    /// The line is drawn by a Form XObject, not the page's own content.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_form: bool,
+    /// The bounds of the clip the line is drawn in, in page space (left,
+    /// bottom, right, top); `None` when it is not clipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_bounds: Option<[f64; 4]>,
 }
 
 impl PageTextLine {
@@ -272,6 +294,16 @@ pub struct PageTextLayer {
     /// The page's visible area (its crop box): left, bottom, right, top.
     #[serde(default)]
     pub page_box: Option<[f64; 4]>,
+    /// The axis-aligned rules and filled rectangles the page's own content
+    /// draws, in page space: what its tables are found from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<crate::pdf_tables::PageRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fills: Vec<crate::pdf_tables::PageFill>,
+    /// The drawings and images the page's own content draws, which Edit PDF
+    /// mode can move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<crate::pdf_content_moves::PageObject>,
 }
 
 impl PageTextLayer {
@@ -680,6 +712,31 @@ pub fn layout_text_edit_fitted(
 
 /// The layout of an extra line: all its text new, in `line`'s fonts, on a
 /// baseline `below` it.
+/// An added line with no text, drawn as a space, as word processors draw
+/// an empty paragraph: so the page shows it is there and keeps its room,
+/// and pagination moves it as it moves text.
+fn drawn_blank(extra: &ExtraLine, edit: &PageTextEdit, line: &PageTextLine) -> ExtraLine {
+    if extra.runs.iter().any(|run| !run.text.is_empty()) {
+        return extra.clone();
+    }
+    let style = extra
+        .runs
+        .first()
+        .or_else(|| edit.runs.first())
+        .map(|run| run.style.clone())
+        .or_else(|| line.styles.first().cloned());
+    let Some(style) = style else {
+        return extra.clone();
+    };
+    ExtraLine {
+        runs: vec![TextEditRun {
+            style,
+            text: " ".into(),
+        }],
+        ..extra.clone()
+    }
+}
+
 pub fn layout_extra_line(
     layer: &PageTextLayer,
     line: &PageTextLine,
@@ -2881,7 +2938,7 @@ fn load_type0_font(
 // ---------------------------------------------------------------------------
 // Pages
 
-fn page_id(document: &Document, page_index: u32) -> Result<ObjectId, TextEditError> {
+pub(crate) fn page_id(document: &Document, page_index: u32) -> Result<ObjectId, TextEditError> {
     page_index
         .checked_add(1)
         .and_then(|number| document.get_pages().get(&number).copied())
@@ -2889,7 +2946,7 @@ fn page_id(document: &Document, page_index: u32) -> Result<ObjectId, TextEditErr
 }
 
 /// The page's own or nearest inherited `/Resources`.
-fn page_resources(document: &Document, page_id: ObjectId) -> Option<Dictionary> {
+pub(crate) fn page_resources(document: &Document, page_id: ObjectId) -> Option<Dictionary> {
     let mut node_id = page_id;
     for _ in 0..MAX_NESTING {
         let node = document.get_object(node_id).ok()?.as_dict().ok()?;
@@ -2961,6 +3018,20 @@ struct GraphicsState {
     rise: f64,
     render_mode: i64,
     color: ColorState,
+    /// The stroke width, in user space.
+    line_width: f64,
+    /// The clip's bounds in page space, when content is clipped.
+    clip_bounds: Option<[f64; 4]>,
+    /// The clipping paths the page's own content set, innermost first.
+    clips: Option<std::sync::Arc<ClipLink>>,
+}
+
+/// A clipping path in effect: the painted path that set it, and the clips
+/// it was set inside.
+#[derive(Debug)]
+struct ClipLink {
+    paint: usize,
+    parent: Option<std::sync::Arc<ClipLink>>,
 }
 
 impl Default for GraphicsState {
@@ -2968,6 +3039,9 @@ impl Default for GraphicsState {
         Self {
             ctm: IDENTITY,
             clip: 0,
+            line_width: 1.,
+            clip_bounds: None,
+            clips: None,
             font: None,
             font_size: 0.,
             char_spacing: 0.,
@@ -3063,7 +3137,159 @@ struct ExtractedPage {
     fonts: BTreeMap<Vec<u8>, LoadedFont>,
     shows: Vec<ShowOp>,
     lines: Vec<ExtractedLine>,
+    paints: Vec<PaintOp>,
+    draws: Vec<DrawOp>,
+    /// The matrix in effect at each `q` of the page's own content streams.
+    saves: HashMap<usize, Matrix>,
 }
+
+impl ExtractedPage {
+    /// The rules and fills the page's own content paints, in page space.
+    fn rules(
+        &self,
+    ) -> (
+        Vec<crate::pdf_tables::PageRule>,
+        Vec<crate::pdf_tables::PageFill>,
+    ) {
+        let mut rules = Vec::new();
+        let mut fills = Vec::new();
+        for paint in &self.paints {
+            if !(paint.stroked || paint.filled) {
+                continue;
+            }
+            let subpaths = path_subpaths(&self.operations, &paint.ops, paint.ctm)
+                .into_iter()
+                .filter(|subpath| !subpath.curved)
+                .map(|subpath| {
+                    (
+                        subpath
+                            .points
+                            .iter()
+                            .map(|point| (point.x, point.y))
+                            .collect::<Vec<_>>(),
+                        subpath.closed,
+                    )
+                })
+                .collect::<Vec<_>>();
+            // The stroke width in page units: the matrix's mean scale.
+            let scale = (paint.ctm[0] * paint.ctm[3] - paint.ctm[1] * paint.ctm[2])
+                .abs()
+                .sqrt();
+            crate::pdf_tables::collect_rules(
+                &crate::pdf_tables::PaintedPath {
+                    subpaths: &subpaths,
+                    stroked: paint.stroked,
+                    filled: paint.filled,
+                    line_width: paint.line_width * scale,
+                },
+                &mut rules,
+                &mut fills,
+            );
+        }
+        (rules, fills)
+    }
+
+    /// A painted path's bounds in page space: what names it when it moves.
+    fn paint_bounds(&self, paint: &PaintOp) -> Option<[f64; 4]> {
+        points_bounds(
+            path_subpaths(&self.operations, &paint.ops, paint.ctm)
+                .iter()
+                .flat_map(|subpath| subpath.points.iter())
+                .map(|point| (point.x, point.y)),
+        )
+    }
+
+    /// The outermost clip in `chain` that clips to a small part of the
+    /// page (`page_box`): what it clips is one drawing, moved with it.
+    fn local_clip(
+        &self,
+        chain: &Option<std::sync::Arc<ClipLink>>,
+        page_box: Option<[f64; 4]>,
+    ) -> Option<usize> {
+        let area = |rect: [f64; 4]| (rect[2] - rect[0]).max(0.) * (rect[3] - rect[1]).max(0.);
+        let mut outermost = None;
+        let mut link = chain.as_deref();
+        while let Some(clip) = link {
+            let local = self
+                .paints
+                .get(clip.paint)
+                .and_then(|paint| self.paint_bounds(paint))
+                .is_some_and(|bounds| {
+                    page_box.is_some_and(|page| area(bounds) < LOCAL_CLIP_SHARE * area(page))
+                });
+            if local {
+                outermost = Some(clip.paint);
+            }
+            link = clip.parent.as_deref();
+        }
+        outermost
+    }
+
+    /// The drawings and images the page's own content draws: what a small
+    /// clip clips is one drawing, named by the clip's bounds, with the text
+    /// lines it clips; otherwise each painted path that is not only a clip,
+    /// and each XObject, is one.
+    fn objects(&self, page_box: Option<[f64; 4]>) -> Vec<crate::pdf_content_moves::PageObject> {
+        use crate::pdf_content_moves::{ContentKind, PageObject};
+        let mut objects = Vec::new();
+        let mut groups = BTreeSet::new();
+        for paint in &self.paints {
+            if !(paint.stroked || paint.filled) || paint.clips {
+                continue;
+            }
+            match self.local_clip(&paint.clip_chain, page_box) {
+                Some(clip) => {
+                    groups.insert(clip);
+                }
+                None => {
+                    if let Some(rect) = self.paint_bounds(paint) {
+                        objects.push(PageObject {
+                            kind: ContentKind::Drawing,
+                            rect,
+                            texts: Vec::new(),
+                        });
+                    }
+                }
+            }
+        }
+        for draw in &self.draws {
+            match self.local_clip(&draw.clip_chain, page_box) {
+                Some(clip) => {
+                    groups.insert(clip);
+                }
+                None => objects.push(PageObject {
+                    kind: ContentKind::Image,
+                    rect: draw.bounds,
+                    texts: Vec::new(),
+                }),
+            }
+        }
+        for clip in groups {
+            let Some(rect) = self.paint_bounds(&self.paints[clip]) else {
+                continue;
+            };
+            let texts = self
+                .lines
+                .iter()
+                .filter(|line| {
+                    line.ops.first().is_some_and(|&show| {
+                        self.local_clip(&self.shows[show].state.clips, page_box) == Some(clip)
+                    })
+                })
+                .filter_map(|line| crate::pdf_tables::line_core_box(&line.public))
+                .collect();
+            objects.push(PageObject {
+                kind: ContentKind::Drawing,
+                rect,
+                texts,
+            });
+        }
+        objects
+    }
+}
+
+/// A clip covering less than this share of the page clips one drawing.
+const LOCAL_CLIP_SHARE: f64 = 0.5;
 
 /// Decodes one content stream, counting its bytes against the page limit.
 /// Decoded content streams and font programs, by their encoded bytes and
@@ -3231,6 +3457,141 @@ struct Walk<'a> {
     decoded_bytes: usize,
     /// How often each Form XObject is drawn on the page.
     form_uses: HashMap<ObjectId, usize>,
+    /// Paths the page's own content streams paint (or clip with).
+    paints: Vec<PaintOp>,
+    /// XObjects the page's own content streams draw.
+    draws: Vec<DrawOp>,
+    /// The matrix in effect at each `q` of the page's own content streams.
+    saves: HashMap<usize, Matrix>,
+}
+
+/// A path the page's content paints or clips with: its construction
+/// operators and the operator that paints it.
+#[derive(Clone, Debug)]
+struct PaintOp {
+    ops: Vec<usize>,
+    paint: usize,
+    ctm: Matrix,
+    stroked: bool,
+    filled: bool,
+    /// It also sets the clip (`W`, `W*`).
+    clips: bool,
+    line_width: f64,
+    /// The clips it is painted inside.
+    clip_chain: Option<std::sync::Arc<ClipLink>>,
+}
+
+/// An XObject (an image or form) the page's content draws with `Do`, and
+/// its bounds in page space.
+#[derive(Clone, Debug)]
+struct DrawOp {
+    op: usize,
+    ctm: Matrix,
+    bounds: [f64; 4],
+    /// The clips it is drawn inside.
+    clip_chain: Option<std::sync::Arc<ClipLink>>,
+}
+
+/// A point of a path in page space, and the operator coordinates it came
+/// from: `slot` counts the operator's points (a rectangle's corners).
+#[derive(Clone, Copy, Debug)]
+struct PathPoint {
+    op: usize,
+    slot: usize,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Subpath {
+    points: Vec<PathPoint>,
+    closed: bool,
+    curved: bool,
+}
+
+/// The subpaths `ops` construct under `ctm`, in page space.
+fn path_subpaths(operations: &[ContentOp], ops: &[usize], ctm: Matrix) -> Vec<Subpath> {
+    let mut subpaths: Vec<Subpath> = Vec::new();
+    let point = |op: usize, slot: usize, x: f64, y: f64| {
+        let (x, y) = apply(ctm, x, y);
+        PathPoint { op, slot, x, y }
+    };
+    for &op in ops {
+        let operation = &operations[op];
+        let operands = &operation.operands;
+        match operation.operator.as_slice() {
+            b"re" => {
+                if let Some([x, y, w, h]) = numbers::<4>(operands) {
+                    subpaths.push(Subpath {
+                        points: vec![
+                            point(op, 0, x, y),
+                            point(op, 1, x + w, y),
+                            point(op, 2, x + w, y + h),
+                            point(op, 3, x, y + h),
+                        ],
+                        closed: true,
+                        curved: false,
+                    });
+                }
+            }
+            b"m" => {
+                if let Some([x, y]) = numbers::<2>(operands) {
+                    subpaths.push(Subpath {
+                        points: vec![point(op, 0, x, y)],
+                        ..Subpath::default()
+                    });
+                }
+            }
+            b"l" => {
+                if let (Some([x, y]), Some(subpath)) = (numbers::<2>(operands), subpaths.last_mut())
+                {
+                    subpath.points.push(point(op, 0, x, y));
+                }
+            }
+            b"c" => {
+                if let (Some([x1, y1, x2, y2, x3, y3]), Some(subpath)) =
+                    (numbers::<6>(operands), subpaths.last_mut())
+                {
+                    subpath.points.extend([
+                        point(op, 0, x1, y1),
+                        point(op, 1, x2, y2),
+                        point(op, 2, x3, y3),
+                    ]);
+                    subpath.curved = true;
+                }
+            }
+            b"v" | b"y" => {
+                if let (Some([x1, y1, x2, y2]), Some(subpath)) =
+                    (numbers::<4>(operands), subpaths.last_mut())
+                {
+                    subpath
+                        .points
+                        .extend([point(op, 0, x1, y1), point(op, 1, x2, y2)]);
+                    subpath.curved = true;
+                }
+            }
+            b"h" => {
+                if let Some(subpath) = subpaths.last_mut() {
+                    subpath.closed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    subpaths
+}
+
+/// The bounds of `points`: left, bottom, right, top.
+fn points_bounds(points: impl Iterator<Item = (f64, f64)>) -> Option<[f64; 4]> {
+    let mut bounds: Option<[f64; 4]> = None;
+    for (x, y) in points {
+        let b = bounds.get_or_insert([x, y, x, y]);
+        b[0] = b[0].min(x);
+        b[1] = b[1].min(y);
+        b[2] = b[2].max(x);
+        b[3] = b[3].max(y);
+    }
+    bounds
 }
 
 impl Walk<'_> {
@@ -3285,6 +3646,49 @@ impl Walk<'_> {
 
     /// Reads the Form XObject `name` drawn from stream `parent`, with the
     /// graphics state at its `Do`.
+    /// The page-space bounds of XObject `name` drawn under `ctm`: an
+    /// image's unit square, or a form's bounding box.
+    fn xobject_bounds(&self, scope: &Scope, name: &[u8], ctm: Matrix) -> Option<[f64; 4]> {
+        let object = get_dict(self.document, &scope.resources, b"XObject")?
+            .get(name)
+            .ok()?
+            .as_reference()
+            .ok()?;
+        let stream = self.document.get_object(object).ok()?.as_stream().ok()?;
+        let numbers_of = |key: &[u8]| {
+            let values = stream
+                .dict
+                .get(key)
+                .ok()
+                .and_then(|value| resolve(self.document, value).ok())?
+                .as_array()
+                .ok()?
+                .iter()
+                .map(object_number)
+                .collect::<Option<Vec<_>>>()?;
+            Some(values)
+        };
+        let (matrix, [x0, y0, x1, y1]) =
+            match get_name(self.document, &stream.dict, b"Subtype").as_deref() {
+                Some(b"Image") => (IDENTITY, [0., 0., 1., 1.]),
+                Some(b"Form") => {
+                    let matrix = numbers_of(b"Matrix")
+                        .and_then(|values| <[f64; 6]>::try_from(values).ok())
+                        .unwrap_or(IDENTITY);
+                    let bbox =
+                        numbers_of(b"BBox").and_then(|values| <[f64; 4]>::try_from(values).ok())?;
+                    (matrix, bbox)
+                }
+                _ => return None,
+            };
+        let full = multiply(matrix, ctm);
+        points_bounds(
+            [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                .into_iter()
+                .map(|(x, y)| apply(full, x, y)),
+        )
+    }
+
     fn form(
         &mut self,
         scope: &Scope,
@@ -3372,8 +3776,9 @@ impl Walk<'_> {
         let mut line_matrix = IDENTITY;
         let mut pending_clip: Option<bool> = None;
         // The current path's construction operators, hashed for the clip
-        // key.
+        // key, and their indices.
         let mut path = 0u64;
+        let mut path_ops: Vec<usize> = Vec::new();
         // Marked content: each level's ActualText and the first show inside it.
         let mut marked: Vec<(Option<String>, usize)> = Vec::new();
         for op_index in operation_range {
@@ -3383,6 +3788,16 @@ impl Walk<'_> {
             'step: {
                 if operation.operator == b"Do" {
                     if let Some(Operand::Name(name)) = operands.last() {
+                        if matches!(self.owners[operation.stream], StreamOwner::Page)
+                            && let Some(bounds) = self.xobject_bounds(scope, name, state.ctm)
+                        {
+                            self.draws.push(DrawOp {
+                                op: op_index,
+                                ctm: state.ctm,
+                                bounds,
+                                clip_chain: state.clips.clone(),
+                            });
+                        }
                         self.form(scope, name, operation.stream, &state, depth)?;
                     }
                     break 'step;
@@ -3391,6 +3806,11 @@ impl Walk<'_> {
                     b"q" => {
                         if stack.len() < 1_024 {
                             stack.push(state.clone());
+                        }
+                        if matches!(self.owners[operation.stream], StreamOwner::Page)
+                            && self.saves.len() < 200_000
+                        {
+                            self.saves.insert(op_index, state.ctm);
                         }
                     }
                     b"Q" => {
@@ -3409,15 +3829,71 @@ impl Walk<'_> {
                             _ => None,
                         });
                         path = clip_key(&(path, operation.operator, numbers.collect::<SmallKey>()));
+                        if path_ops.len() < 100_000 {
+                            path_ops.push(op_index);
+                        }
+                    }
+                    b"w" => {
+                        if let Some([width]) = numbers::<1>(operands) {
+                            state.line_width = width;
+                        }
                     }
                     b"W" => pending_clip = Some(false),
                     b"W*" => pending_clip = Some(true),
                     b"n" | b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" => {
+                        let clips = pending_clip.is_some();
+                        let clip_chain = state.clips.clone();
                         if let Some(even_odd) = pending_clip.take() {
                             let ctm = state.ctm.map(f64::to_bits);
                             state.clip = clip_key(&(state.clip, even_odd, ctm, path));
+                            let bounds = points_bounds(
+                                path_subpaths(&self.operations, &path_ops, state.ctm)
+                                    .iter()
+                                    .flat_map(|subpath| subpath.points.iter())
+                                    .map(|point| (point.x, point.y)),
+                            );
+                            if let Some(bounds) = bounds {
+                                state.clip_bounds = Some(match state.clip_bounds {
+                                    Some(clip) => [
+                                        clip[0].max(bounds[0]),
+                                        clip[1].max(bounds[1]),
+                                        clip[2].min(bounds[2]),
+                                        clip[3].min(bounds[3]),
+                                    ],
+                                    None => bounds,
+                                });
+                            }
+                        }
+                        if matches!(self.owners[operation.stream], StreamOwner::Page)
+                            && !path_ops.is_empty()
+                            && self.paints.len() < 200_000
+                        {
+                            let operator = operation.operator.as_slice();
+                            self.paints.push(PaintOp {
+                                ops: std::mem::take(&mut path_ops),
+                                paint: op_index,
+                                ctm: state.ctm,
+                                stroked: matches!(
+                                    operator,
+                                    b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*"
+                                ),
+                                filled: matches!(
+                                    operator,
+                                    b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*"
+                                ),
+                                clips,
+                                line_width: state.line_width,
+                                clip_chain: clip_chain.clone(),
+                            });
+                            if clips {
+                                state.clips = Some(std::sync::Arc::new(ClipLink {
+                                    paint: self.paints.len() - 1,
+                                    parent: clip_chain,
+                                }));
+                            }
                         }
                         path = 0;
+                        path_ops.clear();
                     }
                     b"BT" => {
                         text_matrix = IDENTITY;
@@ -3650,6 +4126,9 @@ fn extract_page(
         next_clip: 0,
         decoded_bytes,
         form_uses: HashMap::new(),
+        paints: Vec::new(),
+        draws: Vec::new(),
+        saves: HashMap::new(),
     };
     let page_operations = 0..walk.operations.len();
     walk.run(
@@ -3669,6 +4148,9 @@ fn extract_page(
         owners,
         actual_texts,
         form_uses,
+        paints,
+        draws,
+        saves,
         ..
     } = walk;
 
@@ -3764,12 +4246,13 @@ fn extract_page(
         }
     };
     for line in &mut lines {
-        if line.public.read_only.is_none()
-            && repeated(operations[shows[line.ops[0]].op_index].stream)
-        {
+        let stream = operations[shows[line.ops[0]].op_index].stream;
+        if line.public.read_only.is_none() && repeated(stream) {
             line.public.read_only =
                 Some("the text is in a form drawn more than once on this page".into());
         }
+        line.public.in_form = matches!(owners[stream], StreamOwner::Form { .. });
+        line.public.clip_bounds = shows[line.ops[0]].state.clip_bounds;
     }
     Ok(ExtractedPage {
         page_id,
@@ -3780,6 +4263,9 @@ fn extract_page(
         fonts,
         shows,
         lines,
+        paints,
+        draws,
+        saves,
     })
 }
 
@@ -3938,6 +4424,9 @@ fn device_fill(color: &ColorState) -> Option<[f64; 3]> {
 /// `fill`: its device colour, or `None` for `first`'s own colour when that
 /// is not a device colour. The outer `None` when the two cannot share a
 /// line: the writer sets device colours and then restores `first`'s.
+/// Text that is only filled (render mode 0) does not show its stroke
+/// colour, so a run may differ in that too: a word processor sets both
+/// for a word in another colour.
 fn run_fill(first: &ShowOp, show: &ShowOp) -> Option<Option<[f64; 3]>> {
     let (first_color, color) = (&first.state.color, &show.state.color);
     if color == first_color {
@@ -3949,9 +4438,11 @@ fn run_fill(first: &ShowOp, show: &ShowOp) -> Option<Option<[f64; 3]>> {
         .chain(&first_color.fill)
         .all(|part| !part.starts_with('?'));
     let device = device_fill(color)?;
+    let filled_only = first.state.render_mode == 0 && show.state.render_mode == 0;
     (restorable
-        && color.stroke_space == first_color.stroke_space
-        && color.stroke == first_color.stroke
+        && (filled_only
+            || color.stroke_space == first_color.stroke_space
+                && color.stroke == first_color.stroke)
         && color.graphics_state == first_color.graphics_state)
         .then_some(Some(device))
 }
@@ -4293,6 +4784,8 @@ fn group_lines(
                 descent,
                 fill,
                 read_only,
+                in_form: false,
+                clip_bounds: None,
             },
             ops: group.members,
             clusters,
@@ -4341,6 +4834,8 @@ pub fn extract_page_text(
     limits: &TextEditLimits,
 ) -> Result<PageTextLayer, TextEditError> {
     let page = extract_page(document, page_index, limits)?;
+    let (rules, fills) = page.rules();
+    let objects = page.objects(visible_page_box(document, page_index));
     Ok(PageTextLayer {
         page_index,
         fonts: page
@@ -4351,11 +4846,14 @@ pub fn extract_page_text(
             .collect(),
         lines: page.lines.into_iter().map(|line| line.public).collect(),
         page_box: visible_page_box(document, page_index),
+        rules,
+        fills,
+        objects,
     })
 }
 
 /// A page's crop box as left, bottom, right, top.
-fn visible_page_box(document: &Document, page_index: u32) -> Option<[f64; 4]> {
+pub(crate) fn visible_page_box(document: &Document, page_index: u32) -> Option<[f64; 4]> {
     let page_id = page_id(document, page_index).ok()?;
     let view = crate::page_geometry::PageCoordinateSpace::from_lopdf_page(document, page_id)
         .ok()?
@@ -4409,18 +4907,47 @@ fn device_rgb(operands: &[Operand], operator: &[u8], space: Option<&str>) -> Opt
 }
 
 fn format_number(value: f64) -> String {
-    let rounded = (value * 10_000.).round() / 10_000.;
-    if rounded == 0. {
-        return "0".into();
-    }
-    let mut text = format!("{rounded:.4}");
-    while text.ends_with('0') {
-        text.pop();
-    }
-    if text.ends_with('.') {
-        text.pop();
-    }
+    let mut text = String::new();
+    push_number(&mut text, value);
     text
+}
+
+/// Appends `value` to four decimal places, without trailing zeros.
+fn push_number(text: &mut String, value: f64) {
+    use std::fmt::Write as _;
+    let scaled = (value * 10_000.).round();
+    if scaled.is_nan() || scaled.abs() >= 1e15 {
+        let rounded = scaled / 10_000.;
+        let start = text.len();
+        let _ = write!(text, "{rounded:.4}");
+        while text.len() > start && text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+        return;
+    }
+    let scaled = scaled as i64;
+    if scaled == 0 {
+        text.push('0');
+        return;
+    }
+    if scaled < 0 {
+        text.push('-');
+    }
+    let magnitude = scaled.unsigned_abs();
+    let _ = write!(text, "{}", magnitude / 10_000);
+    let mut fraction = magnitude % 10_000;
+    if fraction != 0 {
+        text.push('.');
+        let mut digits = 4;
+        while fraction.is_multiple_of(10) {
+            fraction /= 10;
+            digits -= 1;
+        }
+        let _ = write!(text, "{fraction:0digits$}");
+    }
 }
 
 fn format_matrix(matrix: Matrix) -> String {
@@ -4489,6 +5016,8 @@ struct PlannedEdit {
     layout: TextLineLayout,
     /// Lines added below, laid out.
     extras: Vec<(ExtraLine, TextLineLayout)>,
+    /// How far a table edit moves the line, in page space.
+    offset: (f64, f64),
 }
 
 /// Applies edits to the base document. Edits for different lines of a page
@@ -4499,20 +5028,69 @@ pub fn apply_text_edits(
     edits: &[PageTextEdit],
     limits: &TextEditLimits,
 ) -> Result<(), TextEditError> {
-    let mut by_page: BTreeMap<u32, Vec<&PageTextEdit>> = BTreeMap::new();
+    apply_content_edits(document, edits, &[], &[], limits)
+}
+
+/// Applies text edits, table edits and moves to the base document, a page
+/// at a time: a table edit moves its table's rules, fills, images and
+/// lines, a move moves its content, and text edits name lines where the
+/// base document has them.
+pub fn apply_content_edits(
+    document: &mut Document,
+    edits: &[PageTextEdit],
+    tables: &[crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
+    limits: &TextEditLimits,
+) -> Result<(), TextEditError> {
+    apply_page_content_edits(document, edits, tables, moves, limits)
+}
+
+fn apply_page_content_edits(
+    document: &mut Document,
+    edits: &[PageTextEdit],
+    tables: &[crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
+    limits: &TextEditLimits,
+) -> Result<(), TextEditError> {
+    type PageEdits<'a> = (
+        Vec<&'a PageTextEdit>,
+        Vec<&'a crate::pdf_tables::PageTableEdit>,
+        Vec<crate::pdf_content_moves::ContentMove>,
+    );
+    let mut by_page: BTreeMap<u32, PageEdits> = BTreeMap::new();
     for edit in edits {
-        by_page.entry(edit.page_index).or_default().push(edit);
+        by_page.entry(edit.page_index).or_default().0.push(edit);
     }
-    for (page_index, edits) in by_page {
-        apply_page_edits(document, page_index, &edits, limits)?;
+    for table in tables {
+        table.validate().map_err(TextEditError::Malformed)?;
+        by_page.entry(table.page_index).or_default().1.push(table);
+    }
+    for item in moves {
+        item.validate().map_err(TextEditError::Malformed)?;
+        by_page
+            .entry(item.page_index)
+            .or_default()
+            .2
+            .push(item.clone());
+    }
+    for (page_index, (edits, tables, moves)) in by_page {
+        apply_page_edits(document, page_index, &edits, &tables, &moves, limits)?;
     }
     Ok(())
 }
 
-fn apply_page_edits(
+use crate::pdf_tables::content_offset as table_offset;
+
+fn moved(offset: (f64, f64)) -> bool {
+    offset.0.abs() > 1e-6 || offset.1.abs() > 1e-6
+}
+
+pub(crate) fn apply_page_edits(
     document: &mut Document,
     page_index: u32,
     edits: &[&PageTextEdit],
+    tables: &[&crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
     limits: &TextEditLimits,
 ) -> Result<(), TextEditError> {
     let page = extract_page(document, page_index, limits)?;
@@ -4526,7 +5104,21 @@ fn apply_page_edits(
             .collect(),
         lines: page.lines.iter().map(|line| line.public.clone()).collect(),
         page_box: visible_page_box(document, page_index),
+        ..Default::default()
     };
+    // Where table edits and moves put each line, and which they remove.
+    let line_offsets = page
+        .lines
+        .iter()
+        .map(
+            |line| match crate::pdf_tables::line_core_box(&line.public) {
+                Some(rect) if !tables.is_empty() || !moves.is_empty() => {
+                    crate::pdf_content_moves::line_offset(tables, moves, rect)
+                }
+                _ => Some((0., 0.)),
+            },
+        )
+        .collect::<Vec<_>>();
     let mut planned = Vec::new();
     let mut seen = BTreeSet::new();
     for edit in edits {
@@ -4555,8 +5147,13 @@ fn apply_page_edits(
         if let Some(reason) = &line.read_only {
             return Err(TextEditError::ReadOnly(reason.clone()));
         }
+        let Some(offset) = line_offsets[line_index] else {
+            // A deleted row or column removes the line, edited or not; the
+            // line itself is planned below.
+            continue;
+        };
         // An unchanged line keeps its bytes.
-        if edit.draws_as_original() {
+        if edit.draws_as_original() && !moved(offset) {
             continue;
         }
         for run in &edit.runs {
@@ -4583,16 +5180,89 @@ fn apply_page_edits(
             .layout
             .extra_lines
             .iter()
-            .map(|extra| Ok((extra.clone(), layout_extra_line(&layer, line, extra)?)))
+            .map(|extra| {
+                let extra = drawn_blank(extra, edit, line);
+                let layout = layout_extra_line(&layer, line, &extra)?;
+                Ok((extra, layout))
+            })
             .collect::<Result<Vec<_>, TextEditError>>()?;
         planned.push(PlannedEdit {
             line: line_index,
             runs: edit.runs.clone(),
             layout: layout_text_edit_fitted(&layer, line, &edit.runs, edit.layout.fit)?,
             extras,
+            offset,
         });
     }
-    if planned.is_empty() {
+    // Lines a table edit or move moves or removes that no text edit
+    // changes.
+    for (line_index, offset) in line_offsets.iter().enumerate() {
+        let removed = offset.is_none();
+        let offset = offset.unwrap_or((0., 0.));
+        if !(removed || moved(offset)) || (!removed && seen.contains(&line_index)) {
+            continue;
+        }
+        let line = &page.lines[line_index].public;
+        if line.text.is_empty() {
+            continue;
+        }
+        if let Some(reason) = &line.read_only {
+            return Err(TextEditError::ReadOnly(format!(
+                "the text cannot move: {reason}"
+            )));
+        }
+        if line.in_form {
+            return Err(TextEditError::ReadOnly(
+                "the text cannot move: it is drawn by a form".into(),
+            ));
+        }
+        if removed {
+            planned.retain(|plan| plan.line != line_index);
+        }
+        let runs = if removed {
+            Vec::new()
+        } else {
+            line.original_runs()
+        };
+        planned.push(PlannedEdit {
+            line: line_index,
+            layout: layout_text_edit_fitted(&layer, line, &runs, LineFit::default())?,
+            runs,
+            extras: Vec::new(),
+            offset,
+        });
+    }
+    let page_box = visible_page_box(document, page_index);
+    let mut table_splices = table_content_splices(&page, tables, moves, page_box)?;
+    grow_clips_for_added_lines(&page, &planned, page_box, &mut table_splices);
+    let mut cell_lines = table_cell_lines(&page, &layer, tables)?;
+    // Copies draw after what they copy, in its state; copied text is new
+    // text.
+    let (inserts, copied_lines) = content_copies(&page, &layer, moves, page_box)?;
+    for (op, text) in inserts {
+        let operation = &page.operations[op];
+        if operation.spans_streams {
+            return Err(TextEditError::ReadOnly(
+                "copied content spans content streams".into(),
+            ));
+        }
+        match table_splices.iter_mut().find(|(stream, start, end, _)| {
+            (*stream, *start, *end) == (operation.stream, operation.start, operation.end)
+        }) {
+            Some((_, _, _, replacement)) => replacement.push_str(&text),
+            None => {
+                let original = &page.streams[operation.stream][operation.start..operation.end];
+                table_splices.push((
+                    operation.stream,
+                    operation.start,
+                    operation.end,
+                    format!("{}{text}", String::from_utf8_lossy(original)),
+                ));
+            }
+        }
+    }
+    cell_lines.extend(copied_lines);
+    if planned.is_empty() && table_splices.is_empty() && cell_lines.is_empty() {
         return Ok(());
     }
 
@@ -4640,6 +5310,27 @@ fn apply_page_edits(
             }
         }
     }
+    // New cell text is all new.
+    for cell_line in &cell_lines {
+        for (laid_index, character) in cell_line.layout.chars.iter().enumerate() {
+            let drawn = match character.source {
+                LaidOutSource::Fallback => true,
+                LaidOutSource::Gap => layout_gap_needs_glyph(&cell_line.layout.chars, laid_index),
+                LaidOutSource::Font | LaidOutSource::Original(_) => false,
+            };
+            let style = &cell_line.runs[character.run].style;
+            let font = &page.fonts[&style.font];
+            if !drawn || page_code(font, style, character.character).is_some() {
+                continue;
+            }
+            let (fallback, _, _) = substitute_glyph(&font.metrics, style, character.character)
+                .ok_or(TextEditError::Unencodable(character.character))?;
+            fallback_glyphs
+                .entry(fallback)
+                .or_default()
+                .insert(character.character);
+        }
+    }
     let mut fallback_objects = Vec::new();
     for (fallback, characters) in &fallback_glyphs {
         let (font_id, cids) =
@@ -4662,7 +5353,11 @@ fn apply_page_edits(
     let mut form_resources: BTreeMap<usize, Dictionary> = BTreeMap::new();
     let mut fallback_fonts: BTreeMap<Option<usize>, FallbackFonts> = BTreeMap::new();
     if !fallback_objects.is_empty() {
-        for scope in planned.iter().map(scope_of).collect::<BTreeSet<_>>() {
+        let mut scopes = planned.iter().map(scope_of).collect::<BTreeSet<_>>();
+        if !cell_lines.is_empty() {
+            scopes.insert(None);
+        }
+        for scope in scopes {
             let resources = match scope {
                 None => {
                     page_resources_changed = true;
@@ -4707,6 +5402,12 @@ fn apply_page_edits(
     // Replace each edited line's operators.
     let no_fallbacks = FallbackFonts::new();
     let mut splices: BTreeMap<usize, Vec<(usize, usize, String)>> = BTreeMap::new();
+    for (stream, start, end, replacement) in table_splices {
+        splices
+            .entry(stream)
+            .or_default()
+            .push((start, end, replacement));
+    }
     for plan in &planned {
         let line = &page.lines[plan.line];
         let first_show = &page.shows[line.ops[0]];
@@ -4759,7 +5460,9 @@ fn apply_page_edits(
     for &stream in splices.keys() {
         if matches!(page.owners[stream], StreamOwner::Page) {
             let mut written = Stream::new(Dictionary::new(), spliced(stream)?);
-            written.compress()?;
+            if limits.compress_streams {
+                written.compress()?;
+            }
             content_ids[stream] = document.add_object(written);
         }
     }
@@ -4835,7 +5538,9 @@ fn apply_page_edits(
         }
         dictionary.set("Resources", Object::Dictionary(resources));
         let mut written = Stream::new(dictionary, spliced(stream)?);
-        written.compress()?;
+        if limits.compress_streams {
+            written.compress()?;
+        }
         copies.insert(stream, document.add_object(written));
     }
     // Forms drawn by the page's content streams.
@@ -4862,6 +5567,25 @@ fn apply_page_edits(
         page_resources_changed = true;
     }
 
+    // New cell text is drawn after the page's content, in the default
+    // graphics state: the content is wrapped in `q` and `Q`.
+    if !cell_lines.is_empty() {
+        let text = cell_lines_text(
+            &page,
+            &cell_lines,
+            fallback_fonts.get(&None).unwrap_or(&no_fallbacks),
+        )?;
+        let mut open = Stream::new(Dictionary::new(), b"q\n".to_vec());
+        if limits.compress_streams {
+            open.compress()?;
+        }
+        let mut drawn = Stream::new(Dictionary::new(), format!("\nQ\n{text}\n").into_bytes());
+        if limits.compress_streams {
+            drawn.compress()?;
+        }
+        content_ids.insert(0, document.add_object(open));
+        content_ids.push(document.add_object(drawn));
+    }
     let contents = if content_ids.len() == 1 {
         Object::Reference(content_ids[0])
     } else {
@@ -5096,6 +5820,27 @@ fn first_operator_replacement(
         )),
         ShowKind::Show | ShowKind::ShowArray => {}
     }
+    // A line a table edit moves is drawn from its text matrix moved by the
+    // offset, in its text space.
+    let shifted = moved(plan.offset);
+    let text_matrix = if shifted {
+        let linear = [
+            first.space[0],
+            first.space[1],
+            first.space[2],
+            first.space[3],
+            0.,
+            0.,
+        ];
+        let (tx, ty) = invert(linear)
+            .map(|inverse| apply(inverse, plan.offset.0, plan.offset.1))
+            .ok_or_else(|| TextEditError::ReadOnly("the line cannot be moved".into()))?;
+        let moved_matrix = multiply([1., 0., 0., 1., tx, ty], first.text_matrix);
+        output.push_str(&format!("{} Tm ", format_matrix(moved_matrix)));
+        moved_matrix
+    } else {
+        first.text_matrix
+    };
     // Fonts are written by their names in the stream's own resources.
     let resource_name = |key: &[u8]| {
         page.fonts
@@ -5239,7 +5984,7 @@ fn first_operator_replacement(
                     extra.origin_shift,
                     text_y_below(&line.public, extra.below)
                 ],
-                first.text_matrix
+                text_matrix
             ))
         ));
         let mut extra_pen = extra.origin_shift;
@@ -5270,7 +6015,7 @@ fn first_operator_replacement(
     if current_spacing.1 != state.word_spacing {
         output.push_str(&format!("{} Tw ", format_number(state.word_spacing)));
     }
-    if !extra_glyphs.is_empty() {
+    if !extra_glyphs.is_empty() || shifted {
         // Back on the line, where the operator originally left the text
         // matrix: following operators move from there.
         output.push_str(&format!("{} Tm ", format_matrix(first.line_matrix)));
@@ -5345,6 +6090,779 @@ fn fallback_glyph(
     })
 }
 
+/// A path construction operator drawn with its points at `points` (page
+/// space, by slot), under `ctm`.
+fn path_operator_text(
+    operation: &ContentOp,
+    points: &BTreeMap<usize, (f64, f64)>,
+    ctm: Matrix,
+) -> Option<String> {
+    let inverse = invert(ctm)?;
+    let user = |slot: usize| points.get(&slot).map(|(x, y)| apply(inverse, *x, *y));
+    let mut text = String::with_capacity(48);
+    let numbers = |values: &[f64], text: &mut String| {
+        for value in values {
+            push_number(text, *value);
+            text.push(' ');
+        }
+    };
+    let (slots, operator): (&[usize], &str) = match operation.operator.as_slice() {
+        b"re" => {
+            let (x0, y0) = user(0)?;
+            let (x1, y1) = user(2)?;
+            numbers(&[x0, y0, x1 - x0, y1 - y0], &mut text);
+            text.push_str("re");
+            return Some(text);
+        }
+        b"m" => (&[0], "m"),
+        b"l" => (&[0], "l"),
+        b"c" => (&[0, 1, 2], "c"),
+        b"v" => (&[0, 1], "v"),
+        b"y" => (&[0, 1], "y"),
+        b"h" => return Some("h".into()),
+        _ => return None,
+    };
+    for slot in slots {
+        let (x, y) = user(*slot)?;
+        numbers(&[x, y], &mut text);
+    }
+    text.push_str(operator);
+    Some(text)
+}
+
+/// Lines added below an edited line are drawn in its clip. A rectangle that
+/// clips a small part of the page around that line (as Chrome sets one
+/// around each run of text) grows to take them in, or they would not show.
+fn grow_clips_for_added_lines(
+    page: &ExtractedPage,
+    planned: &[PlannedEdit],
+    page_box: Option<[f64; 4]>,
+    splices: &mut Vec<(usize, usize, usize, String)>,
+) {
+    let area = |rect: [f64; 4]| (rect[2] - rect[0]) * (rect[3] - rect[1]);
+    let union = |a: [f64; 4], b: [f64; 4]| {
+        [
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[2].max(b[2]),
+            a[3].max(b[3]),
+        ]
+    };
+    // Each clip to grow: the page-space rectangle it grows to, and how far
+    // a table edit moves the line it clips.
+    let mut grown: BTreeMap<usize, ([f64; 4], (f64, f64))> = BTreeMap::new();
+    for plan in planned.iter().filter(|plan| !plan.extras.is_empty()) {
+        let line = &page.lines[plan.line].public;
+        let Some(needed) = plan
+            .extras
+            .iter()
+            .filter_map(|(extra, layout)| {
+                let first = layout
+                    .chars
+                    .iter()
+                    .find(|character| !character.character.is_whitespace())?;
+                let last = layout
+                    .chars
+                    .iter()
+                    .rfind(|character| !character.character.is_whitespace())?;
+                let quad = extra_line_base(line, extra.below).quad(first.x, last.x + last.advance);
+                points_bounds(quad.into_iter())
+            })
+            .reduce(union)
+        else {
+            continue;
+        };
+        let show = &page.shows[page.lines[plan.line].ops[0]];
+        let mut link = show.state.clips.as_deref();
+        while let Some(clip) = link {
+            link = clip.parent.as_deref();
+            let paint = &page.paints[clip.paint];
+            let [op] = paint.ops[..] else {
+                continue;
+            };
+            if page.operations[op].operator != b"re" {
+                continue;
+            }
+            let Some(bounds) = page.paint_bounds(paint) else {
+                continue;
+            };
+            let small = page_box.is_some_and(|page| area(bounds) < LOCAL_CLIP_SHARE * area(page));
+            let inside = needed[0] >= bounds[0]
+                && needed[1] >= bounds[1]
+                && needed[2] <= bounds[2]
+                && needed[3] <= bounds[3];
+            if !small || inside {
+                continue;
+            }
+            let entry = grown.entry(clip.paint).or_insert((bounds, plan.offset));
+            entry.0 = union(entry.0, needed);
+        }
+    }
+    for (paint_index, (rect, (dx, dy))) in grown {
+        let paint = &page.paints[paint_index];
+        let operation = &page.operations[paint.ops[0]];
+        let Some(bounds) = page.paint_bounds(paint) else {
+            continue;
+        };
+        if operation.spans_streams {
+            continue;
+        }
+        // Each corner goes to the grown rectangle's corner on its sides.
+        let points = path_subpaths(&page.operations, &paint.ops, paint.ctm)
+            .iter()
+            .flat_map(|subpath| subpath.points.iter())
+            .map(|point| {
+                let x = if (point.x - bounds[0]).abs() <= (point.x - bounds[2]).abs() {
+                    rect[0]
+                } else {
+                    rect[2]
+                };
+                let y = if (point.y - bounds[1]).abs() <= (point.y - bounds[3]).abs() {
+                    rect[1]
+                } else {
+                    rect[3]
+                };
+                (point.slot, (x + dx, y + dy))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let Some(text) = path_operator_text(operation, &points, paint.ctm) else {
+            continue;
+        };
+        // A table edit's move of the clip is in the offset.
+        splices.retain(|(stream, start, end, _)| {
+            (*stream, *start, *end) != (operation.stream, operation.start, operation.end)
+        });
+        splices.push((operation.stream, operation.start, operation.end, text));
+    }
+}
+
+/// The content changes table edits and moves make to a page's paths and
+/// XObjects: rules, fills and clips in a table move with its rows and
+/// columns (a deleted band's collapse), new rows and columns draw copies of
+/// their model's, moved paths move whole, and images and forms are moved by
+/// a matrix. Each change is a stream, the byte range it replaces and its
+/// replacement.
+fn table_content_splices(
+    page: &ExtractedPage,
+    tables: &[&crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
+    page_box: Option<[f64; 4]>,
+) -> Result<Vec<(usize, usize, usize, String)>, TextEditError> {
+    use crate::pdf_content_moves::{ContentKind, change_of};
+    let mut splices = Vec::new();
+    if tables.is_empty() && moves.is_empty() {
+        return Ok(splices);
+    }
+    let maps = tables.iter().map(|table| table.map()).collect::<Vec<_>>();
+    for paint in &page.paints {
+        let subpaths = path_subpaths(&page.operations, &paint.ops, paint.ctm);
+        // A changed path moves (or scales) whole, by its change alone: with
+        // the small clip it is drawn in, or alone; a changed small clip
+        // changes itself. A removed one is not painted.
+        let local = |paint: &PaintOp| {
+            page.paint_bounds(paint).is_some_and(|bounds| {
+                let area = |rect: [f64; 4]| (rect[2] - rect[0]) * (rect[3] - rect[1]);
+                page_box.is_some_and(|page| area(bounds) < LOCAL_CLIP_SHARE * area(page))
+            })
+        };
+        let group = page.local_clip(&paint.clip_chain, page_box);
+        let changed = match group {
+            Some(clip) => page.paint_bounds(&page.paints[clip]).and_then(|rect| {
+                change_of(moves, ContentKind::Drawing, rect).map(|item| (item, rect))
+            }),
+            None if paint.clips && !local(paint) => None,
+            None => page.paint_bounds(paint).and_then(|rect| {
+                change_of(moves, ContentKind::Drawing, rect).map(|item| (item, rect))
+            }),
+        };
+        if let Some((item, rect)) = changed {
+            if item.removed {
+                // Its clip still clips; its paths are not painted.
+                if !paint.clips {
+                    let operation = &page.operations[paint.paint];
+                    if operation.spans_streams {
+                        return Err(TextEditError::ReadOnly(
+                            "the drawing spans content streams".into(),
+                        ));
+                    }
+                    splices.push((operation.stream, operation.start, operation.end, "n".into()));
+                }
+                continue;
+            }
+            let placement = item.placement();
+            let mut points: BTreeMap<usize, BTreeMap<usize, (f64, f64)>> = BTreeMap::new();
+            for point in subpaths.iter().flat_map(|subpath| &subpath.points) {
+                points
+                    .entry(point.op)
+                    .or_default()
+                    .insert(point.slot, placement.map(rect, (point.x, point.y)));
+            }
+            for (&op, points) in &points {
+                let operation = &page.operations[op];
+                if operation.spans_streams {
+                    return Err(TextEditError::ReadOnly(
+                        "the drawing spans content streams".into(),
+                    ));
+                }
+                let text = path_operator_text(operation, points, paint.ctm)
+                    .ok_or_else(|| TextEditError::ReadOnly("the drawing cannot move".into()))?;
+                splices.push((operation.stream, operation.start, operation.end, text));
+            }
+            continue;
+        }
+        if maps.is_empty() {
+            continue;
+        }
+        // Each operator's points as drawn, and copies of whole subpaths.
+        let mut moved_points: BTreeMap<usize, BTreeMap<usize, (f64, f64)>> = BTreeMap::new();
+        let mut changed_ops = BTreeSet::new();
+        let mut copies: Vec<(usize, BTreeMap<usize, BTreeMap<usize, (f64, f64)>>)> = Vec::new();
+        for (subpath_index, subpath) in subpaths.iter().enumerate() {
+            let Some(rect) = points_bounds(subpath.points.iter().map(|point| (point.x, point.y)))
+            else {
+                continue;
+            };
+            let placements = maps
+                .iter()
+                .map(|map| map.placement(rect))
+                .collect::<Vec<_>>();
+            for point in &subpath.points {
+                let (mut x, mut y) = (point.x, point.y);
+                for (map, placement) in maps.iter().zip(&placements) {
+                    let (mx, my) = map
+                        .map_point_as(placement, None, (point.x, point.y))
+                        .unwrap_or((point.x, point.y));
+                    x += mx - point.x;
+                    y += my - point.y;
+                }
+                if (x - point.x).abs() > 1e-6 || (y - point.y).abs() > 1e-6 {
+                    changed_ops.insert(point.op);
+                }
+                moved_points
+                    .entry(point.op)
+                    .or_default()
+                    .insert(point.slot, (x, y));
+            }
+            // A clip is never copied: it would clip the copy's content.
+            if paint.clips || !(paint.stroked || paint.filled) {
+                continue;
+            }
+            for (map, placement) in maps.iter().zip(&placements) {
+                for instance in map.instances(placement).into_iter().skip(1) {
+                    let mut copy: BTreeMap<usize, BTreeMap<usize, (f64, f64)>> = BTreeMap::new();
+                    for point in &subpath.points {
+                        let mapped = map
+                            .map_point_as(placement, Some(instance), (point.x, point.y))
+                            .unwrap_or((point.x, point.y));
+                        copy.entry(point.op).or_default().insert(point.slot, mapped);
+                    }
+                    copies.push((subpath_index, copy));
+                }
+            }
+        }
+        let stream_of = |op: usize| page.operations[op].stream;
+        for &op in &changed_ops {
+            let operation = &page.operations[op];
+            if operation.spans_streams {
+                return Err(TextEditError::ReadOnly(
+                    "the table's drawing spans content streams".into(),
+                ));
+            }
+            let text = path_operator_text(operation, &moved_points[&op], paint.ctm)
+                .ok_or_else(|| TextEditError::ReadOnly("the table's drawing cannot move".into()))?;
+            splices.push((stream_of(op), operation.start, operation.end, text));
+        }
+        if !copies.is_empty() {
+            let paint_operation = &page.operations[paint.paint];
+            let original =
+                &page.streams[paint_operation.stream][paint_operation.start..paint_operation.end];
+            let mut text = String::from_utf8_lossy(original).into_owned();
+            for (subpath_index, copy) in &copies {
+                // The subpath's own operators, in order.
+                let ops = subpaths[*subpath_index]
+                    .points
+                    .iter()
+                    .map(|point| point.op)
+                    .collect::<BTreeSet<_>>();
+                let mut constructed = Vec::new();
+                for &op in paint.ops.iter().filter(|op| ops.contains(op)) {
+                    constructed.push(
+                        path_operator_text(&page.operations[op], &copy[&op], paint.ctm)
+                            .ok_or_else(|| {
+                                TextEditError::ReadOnly("the table's drawing cannot copy".into())
+                            })?,
+                    );
+                }
+                // A closing `h` follows its subpath's last point.
+                if subpaths[*subpath_index].closed
+                    && let Some(last) = constructed.last()
+                    && !last.ends_with(" re")
+                {
+                    constructed.push("h".into());
+                }
+                text.push(' ');
+                text.push_str(&constructed.join(" "));
+                text.push(' ');
+                text.push_str(&String::from_utf8_lossy(&paint_operation.operator));
+            }
+            if paint_operation.spans_streams {
+                return Err(TextEditError::ReadOnly(
+                    "the table's drawing spans content streams".into(),
+                ));
+            }
+            splices.push((
+                paint_operation.stream,
+                paint_operation.start,
+                paint_operation.end,
+                text,
+            ));
+        }
+    }
+    for draw in &page.draws {
+        // An image is placed by its group's change, its own, or its table.
+        let changed = page
+            .local_clip(&draw.clip_chain, page_box)
+            .and_then(|clip| page.paint_bounds(&page.paints[clip]))
+            .and_then(|rect| change_of(moves, ContentKind::Drawing, rect).map(|item| (item, rect)))
+            .or_else(|| {
+                change_of(moves, ContentKind::Image, draw.bounds).map(|item| (item, draw.bounds))
+            });
+        let matrix = match changed {
+            Some((item, _)) if item.removed => None,
+            Some((item, rect)) => Some(item.placement().matrix(rect)),
+            None => table_offset(tables, draw.bounds).map(|(dx, dy)| [1., 0., 0., 1., dx, dy]),
+        };
+        let operation = &page.operations[draw.op];
+        let Some(matrix) = matrix else {
+            splices.push((
+                operation.stream,
+                operation.start,
+                operation.end,
+                String::new(),
+            ));
+            continue;
+        };
+        if matrix == [1., 0., 0., 1., 0., 0.]
+            || matrix
+                .iter()
+                .zip([1., 0., 0., 1., 0., 0.])
+                .all(|(a, b)| (a - b).abs() < 1e-9)
+        {
+            continue;
+        }
+        // The page-space change in the image's user space: drawn under
+        // `ctm`, it is `ctm · matrix · ctm⁻¹`.
+        let inverse = invert(draw.ctm)
+            .ok_or_else(|| TextEditError::ReadOnly("the image cannot move".into()))?;
+        let user = multiply(multiply(draw.ctm, matrix), inverse);
+        let original = &page.streams[operation.stream][operation.start..operation.end];
+        splices.push((
+            operation.stream,
+            operation.start,
+            operation.end,
+            format!(
+                "q {} cm {} Q",
+                format_matrix(user),
+                String::from_utf8_lossy(original)
+            ),
+        ));
+    }
+    Ok(splices)
+}
+
+/// The `q`…`Q` block of the page's own content around operator `op`: the
+/// operators of the `q` that opened it and the `Q` that closes it, in one
+/// stream.
+fn enclosing_block(page: &ExtractedPage, op: usize) -> Option<(usize, usize)> {
+    let stream = page.operations.get(op)?.stream;
+    let same = |index: usize| page.operations[index].stream == stream;
+    let mut depth = 0usize;
+    let mut start = None;
+    for index in (0..op).rev() {
+        if !same(index) {
+            return None;
+        }
+        match page.operations[index].operator.as_slice() {
+            b"Q" => depth += 1,
+            b"q" if depth == 0 => {
+                start = Some(index);
+                break;
+            }
+            b"q" => depth -= 1,
+            _ => {}
+        }
+    }
+    let start = start?;
+    depth = 0;
+    for index in op + 1..page.operations.len() {
+        if !same(index) {
+            return None;
+        }
+        match page.operations[index].operator.as_slice() {
+            b"q" => depth += 1,
+            b"Q" if depth == 0 => return Some((start, index)),
+            b"Q" => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// What copies of content (`moves` with a copy number) add to the page:
+/// text written after an operator, by operator, and copied text lines.
+/// A copied path or image is drawn again right after itself, in its own
+/// graphics state, moved by a matrix; a copied drawing in a small clip
+/// copies the whole `q`…`Q` block around its clip after that block.
+#[allow(clippy::type_complexity)]
+fn content_copies(
+    page: &ExtractedPage,
+    layer: &PageTextLayer,
+    moves: &[crate::pdf_content_moves::ContentMove],
+    page_box: Option<[f64; 4]>,
+) -> Result<(Vec<(usize, String)>, Vec<CellLine>), TextEditError> {
+    use crate::pdf_content_moves::ContentKind;
+    let mut inserts: Vec<(usize, String)> = Vec::new();
+    let mut lines = Vec::new();
+    let bytes = |op: usize| {
+        let operation = &page.operations[op];
+        String::from_utf8_lossy(&page.streams[operation.stream][operation.start..operation.end])
+            .into_owned()
+    };
+    // The page-space change `matrix` in the user space of `ctm`.
+    let user = |ctm: Matrix, matrix: Matrix| -> Result<Matrix, TextEditError> {
+        let inverse = invert(ctm)
+            .ok_or_else(|| TextEditError::ReadOnly("the copy cannot be placed".into()))?;
+        Ok(multiply(multiply(ctm, matrix), inverse))
+    };
+    let area = |rect: [f64; 4]| (rect[2] - rect[0]).max(0.) * (rect[3] - rect[1]).max(0.);
+    let local =
+        |rect: [f64; 4]| page_box.is_some_and(|page| area(rect) < LOCAL_CLIP_SHARE * area(page));
+    let copies = moves
+        .iter()
+        .filter(|item| item.copy.is_some() && !item.removed)
+        .collect::<Vec<_>>();
+    for item in &copies {
+        let placement = item.placement();
+        let matrix = placement.matrix(item.rect);
+        match item.kind {
+            ContentKind::Image => {
+                let Some(draw) = page.draws.iter().find(|draw| {
+                    item.names(ContentKind::Image, draw.bounds)
+                        && page.local_clip(&draw.clip_chain, page_box).is_none()
+                }) else {
+                    continue;
+                };
+                inserts.push((
+                    draw.op,
+                    format!(
+                        " q {} cm {} Q",
+                        format_matrix(user(draw.ctm, matrix)?),
+                        bytes(draw.op)
+                    ),
+                ));
+            }
+            ContentKind::Drawing => {
+                // A small clip and all it clips.
+                let clip = page.paints.iter().find(|paint| {
+                    paint.clips
+                        && page.local_clip(&paint.clip_chain, page_box).is_none()
+                        && page.paint_bounds(paint).is_some_and(|rect| {
+                            local(rect) && item.names(ContentKind::Drawing, rect)
+                        })
+                });
+                if let Some(clip) = clip {
+                    let (start, end) = enclosing_block(page, clip.paint).ok_or_else(|| {
+                        TextEditError::ReadOnly("the drawing cannot be copied".into())
+                    })?;
+                    let outer = page.saves.get(&start).copied().unwrap_or(IDENTITY);
+                    let (first, last) = (&page.operations[start], &page.operations[end]);
+                    let block =
+                        String::from_utf8_lossy(&page.streams[first.stream][first.start..last.end])
+                            .into_owned();
+                    inserts.push((
+                        end,
+                        format!(" q {} cm {block} Q", format_matrix(user(outer, matrix)?)),
+                    ));
+                    continue;
+                }
+                let Some(paint) = page.paints.iter().find(|paint| {
+                    !paint.clips
+                        && (paint.stroked || paint.filled)
+                        && page.local_clip(&paint.clip_chain, page_box).is_none()
+                        && page
+                            .paint_bounds(paint)
+                            .is_some_and(|rect| item.names(ContentKind::Drawing, rect))
+                }) else {
+                    continue;
+                };
+                let path = paint
+                    .ops
+                    .iter()
+                    .map(|&op| bytes(op))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                inserts.push((
+                    paint.paint,
+                    format!(
+                        " q {} cm {path} {} Q",
+                        format_matrix(user(paint.ctm, matrix)?),
+                        bytes(paint.paint)
+                    ),
+                ));
+            }
+            ContentKind::Text => {
+                // Text a copied drawing's clip holds comes with the drawing.
+                if copies
+                    .iter()
+                    .any(|other| other.copy == item.copy && other.kind == ContentKind::Drawing)
+                {
+                    continue;
+                }
+                let Some(line) = layer.lines.iter().find(|line| {
+                    crate::pdf_tables::line_core_box(line)
+                        .is_some_and(|rect| item.names(ContentKind::Text, rect))
+                }) else {
+                    continue;
+                };
+                let m = line.matrix;
+                let scale = (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
+                let runs = normalized_runs(
+                    &line
+                        .original_runs()
+                        .into_iter()
+                        .map(|run| TextEditRun {
+                            style: TextRunStyle {
+                                font_size: run.style.font_size * scale,
+                                char_spacing: run.style.char_spacing * scale,
+                                word_spacing: run.style.word_spacing * scale,
+                                fill: run.style.fill.or(line.fill),
+                                ..run.style
+                            },
+                            text: run.text,
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                if runs.iter().any(|run| {
+                    page.fonts
+                        .get(&run.style.font)
+                        .is_none_or(|font| font.unsupported.is_some())
+                        || run.style.font.contains(&b'/')
+                }) {
+                    return Err(TextEditError::ReadOnly(
+                        "the text's font cannot draw a copy".into(),
+                    ));
+                }
+                let origin = placement.map(item.rect, line.origin());
+                let base = new_text_line(origin, &runs);
+                let layout = layout_text_edit_fitted(layer, &base, &runs, LineFit::default())?;
+                lines.push(CellLine {
+                    origin,
+                    runs,
+                    layout,
+                });
+            }
+        }
+    }
+    Ok((inserts, lines))
+}
+
+/// A line of new cell text, laid out where its table edit draws it.
+struct CellLine {
+    origin: (f64, f64),
+    runs: Vec<TextEditRun>,
+    layout: TextLineLayout,
+}
+
+/// The new cell text `tables` draw, laid out at its cells in the edited
+/// tables (moved down when a table above pushes content below it).
+fn table_cell_lines(
+    page: &ExtractedPage,
+    layer: &PageTextLayer,
+    tables: &[&crate::pdf_tables::PageTableEdit],
+) -> Result<Vec<CellLine>, TextEditError> {
+    let mut lines = Vec::new();
+    for (index, table) in tables.iter().enumerate() {
+        for text in &table.cell_texts {
+            let Some((left, top)) = table.cell_origin(text.row, text.column) else {
+                continue;
+            };
+            let others = tables
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, other)| *other)
+                .collect::<Vec<_>>();
+            let (dx, dy) =
+                table_offset(&others, [left, top - 1., left + 1., top]).unwrap_or((0., 0.));
+            for line in &text.lines {
+                let runs = normalized_runs(&line.runs);
+                if runs.iter().all(|run| run.text.is_empty()) {
+                    continue;
+                }
+                for run in &runs {
+                    let font = page.fonts.get(&run.style.font);
+                    if font.is_none_or(|font| font.unsupported.is_some())
+                        || run.style.font.contains(&b'/')
+                    {
+                        return Err(TextEditError::ReadOnly(format!(
+                            "font {} cannot draw new cell text",
+                            String::from_utf8_lossy(&run.style.font)
+                        )));
+                    }
+                }
+                let origin = (left + line.x + dx, top - line.baseline + dy);
+                let base = new_text_line(origin, &runs);
+                let layout = layout_text_edit_fitted(layer, &base, &runs, LineFit::default())?;
+                lines.push(CellLine {
+                    origin,
+                    runs,
+                    layout,
+                });
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// An empty upright line at page point `origin`, in the state of `runs`'
+/// first style, to lay new text out on.
+fn new_text_line(origin: (f64, f64), runs: &[TextEditRun]) -> PageTextLine {
+    let style = runs.first().map(|run| run.style.clone());
+    PageTextLine {
+        anchor: TextLineAnchor {
+            x_centipoints: (origin.0 * 100.).round() as i64,
+            y_centipoints: (origin.1 * 100.).round() as i64,
+            ordinal: 0,
+        },
+        text: String::new(),
+        chars: Vec::new(),
+        end_x: 0.,
+        styles: style.into_iter().collect(),
+        matrix: [1., 0., 0., 1., origin.0, origin.1],
+        horizontal_scale: 1.,
+        rise: 0.,
+        ascent: 0.,
+        descent: 0.,
+        fill: None,
+        read_only: None,
+        in_form: false,
+        clip_bounds: None,
+    }
+}
+
+/// New cell text as its own text object, in the page's fonts or the
+/// bundled fonts that draw characters they lack.
+fn cell_lines_text(
+    page: &ExtractedPage,
+    lines: &[CellLine],
+    fallback_fonts: &FallbackFonts,
+) -> Result<String, TextEditError> {
+    let mut output = String::from("q BT 0 Tr 0 Ts 100 Tz ");
+    for line in lines {
+        output.push_str(&format!(
+            "1 0 0 1 {} {} Tm ",
+            format_number(line.origin.0),
+            format_number(line.origin.1)
+        ));
+        let mut glyphs: Vec<EmittedGlyph> = Vec::new();
+        for (laid_index, character) in line.layout.chars.iter().enumerate() {
+            let style = &line.runs[character.run].style;
+            let font = &page.fonts[&style.font];
+            if character.source == LaidOutSource::Gap
+                && !layout_gap_needs_glyph(&line.layout.chars, laid_index)
+            {
+                continue;
+            }
+            match page_code(font, style, character.character) {
+                Some((code, needs_span))
+                    if !matches!(character.source, LaidOutSource::Fallback) =>
+                {
+                    let word_spacing = if font.simple && code == 32 {
+                        style.word_spacing
+                    } else {
+                        0.
+                    };
+                    glyphs.push(EmittedGlyph {
+                        font: GlyphFont::Page(style.font.clone()),
+                        style: style.clone(),
+                        actual_text: needs_span
+                            .then(|| (laid_index, character.character.to_string())),
+                        code: font.code_bytes(code),
+                        x: character.x,
+                        advance: font.width(code) / 1000. * style.font_size
+                            + style.char_spacing
+                            + word_spacing,
+                    });
+                }
+                _ => glyphs.push(fallback_glyph(font, style, 1., character, fallback_fonts)?),
+            }
+        }
+        let mut pen = 0.;
+        let mut index = 0;
+        while index < glyphs.len() {
+            let segment_font = glyphs[index].font.clone();
+            let style = glyphs[index].style.clone();
+            let font_name = match &segment_font {
+                GlyphFont::Page(name) => page
+                    .fonts
+                    .get(name)
+                    .map_or_else(|| name.clone(), |font| font.resource_name.clone()),
+                GlyphFont::Fallback(fallback) => fallback_fonts
+                    .get(fallback)
+                    .map(|(name, _)| name.clone())
+                    .ok_or_else(|| TextEditError::Malformed("a fallback font is missing".into()))?,
+            };
+            let [red, green, blue] = style.fill.unwrap_or([0.; 3]);
+            output.push_str(&format!(
+                "{} {} {} rg {} {} Tf {} Tc {} Tw ",
+                format_number(red),
+                format_number(green),
+                format_number(blue),
+                format_name(&font_name),
+                format_number(style.font_size),
+                format_number(style.char_spacing),
+                format_number(style.word_spacing)
+            ));
+            let span = glyphs[index].actual_text.clone();
+            if let Some((_, text)) = &span {
+                output.push_str(&format!(
+                    "/Span <</ActualText {}>> BDC ",
+                    format_text_string(text)
+                ));
+            }
+            let unit = style.font_size / 1000.;
+            output.push('[');
+            let mut string = Vec::new();
+            while index < glyphs.len()
+                && glyphs[index].font == segment_font
+                && glyphs[index].style == style
+                && glyphs[index].actual_text == span
+            {
+                let glyph = &glyphs[index];
+                let adjustment = rounded_adjustment(pen - glyph.x, unit);
+                if adjustment != 0. {
+                    if !string.is_empty() {
+                        output.push_str(&format_hex(&string));
+                        string.clear();
+                    }
+                    output.push_str(&format_number(adjustment));
+                    pen -= adjustment * unit;
+                }
+                string.extend_from_slice(&glyph.code);
+                pen += glyph.advance;
+                index += 1;
+            }
+            output.push_str(&format_hex(&string));
+            output.push_str("] TJ ");
+            if span.is_some() {
+                output.push_str("EMC ");
+            }
+        }
+    }
+    output.push_str("ET Q");
+    Ok(output)
+}
+
 /// A replacement that moves the text matrix as the operator did, drawing
 /// nothing.
 fn move_replacement(show: &ShowOp) -> String {
@@ -5409,6 +6927,392 @@ mod tests {
         });
         document.trailer.set("Root", catalog_id);
         document
+    }
+
+    #[test]
+    fn moved_text_drawings_and_images_are_saved_where_they_were_put() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        let content = b"BT /F1 12 Tf 72 700 Td (Moved) Tj ET \
+            BT /F1 12 Tf 72 600 Td (Kept) Tj ET \
+            0 0 1 RG 2 w 100 500 m 200 500 l S \
+            0.9 g 300 300 50 40 re f \
+            q 80 0 0 60 400 100 cm /Im0 Do Q";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let image = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            vec![0],
+        ));
+        let page_id = page_id(&document, 0).unwrap();
+        let page = document.get_dictionary_mut(page_id).unwrap();
+        let mut resources = page.get(b"Resources").unwrap().as_dict().unwrap().clone();
+        resources.set("XObject", dictionary! { "Im0" => image });
+        page.set("Resources", resources);
+        let before = layer(&document);
+        let moved_line = before
+            .lines
+            .iter()
+            .find(|line| line.text == "Moved")
+            .unwrap();
+        let line_rect = crate::pdf_tables::line_core_box(moved_line).unwrap();
+        // The page's drawings and image are objects to move.
+        let drawing = |rect: [f64; 4]| {
+            before
+                .objects
+                .iter()
+                .find(|object| {
+                    object.kind == ContentKind::Drawing
+                        && object
+                            .rect
+                            .iter()
+                            .zip(rect)
+                            .all(|(a, b)| (a - b).abs() < 0.01)
+                })
+                .cloned()
+                .unwrap()
+        };
+        let stroke = drawing([100., 500., 200., 500.]);
+        let fill = drawing([300., 300., 350., 340.]);
+        let picture = before
+            .objects
+            .iter()
+            .find(|object| object.kind == ContentKind::Image)
+            .cloned()
+            .unwrap();
+        assert_eq!(picture.rect, [400., 100., 480., 160.]);
+        let item = |kind, rect, offset| ContentMove {
+            page_index: 0,
+            kind,
+            rect,
+            offset,
+            scale: [1., 1.],
+            removed: false,
+            copy: None,
+        };
+        let moves = [
+            item(ContentKind::Text, line_rect, [10., -20.]),
+            item(ContentKind::Drawing, stroke.rect, [0., 50.]),
+            item(ContentKind::Drawing, fill.rect, [-30., 0.]),
+            item(ContentKind::Image, picture.rect, [5., 5.]),
+        ];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let origin = |text: &str| {
+            after
+                .lines
+                .iter()
+                .find(|line| line.text == text)
+                .unwrap()
+                .origin()
+        };
+        let (x, y) = origin("Moved");
+        assert!((x - 82.).abs() < 0.01 && (y - 680.).abs() < 0.01, "{x} {y}");
+        let (x, y) = origin("Kept");
+        assert!((x - 72.).abs() < 0.01 && (y - 600.).abs() < 0.01);
+        let has = |kind, rect: [f64; 4]| {
+            after.objects.iter().any(|object| {
+                object.kind == kind
+                    && object
+                        .rect
+                        .iter()
+                        .zip(rect)
+                        .all(|(a, b)| (a - b).abs() < 0.01)
+            })
+        };
+        assert!(has(ContentKind::Drawing, [100., 550., 200., 550.]));
+        assert!(has(ContentKind::Drawing, [270., 300., 320., 340.]));
+        assert!(has(ContentKind::Image, [405., 105., 485., 165.]));
+    }
+
+    #[test]
+    fn a_drawing_in_a_small_clip_moves_with_its_clip_and_text() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        let content = b"q 0 0 612 792 re W n \
+            q 90 480 140 40 re W n 1 0 0 RG 3 w 100 500 m 200 500 l S \
+            BT /F1 10 Tf 100 505 Td (Label) Tj ET Q Q";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        // The clipped drawing and its text are one object, named by the clip.
+        let drawings = before
+            .objects
+            .iter()
+            .filter(|object| object.kind == ContentKind::Drawing)
+            .collect::<Vec<_>>();
+        assert_eq!(drawings.len(), 1, "{drawings:?}");
+        assert_eq!(drawings[0].rect, [90., 480., 230., 520.]);
+        assert_eq!(drawings[0].texts.len(), 1);
+        let text_rect = drawings[0].texts[0];
+        let moves = [
+            ContentMove {
+                page_index: 0,
+                kind: ContentKind::Drawing,
+                rect: drawings[0].rect,
+                offset: [0., -300.],
+                scale: [1., 1.],
+                removed: false,
+                copy: None,
+            },
+            ContentMove {
+                page_index: 0,
+                kind: ContentKind::Text,
+                rect: text_rect,
+                offset: [0., -300.],
+                scale: [1., 1.],
+                removed: false,
+                copy: None,
+            },
+        ];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let moved = after
+            .objects
+            .iter()
+            .find(|object| object.kind == ContentKind::Drawing)
+            .unwrap();
+        assert_eq!(moved.rect, [90., 180., 230., 220.]);
+        let line = after
+            .lines
+            .iter()
+            .find(|line| line.text == "Label")
+            .unwrap();
+        assert!((line.origin().1 - 205.).abs() < 0.01);
+        // The text is still inside the moved clip.
+        let clip = line.clip_bounds.unwrap();
+        assert!(clip[1] <= 205. && clip[3] >= 205., "{clip:?}");
+    }
+
+    #[test]
+    fn resized_and_deleted_content_is_saved_so() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        let content = b"BT /F1 12 Tf 72 700 Td (Gone) Tj ET \
+            BT /F1 12 Tf 72 600 Td (Kept) Tj ET \
+            0 0 1 RG 2 w 100 500 m 200 500 l S \
+            0.9 g 300 300 50 40 re f \
+            q 80 0 0 60 400 100 cm /Im0 Do Q \
+            q 10 0 0 10 50 50 cm /Im0 Do Q";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let image = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            vec![0],
+        ));
+        let page_id = page_id(&document, 0).unwrap();
+        let page = document.get_dictionary_mut(page_id).unwrap();
+        let mut resources = page.get(b"Resources").unwrap().as_dict().unwrap().clone();
+        resources.set("XObject", dictionary! { "Im0" => image });
+        page.set("Resources", resources);
+        let before = layer(&document);
+        let gone = before
+            .lines
+            .iter()
+            .find(|line| line.text == "Gone")
+            .unwrap();
+        let item = |kind, rect, offset, scale, removed| ContentMove {
+            page_index: 0,
+            kind,
+            rect,
+            offset,
+            scale,
+            removed,
+            copy: None,
+        };
+        let moves = [
+            item(
+                ContentKind::Text,
+                crate::pdf_tables::line_core_box(gone).unwrap(),
+                [0., 0.],
+                [1., 1.],
+                true,
+            ),
+            // The stroke deleted, the fill twice as wide, the photo half the
+            // size and moved, the small image deleted.
+            item(
+                ContentKind::Drawing,
+                [100., 500., 200., 500.],
+                [0., 0.],
+                [1., 1.],
+                true,
+            ),
+            item(
+                ContentKind::Drawing,
+                [300., 300., 350., 340.],
+                [0., 0.],
+                [2., 1.],
+                false,
+            ),
+            item(
+                ContentKind::Image,
+                [400., 100., 480., 160.],
+                [10., 20.],
+                [0.5, 0.5],
+                false,
+            ),
+            item(
+                ContentKind::Image,
+                [50., 50., 60., 60.],
+                [0., 0.],
+                [1., 1.],
+                true,
+            ),
+        ];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        assert!(after.lines.iter().all(|line| line.text != "Gone"));
+        assert!(after.lines.iter().any(|line| line.text == "Kept"));
+        let has = |kind, rect: [f64; 4]| {
+            after.objects.iter().any(|object| {
+                object.kind == kind
+                    && object
+                        .rect
+                        .iter()
+                        .zip(rect)
+                        .all(|(a, b)| (a - b).abs() < 0.01)
+            })
+        };
+        assert!(
+            !has(ContentKind::Drawing, [100., 500., 200., 500.]),
+            "{:?}",
+            after.objects
+        );
+        assert!(
+            has(ContentKind::Drawing, [300., 300., 400., 340.]),
+            "{:?}",
+            after.objects
+        );
+        assert!(
+            has(ContentKind::Image, [410., 120., 450., 150.]),
+            "{:?}",
+            after.objects
+        );
+        assert_eq!(
+            after
+                .objects
+                .iter()
+                .filter(|object| object.kind == ContentKind::Image)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn copied_content_is_drawn_again_where_it_was_put() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        let content = b"BT /F1 12 Tf 72 700 Td (Copied) Tj ET \
+            0 0 1 RG 2 w 100 500 m 200 500 l S \
+            q 80 0 0 60 400 100 cm /Im0 Do Q \
+            q 0 0 612 792 re W n q 90 300 140 40 re W n 1 0 0 RG 3 w 100 320 m 200 320 l S \
+            BT /F1 10 Tf 100 325 Td (Label) Tj ET Q Q";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let image = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            vec![0],
+        ));
+        let page_id = page_id(&document, 0).unwrap();
+        let page = document.get_dictionary_mut(page_id).unwrap();
+        let mut resources = page.get(b"Resources").unwrap().as_dict().unwrap().clone();
+        resources.set("XObject", dictionary! { "Im0" => image });
+        page.set("Resources", resources);
+        let before = layer(&document);
+        let copied = before
+            .lines
+            .iter()
+            .find(|line| line.text == "Copied")
+            .unwrap();
+        let label = before
+            .lines
+            .iter()
+            .find(|line| line.text == "Label")
+            .unwrap();
+        let copy = |kind, rect, offset, copy| ContentMove {
+            page_index: 0,
+            kind,
+            rect,
+            offset,
+            scale: [1., 1.],
+            removed: false,
+            copy: Some(copy),
+        };
+        let moves = [
+            copy(
+                ContentKind::Text,
+                crate::pdf_tables::line_core_box(copied).unwrap(),
+                [0., -100.],
+                0,
+            ),
+            copy(ContentKind::Drawing, [100., 500., 200., 500.], [0., 50.], 1),
+            copy(ContentKind::Image, [400., 100., 480., 160.], [0., 200.], 2),
+            // The clipped drawing and its label, together.
+            copy(ContentKind::Drawing, [90., 300., 230., 340.], [250., 0.], 3),
+            copy(
+                ContentKind::Text,
+                crate::pdf_tables::line_core_box(label).unwrap(),
+                [250., 0.],
+                3,
+            ),
+        ];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let origins = |text: &str| {
+            after
+                .lines
+                .iter()
+                .filter(|line| line.text == text)
+                .map(|line| {
+                    let (x, y) = line.origin();
+                    ((x * 100.).round() / 100., (y * 100.).round() / 100.)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(origins("Copied"), [(72., 700.), (72., 600.)]);
+        assert_eq!(origins("Label").len(), 2, "{:?}", after.lines);
+        assert!(origins("Label").contains(&(350., 325.)));
+        let has = |kind, rect: [f64; 4]| {
+            after.objects.iter().any(|object| {
+                object.kind == kind
+                    && object
+                        .rect
+                        .iter()
+                        .zip(rect)
+                        .all(|(a, b)| (a - b).abs() < 0.01)
+            })
+        };
+        assert!(has(ContentKind::Drawing, [100., 500., 200., 500.]));
+        assert!(
+            has(ContentKind::Drawing, [100., 550., 200., 550.]),
+            "{:?}",
+            after.objects
+        );
+        assert!(has(ContentKind::Image, [400., 100., 480., 160.]));
+        assert!(
+            has(ContentKind::Image, [400., 300., 480., 360.]),
+            "{:?}",
+            after.objects
+        );
+        assert!(has(ContentKind::Drawing, [90., 300., 230., 340.]));
+        assert!(
+            has(ContentKind::Drawing, [340., 300., 480., 340.]),
+            "{:?}",
+            after.objects
+        );
     }
 
     fn reload(document: &mut Document) -> Document {
@@ -5548,6 +7452,43 @@ mod tests {
         assert_eq!(after.lines[0].text, "Hi");
         assert_eq!(after.lines[1].text, " World");
         assert_eq!(after.lines[1].anchor, before.lines[1].anchor);
+    }
+
+    #[test]
+    fn a_word_in_another_fill_and_stroke_joins_its_line() {
+        // Chrome sets both colours for a word in black in a grey line, each
+        // word in its own text object.
+        let content = b".5 .5 .5 RG .5 .5 .5 rg BT /F1 12 Tf 72 700 Td (About ) Tj ET \
+            0 0 0 RG 0 0 0 rg BT /F1 12 Tf 108.024 700 Td (Name ) Tj ET \
+            .5 .5 .5 RG .5 .5 .5 rg BT /F1 12 Tf 143.364 700 Td (or more) Tj ET \
+            BT /F1 12 Tf 72 680 Td (Next) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        assert_eq!(before.lines.len(), 2);
+        let line = &before.lines[0];
+        assert_eq!(line.text, "About Name or more");
+        let fills = line
+            .original_runs()
+            .iter()
+            .map(|run| run.style.fill)
+            .collect::<Vec<_>>();
+        assert_eq!(fills, vec![Some([0.5; 3]), Some([0.; 3]), Some([0.5; 3])]);
+        apply_text_edits(
+            &mut document,
+            &[edit(line, "About Name or less")],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut document));
+        assert_eq!(after.lines[0].text, "About Name or less");
+        let fills = after.lines[0]
+            .original_runs()
+            .iter()
+            .map(|run| run.style.fill)
+            .collect::<Vec<_>>();
+        assert_eq!(fills, vec![Some([0.5; 3])]);
+        assert_eq!(after.lines[1].text, "Next");
+        assert_eq!(after.lines[1].fill, Some([0.5; 3]));
     }
 
     #[test]
@@ -6362,6 +8303,85 @@ mod tests {
         }
         // Page text is still editable.
         assert_eq!(layer.lines[0].read_only, None);
+    }
+
+    #[test]
+    fn a_blank_added_line_is_drawn_as_a_space() {
+        let content = b"BT /F1 12 Tf 72 700 Td (Last line) Tj ET";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let line = &before.lines[0];
+        let mut grown = edit(line, "Last line");
+        grown.layout.extra_lines.push(ExtraLine {
+            anchor: TextLineAnchor {
+                x_centipoints: 7200,
+                y_centipoints: 68600,
+                ordinal: 0,
+            },
+            below: 14.,
+            origin_shift: 0.,
+            fit: LineFit::default(),
+            runs: Vec::new(),
+            hard_break: false,
+        });
+        apply_text_edits(&mut document, &[grown], &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let texts = after
+            .lines
+            .iter()
+            .map(|line| (line.text.clone(), line.origin()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            [
+                ("Last line".to_owned(), (72., 700.)),
+                (" ".to_owned(), (72., 686.)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_clipped_on_its_own_grows_its_clip_for_lines_added_below() {
+        // As Chrome writes a table cell's text: a rectangle one line tall
+        // clips it.
+        let content = b"q 70 696 120 16 re W* n BT /F1 12 Tf 72 700 Td (Heading) Tj ET Q";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        let line = &before.lines[0];
+        assert_eq!(line.clip_bounds, Some([70., 696., 190., 712.]));
+        let mut grown = edit(line, "Heading");
+        let style = grown.runs[0].style.clone();
+        grown.layout.extra_lines.push(ExtraLine {
+            anchor: TextLineAnchor {
+                x_centipoints: 7200,
+                y_centipoints: 68600,
+                ordinal: 0,
+            },
+            below: 14.,
+            origin_shift: 0.,
+            fit: LineFit::default(),
+            runs: vec![TextEditRun {
+                style,
+                text: "and more".into(),
+            }],
+            hard_break: false,
+        });
+        apply_text_edits(&mut document, &[grown], &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let added = after
+            .lines
+            .iter()
+            .find(|line| line.text == "and more")
+            .unwrap();
+        let [left, bottom, right, top] = crate::pdf_tables::line_box(added).unwrap();
+        let clip = added.clip_bounds.unwrap();
+        assert!(
+            clip[0] <= left && clip[1] <= bottom && clip[2] >= right && clip[3] >= top,
+            "{clip:?} clips {:?}",
+            [left, bottom, right, top]
+        );
+        // The line it was set for keeps its place in it.
+        assert_eq!(clip[3], 712.);
     }
 
     #[test]

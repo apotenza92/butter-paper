@@ -81,6 +81,42 @@ pub fn selectable_lines(
     blocks: &[PageTextBlock],
     edits: &[PageTextEdit],
 ) -> Vec<SelectableLine> {
+    selectable_lines_with_tables(layer, blocks, edits, &[], &[])
+}
+
+/// [`selectable_lines`] on a page whose tables `tables` edit and whose
+/// content `moves` move: lines a table edit or move moves are where it shows
+/// them, a deleted row's are gone, and new cell text follows each table's
+/// lines.
+pub fn selectable_lines_with_tables(
+    layer: &PageTextLayer,
+    blocks: &[PageTextBlock],
+    edits: &[PageTextEdit],
+    tables: &[crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
+) -> Vec<SelectableLine> {
+    let tables = tables
+        .iter()
+        .filter(|table| table.page_index == layer.page_index)
+        .collect::<Vec<_>>();
+    let moves = moves
+        .iter()
+        .filter(|item| item.page_index == layer.page_index)
+        .cloned()
+        .collect::<Vec<_>>();
+    let moved = |line: &PageTextLine| {
+        if tables.is_empty() && moves.is_empty() {
+            return Some((0., 0.));
+        }
+        crate::pdf_tables::line_core_box(line).map_or(Some((0., 0.)), |rect| {
+            crate::pdf_content_moves::line_offset(&tables, &moves, rect)
+        })
+    };
+    let shift = |mut line: PageTextLine, (dx, dy): (f64, f64)| {
+        line.matrix[4] += dx;
+        line.matrix[5] += dy;
+        line
+    };
     let edit_of = |line: &PageTextLine| {
         edits
             .iter()
@@ -108,6 +144,9 @@ pub fn selectable_lines(
         let paragraph = paragraphs;
         paragraphs += 1;
         for member in members {
+            let Some(offset) = moved(member) else {
+                continue;
+            };
             let edit = edit_of(member);
             let chars = match edit {
                 Some(edit) => layout_text_edit_fitted(layer, member, &edit.runs, edit.layout.fit)
@@ -126,7 +165,7 @@ pub fn selectable_lines(
                     .collect(),
             };
             lines.push(SelectableLine {
-                line: member.clone(),
+                line: shift(member.clone(), offset),
                 chars,
                 paragraph,
             });
@@ -142,7 +181,58 @@ pub fn selectable_lines(
                     })
                     .unwrap_or_default();
                 lines.push(SelectableLine {
-                    line: base,
+                    line: shift(base, offset),
+                    chars,
+                    paragraph,
+                });
+            }
+        }
+    }
+    // New cell text, each cell a paragraph.
+    for table in &tables {
+        for text in &table.cell_texts {
+            let Some((left, top)) = table.cell_origin(text.row, text.column) else {
+                continue;
+            };
+            let paragraph = paragraphs;
+            paragraphs += 1;
+            for cell_line in &text.lines {
+                let Some(style) = cell_line.runs.first().map(|run| run.style.clone()) else {
+                    continue;
+                };
+                let size = style.font_size.abs();
+                let line = PageTextLine {
+                    anchor: crate::pdf_text_edit::TextLineAnchor {
+                        x_centipoints: ((left + cell_line.x) * 100.).round() as i64,
+                        y_centipoints: ((top - cell_line.baseline) * 100.).round() as i64,
+                        ordinal: u32::MAX,
+                    },
+                    text: String::new(),
+                    chars: Vec::new(),
+                    end_x: 0.,
+                    styles: vec![style],
+                    matrix: [1., 0., 0., 1., left + cell_line.x, top - cell_line.baseline],
+                    horizontal_scale: 1.,
+                    rise: 0.,
+                    ascent: 0.8 * size,
+                    descent: -0.2 * size,
+                    fill: None,
+                    read_only: None,
+                    in_form: false,
+                    clip_bounds: None,
+                };
+                let chars =
+                    layout_text_edit_fitted(layer, &line, &cell_line.runs, Default::default())
+                        .map(|layout| {
+                            layout
+                                .chars
+                                .iter()
+                                .map(|c| (c.character, c.x, c.x + c.advance))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                lines.push(SelectableLine {
+                    line,
                     chars,
                     paragraph,
                 });
@@ -339,6 +429,8 @@ mod tests {
             descent: -2.,
             fill: None,
             read_only: None,
+            in_form: false,
+            clip_bounds: None,
         }
     }
 
@@ -352,6 +444,9 @@ mod tests {
                 line("Footer", 100., 2),
             ],
             page_box: None,
+            rules: Vec::new(),
+            fills: Vec::new(),
+            objects: Vec::new(),
         };
         let blocks = vec![PageTextBlock {
             lines: vec![layer.lines[0].anchor, layer.lines[1].anchor],
@@ -361,6 +456,7 @@ mod tests {
             pitch: Some(12.),
             edges: Vec::new(),
             list: None,
+            cell: None,
         }];
         selectable_lines(&layer, &blocks, &[])
     }

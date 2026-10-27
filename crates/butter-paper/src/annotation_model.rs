@@ -17,7 +17,11 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::page_geometry::{PageCoordinateSpace, Rotation as CoordinateRotation};
+use crate::pdf_content_moves::ContentMove;
 use crate::pdf_forms::{FormFieldEdit, rebase_form_edits};
+use crate::pdf_page_base::PageBase;
+use crate::pdf_page_structure::PageSlot;
+use crate::pdf_tables::{PageTableEdit, TableKey};
 use crate::pdf_text_edit::{PageTextEdit, normalized_runs, rebase_text_edits};
 use crate::selection_geometry::{
     SelectionMarquee, SelectionPath, SelectionPoint, geometry_selected, selection_after,
@@ -3236,15 +3240,6 @@ pub struct PageScale {
 }
 
 impl PageScale {
-    /// Paper-to-real ratio, using the same unit conversion as the Electron sidebar.
-    pub fn ratio_label(&self) -> String {
-        let ratio = self.scale_x * self.real_units.points();
-        if !ratio.is_finite() || ratio <= 0. {
-            return self.name.clone();
-        }
-        format!("1:{}", format_scale_number(ratio))
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn custom(
         page_index: u32,
@@ -3369,33 +3364,50 @@ impl PageScale {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScalePreset {
-    pub id: String,
-    pub name: String,
-    pub pdf_units: ScaleUnit,
-    pub real_units: ScaleUnit,
-    pub scale_x: f64,
-    pub scale_y: f64,
-    pub source: ScaleSource,
-    pub built_in: bool,
-}
-
-pub fn built_in_scale_presets() -> Vec<ScalePreset> {
-    [1_u16, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
-        .into_iter()
-        .map(|ratio| ScalePreset {
-            id: format!("one-to-{ratio}"),
-            name: format!("1:{ratio}"),
-            pdf_units: ScaleUnit::Cm,
-            real_units: ScaleUnit::M,
-            scale_x: (f64::from(ratio) / 100.) / ScaleUnit::Cm.points(),
-            scale_y: (f64::from(ratio) / 100.) / ScaleUnit::Cm.points(),
-            source: ScaleSource::Preset,
-            built_in: true,
-        })
-        .collect()
+/// The pages a page-scale change applies to.
+fn page_scale_target_pages(
+    target: PageScaleApplyTarget,
+    page_count: u32,
+) -> Result<Vec<u32>, AnnotationError> {
+    if page_count == 0 {
+        return Err(AnnotationError::InvalidGeometry(
+            "page scale requires at least one page".into(),
+        ));
+    }
+    let page_indices = match target {
+        PageScaleApplyTarget::Current(page_index) => vec![page_index],
+        PageScaleApplyTarget::All => (0..page_count).collect(),
+        PageScaleApplyTarget::Ranges(ranges) => {
+            let mut indices = BTreeSet::new();
+            for range in ranges {
+                let start = range.start_page_index.min(range.end_page_index);
+                let end = range.start_page_index.max(range.end_page_index);
+                if end >= page_count {
+                    return Err(AnnotationError::InvalidGeometry(format!(
+                        "page scale target must be between 0 and {}",
+                        page_count - 1
+                    )));
+                }
+                indices.extend(start..=end);
+            }
+            if indices.is_empty() {
+                return Err(AnnotationError::InvalidGeometry(
+                    "page scale target cannot be empty".into(),
+                ));
+            }
+            indices.into_iter().collect()
+        }
+    };
+    if page_indices
+        .iter()
+        .any(|page_index| *page_index >= page_count)
+    {
+        return Err(AnnotationError::InvalidGeometry(format!(
+            "page scale target must be between 0 and {}",
+            page_count - 1
+        )));
+    }
+    Ok(page_indices)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4856,6 +4868,9 @@ pub enum AnnotationEdit {
     SetImageRect(PdfRect),
     SetImageRotation(f64),
     SetImageOpacity(f64),
+    /// Locks or frees an image's proportions. Locking a stretched image
+    /// returns it to its pixels' shape, keeping its width and centre.
+    SetImageAspectLocked(bool),
     SetSnapshotRect(PdfRect),
     SetSnapshotRotation(f64),
     SetSnapshotOpacity(f64),
@@ -5171,13 +5186,23 @@ pub struct AnnotationSnapshot {
     pub images: Vec<ImageAnnotation>,
     pub snapshots: Vec<SnapshotAnnotation>,
     pub page_scales: Vec<PageScale>,
-    pub scale_presets: Vec<ScalePreset>,
     pub page_length_calibrations: Vec<(u32, LengthCalibration)>,
     pub page_rotations: Vec<(u32, PageRotation)>,
     /// Edits to existing page text, keyed by page and line.
     pub page_text_edits: Vec<PageTextEdit>,
     /// Filled form field values, keyed by field name.
     pub form_field_edits: Vec<FormFieldEdit>,
+    /// Changes to tables' rows and columns, keyed by page and table.
+    pub page_table_edits: Vec<PageTableEdit>,
+    /// Page content moved in Edit PDF mode, keyed by page and content.
+    pub page_content_moves: Vec<ContentMove>,
+    /// Pages shown as an earlier file had them, which their page text and
+    /// table edits apply to.
+    pub page_bases: Vec<PageBase>,
+    /// [`AnnotationDocument::pages_to_keep_when_saved`].
+    pub pages_to_keep_when_saved: Vec<u32>,
+    /// The pages as arranged; empty when they are the file's, in order.
+    pub page_slots: Vec<PageSlot>,
     pub undo_depth: usize,
     pub redo_depth: usize,
 }
@@ -5708,6 +5733,17 @@ impl fmt::Display for AnnotationError {
 
 impl Error for AnnotationError {}
 
+/// Where a page of rearranged pages ([`AnnotationDocument::arrange_pages`])
+/// comes from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ArrangedPage {
+    /// The page shown at `index`, with its markups and edits, or a copy of
+    /// it with copies of them.
+    Shown { index: u32, copy: bool },
+    /// A new blank page, in points.
+    Blank { width: f64, height: f64 },
+}
+
 #[derive(Clone)]
 struct DocumentState {
     annotation_order: Vec<MarkupId>,
@@ -5729,15 +5765,42 @@ struct DocumentState {
     images: Vec<ImageAnnotation>,
     snapshots: Vec<SnapshotAnnotation>,
     page_scales: BTreeMap<u32, PageScale>,
-    scale_presets: Vec<ScalePreset>,
     page_length_calibrations: BTreeMap<u32, LengthCalibration>,
     page_rotations: BTreeMap<u32, PageRotation>,
     page_text_edits: Vec<PageTextEdit>,
     form_field_edits: Vec<FormFieldEdit>,
+    page_table_edits: Vec<PageTableEdit>,
+    page_content_moves: Vec<ContentMove>,
+    /// Pages whose edits apply to the page as an earlier file had it: a
+    /// save rewrote them since.
+    page_bases: Vec<PageBase>,
+    /// The pages as arranged ([`crate::pdf_page_structure`]); empty when
+    /// they are the file's, in its order.
+    page_slots: Vec<PageSlot>,
     revision: u64,
 }
 
+impl DocumentState {
+    /// Drops the page text edits, table edits, moves and kept pages of
+    /// `pages`.
+    fn forget_pages(&mut self, pages: &BTreeSet<u32>) {
+        if pages.is_empty() {
+            return;
+        }
+        self.page_text_edits
+            .retain(|edit| !pages.contains(&edit.page_index));
+        self.page_table_edits
+            .retain(|edit| !pages.contains(&edit.page_index));
+        self.page_content_moves
+            .retain(|item| !pages.contains(&item.page_index));
+        self.page_bases
+            .retain(|base| !pages.contains(&base.page_index));
+    }
+}
+
 const RECOVERY_TIMELINE_SCHEMA_VERSION: u32 = 2;
+/// The most kept pages ([`PageBase`]) the history holds, in bytes.
+const MAX_KEPT_PAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RECOVERY_TIMELINE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_RECOVERY_HISTORY_STATES: usize = 10_000;
 const MAX_RECOVERY_ANNOTATIONS_PER_STATE: usize = 1_000_000;
@@ -5761,6 +5824,16 @@ struct RecoveryTimelineWire {
     history_limit: usize,
     saved_revision: u64,
     next_revision: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    page_bases: Vec<PageBaseWire>,
+}
+
+/// A kept page's PDF, which states' page bases name by id.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PageBaseWire {
+    id: String,
+    pdf_base64: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -5809,13 +5882,24 @@ struct RecoveryDocumentState {
     images: Vec<RecoveryImageAnnotation>,
     snapshots: Vec<RecoverySnapshotAnnotation>,
     page_scales: BTreeMap<u32, PageScale>,
-    scale_presets: Vec<ScalePreset>,
+    /// Saved scales, which documents no longer keep: read and dropped, so
+    /// recovery files written before still open.
+    #[serde(default, rename = "scale_presets", skip_serializing)]
+    _scale_presets: Vec<serde::de::IgnoredAny>,
     page_length_calibrations: BTreeMap<u32, LengthCalibration>,
     page_rotations: BTreeMap<u32, PageRotation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     page_text_edits: Vec<PageTextEdit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     form_field_edits: Vec<FormFieldEdit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    page_table_edits: Vec<PageTableEdit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    page_content_moves: Vec<ContentMove>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    page_bases: Vec<PageBase>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    page_slots: Vec<PageSlot>,
     revision: u64,
 }
 
@@ -5907,11 +5991,15 @@ impl RecoveryDocumentState {
             images,
             snapshots,
             page_scales: state.page_scales.clone(),
-            scale_presets: state.scale_presets.clone(),
+            _scale_presets: Vec::new(),
             page_length_calibrations: state.page_length_calibrations.clone(),
             page_rotations: state.page_rotations.clone(),
             page_text_edits: state.page_text_edits.clone(),
             form_field_edits: state.form_field_edits.clone(),
+            page_table_edits: state.page_table_edits.clone(),
+            page_content_moves: state.page_content_moves.clone(),
+            page_bases: state.page_bases.clone(),
+            page_slots: state.page_slots.clone(),
             revision: state.revision,
         })
     }
@@ -5995,11 +6083,14 @@ impl RecoveryDocumentState {
             images,
             snapshots,
             page_scales: self.page_scales,
-            scale_presets: self.scale_presets,
             page_length_calibrations: self.page_length_calibrations,
             page_rotations: self.page_rotations,
             page_text_edits: self.page_text_edits,
             form_field_edits: self.form_field_edits,
+            page_table_edits: self.page_table_edits,
+            page_content_moves: self.page_content_moves,
+            page_bases: self.page_bases,
+            page_slots: self.page_slots,
             revision: self.revision,
         };
         validate_recovery_state(&state)?;
@@ -6170,6 +6261,12 @@ fn recovery_rectangle_spatial_cell_count(
 }
 
 fn validate_recovery_state(state: &DocumentState) -> Result<(), AnnotationError> {
+    for table in &state.page_table_edits {
+        table.validate().map_err(recovery_error)?;
+    }
+    for item in &state.page_content_moves {
+        item.validate().map_err(recovery_error)?;
+    }
     let family_ids = state
         .rectangles
         .iter()
@@ -6481,23 +6578,6 @@ fn validate_recovery_state(state: &DocumentState) -> Result<(), AnnotationError>
             return Err(recovery_error("page scale and calibration values disagree"));
         }
     }
-    let mut preset_ids = BTreeSet::new();
-    for preset in &state.scale_presets {
-        validate_text(&preset.id, "scale preset id", MAX_MEASUREMENT_LABEL_BYTES)?;
-        validate_text(
-            &preset.name,
-            "scale preset name",
-            MAX_MEASUREMENT_LABEL_BYTES,
-        )?;
-        for value in [preset.scale_x, preset.scale_y] {
-            if !value.is_finite() || value <= 0. {
-                return Err(recovery_error("scale preset factors must be positive"));
-            }
-        }
-        if !preset_ids.insert(&preset.id) {
-            return Err(recovery_error("scale preset ids must be unique"));
-        }
-    }
     Ok(())
 }
 
@@ -6661,11 +6741,14 @@ impl AnnotationDocument {
                 images: Vec::new(),
                 snapshots: Vec::new(),
                 page_scales: BTreeMap::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: BTreeMap::new(),
                 page_rotations: BTreeMap::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                page_slots: Vec::new(),
                 revision: 0,
             },
             selected_ids: Vec::new(),
@@ -6734,6 +6817,25 @@ impl AnnotationDocument {
         {
             return Err(recovery_error("document assets exceed recovery bounds"));
         }
+        let mut page_bases = BTreeMap::new();
+        for base in self
+            .past
+            .iter()
+            .chain(std::iter::once(&self.state))
+            .chain(self.future.iter())
+            .flat_map(|state| &state.page_bases)
+        {
+            let pdf = base
+                .pdf
+                .as_ref()
+                .ok_or_else(|| recovery_error("a kept page is missing its PDF"))?;
+            page_bases
+                .entry(base.id.clone())
+                .or_insert_with(|| PageBaseWire {
+                    id: base.id.clone(),
+                    pdf_base64: BASE64.encode(pdf.as_slice()),
+                });
+        }
         serialize_recovery_wire(
             &RecoveryTimelineWire {
                 schema_version: RECOVERY_TIMELINE_SCHEMA_VERSION,
@@ -6744,6 +6846,7 @@ impl AnnotationDocument {
                 history_limit: self.history_limit,
                 saved_revision: self.saved_revision,
                 next_revision: self.next_revision,
+                page_bases: page_bases.into_values().collect(),
             },
             MAX_RECOVERY_TIMELINE_BYTES,
         )
@@ -6813,9 +6916,37 @@ impl AnnotationDocument {
             }
             assets.insert(wire_asset.id, asset);
         }
+        let mut page_bases = BTreeMap::new();
+        for wire_base in wire.page_bases {
+            let pdf = BASE64
+                .decode(&wire_base.pdf_base64)
+                .map_err(|_| recovery_error("invalid kept page base64"))?;
+            if pdf.len() > crate::pdf_page_base::MAX_PAGE_BASE_BYTES
+                || crate::pdf_page_base::page_base_id(&pdf) != wire_base.id
+            {
+                return Err(recovery_error("kept page hash mismatch"));
+            }
+            if page_bases
+                .insert(wire_base.id, std::sync::Arc::new(pdf))
+                .is_some()
+            {
+                return Err(recovery_error("duplicate kept page"));
+            }
+        }
+        let mut used_bases = BTreeSet::new();
+        let mut resolve_bases = |state: &mut DocumentState| -> Result<(), AnnotationError> {
+            for base in &mut state.page_bases {
+                let pdf = page_bases
+                    .get(&base.id)
+                    .ok_or_else(|| recovery_error(format!("missing kept page {}", base.id)))?;
+                base.pdf = Some(pdf.clone());
+                used_bases.insert(base.id.clone());
+            }
+            Ok(())
+        };
         let mut referenced = BTreeSet::new();
         let mut reference_count = 0usize;
-        let state = wire
+        let mut state = wire
             .current
             .decode(&assets, &mut referenced, &mut reference_count)
             .map_err(|error| recovery_error(error.to_string()))?;
@@ -6839,6 +6970,18 @@ impl AnnotationDocument {
             .collect::<Result<VecDeque<_>, _>>()?;
         if referenced.len() != assets.len() {
             return Err(recovery_error("asset table contains unreachable entries"));
+        }
+        let mut past = past;
+        let mut future = future;
+        for state in past
+            .iter_mut()
+            .chain(std::iter::once(&mut state))
+            .chain(future.iter_mut())
+        {
+            resolve_bases(state)?;
+        }
+        if used_bases.len() != page_bases.len() {
+            return Err(recovery_error("kept pages contain unreachable entries"));
         }
         let mut revisions = BTreeSet::new();
         for revision in past
@@ -7005,7 +7148,7 @@ impl AnnotationDocument {
                 ))
             })
             .collect::<Result<Vec<_>, AnnotationError>>()?;
-        self.load_imported_page_scale_state(annotations, page_scales, Vec::new(), page_rotations)?;
+        self.load_imported_page_scale_state(annotations, page_scales, page_rotations)?;
         self.state.page_length_calibrations = legacy_calibrations;
         for length in &mut self.state.lengths {
             if let Some(calibration) = self.state.page_length_calibrations.get(&length.page_index) {
@@ -7028,7 +7171,6 @@ impl AnnotationDocument {
         &mut self,
         annotations: Vec<Annotation>,
         page_scales: Vec<(u32, PageScale)>,
-        scale_presets: Vec<ScalePreset>,
         page_rotations: Vec<(u32, PageRotation)>,
     ) -> Result<(), AnnotationError> {
         self.require_no_gesture()?;
@@ -7112,11 +7254,14 @@ impl AnnotationDocument {
             images,
             snapshots,
             page_scales,
-            scale_presets,
             page_length_calibrations,
             page_rotations,
             page_text_edits: Vec::new(),
             form_field_edits: Vec::new(),
+            page_table_edits: Vec::new(),
+            page_content_moves: Vec::new(),
+            page_bases: Vec::new(),
+            page_slots: Vec::new(),
             revision: 0,
         };
         self.selected_ids.clear();
@@ -7209,7 +7354,6 @@ impl AnnotationDocument {
             images: self.state.images.clone(),
             snapshots: self.state.snapshots.clone(),
             page_scales: self.state.page_scales.values().cloned().collect(),
-            scale_presets: self.state.scale_presets.clone(),
             page_length_calibrations: self
                 .state
                 .page_length_calibrations
@@ -7224,6 +7368,11 @@ impl AnnotationDocument {
                 .collect(),
             page_text_edits: self.state.page_text_edits.clone(),
             form_field_edits: self.state.form_field_edits.clone(),
+            page_table_edits: self.state.page_table_edits.clone(),
+            page_content_moves: self.state.page_content_moves.clone(),
+            page_bases: self.state.page_bases.clone(),
+            pages_to_keep_when_saved: self.pages_to_keep_when_saved().into_iter().collect(),
+            page_slots: self.state.page_slots.clone(),
             undo_depth: self.past.len(),
             redo_depth: self.future.len(),
         }
@@ -7237,10 +7386,6 @@ impl AnnotationDocument {
         self.state.page_scales.get(&page_index)
     }
 
-    pub fn scale_presets(&self) -> &[ScalePreset] {
-        &self.state.scale_presets
-    }
-
     pub fn page_rotation(&self, page_index: u32) -> Option<PageRotation> {
         self.state.page_rotations.get(&page_index).copied()
     }
@@ -7251,6 +7396,161 @@ impl AnnotationDocument {
 
     pub fn form_field_edits(&self) -> &[FormFieldEdit] {
         &self.state.form_field_edits
+    }
+
+    pub fn page_table_edits(&self) -> &[PageTableEdit] {
+        &self.state.page_table_edits
+    }
+
+    pub fn page_content_moves(&self) -> &[ContentMove] {
+        &self.state.page_content_moves
+    }
+
+    pub fn page_bases(&self) -> &[PageBase] {
+        &self.state.page_bases
+    }
+
+    /// The pages a save must keep as they were before it, so undo can reach
+    /// back past it: pages the save rewrites around their tables or moved
+    /// content or from a kept page, and pages an undo or redo state changes
+    /// tables or moves of.
+    pub fn pages_to_keep_when_saved(&self) -> BTreeSet<u32> {
+        let rewritten = |state: &DocumentState| {
+            state
+                .page_table_edits
+                .iter()
+                .map(|edit| edit.page_index)
+                .chain(state.page_content_moves.iter().map(|item| item.page_index))
+                .collect::<Vec<_>>()
+        };
+        let mut pages = rewritten(&self.state)
+            .into_iter()
+            .chain(self.state.page_bases.iter().map(|base| base.page_index))
+            .collect::<BTreeSet<_>>();
+        for state in self.past.iter().chain(self.future.iter()) {
+            pages.extend(
+                rewritten(state)
+                    .into_iter()
+                    .filter(|page| !state.page_bases.iter().any(|base| base.page_index == *page)),
+            );
+        }
+        pages
+    }
+
+    /// Marks the document saved. `bases` are pages as the file had them
+    /// before the save ([`Self::pages_to_keep_when_saved`]): undo and redo
+    /// states' edits of those pages apply to them from now on. A page to
+    /// keep with no base is shown as saved by every state.
+    pub fn mark_saved_keeping(&mut self, bases: Vec<PageBase>) -> Result<(), AnnotationError> {
+        self.require_no_gesture()?;
+        // A save of rearranged pages writes them in their new order; states
+        // before it name pages of the file as it was, so undo starts again
+        // from the save.
+        if std::iter::once(&self.state)
+            .chain(&self.past)
+            .chain(&self.future)
+            .any(|state| !state.page_slots.is_empty())
+        {
+            self.past.clear();
+            self.future.clear();
+            self.state.page_slots.clear();
+        }
+        let saved_pages = self.pages_to_keep_when_saved();
+        // Kept pages are bounded across the history, so recovery can hold
+        // them: past the bound, a page is shown as saved by every state.
+        let mut kept_bytes = self
+            .past
+            .iter()
+            .chain(self.future.iter())
+            .chain(std::iter::once(&self.state))
+            .flat_map(|state| &state.page_bases)
+            .map(|base| {
+                (
+                    base.id.as_str(),
+                    base.pdf.as_ref().map_or(0, |pdf| pdf.len()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+            .values()
+            .sum::<usize>();
+        let mut kept = BTreeMap::new();
+        for base in bases {
+            let Some(len) = base.pdf.as_ref().map(|pdf| pdf.len()) else {
+                continue;
+            };
+            if !saved_pages.contains(&base.page_index) || kept_bytes + len > MAX_KEPT_PAGE_BYTES {
+                continue;
+            }
+            kept_bytes += len;
+            kept.insert(base.page_index, base);
+        }
+        let lost = saved_pages
+            .iter()
+            .filter(|page| !kept.contains_key(page))
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for state in self
+            .past
+            .iter_mut()
+            .chain(self.future.iter_mut())
+            .chain(std::iter::once(&mut self.state))
+        {
+            state.forget_pages(&lost);
+        }
+        // The current state is the saved file; other states' edits of
+        // kept pages apply to the page as it was.
+        self.state.forget_pages(&saved_pages);
+        for state in self.past.iter_mut().chain(self.future.iter_mut()) {
+            for (page, base) in &kept {
+                if !state.page_bases.iter().any(|base| base.page_index == *page) {
+                    state.page_bases.push(base.clone());
+                }
+            }
+            state.page_bases.sort_by_key(|base| base.page_index);
+        }
+        // The saved file now holds the current page-text edits; every
+        // state's edits of pages it does not keep apply to it from now on.
+        let saved = self.state.page_text_edits.clone();
+        if !saved.is_empty() {
+            for state in self
+                .past
+                .iter_mut()
+                .chain(self.future.iter_mut())
+                .chain(std::iter::once(&mut self.state))
+            {
+                let based = state
+                    .page_bases
+                    .iter()
+                    .map(|base| base.page_index)
+                    .collect::<BTreeSet<_>>();
+                let (mut edits, free): (Vec<_>, Vec<_>) = state
+                    .page_text_edits
+                    .iter()
+                    .cloned()
+                    .partition(|edit| based.contains(&edit.page_index));
+                let saved = saved
+                    .iter()
+                    .filter(|edit| !based.contains(&edit.page_index))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                edits.extend(rebase_text_edits(&free, &saved));
+                edits.sort_by_key(|edit| (edit.page_index, edit.anchor));
+                state.page_text_edits = edits;
+            }
+        }
+        let saved = self.state.form_field_edits.clone();
+        if !saved.is_empty() {
+            for state in self
+                .past
+                .iter_mut()
+                .chain(self.future.iter_mut())
+                .chain(std::iter::once(&mut self.state))
+            {
+                state.form_field_edits = rebase_form_edits(&state.form_field_edits, &saved);
+            }
+        }
+        self.saved_revision = self.state.revision;
+        Ok(())
     }
 
     /// Records a form field's value as a single undoable change. A value
@@ -7302,7 +7602,79 @@ impl AnnotationDocument {
         anchors: &[crate::pdf_text_edit::TextLineAnchor],
         edits: Vec<PageTextEdit>,
     ) -> Result<bool, AnnotationError> {
+        self.set_page_content_edits(page_index, anchors, edits, Vec::new())
+    }
+
+    /// [`Self::set_page_text_edits`], also setting the edits of tables on
+    /// the page (`None`: the table as it is), as one undoable change.
+    pub fn set_page_content_edits(
+        &mut self,
+        page_index: u32,
+        anchors: &[crate::pdf_text_edit::TextLineAnchor],
+        edits: Vec<PageTextEdit>,
+        tables: Vec<(TableKey, Option<PageTableEdit>)>,
+    ) -> Result<bool, AnnotationError> {
+        self.set_pages_content_edits(vec![PageContentEdits {
+            page_index,
+            anchors: anchors.to_vec(),
+            edits,
+            tables,
+        }])
+    }
+
+    /// [`Self::set_page_content_edits`] for several pages, as one undoable
+    /// change (a table's parts on the pages it runs across).
+    pub fn set_pages_content_edits(
+        &mut self,
+        pages: Vec<PageContentEdits>,
+    ) -> Result<bool, AnnotationError> {
         self.require_no_gesture()?;
+        let mut updates = Vec::new();
+        for page in pages {
+            if let Some(update) = self.page_content_update(page)? {
+                updates.push(update);
+            }
+        }
+        if updates.is_empty() {
+            return Ok(false);
+        }
+        self.commit_state_change(|state| {
+            for update in updates {
+                update.apply(state);
+            }
+        });
+        Ok(true)
+    }
+
+    /// What setting a page's content edits changes, or `None` when
+    /// nothing.
+    fn page_content_update(
+        &self,
+        page: PageContentEdits,
+    ) -> Result<Option<PageContentUpdate>, AnnotationError> {
+        let PageContentEdits {
+            page_index,
+            anchors,
+            edits,
+            tables,
+        } = page;
+        for (_, table) in &tables {
+            if let Some(table) = table {
+                table.validate().map_err(AnnotationError::InvalidGeometry)?;
+            }
+        }
+        let table_ours = |edit: &PageTableEdit, key: &TableKey| {
+            edit.page_index == page_index && edit.key() == *key
+        };
+        let tables_changed = tables.iter().any(|(key, wanted)| {
+            let current = self
+                .state
+                .page_table_edits
+                .iter()
+                .find(|edit| table_ours(edit, key));
+            let wanted = wanted.as_ref().filter(|edit| !edit.is_unchanged());
+            current != wanted
+        });
         let ours =
             |edit: &PageTextEdit| edit.page_index == page_index && anchors.contains(&edit.anchor);
         let normalized = |edit: &PageTextEdit| PageTextEdit {
@@ -7323,17 +7695,268 @@ impl AnnotationDocument {
             .map(normalized)
             .collect::<Vec<_>>();
         replacement.sort_by_key(|edit| (edit.page_index, edit.anchor));
-        if current == replacement {
+        if current == replacement && !tables_changed {
+            return Ok(None);
+        }
+        Ok(Some(PageContentUpdate {
+            page_index,
+            anchors,
+            replacement,
+            tables,
+        }))
+    }
+
+    /// Changes each group of page content on `page_index` (moves, resizes
+    /// or removes it), as one undoable change: each piece changes from how
+    /// it is shown. The unlocked markups whose centre is on a group, and the
+    /// markups `markups` (selected with it), move with it; removing it
+    /// removes `markups`.
+    pub fn change_page_content(
+        &mut self,
+        page_index: u32,
+        groups: &[Vec<crate::pdf_content_moves::MovedContent>],
+        markups: &[MarkupId],
+        change: crate::pdf_content_moves::ContentChange,
+    ) -> Result<bool, AnnotationError> {
+        use crate::pdf_content_moves::ContentChange;
+        self.require_no_gesture()?;
+        match change {
+            ContentChange::Move(dx, dy) => {
+                require_finite("move.delta_x", dx)?;
+                require_finite("move.delta_y", dy)?;
+                if dx == 0. && dy == 0. {
+                    return Ok(false);
+                }
+            }
+            ContentChange::Resize { origin, factor } => {
+                for value in [origin.0, origin.1, factor.0, factor.1] {
+                    require_finite("resize", value)?;
+                }
+                if factor == (1., 1.) {
+                    return Ok(false);
+                }
+            }
+            ContentChange::Remove => {}
+        }
+        if groups.iter().all(Vec::is_empty) {
             return Ok(false);
         }
+        let mut moves = self.state.page_content_moves.clone();
+        for item in groups.iter().flatten() {
+            moves.retain(|existing| {
+                !(existing.page_index == page_index && existing.is(item.kind, item.rect, item.copy))
+            });
+            // A deleted copy is gone; deleted content is marked removed.
+            if item.copy.is_some() && change == ContentChange::Remove {
+                continue;
+            }
+            let placement = crate::pdf_content_moves::changed_placement(item, change);
+            let changed = ContentMove {
+                page_index,
+                kind: item.kind,
+                rect: item.rect,
+                offset: placement.offset,
+                scale: placement.scale,
+                removed: change == ContentChange::Remove,
+                copy: item.copy,
+            };
+            changed
+                .validate()
+                .map_err(AnnotationError::InvalidGeometry)?;
+            moves.push(changed);
+        }
+        sort_content_moves(&mut moves);
+        let (carried, removed) = match change {
+            ContentChange::Remove => (
+                Vec::new(),
+                markups
+                    .iter()
+                    .filter(|id| self.annotation_locked(id) == Some(false))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
+            _ => (
+                self.markups_on_content(page_index, groups, markups, change)?,
+                Vec::new(),
+            ),
+        };
         self.commit_state_change(|state| {
-            state.page_text_edits.retain(|edit| !ours(edit));
-            state.page_text_edits.extend(replacement);
-            state
-                .page_text_edits
-                .sort_by_key(|edit| (edit.page_index, edit.anchor));
+            state.page_content_moves = moves;
+            for update in carried {
+                put_annotation(state, update);
+            }
+            remove_annotations(state, &removed);
         });
+        if !removed.is_empty() {
+            self.selected_ids.retain(|id| !removed.contains(id));
+            self.refresh_focused_id(None);
+        }
         Ok(true)
+    }
+
+    /// Adds a copy of each group of content on `page_index`, `offset` from
+    /// where it is shown, as one undoable change. Returns the copies, to
+    /// select.
+    pub fn paste_page_content(
+        &mut self,
+        page_index: u32,
+        groups: &[Vec<crate::pdf_content_moves::MovedContent>],
+        offset: (f64, f64),
+    ) -> Result<Vec<Vec<crate::pdf_content_moves::MovedContent>>, AnnotationError> {
+        self.require_no_gesture()?;
+        require_finite("paste.offset_x", offset.0)?;
+        require_finite("paste.offset_y", offset.1)?;
+        let mut moves = self.state.page_content_moves.clone();
+        let first = moves
+            .iter()
+            .filter_map(|item| item.copy)
+            .max()
+            .map_or(0, |n| n + 1);
+        let mut pasted = Vec::new();
+        for (copy, group) in (first..).zip(groups.iter().filter(|group| !group.is_empty())) {
+            let mut copies = Vec::new();
+            for item in group {
+                let placement = item.from.changed(
+                    item.rect,
+                    crate::pdf_content_moves::ContentChange::Move(offset.0, offset.1),
+                );
+                let added = ContentMove {
+                    page_index,
+                    kind: item.kind,
+                    rect: item.rect,
+                    offset: placement.offset,
+                    scale: placement.scale,
+                    removed: false,
+                    copy: Some(copy),
+                };
+                added.validate().map_err(AnnotationError::InvalidGeometry)?;
+                moves.push(added);
+                copies.push(crate::pdf_content_moves::MovedContent {
+                    from: placement,
+                    copy: Some(copy),
+                    ..*item
+                });
+            }
+            pasted.push(copies);
+        }
+        if pasted.is_empty() {
+            return Ok(pasted);
+        }
+        sort_content_moves(&mut moves);
+        self.commit_state_change(|state| state.page_content_moves = moves);
+        Ok(pasted)
+    }
+
+    /// [`Self::change_page_content`] moving the content by `delta`.
+    pub fn move_page_content(
+        &mut self,
+        page_index: u32,
+        groups: &[Vec<crate::pdf_content_moves::MovedContent>],
+        markups: &[MarkupId],
+        delta: (f64, f64),
+    ) -> Result<bool, AnnotationError> {
+        self.change_page_content(
+            page_index,
+            groups,
+            markups,
+            crate::pdf_content_moves::ContentChange::Move(delta.0, delta.1),
+        )
+    }
+
+    /// The unlocked markups on `page_index` whose centre is on a group of
+    /// content as it is shown, and those of `markups`, moved by `delta`.
+    fn markups_on_content(
+        &self,
+        page_index: u32,
+        groups: &[Vec<crate::pdf_content_moves::MovedContent>],
+        markups: &[MarkupId],
+        change: crate::pdf_content_moves::ContentChange,
+    ) -> Result<Vec<Annotation>, AnnotationError> {
+        // A group's pieces as shown, joined.
+        let bounds = groups
+            .iter()
+            .filter_map(|group| {
+                group.iter().map(|item| item.shown()).reduce(|a, b| {
+                    [
+                        a[0].min(b[0]),
+                        a[1].min(b[1]),
+                        a[2].max(b[2]),
+                        a[3].max(b[3]),
+                    ]
+                })
+            })
+            .collect::<Vec<_>>();
+        if bounds.is_empty() && markups.is_empty() {
+            return Ok(Vec::new());
+        }
+        page_annotations(&self.state, page_index)
+            .filter(|annotation| self.annotation_locked(annotation.id()) == Some(false))
+            .filter(|annotation| {
+                markups.contains(annotation.id())
+                    || annotation_bounds(annotation).is_some_and(|rect| {
+                        let centre = ((rect[0] + rect[2]) / 2., (rect[1] + rect[3]) / 2.);
+                        bounds.iter().any(|group| {
+                            crate::pdf_content_moves::contains(
+                                *group,
+                                [centre.0, centre.1, centre.0, centre.1],
+                                2.,
+                            )
+                        })
+                    })
+            })
+            .filter_map(|annotation| {
+                // A markup moves as its centre does.
+                let rect = annotation_bounds(&annotation)?;
+                let centre = ((rect[0] + rect[2]) / 2., (rect[1] + rect[3]) / 2.);
+                let (x, y) = change.map(centre);
+                Some(annotation.translated_copy(
+                    annotation.id().clone(),
+                    page_index,
+                    x - centre.0,
+                    y - centre.1,
+                ))
+            })
+            .collect()
+    }
+
+    /// A copy of the document's committed annotations with the markups on
+    /// `page_index` that [`Self::move_page_content`] would move for `groups`
+    /// and `delta` moved; `None` when none move. It has no history.
+    pub fn with_moved_markups(
+        &self,
+        page_index: u32,
+        groups: &[Vec<crate::pdf_content_moves::MovedContent>],
+        markups: &[MarkupId],
+        change: crate::pdf_content_moves::ContentChange,
+    ) -> Option<Self> {
+        let carried = self
+            .markups_on_content(page_index, groups, markups, change)
+            .ok()?;
+        self.preview_with(carried)
+    }
+
+    /// A copy of the document's committed annotations with `updates` put
+    /// in place; `None` when there are none. It has no history.
+    fn preview_with(&self, updates: Vec<Annotation>) -> Option<Self> {
+        if updates.is_empty() {
+            return None;
+        }
+        let mut state = self.state.clone();
+        for update in updates {
+            put_annotation(&mut state, update);
+        }
+        state.rectangle_index = RectangleSpatialIndex::rebuild(&state.rectangles);
+        Some(Self {
+            state,
+            selected_ids: self.selected_ids.clone(),
+            focused_id: self.focused_id.clone(),
+            active_gesture: None,
+            past: VecDeque::new(),
+            future: VecDeque::new(),
+            history_limit: self.history_limit,
+            saved_revision: self.saved_revision,
+            next_revision: self.next_revision,
+        })
     }
 
     pub fn rotate_page(
@@ -7352,6 +7975,211 @@ impl AnnotationDocument {
             state.page_rotations.insert(page_index, next);
         });
         Ok(next)
+    }
+
+    /// The pages as arranged; empty when they are the file's, in order.
+    pub fn page_slots(&self) -> &[PageSlot] {
+        &self.state.page_slots
+    }
+
+    /// Rearranges the document's `page_count` shown pages as `pages` lists
+    /// them, as one undoable change: each page keeps its markups, edits,
+    /// scale and rotation, a copy has copies of them, and a page left out
+    /// loses them. Returns the ids of copied markups.
+    pub fn arrange_pages(
+        &mut self,
+        page_count: u32,
+        pages: &[ArrangedPage],
+    ) -> Result<Vec<MarkupId>, AnnotationError> {
+        self.require_no_gesture()?;
+        let invalid = |message: &str| AnnotationError::InvalidGeometry(message.to_owned());
+        if pages.is_empty() {
+            return Err(invalid("a document needs a page"));
+        }
+        let old_slots = if self.state.page_slots.is_empty() {
+            (0..page_count)
+                .map(|index| PageSlot::Source { index })
+                .collect::<Vec<_>>()
+        } else {
+            self.state.page_slots.clone()
+        };
+        if old_slots.len() != page_count as usize {
+            return Err(invalid("the page count is out of date"));
+        }
+        let mut moved = BTreeMap::new();
+        let mut copies = Vec::new();
+        let mut slots = Vec::with_capacity(pages.len());
+        for (new_index, page) in pages.iter().enumerate() {
+            let new_index = new_index as u32;
+            match *page {
+                ArrangedPage::Shown { index, copy } => {
+                    let slot = *old_slots
+                        .get(index as usize)
+                        .ok_or_else(|| invalid("a page to arrange is not in the document"))?;
+                    if copy {
+                        slots.push(slot.copied());
+                        copies.push((index, new_index));
+                    } else {
+                        if moved.insert(index, new_index).is_some() {
+                            return Err(invalid("a page is placed twice"));
+                        }
+                        slots.push(slot);
+                    }
+                }
+                ArrangedPage::Blank { width, height } => {
+                    if !(width.is_finite() && height.is_finite() && width >= 3. && height >= 3.) {
+                        return Err(invalid("a new page has no size"));
+                    }
+                    slots.push(PageSlot::Blank { width, height });
+                }
+            }
+        }
+        let unchanged = moved.len() == page_count as usize
+            && copies.is_empty()
+            && pages.len() == page_count as usize
+            && moved.iter().all(|(old, new)| old == new);
+        if unchanged {
+            return Ok(Vec::new());
+        }
+        // Copies of markups, under new names.
+        let mut copied = Vec::new();
+        let mut taken = BTreeSet::new();
+        let mut sequence = 0_u64;
+        for &(source, target) in &copies {
+            for annotation in page_annotations(&self.state, source).collect::<Vec<_>>() {
+                let id = loop {
+                    sequence += 1;
+                    let id = MarkupId::new(format!("page-copy:{}:{sequence}", self.next_revision))?;
+                    if !self.contains_annotation(&id) && taken.insert(id.as_str().to_owned()) {
+                        break id;
+                    }
+                };
+                copied.push(annotation.translated_copy(id, target, 0., 0.)?);
+            }
+        }
+        let copied_ids = copied
+            .iter()
+            .map(|annotation| annotation.id().clone())
+            .collect::<Vec<_>>();
+        let blanks = pages
+            .iter()
+            .enumerate()
+            .filter(|(_, page)| matches!(page, ArrangedPage::Blank { .. }))
+            .map(|(index, _)| index as u32)
+            .collect::<Vec<_>>();
+        let file_order = crate::pdf_page_structure::is_unchanged(&slots, slots.len())
+            && slots.len() == page_count as usize;
+        let order_ids = copied_ids.clone();
+        self.commit_state_change(move |state| {
+            let mut removed = Vec::new();
+            macro_rules! remap {
+                ($($field:ident),*) => {$(
+                    state.$field.retain(|annotation| {
+                        let kept = moved.contains_key(&annotation.page_index);
+                        if !kept {
+                            removed.push(annotation.id.clone());
+                        }
+                        kept
+                    });
+                    for annotation in &mut state.$field {
+                        annotation.page_index = moved[&annotation.page_index];
+                    }
+                )*};
+            }
+            remap!(
+                rectangles,
+                redacts,
+                ellipses,
+                arcs,
+                straight_lines,
+                vertex_paths,
+                clouds,
+                cloud_pluses,
+                callouts,
+                measurement_paths,
+                pens,
+                text_boxes,
+                dimensions,
+                lengths,
+                images,
+                snapshots
+            );
+            state.annotation_order.retain(|id| !removed.contains(id));
+            state.annotation_order.extend(order_ids);
+            for annotation in copied {
+                push_annotation(state, annotation);
+            }
+            // Per-page records follow their page, and copies take a copy.
+            let targets = |page: u32| {
+                moved
+                    .get(&page)
+                    .copied()
+                    .into_iter()
+                    .chain(
+                        copies
+                            .iter()
+                            .filter(move |(source, _)| *source == page)
+                            .map(|(_, target)| *target),
+                    )
+                    .collect::<Vec<_>>()
+            };
+            state.page_scales = std::mem::take(&mut state.page_scales)
+                .into_values()
+                .flat_map(|scale| {
+                    targets(scale.page_index)
+                        .into_iter()
+                        .map(move |page| (page, scale.with_page_index(page)))
+                })
+                .collect();
+            state.page_length_calibrations = std::mem::take(&mut state.page_length_calibrations)
+                .into_iter()
+                .flat_map(|(page, calibration)| {
+                    targets(page)
+                        .into_iter()
+                        .map(move |target| (target, calibration.clone()))
+                })
+                .collect();
+            let mut rotations = std::mem::take(&mut state.page_rotations)
+                .into_iter()
+                .flat_map(|(page, rotation)| {
+                    targets(page)
+                        .into_iter()
+                        .map(move |target| (target, rotation))
+                })
+                .collect::<BTreeMap<_, _>>();
+            for page in &blanks {
+                rotations.insert(*page, PageRotation::Degrees0);
+            }
+            state.page_rotations = rotations;
+            macro_rules! remap_records {
+                ($($field:ident),*) => {$(
+                    state.$field = std::mem::take(&mut state.$field)
+                        .into_iter()
+                        .flat_map(|record| {
+                            targets(record.page_index).into_iter().map(move |page| {
+                                let mut record = record.clone();
+                                record.page_index = page;
+                                record
+                            })
+                        })
+                        .collect();
+                )*};
+            }
+            remap_records!(
+                page_text_edits,
+                page_table_edits,
+                page_content_moves,
+                page_bases
+            );
+            state
+                .page_text_edits
+                .sort_by_key(|edit| (edit.page_index, edit.anchor));
+            sort_content_moves(&mut state.page_content_moves);
+            state.page_bases.sort_by_key(|base| base.page_index);
+            state.page_slots = if file_order { Vec::new() } else { slots };
+        });
+        self.reconcile_selection();
+        Ok(copied_ids)
     }
 
     /// Applies one page scale as a single revisioned document mutation. Length
@@ -7419,55 +8247,8 @@ impl AnnotationDocument {
         target: PageScaleApplyTarget,
         page_count: u32,
     ) -> Result<bool, AnnotationError> {
-        self.apply_page_scale_with_preset(scale, target, page_count, None)
-    }
-
-    pub fn apply_page_scale_with_preset(
-        &mut self,
-        scale: PageScale,
-        target: PageScaleApplyTarget,
-        page_count: u32,
-        saved_preset: Option<ScalePreset>,
-    ) -> Result<bool, AnnotationError> {
         self.require_no_gesture()?;
-        if page_count == 0 {
-            return Err(AnnotationError::InvalidGeometry(
-                "page scale requires at least one page".into(),
-            ));
-        }
-        let page_indices = match target {
-            PageScaleApplyTarget::Current(page_index) => vec![page_index],
-            PageScaleApplyTarget::All => (0..page_count).collect(),
-            PageScaleApplyTarget::Ranges(ranges) => {
-                let mut indices = BTreeSet::new();
-                for range in ranges {
-                    let start = range.start_page_index.min(range.end_page_index);
-                    let end = range.start_page_index.max(range.end_page_index);
-                    if end >= page_count {
-                        return Err(AnnotationError::InvalidGeometry(format!(
-                            "page scale target must be between 0 and {}",
-                            page_count - 1
-                        )));
-                    }
-                    indices.extend(start..=end);
-                }
-                if indices.is_empty() {
-                    return Err(AnnotationError::InvalidGeometry(
-                        "page scale target cannot be empty".into(),
-                    ));
-                }
-                indices.into_iter().collect()
-            }
-        };
-        if page_indices
-            .iter()
-            .any(|page_index| *page_index >= page_count)
-        {
-            return Err(AnnotationError::InvalidGeometry(format!(
-                "page scale target must be between 0 and {}",
-                page_count - 1
-            )));
-        }
+        let page_indices = page_scale_target_pages(target, page_count)?;
         let replacements = page_indices
             .into_iter()
             .map(|page_index| (page_index, scale.with_page_index(page_index)))
@@ -7487,32 +8268,10 @@ impl AnnotationDocument {
                 .and_then(|scale| scale.length_calibration().ok())
                 .is_some_and(|calibration| !measurement.calibration.same_scale_as(&calibration))
         });
-        if let Some(preset) = &saved_preset
-            && (preset.built_in || preset.id.is_empty() || preset.name.is_empty())
-        {
-            return Err(AnnotationError::InvalidGeometry(
-                "Saved scale preset is invalid.".into(),
-            ));
-        }
-        let preset_changed = saved_preset.as_ref().is_some_and(|preset| {
-            self.state.scale_presets.first() != Some(preset)
-                || self
-                    .state
-                    .scale_presets
-                    .iter()
-                    .skip(1)
-                    .any(|candidate| candidate.id == preset.id)
-        });
-        if !scales_changed && !lengths_changed && !measurement_paths_changed && !preset_changed {
+        if !scales_changed && !lengths_changed && !measurement_paths_changed {
             return Ok(false);
         }
         self.commit_state_change(move |state| {
-            if let Some(preset) = saved_preset {
-                state
-                    .scale_presets
-                    .retain(|candidate| candidate.id != preset.id);
-                state.scale_presets.insert(0, preset);
-            }
             for (page_index, replacement) in replacements {
                 let calibration = replacement
                     .length_calibration()
@@ -7546,32 +8305,27 @@ impl AnnotationDocument {
         Ok(true)
     }
 
-    pub fn delete_scale_preset(&mut self, preset_id: &str) -> Result<bool, AnnotationError> {
+    /// Removes the scale of the target pages: later measurements there
+    /// read paper size again. Measurements already made keep the scale they
+    /// were made at.
+    pub fn remove_page_scale(
+        &mut self,
+        target: PageScaleApplyTarget,
+        page_count: u32,
+    ) -> Result<bool, AnnotationError> {
         self.require_no_gesture()?;
-        if built_in_scale_presets()
+        let page_indices = page_scale_target_pages(target, page_count)?;
+        if !page_indices
             .iter()
-            .any(|preset| preset.id == preset_id)
-            || self
-                .state
-                .scale_presets
-                .iter()
-                .any(|preset| preset.id == preset_id && preset.built_in)
-        {
-            return Err(AnnotationError::InvalidGeometry(
-                "Built-in scale presets cannot be deleted.".into(),
-            ));
-        }
-        if !self
-            .state
-            .scale_presets
-            .iter()
-            .any(|preset| preset.id == preset_id)
+            .any(|page_index| self.state.page_scales.contains_key(page_index))
         {
             return Ok(false);
         }
-        let preset_id = preset_id.to_owned();
         self.commit_state_change(move |state| {
-            state.scale_presets.retain(|preset| preset.id != preset_id);
+            for page_index in page_indices {
+                state.page_scales.remove(&page_index);
+                state.page_length_calibrations.remove(&page_index);
+            }
         });
         Ok(true)
     }
@@ -8156,32 +8910,7 @@ impl AnnotationDocument {
                 })
             }
             AnnotationCommand::MarkSaved => {
-                self.require_no_gesture()?;
-                // The saved file now holds the current page-text edits; every
-                // state's edits apply to it from now on.
-                let saved = self.state.page_text_edits.clone();
-                if !saved.is_empty() {
-                    for state in self
-                        .past
-                        .iter_mut()
-                        .chain(self.future.iter_mut())
-                        .chain(std::iter::once(&mut self.state))
-                    {
-                        state.page_text_edits = rebase_text_edits(&state.page_text_edits, &saved);
-                    }
-                }
-                let saved = self.state.form_field_edits.clone();
-                if !saved.is_empty() {
-                    for state in self
-                        .past
-                        .iter_mut()
-                        .chain(self.future.iter_mut())
-                        .chain(std::iter::once(&mut self.state))
-                    {
-                        state.form_field_edits = rebase_form_edits(&state.form_field_edits, &saved);
-                    }
-                }
-                self.saved_revision = self.state.revision;
+                self.mark_saved_keeping(Vec::new())?;
                 Ok(CommandOutcome::Saved {
                     revision: self.state.revision,
                 })
@@ -8486,136 +9215,7 @@ impl AnnotationDocument {
 
         self.commit_state_change(move |state| {
             for update in updates {
-                match update {
-                    Annotation::Rectangle(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .rectangles
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its Rectangle") = update;
-                    }
-                    Annotation::Redact(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .redacts
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its pending Redact") = update;
-                    }
-                    Annotation::Ellipse(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .ellipses
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its Ellipse") = update;
-                    }
-                    Annotation::Arc(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .arcs
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its Arc") = update;
-                    }
-                    Annotation::StraightLine(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .straight_lines
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its straight line") = update;
-                    }
-                    Annotation::VertexPath(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .vertex_paths
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its vertex path") = update;
-                    }
-                    Annotation::Cloud(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .clouds
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its cloud") = update;
-                    }
-                    Annotation::CloudPlus(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .cloud_pluses
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its Cloud+") = update;
-                    }
-                    Annotation::Callout(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .callouts
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its callout") = update;
-                    }
-                    Annotation::Dimension(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .dimensions
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its dimension") = update;
-                    }
-                    Annotation::MeasurementPath(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .measurement_paths
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its measurement path") = update;
-                    }
-                    Annotation::Pen(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .pens
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its ink annotation") = update;
-                    }
-                    Annotation::TextBox(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .text_boxes
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its text box") = update;
-                    }
-                    Annotation::Length(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .lengths
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its Length") = update;
-                    }
-                    Annotation::Image(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .images
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its Image") = update;
-                    }
-                    Annotation::Snapshot(update) => {
-                        let id = update.id.clone();
-                        *state
-                            .snapshots
-                            .iter_mut()
-                            .find(|annotation| annotation.id == id)
-                            .expect("a group move must retain its Snapshot") = update;
-                    }
-                }
+                put_annotation(state, update);
             }
         });
         Ok(true)
@@ -8680,135 +9280,7 @@ impl AnnotationDocument {
         }
         // Walk page-filtered families once; looking up every ordered id in each
         // family would make a pointer-move preview quadratic in document size.
-        let annotations = std::iter::empty::<Annotation>()
-            .chain(
-                self.state
-                    .rectangles
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Rectangle),
-            )
-            .chain(
-                self.state
-                    .redacts
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Redact),
-            )
-            .chain(
-                self.state
-                    .ellipses
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Ellipse),
-            )
-            .chain(
-                self.state
-                    .arcs
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Arc),
-            )
-            .chain(
-                self.state
-                    .straight_lines
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::StraightLine),
-            )
-            .chain(
-                self.state
-                    .vertex_paths
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::VertexPath),
-            )
-            .chain(
-                self.state
-                    .clouds
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Cloud),
-            )
-            .chain(
-                self.state
-                    .cloud_pluses
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::CloudPlus),
-            )
-            .chain(
-                self.state
-                    .callouts
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Callout),
-            )
-            .chain(
-                self.state
-                    .dimensions
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Dimension),
-            )
-            .chain(
-                self.state
-                    .measurement_paths
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::MeasurementPath),
-            )
-            .chain(
-                self.state
-                    .pens
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Pen),
-            )
-            .chain(
-                self.state
-                    .text_boxes
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::TextBox),
-            )
-            .chain(
-                self.state
-                    .lengths
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Length),
-            )
-            .chain(
-                self.state
-                    .images
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Image),
-            )
-            .chain(
-                self.state
-                    .snapshots
-                    .iter()
-                    .filter(|a| a.page_index == page_index)
-                    .cloned()
-                    .map(Annotation::Snapshot),
-            );
+        let annotations = page_annotations(&self.state, page_index);
         let hits = annotations
             .filter(|annotation| {
                 let mut paths = annotation_selection_paths(annotation, &to_viewport);
@@ -8884,26 +9356,7 @@ impl AnnotationDocument {
         self.commit_state_change(move |state| {
             state.annotation_order.extend(order_ids);
             for annotation in annotations {
-                match annotation {
-                    Annotation::Rectangle(annotation) => state.rectangles.push(annotation),
-                    Annotation::Redact(annotation) => state.redacts.push(annotation),
-                    Annotation::Ellipse(annotation) => state.ellipses.push(annotation),
-                    Annotation::Arc(annotation) => state.arcs.push(annotation),
-                    Annotation::StraightLine(annotation) => state.straight_lines.push(annotation),
-                    Annotation::VertexPath(annotation) => state.vertex_paths.push(annotation),
-                    Annotation::Cloud(annotation) => state.clouds.push(annotation),
-                    Annotation::CloudPlus(annotation) => state.cloud_pluses.push(annotation),
-                    Annotation::Callout(annotation) => state.callouts.push(annotation),
-                    Annotation::MeasurementPath(annotation) => {
-                        state.measurement_paths.push(annotation)
-                    }
-                    Annotation::Pen(annotation) => state.pens.push(annotation),
-                    Annotation::TextBox(annotation) => state.text_boxes.push(annotation),
-                    Annotation::Dimension(annotation) => state.dimensions.push(annotation),
-                    Annotation::Length(annotation) => state.lengths.push(annotation),
-                    Annotation::Image(annotation) => state.images.push(annotation),
-                    Annotation::Snapshot(annotation) => state.snapshots.push(annotation),
-                }
+                push_annotation(state, annotation);
             }
         });
         self.selected_ids = ids.clone();
@@ -8927,54 +9380,7 @@ impl AnnotationDocument {
         }
         let deleted_for_state = deleted.clone();
         self.commit_state_change(move |state| {
-            state
-                .annotation_order
-                .retain(|id| !deleted_for_state.contains(id));
-            state
-                .rectangles
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .redacts
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .ellipses
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .arcs
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .straight_lines
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .vertex_paths
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .clouds
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .cloud_pluses
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .callouts
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .measurement_paths
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .pens
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .text_boxes
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .lengths
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .images
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
-            state
-                .snapshots
-                .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+            remove_annotations(state, &deleted_for_state);
         });
         self.selected_ids.retain(|id| !deleted.contains(id));
         self.refresh_focused_id(None);
@@ -10022,6 +10428,14 @@ impl AnnotationDocument {
         if !self.state.form_field_edits.is_empty() {
             snapshot["form_field_edits"] = serde_json::to_value(&self.state.form_field_edits)
                 .expect("form field edits must serialize");
+        }
+        if !self.state.page_table_edits.is_empty() {
+            snapshot["page_table_edits"] = serde_json::to_value(&self.state.page_table_edits)
+                .expect("table edits must serialize");
+        }
+        if !self.state.page_content_moves.is_empty() {
+            snapshot["page_content_moves"] = serde_json::to_value(&self.state.page_content_moves)
+                .expect("content moves must serialize");
         }
         if !self.state.page_rotations.is_empty() {
             snapshot["page_rotations"] = Value::Array(
@@ -11723,6 +12137,40 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::Image, true))
             }
+            AnnotationEdit::SetImageAspectLocked(aspect_locked) => {
+                let annotation = self.image(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.aspect_locked == aspect_locked {
+                    return Ok((AnnotationKind::Image, false));
+                }
+                let mut rect = annotation.rect;
+                if aspect_locked {
+                    let ratio = f64::from(annotation.asset.width_px)
+                        / f64::from(annotation.asset.height_px);
+                    let height = rect.width / ratio;
+                    rect = PdfRect::new(
+                        rect.x,
+                        rect.y + (rect.height - height) / 2.,
+                        rect.width,
+                        height,
+                    )?;
+                    validate_layout_rect(rect, "image")?;
+                    validate_image_aspect(rect, &annotation.asset, true)?;
+                }
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    let image = state
+                        .images
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated image edit must retain its target");
+                    image.aspect_locked = aspect_locked;
+                    image.rect = rect;
+                });
+                Ok((AnnotationKind::Image, true))
+            }
             AnnotationEdit::SetSnapshotRect(rect) => {
                 validate_snapshot_rect(rect)?;
                 let annotation = self
@@ -12168,6 +12616,385 @@ impl AnnotationDocument {
             .collect();
         self.selected_ids = existing;
         self.refresh_focused_id(None);
+    }
+}
+
+/// Orders content changes by page, kind, bounds and copy.
+fn sort_content_moves(moves: &mut [ContentMove]) {
+    moves.sort_by(|a, b| {
+        (a.page_index, a.kind)
+            .cmp(&(b.page_index, b.kind))
+            .then(
+                a.rect
+                    .partial_cmp(&b.rect)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.copy.cmp(&b.copy))
+    });
+}
+
+/// Adds `annotation` to the list of its kind.
+fn push_annotation(state: &mut DocumentState, annotation: Annotation) {
+    match annotation {
+        Annotation::Rectangle(annotation) => state.rectangles.push(annotation),
+        Annotation::Redact(annotation) => state.redacts.push(annotation),
+        Annotation::Ellipse(annotation) => state.ellipses.push(annotation),
+        Annotation::Arc(annotation) => state.arcs.push(annotation),
+        Annotation::StraightLine(annotation) => state.straight_lines.push(annotation),
+        Annotation::VertexPath(annotation) => state.vertex_paths.push(annotation),
+        Annotation::Cloud(annotation) => state.clouds.push(annotation),
+        Annotation::CloudPlus(annotation) => state.cloud_pluses.push(annotation),
+        Annotation::Callout(annotation) => state.callouts.push(annotation),
+        Annotation::MeasurementPath(annotation) => state.measurement_paths.push(annotation),
+        Annotation::Pen(annotation) => state.pens.push(annotation),
+        Annotation::TextBox(annotation) => state.text_boxes.push(annotation),
+        Annotation::Dimension(annotation) => state.dimensions.push(annotation),
+        Annotation::Length(annotation) => state.lengths.push(annotation),
+        Annotation::Image(annotation) => state.images.push(annotation),
+        Annotation::Snapshot(annotation) => state.snapshots.push(annotation),
+    }
+}
+
+/// Removes the annotations `deleted` names from `state`.
+fn remove_annotations(state: &mut DocumentState, deleted_for_state: &[MarkupId]) {
+    state
+        .annotation_order
+        .retain(|id| !deleted_for_state.contains(id));
+    state
+        .rectangles
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .redacts
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .ellipses
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .arcs
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .straight_lines
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .vertex_paths
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .clouds
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .cloud_pluses
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .callouts
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .dimensions
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .measurement_paths
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .pens
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .text_boxes
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .lengths
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .images
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+    state
+        .snapshots
+        .retain(|annotation| !deleted_for_state.contains(&annotation.id));
+}
+
+/// An annotation's bounds in page space, from its selection outline.
+fn annotation_bounds(annotation: &Annotation) -> Option<[f64; 4]> {
+    let identity = |point: PdfPoint| SelectionPoint::new(point.x, point.y);
+    annotation_selection_paths(annotation, &identity)
+        .into_iter()
+        .flat_map(|path| path.points)
+        .fold(None, |rect: Option<[f64; 4]>, point| {
+            Some(rect.map_or([point.x, point.y, point.x, point.y], |rect| {
+                [
+                    rect[0].min(point.x),
+                    rect[1].min(point.y),
+                    rect[2].max(point.x),
+                    rect[3].max(point.y),
+                ]
+            }))
+        })
+}
+
+/// The annotations on `page_index`, by family.
+fn page_annotations(
+    state: &DocumentState,
+    page_index: u32,
+) -> impl Iterator<Item = Annotation> + '_ {
+    std::iter::empty::<Annotation>()
+        .chain(
+            state
+                .rectangles
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Rectangle),
+        )
+        .chain(
+            state
+                .redacts
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Redact),
+        )
+        .chain(
+            state
+                .ellipses
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Ellipse),
+        )
+        .chain(
+            state
+                .arcs
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Arc),
+        )
+        .chain(
+            state
+                .straight_lines
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::StraightLine),
+        )
+        .chain(
+            state
+                .vertex_paths
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::VertexPath),
+        )
+        .chain(
+            state
+                .clouds
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Cloud),
+        )
+        .chain(
+            state
+                .cloud_pluses
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::CloudPlus),
+        )
+        .chain(
+            state
+                .callouts
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Callout),
+        )
+        .chain(
+            state
+                .dimensions
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Dimension),
+        )
+        .chain(
+            state
+                .measurement_paths
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::MeasurementPath),
+        )
+        .chain(
+            state
+                .pens
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Pen),
+        )
+        .chain(
+            state
+                .text_boxes
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::TextBox),
+        )
+        .chain(
+            state
+                .lengths
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Length),
+        )
+        .chain(
+            state
+                .images
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Image),
+        )
+        .chain(
+            state
+                .snapshots
+                .iter()
+                .filter(move |a| a.page_index == page_index)
+                .cloned()
+                .map(Annotation::Snapshot),
+        )
+}
+
+/// Replaces the annotation in `state` that `update` has the identity of.
+fn put_annotation(state: &mut DocumentState, update: Annotation) {
+    match update {
+        Annotation::Rectangle(update) => {
+            let id = update.id.clone();
+            *state
+                .rectangles
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved Rectangle must still exist") = update;
+        }
+        Annotation::Redact(update) => {
+            let id = update.id.clone();
+            *state
+                .redacts
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved pending Redact must still exist") = update;
+        }
+        Annotation::Ellipse(update) => {
+            let id = update.id.clone();
+            *state
+                .ellipses
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved Ellipse must still exist") = update;
+        }
+        Annotation::Arc(update) => {
+            let id = update.id.clone();
+            *state
+                .arcs
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved Arc must still exist") = update;
+        }
+        Annotation::StraightLine(update) => {
+            let id = update.id.clone();
+            *state
+                .straight_lines
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved straight line must still exist") = update;
+        }
+        Annotation::VertexPath(update) => {
+            let id = update.id.clone();
+            *state
+                .vertex_paths
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved vertex path must still exist") = update;
+        }
+        Annotation::Cloud(update) => {
+            let id = update.id.clone();
+            *state
+                .clouds
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved cloud must still exist") = update;
+        }
+        Annotation::CloudPlus(update) => {
+            let id = update.id.clone();
+            *state
+                .cloud_pluses
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved Cloud+ must still exist") = update;
+        }
+        Annotation::Callout(update) => {
+            let id = update.id.clone();
+            *state
+                .callouts
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved callout must still exist") = update;
+        }
+        Annotation::Dimension(update) => {
+            let id = update.id.clone();
+            *state
+                .dimensions
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved dimension must still exist") = update;
+        }
+        Annotation::MeasurementPath(update) => {
+            let id = update.id.clone();
+            *state
+                .measurement_paths
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved measurement path must still exist") = update;
+        }
+        Annotation::Pen(update) => {
+            let id = update.id.clone();
+            *state
+                .pens
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved ink annotation must still exist") = update;
+        }
+        Annotation::TextBox(update) => {
+            let id = update.id.clone();
+            *state
+                .text_boxes
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved text box must still exist") = update;
+        }
+        Annotation::Length(update) => {
+            let id = update.id.clone();
+            *state
+                .lengths
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved Length must still exist") = update;
+        }
+        Annotation::Image(update) => {
+            let id = update.id.clone();
+            *state
+                .images
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved Image must still exist") = update;
+        }
+        Annotation::Snapshot(update) => {
+            let id = update.id.clone();
+            *state
+                .snapshots
+                .iter_mut()
+                .find(|annotation| annotation.id == id)
+                .expect("the moved Snapshot must still exist") = update;
+        }
     }
 }
 
@@ -13685,6 +14512,49 @@ pub fn fnv1a64_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
+/// The edits [`AnnotationDocument::set_pages_content_edits`] sets on one
+/// page: the lines `anchors` names get `edits`, and each table its edit
+/// (`None`: the table as it is).
+#[derive(Clone, Debug)]
+pub struct PageContentEdits {
+    pub page_index: u32,
+    pub anchors: Vec<crate::pdf_text_edit::TextLineAnchor>,
+    pub edits: Vec<PageTextEdit>,
+    pub tables: Vec<(TableKey, Option<PageTableEdit>)>,
+}
+
+/// A page's content edits, checked and ready to apply.
+struct PageContentUpdate {
+    page_index: u32,
+    anchors: Vec<crate::pdf_text_edit::TextLineAnchor>,
+    replacement: Vec<PageTextEdit>,
+    tables: Vec<(TableKey, Option<PageTableEdit>)>,
+}
+
+impl PageContentUpdate {
+    fn apply(self, state: &mut DocumentState) {
+        let page_index = self.page_index;
+        state
+            .page_text_edits
+            .retain(|edit| edit.page_index != page_index || !self.anchors.contains(&edit.anchor));
+        state.page_text_edits.extend(self.replacement);
+        state
+            .page_text_edits
+            .sort_by_key(|edit| (edit.page_index, edit.anchor));
+        for (key, wanted) in self.tables {
+            state
+                .page_table_edits
+                .retain(|edit| !(edit.page_index == page_index && edit.key() == key));
+            if let Some(wanted) = wanted.filter(|edit| !edit.is_unchanged()) {
+                state.page_table_edits.push(wanted);
+            }
+        }
+        state
+            .page_table_edits
+            .sort_by_key(|edit| (edit.page_index, edit.key()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13752,6 +14622,482 @@ mod tests {
             restored.past.back().unwrap().page_text_edits,
             [edit("Final", "Draft")]
         );
+    }
+
+    #[test]
+    fn arranged_pages_take_their_markups_along_as_one_undo_step() {
+        let rectangle = |name: &str, page_index: u32| {
+            Annotation::Rectangle(RectangleAnnotation {
+                id: id(name),
+                page_index,
+                rect: PdfRect::new(10., 20., 100., 50.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked: false,
+            })
+        };
+        let mut document = AnnotationDocument::default();
+        document
+            .insert_annotations(vec![
+                rectangle("a", 0),
+                rectangle("b", 1),
+                rectangle("c", 2),
+            ])
+            .unwrap();
+        let pages = |document: &AnnotationDocument| {
+            let snapshot = document.snapshot();
+            snapshot
+                .annotation_order
+                .iter()
+                .map(|id| {
+                    let page = snapshot
+                        .rectangles
+                        .iter()
+                        .find(|rectangle| &rectangle.id == id)
+                        .unwrap()
+                        .page_index;
+                    (id.as_str().to_owned(), page)
+                })
+                .collect::<Vec<_>>()
+        };
+        // C first, a copy of A, a blank page, then A; B is left out.
+        let copied = document
+            .arrange_pages(
+                3,
+                &[
+                    ArrangedPage::Shown {
+                        index: 2,
+                        copy: false,
+                    },
+                    ArrangedPage::Shown {
+                        index: 0,
+                        copy: true,
+                    },
+                    ArrangedPage::Blank {
+                        width: 612.,
+                        height: 792.,
+                    },
+                    ArrangedPage::Shown {
+                        index: 0,
+                        copy: false,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(copied.len(), 1);
+        let arranged = pages(&document);
+        assert_eq!(
+            arranged,
+            vec![
+                ("a".to_owned(), 3),
+                ("c".to_owned(), 0),
+                (copied[0].as_str().to_owned(), 1),
+            ]
+        );
+        assert_eq!(
+            document.page_slots(),
+            [
+                PageSlot::Source { index: 2 },
+                PageSlot::Copy { index: 0 },
+                PageSlot::Blank {
+                    width: 612.,
+                    height: 792.
+                },
+                PageSlot::Source { index: 0 },
+            ]
+        );
+        document.undo().unwrap();
+        assert!(document.page_slots().is_empty());
+        assert_eq!(
+            pages(&document),
+            vec![
+                ("a".to_owned(), 0),
+                ("b".to_owned(), 1),
+                ("c".to_owned(), 2)
+            ]
+        );
+        document.redo().unwrap();
+        assert_eq!(pages(&document), arranged);
+
+        // Recovery keeps the arrangement.
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(restored.page_slots(), document.page_slots());
+
+        // Moving pages back into the file's order is the file's order.
+        document
+            .arrange_pages(
+                4,
+                &[
+                    ArrangedPage::Shown {
+                        index: 3,
+                        copy: false,
+                    },
+                    ArrangedPage::Shown {
+                        index: 0,
+                        copy: false,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            document.page_slots(),
+            [PageSlot::Source { index: 0 }, PageSlot::Source { index: 2 }]
+        );
+
+        // A save writes the pages as arranged, and undo starts again.
+        document
+            .apply_command(AnnotationCommand::MarkSaved)
+            .unwrap();
+        assert!(document.page_slots().is_empty());
+        assert_eq!(document.snapshot().undo_depth, 0);
+    }
+
+    #[test]
+    fn arranging_pages_rejects_a_page_placed_twice_or_none() {
+        let mut document = AnnotationDocument::default();
+        assert!(document.arrange_pages(1, &[]).is_err());
+        assert!(
+            document
+                .arrange_pages(
+                    1,
+                    &[
+                        ArrangedPage::Shown {
+                            index: 0,
+                            copy: false
+                        },
+                        ArrangedPage::Shown {
+                            index: 0,
+                            copy: false
+                        },
+                    ],
+                )
+                .is_err()
+        );
+        assert!(
+            document
+                .arrange_pages(
+                    1,
+                    &[ArrangedPage::Shown {
+                        index: 1,
+                        copy: false
+                    }]
+                )
+                .is_err()
+        );
+        assert!(
+            document
+                .arrange_pages(
+                    1,
+                    &[ArrangedPage::Shown {
+                        index: 0,
+                        copy: false
+                    }]
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(document.snapshot().undo_depth, 0, "no change, no undo step");
+    }
+
+    #[test]
+    fn undo_reaches_back_past_a_save_that_rewrote_a_table_page() {
+        use crate::pdf_page_base::PageBase;
+        use crate::pdf_tables::{BandSource, TableBand};
+        let table = |grown: f64| PageTableEdit {
+            page_index: 1,
+            base_rows: vec![100., 80., 60.],
+            base_columns: vec![10., 50.],
+            rows: vec![
+                TableBand {
+                    source: BandSource::Base(0),
+                    size: 20. + grown,
+                    set_size: None,
+                },
+                TableBand {
+                    source: BandSource::Base(1),
+                    size: 20.,
+                    set_size: None,
+                },
+            ],
+            columns: vec![TableBand {
+                source: BandSource::Base(0),
+                size: 40.,
+                set_size: None,
+            }],
+            cell_texts: Vec::new(),
+        };
+        let key = table(0.).key();
+        let mut document = AnnotationDocument::default();
+        assert!(
+            document
+                .set_page_content_edits(1, &[], Vec::new(), vec![(key, Some(table(5.)))])
+                .unwrap()
+        );
+        assert!(
+            document
+                .set_page_content_edits(1, &[], Vec::new(), vec![(key, Some(table(9.)))])
+                .unwrap()
+        );
+        assert_eq!(document.pages_to_keep_when_saved(), BTreeSet::from([1]));
+        let kept = PageBase::new(1, std::sync::Arc::new(b"%PDF earlier page".to_vec()));
+        document.mark_saved_keeping(vec![kept.clone()]).unwrap();
+        // The saved file has the table as it is now.
+        assert!(document.page_table_edits().is_empty());
+        assert!(document.page_bases().is_empty());
+        assert!(!document.snapshot().dirty);
+        // Undo shows the earlier states on the page as the file had it.
+        document.undo().unwrap();
+        assert_eq!(document.page_table_edits(), [table(5.)]);
+        assert_eq!(document.page_bases(), std::slice::from_ref(&kept));
+        assert!(document.snapshot().dirty);
+        document.undo().unwrap();
+        assert!(document.page_table_edits().is_empty());
+        assert_eq!(document.page_bases(), std::slice::from_ref(&kept));
+        // Saved there, the file's page is the earlier one again: no state
+        // needs another kept page for it, and redo keeps its own.
+        assert_eq!(document.pages_to_keep_when_saved(), BTreeSet::from([1]));
+        let earlier = PageBase::new(1, std::sync::Arc::new(b"%PDF saved page".to_vec()));
+        document.mark_saved_keeping(vec![earlier.clone()]).unwrap();
+        assert!(document.page_bases().is_empty());
+        document.redo().unwrap();
+        assert_eq!(document.page_table_edits(), [table(5.)]);
+        assert_eq!(document.page_bases(), std::slice::from_ref(&kept));
+
+        // Recovery keeps the kept pages.
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(restored.page_bases(), std::slice::from_ref(&kept));
+        assert_eq!(restored.page_bases()[0].pdf.as_deref(), kept.pdf.as_deref());
+        // The state saved first is the page the second save rewrote.
+        assert!(restored.future[0].page_table_edits.is_empty());
+        assert_eq!(restored.future[0].page_bases, [earlier]);
+
+        // With no page kept, every state shows the page as saved.
+        let mut document = AnnotationDocument::default();
+        document
+            .set_page_content_edits(1, &[], Vec::new(), vec![(key, Some(table(5.)))])
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::MarkSaved)
+            .unwrap();
+        document.undo().unwrap();
+        assert!(document.page_table_edits().is_empty());
+        assert!(document.page_bases().is_empty());
+    }
+
+    #[test]
+    fn moved_page_content_takes_its_markups_and_undoes_as_one_step() {
+        use crate::pdf_content_moves::{ContentKind, MovedContent, Placement};
+        let mut document = AnnotationDocument::default();
+        let mut create = |name: &str, from: (f64, f64), to: (f64, f64)| {
+            document
+                .begin_create(
+                    7,
+                    id(name),
+                    1,
+                    point(from.0, from.1),
+                    RectangleAppearance::default(),
+                )
+                .unwrap();
+            document.update_gesture(7, point(to.0, to.1)).unwrap();
+            document.commit_gesture(7).unwrap();
+        };
+        // A box around a paragraph's two lines, and one elsewhere.
+        create("on", (70., 590.), (210., 622.));
+        create("off", (300., 100.), (340., 140.));
+        let paragraph = vec![
+            MovedContent {
+                kind: ContentKind::Text,
+                rect: [72., 610., 200., 620.],
+                from: Placement::UNMOVED,
+                copy: None,
+            },
+            MovedContent {
+                kind: ContentKind::Text,
+                rect: [72., 596., 180., 606.],
+                from: Placement::UNMOVED,
+                copy: None,
+            },
+        ];
+        let bottom = |document: &AnnotationDocument, name: &str| {
+            let rect = document
+                .rectangles()
+                .iter()
+                .find(|annotation| annotation.id == id(name))
+                .unwrap()
+                .rect;
+            (rect.x, rect.y)
+        };
+        // While dragged, the markup shows where it will go.
+        let preview = document
+            .with_moved_markups(
+                1,
+                std::slice::from_ref(&paragraph),
+                &[],
+                crate::pdf_content_moves::ContentChange::Move(30., -40.),
+            )
+            .unwrap();
+        assert_eq!(bottom(&preview, "on"), (100., 550.));
+        assert!(
+            document
+                .move_page_content(1, std::slice::from_ref(&paragraph), &[], (30., -40.))
+                .unwrap()
+        );
+        assert_eq!(bottom(&document, "on"), (100., 550.));
+        assert_eq!(bottom(&document, "off"), (300., 100.));
+        assert_eq!(document.page_content_moves().len(), 2);
+        assert!(
+            document
+                .page_content_moves()
+                .iter()
+                .all(|item| item.offset == [30., -40.])
+        );
+        // Moved again from where it is shown, its offset adds up.
+        let shown = paragraph
+            .iter()
+            .map(|item| MovedContent {
+                from: Placement::moved((30., -40.)),
+                ..*item
+            })
+            .collect::<Vec<_>>();
+        document
+            .move_page_content(1, &[shown], &[], (0., 10.))
+            .unwrap();
+        assert!(
+            document
+                .page_content_moves()
+                .iter()
+                .all(|item| item.offset == [30., -30.])
+        );
+        assert_eq!(bottom(&document, "on"), (100., 560.));
+        assert_eq!(document.pages_to_keep_when_saved(), BTreeSet::from([1]));
+        document.undo().unwrap();
+        assert_eq!(bottom(&document, "on"), (100., 550.));
+        document.undo().unwrap();
+        assert_eq!(bottom(&document, "on"), (70., 590.));
+        assert!(document.page_content_moves().is_empty());
+        // Recovery keeps moves.
+        document.redo().unwrap();
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(restored.page_content_moves(), document.page_content_moves());
+    }
+
+    #[test]
+    fn resized_and_deleted_page_content_take_their_markups() {
+        use crate::pdf_content_moves::{ContentChange, ContentKind, MovedContent, Placement};
+        let mut document = AnnotationDocument::default();
+        let mut create = |name: &str, from: (f64, f64), to: (f64, f64)| {
+            document
+                .begin_create(
+                    7,
+                    id(name),
+                    1,
+                    point(from.0, from.1),
+                    RectangleAppearance::default(),
+                )
+                .unwrap();
+            document.update_gesture(7, point(to.0, to.1)).unwrap();
+            document.commit_gesture(7).unwrap();
+        };
+        create("on", (140., 140.), (160., 160.));
+        create("selected", (400., 400.), (420., 420.));
+        let image = vec![MovedContent {
+            kind: ContentKind::Image,
+            rect: [100., 100., 200., 200.],
+            from: Placement::UNMOVED,
+            copy: None,
+        }];
+        // Twice the size from its bottom-left corner: the markup on its
+        // centre moves with the centre.
+        assert!(
+            document
+                .change_page_content(
+                    1,
+                    std::slice::from_ref(&image),
+                    &[],
+                    ContentChange::Resize {
+                        origin: (100., 100.),
+                        factor: (2., 2.)
+                    }
+                )
+                .unwrap()
+        );
+        assert_eq!(document.page_content_moves()[0].scale, [2., 2.]);
+        assert_eq!(document.page_content_moves()[0].offset, [0., 0.]);
+        let rect = document
+            .rectangles()
+            .iter()
+            .find(|annotation| annotation.id == id("on"))
+            .unwrap()
+            .rect;
+        assert_eq!((rect.x, rect.y), (190., 190.));
+        // Deleted with a selected markup: both go, as one step.
+        let resized = vec![MovedContent {
+            from: document.page_content_moves()[0].placement(),
+            ..image[0]
+        }];
+        document
+            .change_page_content(1, &[resized], &[id("selected")], ContentChange::Remove)
+            .unwrap();
+        assert!(document.page_content_moves()[0].removed);
+        assert!(
+            document
+                .rectangles()
+                .iter()
+                .all(|annotation| annotation.id != id("selected"))
+        );
+        document.undo().unwrap();
+        assert!(!document.page_content_moves()[0].removed);
+        assert_eq!(document.rectangles().len(), 2);
+    }
+
+    #[test]
+    fn pasted_copies_move_and_delete_on_their_own() {
+        use crate::pdf_content_moves::{ContentChange, ContentKind, MovedContent, Placement};
+        let mut document = AnnotationDocument::default();
+        let image = vec![MovedContent {
+            kind: ContentKind::Image,
+            rect: [100., 100., 200., 200.],
+            from: Placement::UNMOVED,
+            copy: None,
+        }];
+        let pasted = document
+            .paste_page_content(1, std::slice::from_ref(&image), (10., -10.))
+            .unwrap();
+        assert_eq!(pasted.len(), 1);
+        assert_eq!(pasted[0][0].copy, Some(0));
+        assert_eq!(pasted[0][0].shown(), [110., 90., 210., 190.]);
+        // A second paste is another copy.
+        let again = document
+            .paste_page_content(1, std::slice::from_ref(&image), (20., -20.))
+            .unwrap();
+        assert_eq!(again[0][0].copy, Some(1));
+        // Moving a copy leaves the content and the other copy alone.
+        document
+            .change_page_content(1, &pasted, &[], ContentChange::Move(5., 5.))
+            .unwrap();
+        let moves = document.page_content_moves();
+        assert_eq!(moves.len(), 2);
+        assert_eq!(moves[0].offset, [15., -5.]);
+        assert_eq!(moves[1].offset, [20., -20.]);
+        // Deleting a copy drops it.
+        let moved = vec![MovedContent {
+            from: moves[0].placement(),
+            ..pasted[0][0]
+        }];
+        document
+            .change_page_content(1, &[moved], &[], ContentChange::Remove)
+            .unwrap();
+        assert_eq!(document.page_content_moves().len(), 1);
+        assert_eq!(document.page_content_moves()[0].copy, Some(1));
+        document.undo().unwrap();
+        document.undo().unwrap();
+        document.undo().unwrap();
+        assert_eq!(document.page_content_moves().len(), 1);
+        document.undo().unwrap();
+        assert!(document.page_content_moves().is_empty());
     }
 
     #[test]
@@ -14332,16 +15678,6 @@ mod tests {
             .state
             .page_length_calibrations
             .insert(0, page_calibration);
-        document.state.scale_presets.push(ScalePreset {
-            id: "custom-雪".into(),
-            name: "Custom é".into(),
-            pdf_units: ScaleUnit::In,
-            real_units: ScaleUnit::M,
-            scale_x: 0.25,
-            scale_y: 0.5,
-            source: ScaleSource::Custom,
-            built_in: false,
-        });
         document
             .state
             .page_rotations
@@ -14372,7 +15708,6 @@ mod tests {
         assert_eq!(hydrated.state.images, document.state.images);
         assert_eq!(hydrated.state.snapshots, document.state.snapshots);
         assert_eq!(hydrated.state.page_scales, document.state.page_scales);
-        assert_eq!(hydrated.state.scale_presets, document.state.scale_presets);
         assert_eq!(
             hydrated.state.page_length_calibrations,
             document.state.page_length_calibrations
@@ -14395,14 +15730,22 @@ mod tests {
             )
             .is_err()
         );
-        let mut malformed_preset: Value = serde_json::from_slice(&encoded).unwrap();
-        malformed_preset["current"]["scale_presets"][0]["scale_x"] = json!(-1.0);
-        assert!(
-            AnnotationDocument::hydrate_recovery_timeline(
-                &serde_json::to_vec(&malformed_preset).unwrap()
-            )
-            .is_err()
-        );
+        // Recovery files from before kept saved scales; they still open.
+        let mut earlier: Value = serde_json::from_slice(&encoded).unwrap();
+        earlier["current"]["scale_presets"] = json!([{
+            "id": "custom-雪",
+            "name": "Custom é",
+            "pdf_units": "In",
+            "real_units": "M",
+            "scale_x": 0.25,
+            "scale_y": 0.5,
+            "source": "Custom",
+            "built_in": false
+        }]);
+        let earlier =
+            AnnotationDocument::hydrate_recovery_timeline(&serde_json::to_vec(&earlier).unwrap())
+                .unwrap();
+        assert_eq!(earlier.state.page_scales, document.state.page_scales);
         let mut mismatched_calibration: Value = serde_json::from_slice(&encoded).unwrap();
         let calibration = mismatched_calibration["current"]["page_length_calibrations"]["0"].take();
         mismatched_calibration["current"]["page_length_calibrations"]["1"] = calibration;
@@ -16257,22 +17600,7 @@ mod tests {
     }
 
     #[test]
-    fn page_scale_contract_preserves_presets_axes_precision_targets_and_atomic_history() {
-        assert_eq!(
-            built_in_scale_presets()
-                .iter()
-                .map(|preset| preset.name.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "1:1", "1:2", "1:5", "1:10", "1:20", "1:50", "1:100", "1:200", "1:500", "1:1000",
-            ]
-        );
-        assert!(built_in_scale_presets().iter().all(|preset| {
-            preset.pdf_units == ScaleUnit::Cm
-                && preset.real_units == ScaleUnit::M
-                && preset.built_in
-        }));
-
+    fn page_scale_contract_preserves_axes_precision_targets_and_atomic_history() {
         let custom = PageScale::custom(
             0,
             "1 in = 2 ft",
@@ -16353,43 +17681,24 @@ mod tests {
         document.redo().unwrap();
         assert_eq!(document.snapshot().page_scales.len(), 2);
 
-        let saved = ScalePreset {
-            id: "scale-test".into(),
-            name: custom.name.clone(),
-            pdf_units: custom.pdf_units,
-            real_units: custom.real_units,
-            scale_x: custom.scale_x,
-            scale_y: custom.scale_y,
-            source: custom.source,
-            built_in: false,
-        };
-        document
-            .apply_page_scale_with_preset(
-                custom.clone(),
-                PageScaleApplyTarget::Current(0),
-                3,
-                Some(saved.clone()),
-            )
-            .unwrap();
-        let with_preset = document.snapshot();
-        assert_eq!(with_preset.scale_presets, vec![saved.clone()]);
-        assert_eq!(with_preset.revision, 2);
-        assert_eq!(with_preset.undo_depth, 2);
-        document.undo().unwrap();
-        assert!(document.snapshot().scale_presets.is_empty());
-        document.redo().unwrap();
-        assert_eq!(document.snapshot().scale_presets, vec![saved.clone()]);
-        assert!(document.delete_scale_preset("scale-test").unwrap());
-        assert!(document.snapshot().scale_presets.is_empty());
-        assert_eq!(document.snapshot().revision, 3);
-        assert!(!document.delete_scale_preset("scale-test").unwrap());
-        assert_eq!(
+        // Removing one page's scale is one change; measurements keep theirs.
+        assert!(
             document
-                .delete_scale_preset("one-to-1")
-                .unwrap_err()
-                .to_string(),
-            "invalid geometry: Built-in scale presets cannot be deleted."
+                .remove_page_scale(PageScaleApplyTarget::Current(1), 3)
+                .unwrap()
         );
+        let removed = document.snapshot();
+        assert_eq!(removed.page_scales, vec![applied.with_page_index(2)]);
+        assert_eq!((removed.revision, removed.undo_depth), (2, 2));
+        assert_eq!(removed.lengths[0].caption(), "Span: 4 8/16 ft");
+        assert!(
+            !document
+                .remove_page_scale(PageScaleApplyTarget::Current(1), 3)
+                .unwrap(),
+            "a page without a scale has none to remove"
+        );
+        document.undo().unwrap();
+        assert_eq!(document.snapshot().page_scales.len(), 2);
     }
 
     #[test]
@@ -17417,6 +18726,41 @@ mod tests {
         document.delete_selected_unlocked().unwrap();
         assert_eq!(document.focused_id(), None);
         assert!(document.selected_ids().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_selection_removes_its_dimensions() {
+        let mut document = AnnotationDocument::default();
+        create_rectangle(&mut document, "a");
+        let appearance = DimensionAppearance::new(
+            StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap(),
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap();
+        let dimension = DimensionAnnotation::new(
+            id("dimension"),
+            0,
+            point(20., 50.),
+            point(120., 50.),
+            24.,
+            "",
+            appearance,
+        )
+        .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Dimension(
+                dimension,
+            )))
+            .unwrap();
+        assert!(document.select(&id("a")));
+        assert!(document.toggle_selection(&id("dimension")));
+
+        document.delete_selected_unlocked().unwrap();
+
+        let snapshot = document.snapshot();
+        assert!(snapshot.dimensions.is_empty());
+        assert!(snapshot.annotation_order.is_empty());
+        validate_recovery_state(&document.state).unwrap();
     }
 
     #[test]

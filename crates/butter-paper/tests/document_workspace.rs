@@ -128,16 +128,10 @@ use butter_paper::page_geometry::{
     PageCoordinateSpace, PdfPoint as CoordinatePoint, PdfRect as CoordinateRect,
     Rotation as CoordinateRotation,
 };
+use butter_paper::page_scale_catalog::STANDARD_SCALES;
 use butter_paper::page_scale_control::{
-    CalibrationPointDisposition, PAGE_SCALE_APPLY_ID, PAGE_SCALE_CUSTOM_PDF_LENGTH_ID,
-    PAGE_SCALE_CUSTOM_PDF_UNITS_ID, PAGE_SCALE_CUSTOM_REAL_LENGTH_ID,
-    PAGE_SCALE_CUSTOM_REAL_UNITS_ID, PAGE_SCALE_DIALOG_BODY_ID, PAGE_SCALE_DIALOG_ID,
-    PAGE_SCALE_KNOWN_LENGTH_ID, PAGE_SCALE_METHOD_CUSTOM_ID, PAGE_SCALE_METHOD_PRESET_ID,
-    PAGE_SCALE_PAGES_ID, PAGE_SCALE_PICK_ALERT_ID, PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_ID,
-    PAGE_SCALE_PICK_STATUS_ID, PAGE_SCALE_PRECISION_MODE_ID, PAGE_SCALE_PRECISION_VALUE_ID,
-    PAGE_SCALE_RANGE_ID, PAGE_SCALE_SAVE_PRESET_ID, PAGE_SCALE_SEPARATE_Y_ID,
-    PAGE_SCALE_TRIGGER_ID, PAGE_SCALE_Y_PDF_LENGTH_ID, PAGE_SCALE_Y_REAL_LENGTH_ID, PageScaleMode,
-    PageScalePagesMode,
+    PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID, PAGE_SCALE_TRIGGER_ID, PageScalePages,
+    ScaleChoice,
 };
 use butter_paper::page_view_control::{CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID};
 use butter_paper::page_view_control::{PageViewMode, WheelBehavior};
@@ -1293,7 +1287,6 @@ fn persistence_annotation_snapshot(session: &PdfPersistenceSession) -> Annotatio
         images: session.images().to_vec(),
         snapshots: session.snapshots().to_vec(),
         page_scales: session.page_scales().to_vec(),
-        scale_presets: Vec::new(),
         page_length_calibrations: session
             .page_length_calibrations()
             .iter()
@@ -1306,6 +1299,11 @@ fn persistence_annotation_snapshot(session: &PdfPersistenceSession) -> Annotatio
             .collect(),
         page_text_edits: Vec::new(),
         form_field_edits: Vec::new(),
+        page_table_edits: Vec::new(),
+        page_content_moves: Vec::new(),
+        page_bases: Vec::new(),
+        pages_to_keep_when_saved: Vec::new(),
+        page_slots: Vec::new(),
         undo_depth: 1,
         redo_depth: 0,
     }
@@ -5055,7 +5053,9 @@ fn session_recovery_warning_names_lost_documents_and_requires_explicit_dismissal
 }
 
 #[gpui::test]
-fn startup_recovery_inspection_blocks_open_until_the_inbox_is_resolved(cx: &mut TestAppContext) {
+fn startup_recovery_holds_opens_until_nothing_more_can_be_recovered_automatically(
+    cx: &mut TestAppContext,
+) {
     cx.update(gpui_component::init);
     let workspace = cx.new(DocumentWorkspace::new);
     workspace.update(cx, |workspace, cx| {
@@ -5066,6 +5066,7 @@ fn startup_recovery_inspection_blocks_open_until_the_inbox_is_resolved(cx: &mut 
         workspace.defer_startup_open(deferred.clone());
         workspace.begin_startup_recovery_inspection(cx);
         assert!(workspace.startup_recovery_inspecting());
+        // A recent PDF clicked meanwhile waits rather than being dropped.
         assert_eq!(
             workspace.open_documents(
                 DocumentOpenBatchRequest::new(
@@ -5076,6 +5077,7 @@ fn startup_recovery_inspection_blocks_open_until_the_inbox_is_resolved(cx: &mut 
             ),
             DocumentOpenBatchDisposition::DeferredForRecovery,
         );
+        assert_eq!(workspace.opens_awaiting_recovery().len(), 1);
         workspace.finish_startup_recovery_inspection(
             vec![StartupRecoveryItem {
                 id: butter_paper::document_recovery_store::RecoveryDocumentId::generate().unwrap(),
@@ -5087,19 +5089,14 @@ fn startup_recovery_inspection_blocks_open_until_the_inbox_is_resolved(cx: &mut 
             }],
             cx,
         );
+        // A checkpoint that cannot be reopened stays in the open Recovery
+        // panel, and the held opens go ahead.
         assert!(!workspace.startup_recovery_inspecting());
         assert_eq!(workspace.startup_recovery_items().len(), 1);
-        assert_eq!(workspace.deferred_startup_open(), Some(&deferred));
-        assert_eq!(
-            workspace.open_documents(
-                DocumentOpenBatchRequest::new(
-                    DocumentOpenOrigin::System,
-                    vec![workspace_save_target("deferred.pdf")],
-                ),
-                cx,
-            ),
-            DocumentOpenBatchDisposition::DeferredForRecovery,
-        );
+        assert!(workspace.recovery_notifications_open());
+        assert_eq!(workspace.deferred_startup_open(), None);
+        assert!(workspace.opens_awaiting_recovery().is_empty());
+        assert!(!workspace.startup_recovery_blocks_open());
     });
 }
 
@@ -5151,6 +5148,9 @@ fn discarding_the_exact_startup_recovery_retires_it_and_resumes_deferred_launch(
             }],
             cx,
         );
+        // With no PDF opener it cannot be reopened, so it waits to be
+        // discarded.
+        assert!(workspace.recovery_notifications_open());
         workspace.discard_startup_recovery(id, cx);
         assert_eq!(workspace.startup_recovery_operation(), Some(id));
     });
@@ -5235,10 +5235,7 @@ fn discarding_a_stale_startup_recovery_refreshes_without_erasing_the_new_checkpo
         assert_eq!(item.authority, Some(current));
         assert_eq!(item.current_revision, Some(2));
         assert_eq!(workspace.startup_recovery_operation(), None);
-        assert_eq!(
-            workspace.deferred_startup_open(),
-            Some(&DeferredStartupOpen::None)
-        );
+        assert_eq!(workspace.deferred_startup_open(), None);
     });
 }
 
@@ -5303,6 +5300,18 @@ fn recovering_an_unchanged_opened_source_restores_the_exact_dirty_timeline(
     workspace.update(cx, |workspace, cx| {
         workspace.bind_document_recovery_store(store.clone());
         workspace.defer_startup_open(DeferredStartupOpen::None);
+        // The last session's warning about these edits goes once they are
+        // reopened.
+        workspace.show_session_recovery_warning(
+            &SessionRecoverySnapshot::new(vec![SessionRecoveryDocument::new(
+                source.clone(),
+                "unchanged.pdf",
+                1,
+                true,
+            )]),
+            cx,
+        );
+        assert!(workspace.session_recovery_warning().is_some());
         workspace.finish_startup_recovery_inspection(
             vec![StartupRecoveryItem {
                 id,
@@ -5323,6 +5332,7 @@ fn recovering_an_unchanged_opened_source_restores_the_exact_dirty_timeline(
         assert!(workspace.startup_recovery_items().is_empty());
         assert_eq!(workspace.startup_recovery_operation(), None);
         assert_eq!(workspace.deferred_startup_open(), None);
+        assert_eq!(workspace.session_recovery_warning(), None);
         let document_id = workspace.active_document_id().unwrap();
         let snapshot = workspace.annotation_snapshot(document_id, cx).unwrap();
         assert_eq!((snapshot.revision, snapshot.saved_revision), (1, 0));
@@ -5340,7 +5350,7 @@ fn recovering_an_unchanged_opened_source_restores_the_exact_dirty_timeline(
 }
 
 #[gpui::test]
-fn changed_opened_source_keeps_recovery_and_requires_a_copy(cx: &mut TestAppContext) {
+fn changed_opened_source_reopens_its_recovery_as_a_new_pdf(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let root = std::env::temp_dir().join(format!(
         "bp-startup-recovery-changed-source-{}-{}",
@@ -5389,9 +5399,15 @@ fn changed_opened_source_keeps_recovery_and_requires_a_copy(cx: &mut TestAppCont
         })
         .unwrap();
     let recovered = store.load(id).unwrap().unwrap();
-    let changed_sha256: [u8; 32] = Sha256::digest(b"changed source bytes").into();
-    let workspace =
-        cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(DigestOpener(changed_sha256)), cx));
+    std::fs::write(&source, b"changed source bytes").unwrap();
+    let generated_store = GeneratedDocumentStore::new(root.join("generated")).unwrap();
+    let workspace = cx.new(|cx| {
+        DocumentWorkspace::with_opener_and_generated_store(
+            Arc::new(FileDigestOpener),
+            generated_store,
+            cx,
+        )
+    });
     workspace.update(cx, |workspace, cx| {
         workspace.bind_document_recovery_store(store.clone());
         workspace.defer_startup_open(DeferredStartupOpen::None);
@@ -5406,27 +5422,21 @@ fn changed_opened_source_keeps_recovery_and_requires_a_copy(cx: &mut TestAppCont
             }],
             cx,
         );
-        workspace.recover_startup_opened_source(id, cx);
     });
 
     cx.run_until_parked();
 
-    workspace.update(cx, |workspace, _| {
-        assert_eq!(workspace.startup_recovery_items().len(), 1);
-        assert!(matches!(
-            workspace.startup_recovery_items()[0].availability,
-            StartupRecoveryAvailability::GeneratedCopyRequired
-        ));
+    // The changed PDF's tab is closed and the changes reopen as a new PDF.
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.startup_recovery_items().is_empty());
         assert_eq!(workspace.startup_recovery_operation(), None);
-        assert_eq!(
-            workspace.deferred_startup_open(),
-            Some(&DeferredStartupOpen::None)
-        );
+        assert_eq!(workspace.deferred_startup_open(), None);
+        assert_eq!(workspace.sessions().len(), 1);
+        let document_id = workspace.active_document_id().unwrap();
+        assert!(workspace.document_requires_save_as(document_id, cx));
+        let snapshot = workspace.annotation_snapshot(document_id, cx).unwrap();
+        assert_eq!(snapshot.rectangles[0].id, changed_id);
     });
-    assert_eq!(
-        store.load(id).unwrap().unwrap().authority,
-        recovered.authority
-    );
 }
 
 #[gpui::test]
@@ -6551,7 +6561,6 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: source_session.page_scales().to_vec(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: source_session
                     .page_length_calibrations()
                     .iter()
@@ -6564,6 +6573,11 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                     .collect(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -6626,7 +6640,6 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                 images: created_reopen.images().to_vec(),
                 snapshots: created_reopen.snapshots().to_vec(),
                 page_scales: created_reopen.page_scales().to_vec(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: created_reopen
                     .page_length_calibrations()
                     .iter()
@@ -6639,6 +6652,11 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                     .collect(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -6693,7 +6711,6 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                 images: edited_reopen.images().to_vec(),
                 snapshots: edited_reopen.snapshots().to_vec(),
                 page_scales: edited_reopen.page_scales().to_vec(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: edited_reopen
                     .page_length_calibrations()
                     .iter()
@@ -6706,6 +6723,11 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
                     .collect(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -8214,11 +8236,15 @@ fn line_arrow_workspace_save_as_reconciles_two_typed_reopen_cycles() {
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -8274,11 +8300,15 @@ fn line_arrow_workspace_save_as_reconciles_two_typed_reopen_cycles() {
                 images: created.images().to_vec(),
                 snapshots: created.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -8374,6 +8404,20 @@ fn page_rotation_is_one_document_revision_rejects_stale_pixels_and_preserves_fai
             5, 0, 0, 255, 3, 0, 0, 255, 1, 0, 0, 255, 6, 0, 0, 255, 4, 0, 0, 255, 2, 0, 0, 255,
         ]
     );
+    // Before that render arrives, the pixels already shown are turned, so
+    // the old image is never stretched to the page's new shape.
+    session.read_with(cx, |session, _| {
+        assert_eq!(
+            session.current_base_raster().unwrap().pixels_bgra(),
+            rotated.current_page.pixels_bgra()
+        );
+        let thumbnail = session.thumbnail_base_raster(0).unwrap();
+        assert_eq!(
+            (thumbnail.width(), thumbnail.height()),
+            (rotated.thumbnail.width(), rotated.thumbnail.height())
+        );
+        assert_eq!(thumbnail.pixels_bgra(), rotated.thumbnail.pixels_bgra());
+    });
 
     let rotate_left = workspace
         .update(cx, |workspace, cx| {
@@ -8410,11 +8454,6 @@ fn page_rotation_is_one_document_revision_rejects_stale_pixels_and_preserves_fai
         Some((2., 3.))
     );
 
-    let failed_rotation = workspace
-        .update(cx, |workspace, cx| {
-            workspace.begin_page_rotation(document_id, 0, PageRotationDirection::Right, cx)
-        })
-        .unwrap();
     let pixels_before_failure = session.read_with(cx, |session, _| {
         session
             .current_base_raster()
@@ -8422,6 +8461,11 @@ fn page_rotation_is_one_document_revision_rejects_stale_pixels_and_preserves_fai
             .pixels_bgra()
             .to_vec()
     });
+    let failed_rotation = workspace
+        .update(cx, |workspace, cx| {
+            workspace.begin_page_rotation(document_id, 0, PageRotationDirection::Right, cx)
+        })
+        .unwrap();
     assert_eq!(
         workspace
             .update(cx, |workspace, cx| workspace.begin_save_as(
@@ -10608,6 +10652,102 @@ fn real_enospc_initial_recovery_stream_blocks_edits_and_visible_retry_recovers_o
     let edited = store.load(authority.document_id()).unwrap().unwrap();
     assert_eq!((edited.current_revision, edited.saved_revision), (1, 0));
     store.clear(edited.authority.document_id()).unwrap();
+}
+
+#[test]
+fn save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place() {
+    run_gpui_test_with_native_main_stack(
+        "save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place",
+        save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place_on_native_stack,
+    );
+}
+
+fn save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let scratch = std::env::temp_dir().join(format!(
+        "bp-workspace-save-as-names-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir(&scratch).unwrap();
+    let root = scratch.canonicalize().unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let source = root.join("source.pdf");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
+        &source,
+    )
+    .unwrap();
+    let source_bytes = std::fs::read(&source).unwrap();
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace =
+                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(FileDigestOpener), cx));
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(source.clone(), cx));
+    cx.run_until_parked();
+    let draw = |cx: &mut gpui::VisualTestContext, id: &str| {
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.create_rectangle(
+                    document_id,
+                    0,
+                    MarkupId::new(id).unwrap(),
+                    PdfPoint::new(72., 96.).unwrap(),
+                    PdfPoint::new(216., 192.).unwrap(),
+                    cx,
+                )
+            })
+            .unwrap();
+    };
+    let save_as = |cx: &mut gpui::VisualTestContext, chosen: PathBuf| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        native_save_command(cx, &workspace, true);
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection(move |_| Some(chosen));
+        cx.run_until_parked();
+    };
+    let clean_at = |cx: &mut gpui::VisualTestContext, path: &Path| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.document_save_failure(document_id, cx).is_none()
+                && !workspace
+                    .annotation_snapshot(document_id, cx)
+                    .unwrap()
+                    .dirty
+                && workspace.session(document_id, cx).unwrap().read(cx).path() == path
+        })
+    };
+
+    // A name typed without an extension saves as that name with `.pdf`.
+    draw(cx, "workspace:rectangle:typed-name");
+    save_as(cx, root.join("typed"));
+    let typed = root.join("typed.pdf");
+    assert!(clean_at(cx, &typed));
+    assert!(!root.join("typed").exists());
+    assert_eq!(std::fs::read(&source).unwrap(), source_bytes);
+
+    // Choosing the open file itself saves it in place, as Save does.
+    draw(cx, "workspace:rectangle:same-file");
+    save_as(cx, typed.clone());
+    assert!(clean_at(cx, &typed));
+    assert!(
+        PdfPersistenceSession::open(&typed)
+            .unwrap()
+            .rectangles()
+            .iter()
+            .any(|rectangle| rectangle.id.as_str() == "workspace:rectangle:same-file")
+    );
 }
 
 #[test]
@@ -13516,21 +13656,15 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
     let page_scale_control = workspace
         .read_with(cx, |workspace, _| workspace.page_scale_control())
         .unwrap();
+    // 1 in = 2 ft is the standard 1/2" = 1'-0".
     assert_eq!(
-        page_scale_control.read_with(cx, |control, _| control.mode()),
-        PageScaleMode::Custom,
+        page_scale_control.read_with(cx, |control, _| control.choice()),
+        ScaleChoice::Standard(standard("1/2\" = 1'-0\"")),
     );
     assert_eq!(
-        page_scale_control
-            .read_with(cx, |control, _| control.pdf_length_input())
-            .read_with(cx, |input, _| input.value().to_string()),
-        "1",
-    );
-    assert_eq!(
-        page_scale_control
-            .read_with(cx, |control, _| control.known_length_input())
-            .read_with(cx, |input, _| input.value().to_string()),
-        (scale.scale_x * 72.).to_string(),
+        page_scale_control.read_with(cx, |control, cx| control.resolved_scale(cx)),
+        Ok(Some(scale.clone())),
+        "an unchanged dialog keeps the page's scale exactly"
     );
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
     cx.update(|window, cx| window.close_dialog(cx));
@@ -14977,8 +15111,8 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
             .fold(f64::NEG_INFINITY, f64::max);
         let start = to_view(right + 18., top - 3.);
         let end = to_view(right - 18., top - 1.);
-        cx.simulate_click(start, Modifiers::default());
-        cx.simulate_mouse_move(end, None, Modifiers::default());
+        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        trace_lasso(cx, start, end, Modifiers::default());
         assert_eq!(
             workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
                 request.document_id,
@@ -14996,21 +15130,6 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
                 .revision,
             before.revision
         );
-        cx.simulate_click(end, Modifiers::default());
-        assert_eq!(
-            workspace.read_with(cx, |workspace, cx| workspace
-                .selected_annotation_ids(request.document_id, cx)),
-            vec![id.clone()],
-            "click-box caption commit {id:?}"
-        );
-        cx.simulate_keystrokes("escape");
-        cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        cx.simulate_mouse_move(
-            to_view(right - 18., top - 3.),
-            Some(MouseButton::Left),
-            Modifiers::default(),
-        );
-        cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         cx.simulate_mouse_up(
             to_view(right + 18., top - 1.),
             MouseButton::Left,
@@ -15025,8 +15144,13 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
         cx.simulate_keystrokes("escape");
     }
     for (end_y, expected) in [(154., Vec::new()), (185., vec![length.id.clone()])] {
-        cx.simulate_click(to_view(90., 140.), Modifiers::default());
-        cx.simulate_mouse_move(to_view(280., end_y), None, Modifiers::default());
+        cx.simulate_mouse_down(to_view(90., 140.), MouseButton::Left, Modifiers::default());
+        trace_lasso(
+            cx,
+            to_view(90., 140.),
+            to_view(280., end_y),
+            Modifiers::default(),
+        );
         assert_eq!(
             workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
                 request.document_id,
@@ -15036,7 +15160,7 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
             expected,
             "Window needs body and caption"
         );
-        cx.simulate_click(to_view(280., end_y), Modifiers::default());
+        cx.simulate_mouse_up(to_view(90., end_y), MouseButton::Left, Modifiers::default());
         assert_eq!(
             workspace.read_with(cx, |workspace, cx| workspace
                 .selected_annotation_ids(request.document_id, cx)),
@@ -15125,8 +15249,17 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
         .iter()
         .map(|p| p.y)
         .fold(f64::NEG_INFINITY, f64::max);
-    cx.simulate_click(to_view(right + 18., top - 3.), Modifiers::default());
-    cx.simulate_mouse_move(to_view(right - 18., top - 1.), None, Modifiers::default());
+    cx.simulate_mouse_down(
+        to_view(right + 18., top - 3.),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    trace_lasso(
+        cx,
+        to_view(right + 18., top - 3.),
+        to_view(right - 18., top - 1.),
+        Modifiers::default(),
+    );
     let mode = workspace.read_with(cx, |workspace, cx| {
         workspace
             .document_view_state(request.document_id, cx)
@@ -15168,11 +15301,12 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
         vec![length.id.clone()],
         "current prepaint transform retains the candidate"
     );
-    cx.simulate_click(
+    cx.simulate_mouse_up(
         point(
-            zoomed_origin.x + px((right - 18.) as f32 * zoomed_scale),
+            zoomed_origin.x + px((right + 18.) as f32 * zoomed_scale),
             zoomed_origin.y + px((792. - (top - 1.) as f32) * zoomed_scale),
         ),
+        MouseButton::Left,
         Modifiers::default(),
     );
     assert_eq!(
@@ -16679,8 +16813,13 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
     cx.run_until_parked();
     cx.simulate_mouse_move(hot, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // The calibration end snaps to the vertex: only the green snap square
+    // shows there.
+    let snap_green: gpui::Hsla = gpui::rgb(0x16a34a).into();
     assert!(
-        feedback_handles_at(cx, hot).is_empty(),
+        feedback_handles_at(cx, hot)
+            .iter()
+            .all(|quad| quad.border_color == snap_green),
         "calibration picking must own hover instead of exposing annotation controls"
     );
     cx.simulate_click(hot, Modifiers::default());
@@ -16697,9 +16836,15 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
             .is_none(),
         "the calibration press must not select or transform the measurement"
     );
-    page_scale_control.update(cx, |control, cx| {
-        assert!(control.cancel_pick(cx));
+    cx.update(|window, cx| {
+        page_scale_control.update(cx, |control, cx| {
+            // Abandoning the line returns to the dialog; close it too.
+            assert!(control.cancel_pick(window, cx));
+        });
+        assert!(window.has_active_dialog(cx));
+        window.close_dialog(cx);
     });
+    cx.run_until_parked();
     cx.simulate_mouse_move(hot, None, Modifiers::default());
 
     let moved = PdfPoint::new(220., 540.).unwrap();
@@ -17635,6 +17780,19 @@ fn shape_feedback_workspace_paints_resize_handles_and_locked_rotation_omission(
     }
 }
 
+/// Select's selection lasso traced round the box from `from` to `to`, the
+/// button still held: first towards `to`'s side, which picks what it selects.
+fn trace_lasso(
+    cx: &mut gpui::VisualTestContext,
+    from: gpui::Point<Pixels>,
+    to: gpui::Point<Pixels>,
+    modifiers: Modifiers,
+) {
+    for corner in [point(to.x, from.y), to, point(from.x, to.y)] {
+        cx.simulate_mouse_move(corner, Some(MouseButton::Left), modifiers);
+    }
+}
+
 #[gpui::test]
 fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -17768,7 +17926,7 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
         shift: true,
         ..Modifiers::default()
     };
-    cx.simulate_click(to_view(50., 240.), modifiers);
+    cx.simulate_mouse_down(to_view(50., 240.), MouseButton::Left, modifiers);
     assert!(
         workspace
             .read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
@@ -17778,7 +17936,7 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
             ))
             .is_empty()
     );
-    cx.simulate_mouse_move(to_view(530., 70.), None, modifiers);
+    trace_lasso(cx, to_view(50., 240.), to_view(530., 70.), modifiers);
     let hits = vec![
         rectangle.id.clone(),
         second.id.clone(),
@@ -17829,7 +17987,7 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
         candidate_colours,
         "a candidate Dimension's handles take the hover colour too",
     );
-    cx.simulate_click(to_view(530., 70.), modifiers);
+    cx.simulate_mouse_up(to_view(50., 70.), MouseButton::Left, modifiers);
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .selected_annotation_ids(request.document_id, cx)),
@@ -17852,8 +18010,13 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
         },
         Modifiers::default(),
     ] {
-        cx.simulate_click(to_view(50., 240.), operation_modifiers);
-        cx.simulate_mouse_move(to_view(530., 70.), None, operation_modifiers);
+        cx.simulate_mouse_down(to_view(50., 240.), MouseButton::Left, operation_modifiers);
+        trace_lasso(
+            cx,
+            to_view(50., 240.),
+            to_view(530., 70.),
+            operation_modifiers,
+        );
         assert_eq!(
             workspace.read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
                 request.document_id,
@@ -17863,7 +18026,7 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
             hits,
             "candidate geometry is independent of Remove or Replace selection results"
         );
-        cx.simulate_click(to_view(530., 70.), operation_modifiers);
+        cx.simulate_mouse_up(to_view(50., 70.), MouseButton::Left, operation_modifiers);
         let selected = workspace.read_with(cx, |workspace, cx| {
             workspace.selected_annotation_ids(request.document_id, cx)
         });
@@ -17879,8 +18042,13 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| focus.focus(window, cx));
     cx.simulate_click(to_view(50., 240.), Modifiers::default());
-    cx.simulate_click(to_view(50., 240.), Modifiers::default());
-    cx.simulate_mouse_move(to_view(530., 70.), None, Modifiers::default());
+    cx.simulate_mouse_down(to_view(50., 240.), MouseButton::Left, Modifiers::default());
+    trace_lasso(
+        cx,
+        to_view(50., 240.),
+        to_view(530., 70.),
+        Modifiers::default(),
+    );
     assert!(
         !workspace
             .read_with(cx, |workspace, cx| workspace.selection_marquee_candidates(
@@ -17977,22 +18145,23 @@ fn multi_selection_workspace_marquee_routes_real_pointer_coordinates_and_modifie
     );
     let to_view =
         |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
-    let drag_lasso =
-        |cx: &mut gpui::VisualTestContext, points: &[(f32, f32)], modifiers: Modifiers| {
-            let start = to_view(points[0].0, points[0].1);
-            cx.simulate_mouse_down(start, MouseButton::Left, modifiers);
-            for &(x, y) in &points[1..points.len() - 1] {
-                cx.simulate_mouse_move(to_view(x, y), Some(MouseButton::Left), modifiers);
-            }
-            let end = points[points.len() - 1];
-            cx.simulate_mouse_up(to_view(end.0, end.1), MouseButton::Left, modifiers);
-        };
+    // Select's lasso, traced round the box from one corner to the other.
+    let drag_lasso = |cx: &mut gpui::VisualTestContext,
+                      (x0, y0): (f32, f32),
+                      (x1, y1): (f32, f32),
+                      modifiers: Modifiers| {
+        cx.simulate_mouse_down(to_view(x0, y0), MouseButton::Left, modifiers);
+        trace_lasso(cx, to_view(x0, y0), to_view(x1, y1), modifiers);
+        cx.simulate_mouse_up(to_view(x0, y1), MouseButton::Left, modifiers);
+    };
 
     let before = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
+    // A click (a press moving no further than the drag threshold) arms a
+    // selection box from there, which the next click finishes.
     let box_start = to_view(50., 220.);
     let exact_threshold = point(box_start.x + px(6.), box_start.y);
     cx.simulate_mouse_down(box_start, MouseButton::Left, Modifiers::default());
@@ -18035,15 +18204,23 @@ fn multi_selection_workspace_marquee_routes_real_pointer_coordinates_and_modifie
             })
             .is_none()
     );
-    assert!(workspace.update(cx, |workspace, cx| {
-        workspace.toggle_annotation_selection(request.document_id, &rectangle.id, cx)
-    }));
-
-    drag_lasso(
-        cx,
-        &[(50., 220.), (240., 220.), (240., 70.), (50., 70.)],
-        Modifiers::default(),
+    // With a selection, a click on empty page only ends it: no box.
+    cx.simulate_click(to_view(560., 400.), Modifiers::default());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .selected_annotation_ids(request.document_id, cx))
+            .is_empty()
     );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.active_selection_marquee(request.document_id, cx)
+            })
+            .is_none()
+    );
+
+    drag_lasso(cx, (50., 220.), (240., 70.), Modifiers::default());
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .selected_annotation_ids(request.document_id, cx)),
@@ -18052,7 +18229,8 @@ fn multi_selection_workspace_marquee_routes_real_pointer_coordinates_and_modifie
 
     drag_lasso(
         cx,
-        &[(280., 180.), (370., 180.), (370., 70.), (280., 70.)],
+        (280., 180.),
+        (370., 70.),
         Modifiers {
             shift: true,
             ..Modifiers::default()
@@ -18066,7 +18244,8 @@ fn multi_selection_workspace_marquee_routes_real_pointer_coordinates_and_modifie
 
     drag_lasso(
         cx,
-        &[(50., 220.), (240., 220.), (240., 70.), (50., 70.)],
+        (50., 220.),
+        (240., 70.),
         Modifiers {
             shift: true,
             alt: true,
@@ -20784,6 +20963,8 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
     let checker =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-image-checker-v1.png");
     let image_id = MarkupId::new("workspace:image:unselected-first-press").unwrap();
+    // A free image, whose edges resize as well as its corners.
+    cx.update(|_, cx| cx.set_global(butter_paper::application_shell::LockImageProportions(false)));
     workspace
         .update(cx, |workspace, cx| {
             workspace.insert_image_at(
@@ -21539,13 +21720,6 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(PAGE_SCALE_DIALOG_ID, "page-scale-dialog");
-    assert_eq!(PAGE_SCALE_PICK_STATUS_ID, "page-scale-pick-status");
-    assert_eq!(
-        PAGE_SCALE_KNOWN_LENGTH_ID,
-        "page-scale-calibrate-real-length"
-    );
-    assert_eq!(PAGE_SCALE_PICK_ID, "page-scale-pick-calibration");
     let control = workspace
         .read_with(cx, |workspace, _| workspace.page_scale_control())
         .unwrap();
@@ -21556,7 +21730,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
     assert!(control.read_with(cx, |control, _| control.is_picking()));
-    assert!(cx.debug_bounds(PAGE_SCALE_PICK_ALERT_ID).is_some());
+    assert!(cx.debug_bounds(PAGE_SCALE_PICK_HINT_ID).is_some());
     assert!(cx.debug_bounds(PAGE_SCALE_PICK_CANCEL_ID).is_some());
 
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
@@ -21583,12 +21757,15 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
     let end = end.unwrap();
     assert!((start.x - 72.).abs() < 0.001 && (start.y - 240.).abs() < 0.001);
     assert!((end.x - 144.).abs() < 0.001 && (end.y - start.y).abs() < 0.001);
+    assert_eq!(
+        control.read_with(cx, |control, _| control.choice()),
+        ScaleChoice::Measured
+    );
+    // A Letter page measures in feet.
     let known_length = control.read_with(cx, |control, _| control.known_length_input());
     cx.update(|window, cx| {
         known_length.update(cx, |input, cx| input.set_value("2", window, cx));
     });
-
-    assert_eq!(PAGE_SCALE_APPLY_ID, "page-scale-apply");
     assert!(control.update(cx, |control, cx| control.apply(cx)));
     cx.run_until_parked();
     let applied_calibration = workspace
@@ -21598,7 +21775,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
         .unwrap();
     assert!(
         (applied_calibration.scale_x() * 72. - 2.).abs() < 0.001,
-        "the authoritative page-scale ratio must preserve two metres per 72 PDF points"
+        "the authoritative page-scale ratio must preserve two feet per 72 PDF points"
     );
     let calibrated_snapshot = workspace
         .read_with(cx, |workspace, cx| {
@@ -21673,7 +21850,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
         })
         .unwrap();
     assert_eq!(snapshot.lengths.len(), 1);
-    assert_eq!(snapshot.lengths[0].caption(), "4.000 m");
+    assert_eq!(snapshot.lengths[0].caption(), "4.00 ft");
     assert!(snapshot.dirty);
 
     let second = workspace.update(cx, |workspace, cx| {
@@ -21696,20 +21873,27 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
             .is_none(),
         "page scale state must not leak to a second stable session"
     );
-    cx.update(|window, cx| {
-        control.update(cx, |control, cx| {
-            control.open_for(second.document_id, 0, window, cx)
-        });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_page_scale_dialog(second.document_id, 0, window, cx)
     });
     assert_eq!(
         control.read_with(cx, |control, _| control.points()),
         (None, None)
     );
     assert_eq!(
-        control.read_with(cx, |control, _| control.mode()),
-        PageScaleMode::Preset,
-        "the frozen Electron contract defaults a newly opened scale dialog to Preset"
+        control.read_with(cx, |control, _| control.choice()),
+        ScaleChoice::Unset,
+        "a page without a scale or a stated one starts with nothing chosen"
     );
+    assert!(
+        !control.update(cx, |control, cx| control.apply(cx)),
+        "nothing to apply until a scale is chosen"
+    );
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.choose_for_test(ScaleChoice::Standard(standard("1:100")), window, cx)
+        })
+    });
     assert!(control.update(cx, |control, cx| control.apply(cx)));
     assert_eq!(
         workspace
@@ -21751,7 +21935,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 ScalePrecision::decimal(0.001).unwrap(),
             )
             .unwrap(),
-            PageScaleMode::Custom,
+            ScaleChoice::Custom,
         ),
         (
             "fraction-precision",
@@ -21766,7 +21950,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 ScalePrecision::fraction(64).unwrap(),
             )
             .unwrap(),
-            PageScaleMode::Custom,
+            ScaleChoice::Custom,
         ),
         (
             "anisotropic",
@@ -21781,7 +21965,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 ScalePrecision::decimal(0.0001).unwrap(),
             )
             .unwrap(),
-            PageScaleMode::Custom,
+            ScaleChoice::Custom,
         ),
         (
             "calibrated",
@@ -21796,7 +21980,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 ScalePrecision::decimal(0.01).unwrap(),
             )
             .unwrap(),
-            PageScaleMode::Custom,
+            ScaleChoice::Custom,
         ),
         (
             "missing-preset",
@@ -21811,7 +21995,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 ScalePrecision::fraction(32).unwrap(),
             )
             .unwrap(),
-            PageScaleMode::Custom,
+            ScaleChoice::Custom,
         ),
     ];
 
@@ -21844,13 +22028,11 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
         let control = workspace
             .read_with(cx, |workspace, _| workspace.page_scale_control())
             .unwrap();
-        cx.update(|window, cx| {
-            control.update(cx, |control, cx| {
-                control.open_for(request.document_id, 0, window, cx)
-            });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_page_scale_dialog(request.document_id, 0, window, cx)
         });
         assert_eq!(
-            control.read_with(cx, |control, _| control.mode()),
+            control.read_with(cx, |control, _| control.choice()),
             expected_mode,
             "{case_name} must hydrate into a truthful readable mode"
         );
@@ -21875,10 +22057,12 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
         cx.update(|window, cx| window.close_dialog(cx));
 
         if case_name == "anisotropic" {
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_page_scale_dialog(request.document_id, 0, window, cx)
+            });
             cx.update(|window, cx| {
                 control.update(cx, |control, cx| {
-                    control.open_for(request.document_id, 0, window, cx);
-                    control.configure_pages_for_test(PageScalePagesMode::All, window, cx);
+                    control.set_pages(PageScalePages::All, window, cx)
                 });
             });
             assert!(control.update(cx, |control, cx| control.apply(cx)));
@@ -21901,11 +22085,13 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
         }
 
         if case_name == "arbitrary-decimal" {
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.open_page_scale_dialog(request.document_id, 0, window, cx)
+            });
             cx.update(|window, cx| {
                 control.update(cx, |control, cx| {
-                    control.open_for(request.document_id, 0, window, cx);
                     control
-                        .known_length_input()
+                        .custom_real_input()
                         .update(cx, |input, cx| input.set_value("9.25", window, cx));
                 });
             });
@@ -21927,7 +22113,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
 }
 
 #[gpui::test]
-fn page_scale_dialog_custom_xy_fraction_range_and_saved_preset_are_one_revision(
+fn page_scale_dialog_custom_ratio_fraction_precision_and_page_range_are_one_revision(
     cx: &mut TestAppContext,
 ) {
     cx.update(|cx| {
@@ -21955,80 +22141,39 @@ fn page_scale_dialog_custom_xy_fraction_range_and_saved_preset_are_one_revision(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let control = workspace
-        .read_with(cx, |workspace, _| workspace.page_scale_control())
-        .unwrap();
-    cx.update(|window, cx| {
-        control.update(cx, |control, cx| {
-            control.open_for(request.document_id, 0, window, cx)
-        });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_page_scale_dialog(request.document_id, 0, window, cx)
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .unwrap();
+    // 1 in on paper = 2 ft, measured in feet to the sixteenth, on pages 2-3.
     cx.update(|window, cx| {
         control.update(cx, |control, cx| {
-            control.configure_custom_for_test(
-                ScaleUnit::In,
+            control.choose_for_test(ScaleChoice::Custom, window, cx);
+            control.set_display_for_test(
                 ScaleUnit::Ft,
-                true,
                 ScalePrecision::fraction(16).unwrap(),
-                PageScalePagesMode::Custom,
-                true,
                 window,
                 cx,
             );
             control
-                .pdf_length_input()
+                .custom_paper_input()
                 .update(cx, |input, cx| input.set_value("1", window, cx));
             control
-                .known_length_input()
+                .custom_real_input()
                 .update(cx, |input, cx| input.set_value("2", window, cx));
+            control.set_pages(PageScalePages::Range, window, cx);
             control
-                .y_pdf_length_input()
-                .update(cx, |input, cx| input.set_value("2", window, cx));
-            control
-                .y_real_length_input()
-                .update(cx, |input, cx| input.set_value("9", window, cx));
-            control
-                .custom_range_input()
+                .range_input()
                 .update(cx, |input, cx| input.set_value("2-3", window, cx));
         });
         window.draw(cx).clear(cx);
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.run_until_parked();
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-
-    let visible_ids = control.read_with(cx, |control, _| control.visible_stable_ids());
-    for stable_id in [
-        PAGE_SCALE_DIALOG_ID,
-        PAGE_SCALE_DIALOG_BODY_ID,
-        PAGE_SCALE_METHOD_PRESET_ID,
-        PAGE_SCALE_METHOD_CUSTOM_ID,
-        PAGE_SCALE_CUSTOM_PDF_LENGTH_ID,
-        PAGE_SCALE_CUSTOM_PDF_UNITS_ID,
-        PAGE_SCALE_CUSTOM_REAL_LENGTH_ID,
-        PAGE_SCALE_CUSTOM_REAL_UNITS_ID,
-        PAGE_SCALE_SEPARATE_Y_ID,
-        PAGE_SCALE_Y_PDF_LENGTH_ID,
-        PAGE_SCALE_Y_REAL_LENGTH_ID,
-        PAGE_SCALE_PAGES_ID,
-        PAGE_SCALE_RANGE_ID,
-        PAGE_SCALE_PRECISION_MODE_ID,
-        PAGE_SCALE_PRECISION_VALUE_ID,
-        PAGE_SCALE_SAVE_PRESET_ID,
-        PAGE_SCALE_APPLY_ID,
-    ] {
-        assert!(
-            visible_ids.contains(&stable_id),
-            "the deterministic real-component render branch must include {stable_id}"
-        );
-    }
-
     assert!(control.update(cx, |control, cx| control.apply(cx)));
     let applied = workspace
         .read_with(cx, |workspace, cx| {
@@ -22044,62 +22189,34 @@ fn page_scale_dialog_custom_xy_fraction_range_and_saved_preset_are_one_revision(
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-    assert!(
-        applied
-            .page_scales
-            .iter()
-            .all(|scale| scale.source == ScaleSource::Custom
-                && scale.precision == ScalePrecision::fraction(16).unwrap()
-                && (scale.scale_x - (2. / 72.)).abs() < 0.000_001
-                && (scale.scale_y - (9. / 144.)).abs() < 0.000_001)
-    );
-    assert_eq!(applied.scale_presets.len(), 1);
-    assert_eq!(applied.scale_presets[0].id, "scale-native-1");
-    assert!(!applied.scale_presets[0].built_in);
+    assert!(applied.page_scales.iter().all(|scale| {
+        scale.source == ScaleSource::Custom
+            && scale.real_units == ScaleUnit::Ft
+            && scale.precision == ScalePrecision::fraction(16).unwrap()
+            && (scale.scale_x - (2. / 72.)).abs() < 0.000_001
+            && scale.scale_y == scale.scale_x
+    }));
     assert!(
         workspace
             .read_with(cx, |workspace, cx| {
                 workspace.page_scale(request.document_id, 0, cx)
             })
             .is_none(),
-        "the custom range must preserve the untargeted current page"
+        "the page range must leave the untargeted current page alone"
     );
 
     cx.update(|window, cx| window.close_dialog(cx));
-    cx.update(|window, cx| {
-        control.update(cx, |control, cx| {
-            control.open_for(request.document_id, 1, window, cx)
-        });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_page_scale_dialog(request.document_id, 1, window, cx)
     });
     assert_eq!(
-        control.read_with(cx, |control, _| control.mode()),
-        PageScaleMode::Custom,
-    );
-    let hydrated_ids = control.read_with(cx, |control, _| control.visible_stable_ids());
-    assert!(hydrated_ids.contains(&PAGE_SCALE_Y_PDF_LENGTH_ID));
-    assert_eq!(
-        control
-            .read_with(cx, |control, _| control.pdf_length_input())
-            .read_with(cx, |input, _| input.value().to_string()),
-        "1",
+        control.read_with(cx, |control, _| control.choice()),
+        ScaleChoice::Standard(standard("1/2\" = 1'-0\"")),
+        "a custom ratio that is a standard scale reopens as that scale"
     );
     assert_eq!(
-        control
-            .read_with(cx, |control, _| control.known_length_input())
-            .read_with(cx, |input, _| input.value().to_string()),
-        (applied.page_scales[0].scale_x * 72.).to_string(),
-    );
-    assert_eq!(
-        control
-            .read_with(cx, |control, _| control.y_pdf_length_input())
-            .read_with(cx, |input, _| input.value().to_string()),
-        "1",
-    );
-    assert_eq!(
-        control
-            .read_with(cx, |control, _| control.y_real_length_input())
-            .read_with(cx, |input, _| input.value().to_string()),
-        (applied.page_scales[0].scale_y * 72.).to_string(),
+        control.read_with(cx, |control, _| control.display()),
+        (ScaleUnit::Ft, ScalePrecision::fraction(16).unwrap())
     );
     cx.update(|window, cx| window.close_dialog(cx));
     assert_eq!(
@@ -22108,7 +22225,7 @@ fn page_scale_dialog_custom_xy_fraction_range_and_saved_preset_are_one_revision(
                 .annotation_snapshot(request.document_id, cx))
             .unwrap(),
         applied,
-        "opening and cancelling hydrated page scale must not change history",
+        "opening and cancelling the dialog must not change history",
     );
 
     workspace
@@ -22116,25 +22233,209 @@ fn page_scale_dialog_custom_xy_fraction_range_and_saved_preset_are_one_revision(
             workspace.undo_annotations(request.document_id, cx)
         })
         .unwrap();
-    let undone = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.annotation_snapshot(request.document_id, cx)
-        })
-        .unwrap();
-    assert!(undone.page_scales.is_empty());
-    assert!(undone.scale_presets.is_empty());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .page_scales
+            .is_empty()
+    );
     workspace
         .update(cx, |workspace, cx| {
             workspace.redo_annotations(request.document_id, cx)
         })
         .unwrap();
-    let redone = workspace
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .page_scales,
+        applied.page_scales
+    );
+}
+
+#[gpui::test]
+fn page_scale_dialog_changing_the_unit_keeps_the_scale(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("page-scale-units.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_page_scale_dialog(request.document_id, 0, window, cx)
+    });
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .unwrap();
+    let ratio = |cx: &mut gpui::VisualTestContext| {
+        let scale = control
+            .read_with(cx, |control, cx| control.resolved_scale(cx))
+            .unwrap()
+            .unwrap();
+        butter_paper::page_scale_catalog::ratio_of(&scale)
+    };
+    // 1 cm on paper = 1 m, then the same in millimetres.
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.set_display_for_test(
+                ScaleUnit::M,
+                ScalePrecision::decimal(0.01).unwrap(),
+                window,
+                cx,
+            );
+            control.choose_for_test(ScaleChoice::Custom, window, cx);
+            // A Letter page starts with inches on paper; a typed unit wins.
+            control
+                .custom_paper_input()
+                .update(cx, |input, cx| input.set_value("1 cm", window, cx));
+            control
+                .custom_real_input()
+                .update(cx, |input, cx| input.set_value("1", window, cx));
+        })
+    });
+    assert!((ratio(cx) - 100.).abs() < 1e-9);
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.set_display_for_test(
+                ScaleUnit::Mm,
+                ScalePrecision::decimal(1.).unwrap(),
+                window,
+                cx,
+            )
+        })
+    });
+    assert_eq!(
+        control
+            .read_with(cx, |control, _| control.custom_real_input())
+            .read_with(cx, |input, _| input.value().to_string()),
+        "1000"
+    );
+    assert!((ratio(cx) - 100.).abs() < 1e-9);
+    // A length typed with its own unit is read in it.
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .custom_real_input()
+                .update(cx, |input, cx| input.set_value("2 m", window, cx))
+        })
+    });
+    assert!((ratio(cx) - 200.).abs() < 1e-9);
+}
+
+#[gpui::test]
+fn page_scale_dialog_no_scale_removes_the_scale_and_keeps_measurements(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let scale = STANDARD_SCALES[standard("1:100")].page_scale(
+        0,
+        ScaleUnit::M,
+        ScalePrecision::decimal(0.01).unwrap(),
+    );
+    let length = LengthAnnotation::new(
+        MarkupId::new("pdf:page-scale-removed").unwrap(),
+        0,
+        PdfPoint::new(72., 192.).unwrap(),
+        PdfPoint::new(72. + 72. / 2.54, 192.).unwrap(),
+        LengthCalibration::from_page_scale(&scale).unwrap(),
+    )
+    .unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("page-scale-removed.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))
+                .with_annotations(vec![Annotation::Length(length)])
+                .with_page_scales(vec![scale.clone()])),
+            cx,
+        )
+    });
+    let caption = |cx: &mut gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .lengths[0]
+            .caption()
+    };
+    assert_eq!(caption(cx), "1.00 m");
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_page_scale_dialog(request.document_id, 0, window, cx)
+    });
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .unwrap();
+    assert_eq!(
+        control.read_with(cx, |control, _| control.choice()),
+        ScaleChoice::Standard(standard("1:100"))
+    );
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.choose_for_test(ScaleChoice::None, window, cx)
+        })
+    });
+    assert!(control.update(cx, |control, cx| control.apply(cx)));
+    let removed = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert_eq!(redone.page_scales, applied.page_scales);
-    assert_eq!(redone.scale_presets, applied.scale_presets);
+    assert!(removed.page_scales.is_empty());
+    assert!(removed.page_length_calibrations.is_empty());
+    assert_eq!(
+        (removed.revision, removed.undo_depth, removed.dirty),
+        (1, 1, true)
+    );
+    assert_eq!(
+        caption(cx),
+        "1.00 m",
+        "a measurement keeps the scale it was made at"
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .page_scales,
+        vec![scale]
+    );
 }
 
 #[test]
@@ -22235,11 +22536,15 @@ fn page_scale_dialog_save_as_round_trips_scale_without_a_length_annotation() {
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: vec![(0, scale.clone())],
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -22311,7 +22616,6 @@ fn page_rotation_save_as_writes_pdf_rotate_and_independently_reopens_it() {
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: source_session
                     .page_length_calibrations()
                     .iter()
@@ -22320,6 +22624,11 @@ fn page_rotation_save_as_writes_pdf_rotate_and_independently_reopens_it() {
                 page_rotations,
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -22410,53 +22719,36 @@ fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
         .unwrap();
     cx.update(|window, cx| {
         control.update(cx, |control, cx| control.begin_pick(window, cx));
-        assert_eq!(
-            control.update(cx, |control, cx| {
-                control.record_point(
-                    request.document_id,
-                    1,
-                    PdfPoint::new(72., 240.).unwrap(),
-                    false,
-                    window,
-                    cx,
-                )
-            }),
-            CalibrationPointDisposition::FirstPoint
-        );
     });
+    let press = |cx: &mut gpui::VisualTestContext, page_index: u32, x: f64| {
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.press_calibration_point(
+                request.document_id,
+                page_index,
+                PdfPoint::new(x, 240.).unwrap(),
+                false,
+                window,
+                cx,
+            )
+        });
+        control.read_with(cx, |control, _| control.points())
+    };
+    assert!(matches!(press(cx, 1, 72.), (Some(_), None)));
     assert_eq!(
         control.read_with(cx, |control, _| control.target()),
         Some((request.document_id, 1)),
         "the first point, not the dialog-origin page, owns calibration authority"
     );
-    cx.update(|window, cx| {
-        assert_eq!(
-            control.update(cx, |control, cx| {
-                control.record_point(
-                    request.document_id,
-                    0,
-                    PdfPoint::new(144., 240.).unwrap(),
-                    false,
-                    window,
-                    cx,
-                )
-            }),
-            CalibrationPointDisposition::Ignored
-        );
-        assert_eq!(
-            control.update(cx, |control, cx| {
-                control.record_point(
-                    request.document_id,
-                    1,
-                    PdfPoint::new(144., 240.).unwrap(),
-                    false,
-                    window,
-                    cx,
-                )
-            }),
-            CalibrationPointDisposition::Completed
-        );
-    });
+    assert!(
+        matches!(press(cx, 0, 144.), (Some(_), None)),
+        "the second end must be on the first end's page"
+    );
+    assert!(matches!(press(cx, 1, 144.), (Some(_), Some(_))));
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert_eq!(
+        control.read_with(cx, |control, _| control.choice()),
+        ScaleChoice::Measured
+    );
     workspace.update(cx, |workspace, cx| {
         assert!(workspace.close_document(request.document_id, cx));
     });
@@ -36338,6 +36630,8 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
 fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reopen(
     cx: &mut TestAppContext,
 ) {
+    // Free images: these steps resize the image out of its own shape.
+    cx.update(|cx| cx.set_global(butter_paper::application_shell::LockImageProportions(false)));
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let test_executable = std::env::current_exe().expect("the test executable path must exist");
     let worker = test_executable
@@ -37173,6 +37467,8 @@ fn regular_png_workspace_create_move_resize_save_reopen_and_release_is_exact(
     );
 
     let image_id = MarkupId::new("workspace:image:regular-png-1").unwrap();
+    // A free image, stretched below.
+    cx.update(|_, cx| cx.set_global(butter_paper::application_shell::LockImageProportions(false)));
     let asset_id = workspace
         .update(cx, |workspace, cx| {
             workspace.insert_image_at(
@@ -37369,11 +37665,15 @@ fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state(
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -37424,11 +37724,15 @@ fn text_box_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state(
                 images: edited.images().to_vec(),
                 snapshots: edited.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -37510,11 +37814,15 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -37576,11 +37884,15 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 images: created_reopen.images().to_vec(),
                 snapshots: created_reopen.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -37630,11 +37942,15 @@ fn length_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() 
                 images: edited.images().to_vec(),
                 snapshots: edited.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -37712,11 +38028,15 @@ fn pen_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
         images: source_session.images().to_vec(),
         snapshots: source_session.snapshots().to_vec(),
         page_scales: Vec::new(),
-        scale_presets: Vec::new(),
         page_length_calibrations: Vec::new(),
         page_rotations: Vec::new(),
         page_text_edits: Vec::new(),
         form_field_edits: Vec::new(),
+        page_table_edits: Vec::new(),
+        page_content_moves: Vec::new(),
+        page_bases: Vec::new(),
+        pages_to_keep_when_saved: Vec::new(),
+        page_slots: Vec::new(),
         undo_depth: 2,
         redo_depth: 0,
     };
@@ -37774,11 +38094,15 @@ fn pen_save_as_reconciles_create_edit_delete_and_reopens_exact_typed_state() {
                 images: edited.images().to_vec(),
                 snapshots: edited.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -37860,11 +38184,15 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
                 images: source_session.images().to_vec(),
                 snapshots: source_session.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -37923,11 +38251,15 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
                 images: created_reopen.images().to_vec(),
                 snapshots: created_reopen.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 2,
                 redo_depth: 0,
             },
@@ -37982,11 +38314,15 @@ fn highlight_save_as_uses_canonical_identity_and_reconciles_create_edit_delete()
                 images: edited_reopen.images().to_vec(),
                 snapshots: edited_reopen.snapshots().to_vec(),
                 page_scales: Vec::new(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: Vec::new(),
                 page_rotations: Vec::new(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 3,
                 redo_depth: 0,
             },
@@ -38054,11 +38390,15 @@ fn save_as_refuses_source_identity_drift_before_writing_a_target() {
             images: persistence.images().to_vec(),
             snapshots: persistence.snapshots().to_vec(),
             page_scales: Vec::new(),
-            scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations: Vec::new(),
             page_text_edits: Vec::new(),
             form_field_edits: Vec::new(),
+            page_table_edits: Vec::new(),
+            page_content_moves: Vec::new(),
+            page_bases: Vec::new(),
+            pages_to_keep_when_saved: Vec::new(),
+            page_slots: Vec::new(),
             undo_depth: 0,
             redo_depth: 0,
         },
@@ -38150,7 +38490,6 @@ fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_remov
                 images: persistence.images().to_vec(),
                 snapshots: persistence.snapshots().to_vec(),
                 page_scales: persistence.page_scales().to_vec(),
-                scale_presets: Vec::new(),
                 page_length_calibrations: persistence
                     .page_length_calibrations()
                     .iter()
@@ -38163,6 +38502,11 @@ fn in_place_save_atomically_replaces_the_regular_source_preserves_mode_and_remov
                     .collect(),
                 page_text_edits: Vec::new(),
                 form_field_edits: Vec::new(),
+                page_table_edits: Vec::new(),
+                page_content_moves: Vec::new(),
+                page_bases: Vec::new(),
+                pages_to_keep_when_saved: Vec::new(),
+                page_slots: Vec::new(),
                 undo_depth: 1,
                 redo_depth: 0,
             },
@@ -38315,11 +38659,15 @@ fn in_place_save_refuses_a_final_symlink_source_without_writing_or_staging() {
             images: Vec::new(),
             snapshots: Vec::new(),
             page_scales: Vec::new(),
-            scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations: Vec::new(),
             page_text_edits: Vec::new(),
             form_field_edits: Vec::new(),
+            page_table_edits: Vec::new(),
+            page_content_moves: Vec::new(),
+            page_bases: Vec::new(),
+            pages_to_keep_when_saved: Vec::new(),
+            page_slots: Vec::new(),
             undo_depth: 0,
             redo_depth: 0,
         },
@@ -38606,11 +38954,15 @@ fn save_as_does_not_publish_a_target_when_native_reopen_validation_fails() {
             images: persistence.images().to_vec(),
             snapshots: persistence.snapshots().to_vec(),
             page_scales: Vec::new(),
-            scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations: Vec::new(),
             page_text_edits: Vec::new(),
             form_field_edits: Vec::new(),
+            page_table_edits: Vec::new(),
+            page_content_moves: Vec::new(),
+            page_bases: Vec::new(),
+            pages_to_keep_when_saved: Vec::new(),
+            page_slots: Vec::new(),
             undo_depth: 0,
             redo_depth: 0,
         },
@@ -39828,9 +40180,6 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     );
     cx.run_until_parked();
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
-    assert!(page_scale_control.read_with(cx, |control, _| {
-        control.visible_stable_ids().contains(&PAGE_SCALE_DIALOG_ID)
-    }));
 
     // VisualTestContext does not expose modal descendants. Use the accepted
     // retained PageScaleControl seams for pick, input, and apply after proving
@@ -39841,11 +40190,8 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
-    assert!(page_scale_control.read_with(cx, |control, _| {
-        control.mode() == PageScaleMode::Calibrate
-            && control.visible_stable_ids().contains(&PAGE_SCALE_PICK_ID)
-    }));
-    assert!(cx.debug_bounds(PAGE_SCALE_PICK_ALERT_ID).is_some());
+    assert!(page_scale_control.read_with(cx, |control, _| control.is_picking()));
+    assert!(cx.debug_bounds(PAGE_SCALE_PICK_HINT_ID).is_some());
     let layer_bounds = cx
         .debug_bounds(layer_id)
         .expect("the calibration picker must retain the annotation layer");
@@ -39871,7 +40217,8 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         (actual.x - expected.x).abs() <= 0.000_1 && (actual.y - expected.y).abs() <= 0.000_1
     };
     cx.simulate_click(to_view(calibration_start), Modifiers::default());
-    assert!(cx.debug_bounds(PAGE_SCALE_PICK_ALERT_ID).is_some());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(PAGE_SCALE_PICK_HINT_ID).is_some());
     cx.simulate_click(to_view(calibration_end), Modifiers::default());
     cx.run_until_parked();
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
@@ -39881,6 +40228,14 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert!(same_pdf_point(picked_end.unwrap(), calibration_end));
     let known_length = page_scale_control.read_with(cx, |control, _| control.known_length_input());
     cx.update(|window, cx| {
+        page_scale_control.update(cx, |control, cx| {
+            control.set_display_for_test(
+                ScaleUnit::M,
+                ScalePrecision::decimal(0.001).unwrap(),
+                window,
+                cx,
+            )
+        });
         known_length.update(cx, |input, cx| input.set_value("2", window, cx));
     });
     let before_scale = workspace
@@ -39927,8 +40282,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     let layer_bounds = cx
         .debug_bounds(layer_id)
         .expect("the Length tool must retain the annotation layer");
-    // The calibration alert is gone; derive the transform from this frame,
-    // not the smaller viewport used while picking the scale.
+    // Derive the transform from this frame.
     let scale = (f64::from(layer_bounds.size.width) / display_size.0)
         .min(f64::from(layer_bounds.size.height) / display_size.1);
     let transform = PageTransform::from_page_coordinate_space(coordinate_space, scale).unwrap();
@@ -46187,4 +46541,108 @@ fn cmd_w_closes_a_window_with_no_document_tabs(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("cmd-w");
     visual.run_until_parked();
     assert!(cx.windows().is_empty());
+}
+
+#[test]
+fn saving_a_table_page_keeps_the_page_and_saving_an_undone_state_restores_it() {
+    use butter_paper::pdf_tables::{PageTableEdit, page_tables};
+    use butter_paper::pdf_text_edit::{TextEditLimits, extract_page_text};
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = manifest_dir.join("tests/fixtures/text-edit/chrome-table.pdf");
+    let scratch = |name: &str| {
+        manifest_dir.join(format!(
+            "target/test-scratch/table-kept-{name}-{}.pdf",
+            std::process::id()
+        ))
+    };
+    let (grown_target, undone_target) = (scratch("grown"), scratch("undone"));
+    let _cleanup = ScratchFiles(vec![grown_target.clone(), undone_target.clone()]);
+    let origins = |path: &Path| {
+        let document = lopdf::Document::load(path).unwrap();
+        extract_page_text(&document, 0, &TextEditLimits::default())
+            .unwrap()
+            .lines
+            .iter()
+            .map(|line| (line.text.clone(), line.origin()))
+            .collect::<Vec<_>>()
+    };
+    let original = origins(&source);
+    let source_session = PdfPersistenceSession::open(&source).unwrap();
+    let table = page_tables(&source_session.page_text(0).unwrap()).remove(0);
+    let mut grown = PageTableEdit::unchanged(0, &table);
+    grown.rows[1].size += 20.;
+    let mut annotations = persistence_annotation_snapshot(&source_session);
+    annotations.page_table_edits = vec![grown];
+    annotations.pages_to_keep_when_saved = vec![0];
+    let saver = PdfDocumentSaver::new(Arc::new(SuccessfulOpener));
+    let saved = saver
+        .save(&SaveDocumentRequest {
+            document_id: DocumentId::new(97),
+            generation: 1,
+            source_path: source.clone(),
+            destination: save_as_destination(&source, &grown_target),
+            current_page: 0,
+            annotation_revision: 1,
+            annotations: annotations.clone(),
+            expected_source_sha256: None,
+        })
+        .unwrap();
+    assert_ne!(origins(&grown_target), original);
+    // The save kept the page as the source had it.
+    let kept = saved.kept_pages().to_vec();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].page_index, 0);
+
+    // Undone past the save and saved again: the page is the source's.
+    let grown_session = PdfPersistenceSession::open(&grown_target).unwrap();
+    let mut undone = persistence_annotation_snapshot(&grown_session);
+    undone.page_bases = kept;
+    undone.pages_to_keep_when_saved = vec![0];
+    let saved = saver
+        .save(&SaveDocumentRequest {
+            document_id: DocumentId::new(97),
+            generation: 2,
+            source_path: grown_target.clone(),
+            destination: save_as_destination(&grown_target, &undone_target),
+            current_page: 0,
+            annotation_revision: 2,
+            annotations: undone,
+            expected_source_sha256: None,
+        })
+        .unwrap();
+    assert_eq!(origins(&undone_target), original);
+    // That save kept the grown page, for redo.
+    assert_eq!(saved.kept_pages().len(), 1);
+    let reopened = PdfPersistenceSession::open(&undone_target).unwrap();
+    assert_eq!(page_tables(&reopened.page_text(0).unwrap()).len(), 1);
+}
+
+#[gpui::test]
+fn the_canvas_context_menu_switches_edit_pdf(cx: &mut TestAppContext) {
+    cx.update(init_document_workspace_actions);
+    let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
+    let editing = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, _| workspace.content_edit_mode(document_id))
+    };
+    assert!(!editing(cx));
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let menu_at = point(viewport.origin.x + px(40.), viewport.origin.y + px(40.));
+    for expected in [true, false] {
+        cx.simulate_mouse_down(menu_at, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(menu_at, MouseButton::Right, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // Select tool, Hand tool, then Edit PDF.
+        cx.simulate_keystrokes("down down down enter");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+        assert_eq!(editing(cx), expected);
+    }
+}
+
+/// The index of the standard scale named `label`.
+fn standard(label: &str) -> usize {
+    STANDARD_SCALES
+        .iter()
+        .position(|scale| scale.label == label)
+        .unwrap_or_else(|| panic!("{label} is a standard scale"))
 }

@@ -1401,9 +1401,6 @@ impl DocumentRecoveryStore {
         if head.document_id != id.to_hex() {
             return Err(DocumentRecoveryStoreError::Corrupt(Corruption::InvalidHead));
         }
-        if head.saved_revision > head.current_revision {
-            return Err(DocumentRecoveryStoreError::Corrupt(Corruption::InvalidHead));
-        }
         if head.checkpoint_sequence == 0 {
             return Err(DocumentRecoveryStoreError::Corrupt(Corruption::InvalidHead));
         }
@@ -1948,11 +1945,8 @@ fn validate_publication(
             "timeline is too large",
         ));
     }
-    if publication.saved_revision > publication.current_revision {
-        return Err(DocumentRecoveryStoreError::InvalidInput(
-            "saved revision exceeds current revision",
-        ));
-    }
+    // Either revision may be the later: undo after a save goes back past
+    // the saved one.
     if publication.source_sha256 != sha256(publication.base_pdf) {
         return Err(DocumentRecoveryStoreError::InvalidInput(
             "source digest does not match the exact base PDF",
@@ -2012,11 +2006,8 @@ fn validate_streaming_publication(
             "timeline is too large",
         ));
     }
-    if publication.saved_revision > publication.current_revision {
-        return Err(DocumentRecoveryStoreError::InvalidInput(
-            "saved revision exceeds current revision",
-        ));
-    }
+    // Either revision may be the later: undo after a save goes back past
+    // the saved one.
     match (publication.source_kind, publication.requires_save_as) {
         (RecoverySourceKind::Opened, false) | (RecoverySourceKind::Generated, true) => Ok(()),
         _ => Err(DocumentRecoveryStoreError::InvalidInput(
@@ -3292,6 +3283,36 @@ mod tests {
             ),
             Err(DocumentRecoveryStoreError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn undo_after_a_save_publishes_a_revision_before_the_saved_one() {
+        let root = TempRoot::new();
+        let store = DocumentRecoveryStore::open(&root.0).unwrap();
+        let saved = root.0.join("saved.pdf");
+        fs::write(&saved, b"saved base").unwrap();
+        let clean = StagedRecoveryPublication {
+            source_path: &saved,
+            source_kind: RecoverySourceKind::Opened,
+            timeline: b"clean timeline",
+            current_revision: 4,
+            saved_revision: 4,
+            requires_save_as: false,
+        };
+        let authority = store
+            .stage_and_publish_new(sha256(b"saved base"), &clean)
+            .unwrap();
+        // Undo goes back to revision 3, before the saved revision 4.
+        let undone = StagedRecoveryPublication {
+            timeline: b"undone timeline",
+            current_revision: 3,
+            ..clean
+        };
+        let authority = store.replace_timeline(&authority, &undone).unwrap();
+        let recovered = store.load(authority.document_id()).unwrap().unwrap();
+        assert_eq!(recovered.timeline, b"undone timeline");
+        assert_eq!(recovered.current_revision, 3);
+        assert_eq!(recovered.saved_revision, 4);
     }
 
     #[test]

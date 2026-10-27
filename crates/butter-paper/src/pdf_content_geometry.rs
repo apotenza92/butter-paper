@@ -37,9 +37,21 @@ pub struct PdfRect {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PdfContentPrimitive {
-    Line { start: PdfPoint, end: PdfPoint },
-    Rect { rect: PdfRect },
-    Polyline { points: Vec<PdfPoint>, closed: bool },
+    Line {
+        start: PdfPoint,
+        end: PdfPoint,
+    },
+    Rect {
+        rect: PdfRect,
+    },
+    Polyline {
+        points: Vec<PdfPoint>,
+        closed: bool,
+    },
+    /// The box Edit PDF frames a paragraph, drawing or image with.
+    Frame {
+        rect: PdfRect,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

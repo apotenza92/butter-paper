@@ -11,12 +11,13 @@ use super::*;
 use crate::page_text_editor::{
     Backspace, CopyText, CutText, DeleteForward, DeleteToLineStart, DeleteWordBackward,
     DeleteWordForward, FinishEditing, InsertNewline, MoveDown, MoveLeft, MoveLineEnd,
-    MoveLineStart, MoveRight, MoveUp, MoveWordLeft, MoveWordRight, PAGE_TEXT_EDITOR_CONTEXT,
-    PageTextEditState, PageTextInput, PageTextInputEvent, PageTextScreenMap, PasteText, RedoText,
-    SelectAllText, SelectDown, SelectLeft, SelectLineEnd, SelectLineStart, SelectRight, SelectUp,
-    SelectWordLeft, SelectWordRight, UndoText,
+    MoveLineStart, MoveRight, MoveUp, MoveWordLeft, MoveWordRight, NextCell,
+    PAGE_TEXT_EDITOR_CONTEXT, PageTextEditState, PageTextInput, PageTextInputEvent,
+    PageTextScreenMap, PasteText, PreviousCell, RedoText, SelectAllText, SelectDown, SelectLeft,
+    SelectLineEnd, SelectLineStart, SelectRight, SelectUp, SelectWordLeft, SelectWordRight,
+    UndoText,
 };
-use crate::pdf_text_blocks::{PageTextBlock, paragraph_blocks};
+use crate::pdf_text_blocks::PageTextBlock;
 use crate::pdf_text_edit::{
     ExtraLine, PageTextEdit, PageTextLayer, PageTextLine, TextLineAnchor, extra_line_base,
     layout_text_edit_fitted,
@@ -33,8 +34,12 @@ type Quad = [(f64, f64); 4];
 
 pub(super) enum PageTextLayerState {
     Pending,
-    /// The page's text and its paragraphs.
-    Ready(Arc<PageTextLayer>, Arc<Vec<PageTextBlock>>),
+    /// The page's text, its paragraphs and its tables.
+    Ready(
+        Arc<PageTextLayer>,
+        Arc<Vec<PageTextBlock>>,
+        Arc<Vec<crate::pdf_tables::PageTable>>,
+    ),
     Failed(String),
 }
 
@@ -44,6 +49,8 @@ pub(super) enum PageTextLayerState {
 pub(super) struct PageTextDocumentState {
     epoch: u64,
     layers: HashMap<u32, PageTextLayerState>,
+    /// The kept page each page's text was read from (`None`: the file's).
+    layer_bases: HashMap<u32, Option<String>>,
     /// The edits the worker renders.
     shown: DocumentEdits,
     /// Edits sent to the worker and not yet acknowledged.
@@ -52,9 +59,16 @@ pub(super) struct PageTextDocumentState {
     rejected: Option<DocumentEdits>,
     /// The last hovered point, tested again when its page's text arrives.
     hover_probe: Option<(PageInteraction, PdfPoint)>,
-    /// Each page's paragraph outlines, a quad per line keyed by the
-    /// paragraph's first line, for the edits they were drawn with.
-    outlines: HashMap<u32, (Vec<PageTextEdit>, Arc<Vec<(TextLineAnchor, Vec<Quad>)>>)>,
+}
+
+impl PageTextDocumentState {
+    /// Whether reading the page's text failed.
+    pub(super) fn failed(&self, page_index: u32) -> bool {
+        matches!(
+            self.layers.get(&page_index),
+            Some(PageTextLayerState::Failed(_))
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +80,22 @@ pub(super) struct PageTextEditing {
     pub epoch: u64,
     /// The press that started a drag selection is still held.
     pub dragging: bool,
+    /// The table cell the paragraph is in.
+    pub table: Option<TableEditingCell>,
+    /// How far table edits move the paragraph from where its lines are in
+    /// the base document, in page space.
+    pub offset: (f64, f64),
+}
+
+/// A table cell being edited: the table, the cell's row and column in the
+/// edited table, and whether its text is the table edit's own (a cell with
+/// no text in the base table).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TableEditingCell {
+    pub key: crate::pdf_tables::TableKey,
+    pub row: usize,
+    pub column: usize,
+    pub virtual_cell: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,22 +105,19 @@ pub(super) struct PageTextHover {
     /// The hovered paragraph's first line, or the read-only line.
     pub anchor: TextLineAnchor,
     pub editable: bool,
+    /// It is in a table cell, which a press edits directly.
+    pub cell: bool,
 }
 
-/// What the viewport draws over one page for the Edit PDF Content tool, in page
-/// user space.
-#[derive(Clone)]
+/// What the viewport draws over one page in Edit PDF mode, in page user
+/// space.
+#[derive(Clone, Default)]
 pub(super) struct PageTextOverlay {
     pub page_index: u32,
-    /// Every editable paragraph on the page, a quad per line, while Edit
-    /// Text is active.
-    pub paragraphs: Vec<Quad>,
-    /// The hovered paragraph, a quad per line.
+    /// The frames of the hovered paragraph, drawing or image.
     pub hover: Vec<Quad>,
     /// The edited paragraph, a quad per line.
     pub frame: Vec<Quad>,
-    /// The frame's colour: a warning when added lines overlap other text.
-    pub frame_color: Option<gpui::Hsla>,
     pub selection: Vec<Quad>,
     pub caret: Option<[(f64, f64); 2]>,
     /// Underlines under text an input method is composing.
@@ -100,20 +127,39 @@ pub(super) struct PageTextOverlay {
     /// Fainter marks after its lines that wrap into the next.
     pub wraps: Vec<Vec<(f64, f64)>>,
     pub input: Option<(Entity<PageTextInput>, FocusHandle)>,
+    /// How far table edits move the edited paragraph from its base lines:
+    /// the input method's text positions are the base lines'.
+    pub input_offset: (f64, f64),
+    /// Labels under edited paragraphs and tables that run into other text
+    /// or off the page.
+    pub warnings: Vec<super::tables::ContentWarning>,
+    /// The selected content's outlines.
+    pub selected: Vec<Quad>,
+    /// Its resize handles, page points.
+    pub handles: Vec<(f64, f64)>,
 }
 
 /// A line under a page point: in a paragraph that can be edited, or a
 /// read-only line.
-struct PageTextHit {
-    layer: Arc<PageTextLayer>,
-    block: Option<PageTextBlock>,
-    line: PageTextLine,
+pub(super) struct PageTextHit {
+    pub layer: Arc<PageTextLayer>,
+    pub block: Option<PageTextBlock>,
+    pub line: PageTextLine,
+    /// How far table edits and moves move the line on the page.
+    pub offset: (f64, f64),
+    /// The table cell it is in.
+    pub cell: Option<TableEditingCell>,
+}
+
+fn shifted(quad: &Quad, (dx, dy): (f64, f64)) -> Quad {
+    quad.map(|(x, y)| (x + dx, y + dy))
 }
 
 /// The text-space span of a line's visible characters as `runs` lay it
 /// out, without leading and trailing spaces.
 /// The pages whose content differs between two sets of edits: pages whose
-/// text edits differ, and the pages of form fields whose values differ.
+/// text or table edits, moves or kept pages differ, and the pages of form fields
+/// whose values differ.
 fn changed_pages(
     before: &DocumentEdits,
     after: &DocumentEdits,
@@ -133,6 +179,53 @@ fn changed_pages(
         .map(|edit| edit.page_index)
         .filter(|page| on_page(&before.text, *page) != on_page(&after.text, *page))
         .collect::<BTreeSet<_>>();
+    let tables_on = |edits: &DocumentEdits, page: u32| {
+        edits
+            .tables
+            .iter()
+            .filter(|edit| edit.page_index == page)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    pages.extend(
+        before
+            .tables
+            .iter()
+            .chain(&after.tables)
+            .map(|edit| edit.page_index)
+            .filter(|page| tables_on(before, *page) != tables_on(after, *page)),
+    );
+    let moves_on = |edits: &DocumentEdits, page: u32| {
+        edits
+            .moves
+            .iter()
+            .filter(|item| item.page_index == page)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    pages.extend(
+        before
+            .moves
+            .iter()
+            .chain(&after.moves)
+            .map(|item| item.page_index)
+            .filter(|page| moves_on(before, *page) != moves_on(after, *page)),
+    );
+    let base_on = |edits: &DocumentEdits, page: u32| {
+        edits
+            .bases
+            .iter()
+            .find(|base| base.page_index == page)
+            .map(|base| base.id.clone())
+    };
+    pages.extend(
+        before
+            .bases
+            .iter()
+            .chain(&after.bases)
+            .map(|base| base.page_index)
+            .filter(|page| base_on(before, *page) != base_on(after, *page)),
+    );
     let value = |edits: &DocumentEdits, name: &str| {
         edits
             .forms
@@ -203,6 +296,10 @@ fn line_scale(line: &PageTextLine) -> f64 {
     (m[0] * m[3] - m[1] * m[2]).abs().sqrt().max(1e-9)
 }
 
+/// How long edits pause before the thumbnails of the pages they changed
+/// are drawn again.
+const THUMBNAIL_REFRESH_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+
 impl DocumentWorkspace {
     fn page_text_state(
         &mut self,
@@ -222,17 +319,17 @@ impl DocumentWorkspace {
 
     /// The editable text of a page, requesting it from the worker when
     /// it has not been read.
-    /// With Edit PDF Content active, loads the text of the visible pages, so the
-    /// first press on them finds their lines.
+    /// In Edit PDF mode, loads the text of the visible pages, so the first
+    /// press on them finds their lines.
     pub(super) fn prefetch_page_text(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        if !self.content_edit_mode(document_id) {
+            return;
+        }
         let Some(session) = self.session(document_id, cx).cloned() else {
             return;
         };
         let pages = {
             let session = session.read(cx);
-            if !session.annotations.tool().edits_page_text() {
-                return;
-            }
             session
                 .viewer
                 .plan_snapshot()
@@ -257,7 +354,6 @@ impl DocumentWorkspace {
             state
                 .layers
                 .retain(|page, layer| near(page) || matches!(layer, PageTextLayerState::Pending));
-            state.outlines.retain(|page, _| near(page));
         }
         // Reading text shares the worker with rendering, so one page is read
         // at a time, always one in view now: pages flown past while
@@ -272,8 +368,19 @@ impl DocumentWorkspace {
         if reading {
             return;
         }
+        // Then the pages either side, where a table in view may run on.
+        let page_count = self
+            .session(document_id, cx)
+            .map_or(0, |session| session.read(cx).page_count());
+        let neighbours = pages
+            .iter()
+            .flat_map(|page| [page.checked_sub(1), page.checked_add(1)])
+            .flatten()
+            .filter(|page| *page < page_count)
+            .collect::<Vec<_>>();
         let next = pages
             .into_iter()
+            .chain(neighbours)
             .filter_map(|page| u32::try_from(page).ok())
             .find(|page| {
                 self.page_text
@@ -285,69 +392,7 @@ impl DocumentWorkspace {
         }
     }
 
-    /// The outlines of every editable paragraph on a loaded page, kept
-    /// until the page's edits change.
-    fn page_paragraph_outlines(
-        &mut self,
-        document_id: DocumentId,
-        page_index: u32,
-        cx: &mut Context<Self>,
-    ) -> Option<Arc<Vec<(TextLineAnchor, Vec<Quad>)>>> {
-        // Only text already read: drawing never asks the worker.
-        let (layer, blocks) = match self.page_text.get(&document_id)?.layers.get(&page_index)? {
-            PageTextLayerState::Ready(layer, blocks) => (layer.clone(), blocks.clone()),
-            _ => return None,
-        };
-        let edits = self
-            .page_text_edits_of(document_id, cx)
-            .into_iter()
-            .filter(|edit| edit.page_index == page_index)
-            .collect::<Vec<_>>();
-        if let Some((drawn, outlines)) = self
-            .page_text
-            .get(&document_id)
-            .and_then(|state| state.outlines.get(&page_index))
-            && *drawn == edits
-        {
-            return Some(outlines.clone());
-        }
-        // Text placed outside the page's visible area (printers' notes)
-        // shows no outline.
-        let view_box = self
-            .session(document_id, cx)
-            .and_then(|session| session.read(cx).source_page_coordinate_space(page_index))
-            .map(|space| space.view_box());
-        let visible = |quad: &Quad| {
-            view_box.is_none_or(|view| {
-                let xs = quad.iter().map(|(x, _)| *x);
-                let ys = quad.iter().map(|(_, y)| *y);
-                xs.clone().fold(f64::MAX, f64::min) < view.right()
-                    && xs.fold(f64::MIN, f64::max) > view.x
-                    && ys.clone().fold(f64::MAX, f64::min) < view.top()
-                    && ys.fold(f64::MIN, f64::max) > view.y
-            })
-        };
-        let outlines = Arc::new(
-            blocks
-                .iter()
-                .map(|block| {
-                    let mut quads =
-                        self.paragraph_line_quads(document_id, page_index, &layer, block, cx);
-                    quads.retain(visible);
-                    (block.lines[0], quads)
-                })
-                .collect::<Vec<_>>(),
-        );
-        self.page_text
-            .get_mut(&document_id)?
-            .outlines
-            .insert(page_index, (edits, outlines.clone()));
-        Some(outlines)
-    }
-
-    /// A paragraph's lines as the page shows them, a quad each, with the
-    /// lines earlier edits added below it.
-    fn paragraph_line_quads(
+    pub(super) fn paragraph_line_quads(
         &self,
         document_id: DocumentId,
         page_index: u32,
@@ -376,7 +421,7 @@ impl DocumentWorkspace {
         quads
     }
 
-    fn page_text_layer(
+    pub(super) fn page_text_layer(
         &mut self,
         document_id: DocumentId,
         page_index: u32,
@@ -389,30 +434,47 @@ impl DocumentWorkspace {
         };
         let state = self.page_text_state(document_id, epoch);
         match state.layers.get(&page_index) {
-            Some(PageTextLayerState::Ready(layer, _)) => return Some(layer.clone()),
+            Some(PageTextLayerState::Ready(layer, _, _)) => return Some(layer.clone()),
             Some(PageTextLayerState::Pending | PageTextLayerState::Failed(_)) => return None,
             None => {}
         }
         let resource = resource?;
+        // A page shown as an earlier file had it is read from that page.
+        let base = self
+            .page_bases_of(document_id, cx)
+            .into_iter()
+            .find(|base| base.page_index == page_index);
+        let requested = base.as_ref().map(|base| base.id.clone());
+        let state = self.page_text_state(document_id, epoch);
         state.layers.insert(page_index, PageTextLayerState::Pending);
-        let task = cx
-            .background_executor()
-            .spawn(async move { resource.page_text(page_index) });
+        state.layer_bases.insert(page_index, requested.clone());
+        let task = cx.background_executor().spawn(async move {
+            match base {
+                Some(base) => resource.page_base_text(page_index, &base),
+                None => resource.page_text(page_index),
+            }
+        });
         cx.spawn(async move |owner, cx| {
             let result = task.await;
             let _ = owner.update(cx, |workspace, cx| {
                 let Some(state) = workspace.page_text.get_mut(&document_id) else {
                     return;
                 };
-                if state.epoch != epoch {
+                if state.epoch != epoch || state.layer_bases.get(&page_index) != Some(&requested) {
                     return;
                 }
                 state.layers.insert(
                     page_index,
                     match result {
                         Ok(layer) => {
-                            let blocks = paragraph_blocks(&layer);
-                            PageTextLayerState::Ready(Arc::new(layer), Arc::new(blocks))
+                            let tables = crate::pdf_tables::page_tables(&layer);
+                            let blocks =
+                                crate::pdf_text_blocks::paragraph_blocks_in(&layer, &tables);
+                            PageTextLayerState::Ready(
+                                Arc::new(layer),
+                                Arc::new(blocks),
+                                Arc::new(tables),
+                            )
                         }
                         Err(error) => PageTextLayerState::Failed(error),
                     },
@@ -420,9 +482,9 @@ impl DocumentWorkspace {
                 let probe = state
                     .hover_probe
                     .filter(|(interaction, _)| interaction.page_index == page_index);
+                workspace.refresh_content_snapping_for_text(document_id, page_index, cx);
                 if let Some((interaction, point)) = probe
-                    && workspace.annotation_tool(document_id, cx)
-                        == Some(AnnotationTool::EditPdfContent)
+                    && workspace.editing_content(document_id, cx)
                 {
                     workspace.update_page_text_hover(interaction, point, cx);
                 }
@@ -451,10 +513,16 @@ impl DocumentWorkspace {
 
     /// The edits the page should show: the document's, with the paragraph
     /// being edited as it is now.
-    fn desired_page_text_edits(&self, document_id: DocumentId, cx: &App) -> Vec<PageTextEdit> {
+    pub(super) fn desired_page_text_edits(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Vec<PageTextEdit> {
         let mut edits = self.page_text_edits_of(document_id, cx);
+        // A cell with no base text keeps its text with the table edit.
         if let Some(editing) = self.page_text_editing
             && editing.document_id == document_id
+            && !editing.table.is_some_and(|table| table.virtual_cell)
             && let Some(state) = self
                 .page_text_input
                 .as_ref()
@@ -475,6 +543,166 @@ impl DocumentWorkspace {
         edits
     }
 
+    /// A loaded page's text, paragraphs and tables.
+    pub(super) fn loaded_page_text(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+    ) -> Option<(
+        Arc<PageTextLayer>,
+        Arc<Vec<PageTextBlock>>,
+        Arc<Vec<crate::pdf_tables::PageTable>>,
+    )> {
+        match self.page_text.get(&document_id)?.layers.get(&page_index)? {
+            PageTextLayerState::Ready(layer, blocks, tables) => {
+                Some((layer.clone(), blocks.clone(), tables.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Pages the document shows as an earlier file had them.
+    pub(super) fn page_bases_of(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Vec<crate::pdf_page_base::PageBase> {
+        self.session(document_id, cx)
+            .map(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .document_page_bases(document_id.value())
+                    .to_vec()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(super) fn page_table_edits_of(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Vec<crate::pdf_tables::PageTableEdit> {
+        self.session(document_id, cx)
+            .map(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .document_page_table_edits(document_id.value())
+                    .to_vec()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The document's edit of a table on a page, if any.
+    pub(super) fn page_table_edit(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        key: crate::pdf_tables::TableKey,
+        cx: &App,
+    ) -> Option<crate::pdf_tables::PageTableEdit> {
+        self.page_table_edits_of(document_id, cx)
+            .into_iter()
+            .find(|edit| edit.page_index == page_index && edit.key() == key)
+    }
+
+    /// The table being edited as it is now: the document's edit, with the
+    /// edited cell's text as typed and rows grown to hold their cells'.
+    fn live_table_edit(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Option<crate::pdf_tables::PageTableEdit> {
+        let editing = self
+            .page_text_editing
+            .filter(|editing| editing.document_id == document_id)?;
+        let cell = editing.table?;
+        let (layer, _, tables) = self.loaded_page_text(document_id, editing.page_index)?;
+        let table = tables.iter().find(|table| table.key() == cell.key)?;
+        let current = self.page_table_edit(document_id, editing.page_index, cell.key, cx);
+        let mut view = crate::table_editing::TableView::new(
+            editing.page_index,
+            table.clone(),
+            current.as_ref(),
+        );
+        if cell.virtual_cell
+            && let Some(state) = self
+                .page_text_input
+                .as_ref()
+                .and_then(|(input, _)| input.read(cx).state.as_ref())
+        {
+            let origin = view.edit.cell_origin(cell.row, cell.column)?;
+            let lines = crate::table_editing::cell_text_lines(origin, state.laid_out_lines());
+            view.edit
+                .cell_texts
+                .retain(|text| (text.row, text.column) != (cell.row, cell.column));
+            if !lines.is_empty() {
+                view.edit.cell_texts.push(crate::pdf_tables::TableCellText {
+                    row: cell.row,
+                    column: cell.column,
+                    lines,
+                });
+                view.edit
+                    .cell_texts
+                    .sort_by_key(|text| (text.row, text.column));
+            }
+        }
+        let text = self
+            .desired_page_text_edits(document_id, cx)
+            .into_iter()
+            .filter(|edit| edit.page_index == editing.page_index)
+            .collect::<Vec<_>>();
+        crate::table_editing::fit_rows(&layer, &mut view, &text);
+        Some(view.edit)
+    }
+
+    /// The table edits the pages should show: the document's, with the
+    /// table being edited as it is now.
+    pub(super) fn desired_page_table_edits(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Vec<crate::pdf_tables::PageTableEdit> {
+        let mut edits = self.page_table_edits_of(document_id, cx);
+        if let Some(live) = self.live_table_edit(document_id, cx) {
+            edits.retain(|edit| !(edit.page_index == live.page_index && edit.key() == live.key()));
+            if !live.is_unchanged() {
+                edits.push(live);
+            }
+            edits.sort_by_key(|edit| (edit.page_index, edit.key()));
+        }
+        edits
+    }
+
+    /// Whether a table on the page is being edited, so that it shows
+    /// table edits the document does not have yet.
+    pub(super) fn editing_page_tables(&self, document_id: DocumentId, page_index: u32) -> bool {
+        self.page_text_editing.is_some_and(|editing| {
+            editing.document_id == document_id
+                && editing.page_index == page_index
+                && editing.table.is_some()
+        })
+    }
+
+    /// The table edits a page shows now.
+    pub(super) fn shown_page_table_edits(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &App,
+    ) -> Vec<crate::pdf_tables::PageTableEdit> {
+        let edits = self.page_table_edits_of(document_id, cx);
+        if self.editing_page_tables(document_id, page_index) {
+            self.desired_page_table_edits(document_id, cx)
+        } else {
+            edits
+        }
+        .into_iter()
+        .filter(|edit| edit.page_index == page_index)
+        .collect()
+    }
+
     /// The form field values the pages should show: the document's.
     fn form_field_edits_of(
         &self,
@@ -492,6 +720,16 @@ impl DocumentWorkspace {
             .unwrap_or_default()
     }
 
+    /// Forgets the page text read for `document_id`'s pages: after they
+    /// are rearranged it belongs to other pages.
+    pub(super) fn forget_page_text_layers(&mut self, document_id: DocumentId) {
+        if let Some(state) = self.page_text.get_mut(&document_id) {
+            state.layers.clear();
+            state.layer_bases.clear();
+            state.hover_probe = None;
+        }
+    }
+
     /// Sends the edits the pages should show (page text and form fields) to
     /// the worker when they differ from what it renders, one update at a
     /// time, then refreshes the view.
@@ -507,16 +745,48 @@ impl DocumentWorkspace {
         let desired = DocumentEdits {
             text: self.desired_page_text_edits(document_id, cx),
             forms: self.form_field_edits_of(document_id, cx),
+            tables: self.desired_page_table_edits(document_id, cx),
+            moves: self.desired_page_content_moves(document_id, cx),
+            bases: self.page_bases_of(document_id, cx),
+            pages: self
+                .session(document_id, cx)
+                .map(|session| {
+                    session
+                        .read(cx)
+                        .annotations
+                        .document_page_slots(document_id.value())
+                        .to_vec()
+                })
+                .unwrap_or_default(),
         };
         let form = resource
             .as_ref()
             .map(|resource| resource.form_layer())
             .unwrap_or_default();
         let state = self.page_text_state(document_id, epoch);
-        if state.sending.is_some()
-            || state.shown == desired
-            || state.rejected.as_ref() == Some(&desired)
-        {
+        // Undo or redo past a save shows a page as another file had it: its
+        // text is read again.
+        let stale = state
+            .layer_bases
+            .iter()
+            .filter(|(page, read_from)| {
+                let shown = desired
+                    .bases
+                    .iter()
+                    .find(|base| base.page_index == **page)
+                    .map(|base| &base.id);
+                read_from.as_ref() != shown
+            })
+            .map(|(page, _)| *page)
+            .collect::<Vec<_>>();
+        for page in stale {
+            state.layers.remove(&page);
+            state.layer_bases.remove(&page);
+        }
+        if state.sending.is_none() && state.shown == desired {
+            return;
+        }
+        if state.sending.is_some() || state.rejected.as_ref() == Some(&desired) {
             return;
         }
         let Some(resource) = resource else {
@@ -524,12 +794,14 @@ impl DocumentWorkspace {
         };
         state.sending = Some(desired.clone());
         let sent = desired.clone();
+        self.note_content_sprite_sent(document_id);
         let task = cx
             .background_executor()
             .spawn(async move { resource.set_document_edits(&sent) });
         cx.spawn(async move |owner, cx| {
             let result = task.await;
             let _ = owner.update(cx, |workspace, cx| {
+                workspace.note_content_sprite_replied(document_id);
                 let Some(state) = workspace.page_text.get_mut(&document_id) else {
                     return;
                 };
@@ -539,11 +811,36 @@ impl DocumentWorkspace {
                 state.sending = None;
                 match result {
                     Ok(()) => {
-                        let changed_pages = changed_pages(&state.shown, &desired, &form);
-                        state.shown = desired;
+                        // Rearranged pages are all drawn and read again:
+                        // anything read while the worker had the old order
+                        // shows other pages.
+                        let rearranged = state.shown.pages != desired.pages;
+                        let mut changed_pages = changed_pages(&state.shown, &desired, &form);
+                        if rearranged {
+                            state.layers.clear();
+                            state.layer_bases.clear();
+                        }
+                        state.shown = desired.clone();
                         state.rejected = None;
+                        // Snapping reads the page as shown: changed pages are
+                        // read again, but not mid-drag, where what moves would
+                        // become its own target.
+                        let refresh_snapping = workspace.content_drag.is_none();
                         if let Some(session) = workspace.session(document_id, cx).cloned() {
                             let rendered = session.update(cx, |session, cx| {
+                                if rearranged {
+                                    changed_pages.extend(0..session.page_sizes.len() as u32);
+                                    session.thumbnail_requests.clear();
+                                }
+                                if refresh_snapping {
+                                    for page in &changed_pages {
+                                        session.page_content_geometry_requests.remove(page);
+                                        session.annotations.clear_semantic_snap_page_content_page(
+                                            document_id.value(),
+                                            *page,
+                                        );
+                                    }
+                                }
                                 session.viewer.refresh_content();
                                 cx.notify();
                                 changed_pages
@@ -558,9 +855,15 @@ impl DocumentWorkspace {
                                     .collect::<Vec<_>>()
                             });
                             // Pages without a thumbnail yet show the edit when
-                            // they are first rendered.
-                            for page in rendered {
-                                workspace.refresh_page_thumbnail(document_id, page, cx);
+                            // they are first rendered; the others once edits
+                            // pause, after the page itself.
+                            workspace.defer_thumbnail_refresh(document_id, rendered, cx);
+                            if refresh_snapping {
+                                workspace.ensure_visible_page_content_snap_geometry(
+                                    document_id,
+                                    false,
+                                    cx,
+                                );
                             }
                         }
                     }
@@ -574,6 +877,42 @@ impl DocumentWorkspace {
                 // Catch up with changes made while this update ran.
                 workspace.sync_document_edits(document_id, cx);
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Redraws the thumbnails of `pages` once edits pause: while typing,
+    /// the worker draws the page being edited, not its thumbnail, after
+    /// each keystroke.
+    fn defer_thumbnail_refresh(
+        &mut self,
+        document_id: DocumentId,
+        pages: Vec<u32>,
+        cx: &mut Context<Self>,
+    ) {
+        if pages.is_empty() {
+            return;
+        }
+        self.thumbnail_refreshes
+            .entry(document_id)
+            .or_default()
+            .extend(pages);
+        self.thumbnail_refresh_generation = self.thumbnail_refresh_generation.wrapping_add(1);
+        let generation = self.thumbnail_refresh_generation;
+        cx.spawn(async move |workspace, cx| {
+            cx.background_executor()
+                .timer(THUMBNAIL_REFRESH_DELAY)
+                .await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                if workspace.thumbnail_refresh_generation != generation {
+                    return;
+                }
+                for (document_id, pages) in std::mem::take(&mut workspace.thumbnail_refreshes) {
+                    for page in pages {
+                        workspace.refresh_page_thumbnail(document_id, page, cx);
+                    }
+                }
             });
         })
         .detach();
@@ -606,7 +945,7 @@ impl DocumentWorkspace {
     ) -> Option<(Arc<PageTextLayer>, Arc<Vec<PageTextBlock>>)> {
         self.page_text_layer(document_id, page_index, cx)?;
         match self.page_text.get(&document_id)?.layers.get(&page_index)? {
-            PageTextLayerState::Ready(layer, blocks) => Some((layer.clone(), blocks.clone())),
+            PageTextLayerState::Ready(layer, blocks, _) => Some((layer.clone(), blocks.clone())),
             _ => None,
         }
     }
@@ -636,22 +975,40 @@ impl DocumentWorkspace {
             .and_then(|(input, _)| input.read(cx).state.as_ref())
         {
             let first = &state.paragraph().lines()[0];
-            if state.contains_point(point.x, point.y, tolerance_points / line_scale(first))
-                && let Some(block) = blocks.iter().find(|block| block.lines[0] == editing.anchor)
-            {
-                return Some(PageTextHit {
-                    layer: layer.clone(),
-                    block: Some(block.clone()),
-                    line: first.clone(),
-                });
+            let (x, y) = (point.x - editing.offset.0, point.y - editing.offset.1);
+            if state.contains_point(x, y, tolerance_points / line_scale(first)) {
+                let block = if editing.table.is_some_and(|table| table.virtual_cell) {
+                    Some(state_block(state))
+                } else {
+                    blocks
+                        .iter()
+                        .find(|block| block.lines[0] == editing.anchor)
+                        .cloned()
+                };
+                if let Some(block) = block {
+                    return Some(PageTextHit {
+                        layer: state.paragraph().layer().clone(),
+                        block: Some(block),
+                        line: first.clone(),
+                        offset: editing.offset,
+                        cell: editing.table,
+                    });
+                }
             }
         }
+        let tables =
+            self.shown_page_table_edits(interaction.document_id, interaction.page_index, cx);
+        let table_refs = tables.iter().collect::<Vec<_>>();
+        let moves =
+            self.shown_page_content_moves(interaction.document_id, interaction.page_index, cx);
         let mut best: Option<(f64, PageTextHit)> = None;
         let mut consider = |line: &PageTextLine,
                             block: Option<&PageTextBlock>,
-                            span: (f64, f64)| {
+                            span: (f64, f64),
+                            offset: (f64, f64)| {
             let tolerance = tolerance_points / line_scale(line);
-            let Some(distance) = line_distance(line, span, (point.x, point.y), tolerance) else {
+            let at = (point.x - offset.0, point.y - offset.1);
+            let Some(distance) = line_distance(line, span, at, tolerance) else {
                 return;
             };
             if best.as_ref().is_some_and(|(best, _)| *best <= distance) {
@@ -663,10 +1020,17 @@ impl DocumentWorkspace {
                     layer: layer.clone(),
                     block: block.cloned(),
                     line: line.clone(),
+                    offset,
+                    cell: None,
                 },
             ));
         };
         for line in &layer.lines {
+            // Lines a table edit moves are hit where they are shown; a
+            // deleted row's are gone.
+            let Some(offset) = line_offset(line, &table_refs, &moves) else {
+                continue;
+            };
             let edit = self.page_text_line_edit(
                 interaction.document_id,
                 interaction.page_index,
@@ -677,7 +1041,7 @@ impl DocumentWorkspace {
                 .iter()
                 .find(|block| block.lines.contains(&line.anchor));
             if let Some(span) = visible_span(&layer, line, edit.as_ref()) {
-                consider(line, block, span);
+                consider(line, block, span, offset);
             }
             for extra in edit.iter().flat_map(|edit| &edit.layout.extra_lines) {
                 let base = extra_line_base(line, extra.below);
@@ -695,11 +1059,326 @@ impl DocumentWorkspace {
                         },
                     }),
                 ) {
-                    consider(&base, block, span);
+                    consider(&base, block, span, offset);
                 }
             }
         }
-        best.map(|(_, hit)| hit)
+        let mut hit = best.map(|(_, hit)| hit)?;
+        hit.cell = self.hit_table_cell(interaction, &hit, cx);
+        Some(hit)
+    }
+
+    /// The text under a page point, a table's cells first: inside a table
+    /// as it is shown, its cells (their text, or a new cell's) are hit
+    /// rather than text outside the table that it now covers.
+    pub(super) fn page_text_and_table_hit(
+        &mut self,
+        interaction: PageInteraction,
+        point: PdfPoint,
+        cx: &mut Context<Self>,
+    ) -> Option<PageTextHit> {
+        let hit = self.page_text_hit(interaction, point, cx);
+        if hit.as_ref().is_some_and(|hit| hit.cell.is_some()) {
+            return hit;
+        }
+        self.table_cell_hit(interaction, point, cx).or(hit)
+    }
+
+    /// The table cell a hit paragraph is in, in the table as it is shown.
+    fn hit_table_cell(
+        &self,
+        interaction: PageInteraction,
+        hit: &PageTextHit,
+        cx: &App,
+    ) -> Option<TableEditingCell> {
+        let cell = hit.block.as_ref()?.cell?;
+        let (_, _, tables) =
+            self.loaded_page_text(interaction.document_id, interaction.page_index)?;
+        let table = tables.iter().find(|table| table.key() == cell.table)?;
+        let edit = self
+            .shown_page_table_edits(interaction.document_id, interaction.page_index, cx)
+            .into_iter()
+            .find(|edit| edit.key() == cell.table);
+        let view = crate::table_editing::TableView::new(
+            interaction.page_index,
+            table.clone(),
+            edit.as_ref(),
+        );
+        let output = view.cell_of_base(cell.cell)?;
+        Some(TableEditingCell {
+            key: cell.table,
+            row: output.row,
+            column: output.column,
+            virtual_cell: false,
+        })
+    }
+
+    /// What a table, grown by its edit, runs into: past the page's bottom
+    /// edge, and the lines of text outside it (which never move) that it
+    /// now covers, where they are drawn. `None` when it fits.
+    pub(super) fn table_overlaps_below(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        key: crate::pdf_tables::TableKey,
+        cx: &App,
+    ) -> Option<(super::tables::ContentWarningKind, Vec<[f64; 4]>)> {
+        use super::tables::ContentWarningKind;
+        let (layer, _, tables) = self.loaded_page_text(document_id, page_index)?;
+        let table = tables.iter().find(|table| table.key() == key)?;
+        let shown_edits = self.shown_page_table_edits(document_id, page_index, cx);
+        let edit = shown_edits
+            .iter()
+            .find(|edit| edit.key() == key)
+            .cloned()
+            .unwrap_or_else(|| crate::pdf_tables::PageTableEdit::unchanged(page_index, table));
+        let view = crate::table_editing::TableView::new(page_index, table.clone(), Some(&edit));
+        let shown = view.bounds();
+        let past_page = layer.page_box.is_some_and(|page| shown[1] < page[1] - 0.5);
+        let in_table = |line: &PageTextLine| {
+            table
+                .cells
+                .iter()
+                .any(|cell| cell.lines.contains(&line.anchor))
+        };
+        // Text that is not the table's, where table edits and moves by
+        // hand leave it, under the table as edited.
+        let refs = shown_edits.iter().collect::<Vec<_>>();
+        let moves = self.shown_page_content_moves(document_id, page_index, cx);
+        let overlapped = layer
+            .lines
+            .iter()
+            .filter(|line| !in_table(line) && !line.text.trim().is_empty())
+            .filter_map(|line| {
+                let rect = crate::pdf_tables::line_box(line)?;
+                let core = crate::pdf_tables::line_core_box(line)?;
+                let (dx, dy) = crate::pdf_content_moves::line_offset(&refs, &moves, core)?;
+                let moved = [rect[0] + dx, rect[1] + dy, rect[2] + dx, rect[3] + dy];
+                (moved[0] < shown[2] - 0.5
+                    && moved[2] > shown[0] + 0.5
+                    && moved[1] < shown[3] - 0.5
+                    && moved[3] > shown[1] + 0.5)
+                    .then_some(moved)
+            })
+            .collect::<Vec<_>>();
+        if past_page {
+            Some((ContentWarningKind::PastPage, overlapped))
+        } else if !overlapped.is_empty() {
+            Some((ContentWarningKind::Overlaps, overlapped))
+        } else {
+            None
+        }
+    }
+
+    /// An editor for `paragraph` (opened from `block`) with its lines as
+    /// the document shows them now: earlier edits' text, added lines, hard
+    /// breaks and chosen settings; or, for a new cell, `new_cell_text`.
+    pub(super) fn paragraph_edit_state(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        paragraph: Paragraph,
+        block: &PageTextBlock,
+        new_cell_text: Option<Vec<crate::pdf_text_edit::TextEditRun>>,
+        cx: &App,
+    ) -> Result<PageTextEditState, crate::pdf_text_edit::TextEditError> {
+        let edits = block
+            .lines
+            .iter()
+            .map(|anchor| self.page_text_line_edit(document_id, page_index, *anchor, cx))
+            .collect::<Vec<_>>();
+        let current = match new_cell_text {
+            Some(runs) => vec![runs],
+            None => paragraph
+                .lines()
+                .iter()
+                .zip(&edits)
+                .map(|(line, edit)| {
+                    edit.as_ref()
+                        .map_or_else(|| line.original_runs(), |edit| edit.runs.clone())
+                })
+                .collect::<Vec<_>>(),
+        };
+        let added: Vec<ExtraLine> = edits
+            .last()
+            .and_then(|edit| edit.as_ref())
+            .map(|edit| edit.layout.extra_lines.clone())
+            .unwrap_or_default();
+        // Settings chosen earlier are kept with the first line.
+        let format = edits
+            .first()
+            .and_then(|edit| edit.as_ref())
+            .map(|edit| edit.layout.paragraph)
+            .unwrap_or_default();
+        let paragraph = paragraph.with_format(format);
+        // Hard breaks (ending list items) an earlier edit left.
+        let breaks = edits
+            .iter()
+            .map(|edit| edit.as_ref().map(|edit| edit.layout.hard_break))
+            .collect::<Vec<_>>();
+        PageTextEditState::new(paragraph, &current, &breaks, &added, 0)
+    }
+
+    /// How much wider a table edit makes the columns a cell spans.
+    pub(super) fn column_growth(
+        &self,
+        interaction: PageInteraction,
+        cell: TableEditingCell,
+        cx: &App,
+    ) -> f64 {
+        self.column_growth_on(interaction.document_id, interaction.page_index, cell, cx)
+    }
+
+    pub(super) fn column_growth_on(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        cell: TableEditingCell,
+        cx: &App,
+    ) -> f64 {
+        let Some(edit) = self.page_table_edit(document_id, page_index, cell.key, cx) else {
+            return 0.;
+        };
+        let Some((_, _, tables)) = self.loaded_page_text(document_id, page_index) else {
+            return 0.;
+        };
+        let Some(table) = tables.iter().find(|table| table.key() == cell.key) else {
+            return 0.;
+        };
+        let view = crate::table_editing::TableView::new(page_index, table.clone(), Some(&edit));
+        let Some(output) = view
+            .cells()
+            .into_iter()
+            .find(|output| (output.row, output.column) == (cell.row, cell.column))
+        else {
+            return 0.;
+        };
+        let Some(base) = output.base.map(|base| &table.cells[base]) else {
+            return 0.;
+        };
+        let base_width = table.columns[base.column + base.column_span] - table.columns[base.column];
+        let bounds = view.cell_bounds(&output);
+        bounds[2] - bounds[0] - base_width
+    }
+
+    /// The text a new cell has in the document's table edit, as one run
+    /// list: lines joined by a space, or by a line break where one ends them.
+    pub(super) fn new_cell_runs(
+        &self,
+        interaction: PageInteraction,
+        cell: TableEditingCell,
+        cx: &App,
+    ) -> Vec<crate::pdf_text_edit::TextEditRun> {
+        let Some(edit) = self.page_table_edit(
+            interaction.document_id,
+            interaction.page_index,
+            cell.key,
+            cx,
+        ) else {
+            return Vec::new();
+        };
+        let Some(text) = edit
+            .cell_texts
+            .iter()
+            .find(|text| (text.row, text.column) == (cell.row, cell.column))
+        else {
+            return Vec::new();
+        };
+        let mut runs: Vec<crate::pdf_text_edit::TextEditRun> = Vec::new();
+        for (index, line) in text.lines.iter().enumerate() {
+            runs.extend(line.runs.iter().cloned());
+            if index + 1 == text.lines.len() {
+                continue;
+            }
+            let joiner = if line.hard_break {
+                Some('\n')
+            } else if !line
+                .runs
+                .last()
+                .is_some_and(|run| run.text.ends_with(char::is_whitespace))
+            {
+                Some(' ')
+            } else {
+                None
+            };
+            if let (Some(joiner), Some(last)) = (joiner, runs.last_mut()) {
+                last.text.push(joiner);
+            }
+        }
+        crate::pdf_text_edit::normalized_runs(&runs)
+    }
+
+    /// A press in a table cell away from its text: the cell's nearest
+    /// paragraph, or for a cell with no base text, a new paragraph for it.
+    fn table_cell_hit(
+        &self,
+        interaction: PageInteraction,
+        point: PdfPoint,
+        cx: &App,
+    ) -> Option<PageTextHit> {
+        let (layer, blocks, tables) =
+            self.loaded_page_text(interaction.document_id, interaction.page_index)?;
+        let shown =
+            self.shown_page_table_edits(interaction.document_id, interaction.page_index, cx);
+        let refs = shown.iter().collect::<Vec<_>>();
+        let moves =
+            self.shown_page_content_moves(interaction.document_id, interaction.page_index, cx);
+        for table in tables.iter() {
+            let edit = shown.iter().find(|edit| edit.key() == table.key());
+            let view =
+                crate::table_editing::TableView::new(interaction.page_index, table.clone(), edit);
+            let Some(cell) = view.cell_at(point.x, point.y) else {
+                continue;
+            };
+            let key = table.key();
+            if view.has_base_text(&cell) {
+                let base = cell.base?;
+                // The cell's paragraph nearest the press.
+                let nearest = blocks
+                    .iter()
+                    .filter(|block| {
+                        block.cell.is_some_and(|block_cell| {
+                            block_cell.table == key && block_cell.cell == base
+                        })
+                    })
+                    .filter_map(|block| {
+                        let line = layer.line(block.lines.last()?)?;
+                        let offset = line_offset(line, &refs, &moves)?;
+                        let (_, y) = line.origin();
+                        Some(((y + offset.1 - point.y).abs(), block, line, offset))
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))?;
+                return Some(PageTextHit {
+                    layer: layer.clone(),
+                    block: Some(nearest.1.clone()),
+                    line: nearest.2.clone(),
+                    offset: nearest.3,
+                    cell: Some(TableEditingCell {
+                        key,
+                        row: cell.row,
+                        column: cell.column,
+                        virtual_cell: false,
+                    }),
+                });
+            }
+            if table.read_only.is_some() {
+                return None;
+            }
+            let (layer, block, line) = new_cell_paragraph(&layer, &blocks, &view, &cell)?;
+            return Some(PageTextHit {
+                layer,
+                block: Some(block),
+                line,
+                offset: (0., 0.),
+                cell: Some(TableEditingCell {
+                    key,
+                    row: cell.row,
+                    column: cell.column,
+                    virtual_cell: true,
+                }),
+            });
+        }
+        None
     }
 
     /// The anchor that names a hit: its paragraph's first line, or the line.
@@ -717,7 +1396,7 @@ impl DocumentWorkspace {
         point: PdfPoint,
         cx: &mut Context<Self>,
     ) -> bool {
-        let hit = self.page_text_hit(interaction, point, cx);
+        let hit = self.page_text_and_table_hit(interaction, point, cx);
         if let Some(state) = self.page_text.get_mut(&interaction.document_id) {
             state.hover_probe = Some((interaction, point));
         }
@@ -726,30 +1405,13 @@ impl DocumentWorkspace {
             page_index: interaction.page_index,
             anchor: Self::hit_anchor(&hit),
             editable: hit.block.is_some(),
+            cell: hit.cell.is_some(),
         });
         if self.page_text_hover != hover {
             self.page_text_hover = hover;
             cx.notify();
         }
         true
-    }
-
-    pub(super) fn page_text_cursor(&self, document_id: DocumentId) -> Option<CursorStyle> {
-        if self
-            .page_text_editing
-            .is_some_and(|editing| editing.document_id == document_id && editing.dragging)
-        {
-            return Some(CursorStyle::IBeam);
-        }
-        let hover = self
-            .page_text_hover
-            .as_ref()
-            .filter(|hover| hover.document_id == document_id)?;
-        Some(if hover.editable {
-            CursorStyle::IBeam
-        } else {
-            CursorStyle::OperationNotAllowed
-        })
     }
 
     fn page_text_input_entity(
@@ -773,8 +1435,26 @@ impl DocumentWorkspace {
                     cx.notify();
                 }
                 PageTextInputEvent::Finish => {
+                    // The paragraph stays selected, to move or edit again.
+                    let edited = workspace.page_text_editing;
                     workspace.commit_page_text_editing(cx);
+                    if let Some(edited) = edited.filter(|edited| edited.table.is_none()) {
+                        workspace.select_paragraph(
+                            edited.document_id,
+                            edited.page_index,
+                            edited.anchor,
+                            cx,
+                        );
+                    }
                     workspace.workspace_focus.focus(window, cx);
+                    cx.notify();
+                }
+                PageTextInputEvent::Tab { back } => {
+                    workspace.move_to_next_table_cell(*back, window, cx);
+                    cx.notify();
+                }
+                PageTextInputEvent::JoinPrevious => {
+                    workspace.join_previous_paragraph(window, cx);
                     cx.notify();
                 }
                 PageTextInputEvent::Rejected(character) => {
@@ -826,7 +1506,7 @@ impl DocumentWorkspace {
                             Button::new(DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID)
                                 .debug_selector(|| DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID.into())
                                 .danger()
-                                .label("Edit PDF Content"),
+                                .label("Edit PDF"),
                         )),
                 )
                 .on_ok(move |_, _, cx| {
@@ -853,7 +1533,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let hit = self.page_text_hit(interaction, point, cx);
+        let hit = self.page_text_and_table_hit(interaction, point, cx);
         let Some(hit) = hit else {
             self.commit_page_text_editing(cx);
             if let Some(PageTextLayerState::Failed(error)) = self
@@ -912,49 +1592,43 @@ impl DocumentWorkspace {
         let input = self.page_text_input_entity(window, cx);
         if !continuing {
             self.commit_page_text_editing(cx);
+            // A cell's text wraps at its column's width as edited.
+            let mut block = block;
+            if let (Some(cell), Some(table)) = (block.cell.as_mut(), hit.cell)
+                && !table.virtual_cell
+            {
+                cell.right += self.column_growth(interaction, table, cx);
+            }
             let Some(paragraph) = Paragraph::new(hit.layer.clone(), &block) else {
                 return true;
             };
-            // The paragraph's lines as the document shows them now.
-            let edits = block
-                .lines
-                .iter()
-                .map(|anchor| {
-                    self.page_text_line_edit(
-                        interaction.document_id,
-                        interaction.page_index,
-                        *anchor,
-                        cx,
-                    )
-                })
-                .collect::<Vec<_>>();
-            let current = paragraph
-                .lines()
-                .iter()
-                .zip(&edits)
-                .map(|(line, edit)| {
-                    edit.as_ref()
-                        .map_or_else(|| line.original_runs(), |edit| edit.runs.clone())
-                })
-                .collect::<Vec<_>>();
-            let added: Vec<ExtraLine> = edits
-                .last()
-                .and_then(|edit| edit.as_ref())
-                .map(|edit| edit.layout.extra_lines.clone())
-                .unwrap_or_default();
-            // Settings chosen earlier are kept with the first line.
-            let format = edits
-                .first()
-                .and_then(|edit| edit.as_ref())
-                .map(|edit| edit.layout.paragraph)
-                .unwrap_or_default();
-            let paragraph = paragraph.with_format(format);
-            // Hard breaks (ending list items) an earlier edit left.
-            let breaks = edits
-                .iter()
-                .map(|edit| edit.as_ref().map(|edit| edit.layout.hard_break))
-                .collect::<Vec<_>>();
-            let state = match PageTextEditState::new(paragraph, &current, &breaks, &added, 0) {
+            // A new cell's text is the table edit's.
+            let new_cell_text = hit.cell.filter(|cell| cell.virtual_cell).map(|cell| {
+                // Kept in page units; the paragraph's line has its model's
+                // text space.
+                let m = hit.line.matrix;
+                let scale = (m[0] * m[3] - m[1] * m[2]).abs().sqrt().max(1e-9);
+                self.new_cell_runs(interaction, cell, cx)
+                    .into_iter()
+                    .map(|run| crate::pdf_text_edit::TextEditRun {
+                        style: crate::pdf_text_edit::TextRunStyle {
+                            font_size: run.style.font_size / scale,
+                            char_spacing: run.style.char_spacing / scale,
+                            word_spacing: run.style.word_spacing / scale,
+                            ..run.style
+                        },
+                        text: run.text,
+                    })
+                    .collect()
+            });
+            let state = match self.paragraph_edit_state(
+                interaction.document_id,
+                interaction.page_index,
+                paragraph,
+                &block,
+                new_cell_text,
+                cx,
+            ) {
                 Ok(state) => state,
                 Err(error) => {
                     self.annotation_statuses
@@ -976,11 +1650,16 @@ impl DocumentWorkspace {
                 anchor,
                 epoch,
                 dragging: false,
+                table: hit.cell,
+                offset: hit.offset,
             });
         }
+        let offset = self
+            .page_text_editing
+            .map_or((0., 0.), |editing| editing.offset);
         input.update(cx, |input, cx| {
             if let Some(state) = input.state.as_mut() {
-                let index = state.index_at_point(point.x, point.y);
+                let index = state.index_at_point(point.x - offset.0, point.y - offset.1);
                 match click_count {
                     2 => state.select_word_at(
                         index.saturating_sub(usize::from(index == state.len() && index > 0)),
@@ -1001,6 +1680,9 @@ impl DocumentWorkspace {
             page_index: interaction.page_index,
             anchor,
             editable: true,
+            cell: self
+                .page_text_editing
+                .is_some_and(|editing| editing.table.is_some()),
         });
         self.annotation_statuses.remove(&interaction.document_id);
         input.read(cx).focus_handle(cx).focus(window, cx);
@@ -1030,7 +1712,8 @@ impl DocumentWorkspace {
         if let Some((input, _)) = &self.page_text_input {
             input.update(cx, |input, cx| {
                 if let Some(state) = input.state.as_mut() {
-                    let index = state.index_at_point(point.x, point.y);
+                    let index = state
+                        .index_at_point(point.x - editing.offset.0, point.y - editing.offset.1);
                     state.move_to(index, true);
                     cx.notify();
                 }
@@ -1289,9 +1972,14 @@ impl DocumentWorkspace {
     /// Records the paragraph being edited as one undoable change and stops
     /// editing. The page already shows the text.
     pub(super) fn commit_page_text_editing(&mut self, cx: &mut Context<Self>) {
-        let Some(editing) = self.page_text_editing.take() else {
+        let Some(editing) = self.page_text_editing else {
             return;
         };
+        // The edited cell's table, with its rows grown to hold the text.
+        let table = editing
+            .table
+            .map(|cell| (cell.key, self.live_table_edit(editing.document_id, cx)));
+        self.page_text_editing = None;
         let state = self
             .page_text_input
             .as_ref()
@@ -1311,14 +1999,26 @@ impl DocumentWorkspace {
             self.sync_document_edits(editing.document_id, cx);
             return;
         }
-        let edits = state.edits();
-        let anchors = state.paragraph().anchors();
+        // A new cell's text is kept with its table edit.
+        let virtual_cell = editing.table.is_some_and(|cell| cell.virtual_cell);
+        let (edits, anchors) = if virtual_cell {
+            (Vec::new(), Vec::new())
+        } else {
+            (state.edits(), state.paragraph().anchors())
+        };
         let page_index = state.page_index();
+        let tables = table.into_iter().collect::<Vec<_>>();
         let result = self.update_annotation_history_with_result(
             editing.document_id,
             cx,
             move |annotations, document_id| {
-                annotations.set_document_page_text_edits(document_id, page_index, &anchors, edits)
+                annotations.set_document_page_content_edits(
+                    document_id,
+                    page_index,
+                    &anchors,
+                    edits,
+                    tables,
+                )
             },
         );
         if let Err(error) = result {
@@ -1334,12 +2034,26 @@ impl DocumentWorkspace {
     /// Stops editing when the tool, document or page it belongs to goes
     /// away.
     pub(super) fn reconcile_page_text_editing(&mut self, cx: &mut Context<Self>) {
+        // Selected content belongs to the active document in Edit PDF mode.
+        if self.content_selection.as_ref().is_some_and(|selection| {
+            self.active_document_id != Some(selection.document_id)
+                || !self.editing_content(selection.document_id, cx)
+        }) {
+            self.content_selection = None;
+            self.content_drag = None;
+        }
+        if self
+            .content_hover
+            .as_ref()
+            .is_some_and(|hover| !self.editing_content(hover.document_id, cx))
+        {
+            self.content_hover = None;
+        }
         let Some(editing) = self.page_text_editing else {
             return;
         };
         let still_editing = self.active_document_id == Some(editing.document_id)
-            && self.annotation_tool(editing.document_id, cx)
-                == Some(AnnotationTool::EditPdfContent)
+            && self.editing_content(editing.document_id, cx)
             && !self.pan_tool_active;
         if !still_editing {
             self.commit_page_text_editing(cx);
@@ -1406,7 +2120,9 @@ impl DocumentWorkspace {
             .map(|(page, layer)| {
                 let layer = match layer {
                     PageTextLayerState::Pending => "pending".into(),
-                    PageTextLayerState::Ready(_, blocks) => format!("{} blocks", blocks.len()),
+                    PageTextLayerState::Ready(_, blocks, tables) => {
+                        format!("{} blocks, {} tables", blocks.len(), tables.len())
+                    }
                     PageTextLayerState::Failed(error) => format!("failed: {error}"),
                 };
                 format!("page {page}: {layer}")
@@ -1451,7 +2167,6 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Vec<PageTextOverlay> {
         let mut overlays: Vec<PageTextOverlay> = Vec::new();
-        let warning = cx.theme().danger;
         let editing = self
             .page_text_editing
             .filter(|editing| editing.document_id == document_id);
@@ -1461,51 +2176,107 @@ impl DocumentWorkspace {
             && let Some((input, _)) = &self.page_text_input
             && let Some(state) = input.read(cx).state.as_ref()
         {
-            let selection = state.selection_quads();
+            let offset = editing.offset;
+            let shift_points = |points: Vec<(f64, f64)>| {
+                points
+                    .into_iter()
+                    .map(|(x, y)| (x + offset.0, y + offset.1))
+                    .collect::<Vec<_>>()
+            };
+            let selection = state
+                .selection_quads()
+                .iter()
+                .map(|quad| shifted(quad, offset))
+                .collect::<Vec<_>>();
             let caret = selection
                 .is_empty()
                 .then(|| state.caret_segment())
-                .flatten();
-            let frame = state.frame_quads();
-            // Edited text never moves other text; the frame warns when a
-            // line runs into it (added below, or grown into a table's next
-            // cell).
+                .flatten()
+                .map(|segment| segment.map(|(x, y)| (x + offset.0, y + offset.1)));
+            let base_frame = state.frame_quads();
+            // One box round the paragraph, as hovered and selected
+            // content is framed.
+            let frame = super::content::quads_bounds(&base_frame)
+                .map(|bounds| shifted(&bounds_quad(bounds), offset))
+                .into_iter()
+                .collect::<Vec<_>>();
+            // Edited text never moves other text: a label warns when a
+            // line runs past the page's bottom, or into other text (added
+            // below, or grown into a table's next cell). A cell's table
+            // warns for it.
             let anchors = state.paragraph().anchors();
-            let overlaps = editing_layer.as_ref().is_some_and(|layer| {
-                // Text the paragraph already overlapped does not count.
-                let original = layer
-                    .lines
-                    .iter()
-                    .filter(|line| anchors.contains(&line.anchor))
-                    .map(|line| line.quad(0., line.end_x))
-                    .collect::<Vec<_>>();
-                let others = layer
-                    .lines
-                    .iter()
-                    .filter(|line| !anchors.contains(&line.anchor) && !line.text.trim().is_empty())
-                    .map(|line| line.quad(0., line.end_x))
-                    .filter(|other| !original.iter().any(|quad| quads_overlap(quad, other)))
-                    .collect::<Vec<_>>();
-                state
-                    .wrapped()
-                    .iter()
-                    .zip(&frame)
-                    .filter(|(line, _)| !line.unchanged)
-                    .any(|(_, quad)| others.iter().any(|other| quads_overlap(quad, other)))
-            });
-            overlays.push(PageTextOverlay {
+            let past_page = editing_layer
+                .as_ref()
+                .and_then(|layer| layer.page_box)
+                .is_some_and(|page| frame.iter().flatten().any(|point| point.1 < page[1] - 0.5));
+            // The other text its changed lines now cover.
+            let overlapped = editing_layer
+                .as_ref()
+                .map(|layer| {
+                    // Text the paragraph already overlapped does not count.
+                    let original = layer
+                        .lines
+                        .iter()
+                        .filter(|line| anchors.contains(&line.anchor))
+                        .map(|line| line.quad(0., line.end_x))
+                        .collect::<Vec<_>>();
+                    let changed = state
+                        .wrapped()
+                        .iter()
+                        .zip(&base_frame)
+                        .filter(|(line, _)| !line.unchanged)
+                        .map(|(_, quad)| *quad)
+                        .collect::<Vec<_>>();
+                    layer
+                        .lines
+                        .iter()
+                        .filter(|line| {
+                            !anchors.contains(&line.anchor) && !line.text.trim().is_empty()
+                        })
+                        .map(|line| line.quad(0., line.end_x))
+                        .filter(|other| !original.iter().any(|quad| quads_overlap(quad, other)))
+                        .filter(|other| changed.iter().any(|quad| quads_overlap(quad, other)))
+                        .filter_map(|other| super::content::quads_bounds(&[other]))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            use super::tables::{ContentWarning, ContentWarningKind};
+            let kind = if past_page {
+                Some(ContentWarningKind::PastPage)
+            } else {
+                (!overlapped.is_empty()).then_some(ContentWarningKind::Overlaps)
+            };
+            let warnings = kind
+                .filter(|_| editing.table.is_none())
+                .and_then(|kind| {
+                    let bounds = super::content::quads_bounds(&frame)?;
+                    Some(ContentWarning {
+                        bounds,
+                        kind,
+                        overlapped,
+                    })
+                })
+                .into_iter()
+                .collect();
+            let overlay = PageTextOverlay {
                 page_index: editing.page_index,
-                paragraphs: Vec::new(),
                 hover: Vec::new(),
                 frame,
-                frame_color: overlaps.then_some(warning),
+                warnings,
                 selection,
                 caret,
-                marked: state.marked_segments(),
-                breaks: state.break_marks(),
-                wraps: state.wrap_marks(),
+                marked: state
+                    .marked_segments()
+                    .into_iter()
+                    .map(|segment| segment.map(|(x, y)| (x + offset.0, y + offset.1)))
+                    .collect(),
+                breaks: state.break_marks().into_iter().map(shift_points).collect(),
+                wraps: state.wrap_marks().into_iter().map(shift_points).collect(),
                 input: Some((input.clone(), input.read(cx).focus_handle(cx))),
-            });
+                input_offset: offset,
+                ..Default::default()
+            };
+            overlays.push(overlay);
         }
         if let Some(hover) = self
             .page_text_hover
@@ -1517,7 +2288,20 @@ impl DocumentWorkspace {
             && let Some((layer, blocks)) = self.page_text_blocks(document_id, hover.page_index, cx)
             && let Some(block) = blocks.iter().find(|block| block.lines[0] == hover.anchor)
         {
-            let quads = self.paragraph_line_quads(document_id, hover.page_index, &layer, block, cx);
+            let tables = self.shown_page_table_edits(document_id, hover.page_index, cx);
+            let moves = self.shown_page_content_moves(document_id, hover.page_index, cx);
+            let offset = block_offset(&layer, block, &tables.iter().collect::<Vec<_>>(), &moves)
+                .unwrap_or((0., 0.));
+            let quads = super::content::quads_bounds(&self.paragraph_line_quads(
+                document_id,
+                hover.page_index,
+                &layer,
+                block,
+                cx,
+            ))
+            .map(|bounds| shifted(&bounds_quad(bounds), offset))
+            .into_iter()
+            .collect::<Vec<_>>();
             match overlays
                 .iter_mut()
                 .find(|overlay| overlay.page_index == hover.page_index)
@@ -1525,66 +2309,42 @@ impl DocumentWorkspace {
                 Some(overlay) => overlay.hover = quads,
                 None => overlays.push(PageTextOverlay {
                     page_index: hover.page_index,
-                    paragraphs: Vec::new(),
                     hover: quads,
-                    frame: Vec::new(),
-                    frame_color: None,
-                    selection: Vec::new(),
-                    caret: None,
-                    marked: Vec::new(),
-                    breaks: Vec::new(),
-                    wraps: Vec::new(),
-                    input: None,
+                    ..Default::default()
                 }),
             }
         }
-        // With Edit PDF Content active, every paragraph on the visible pages is
-        // outlined faintly, except the one being edited.
-        let tool_active =
-            self.annotation_tool(document_id, cx) == Some(AnnotationTool::EditPdfContent);
-        let visible = self
-            .session(document_id, cx)
-            .and_then(|session| {
-                session
-                    .read(cx)
-                    .viewer
-                    .plan_snapshot()
-                    .map(|plan| plan.visible_pages.to_vec())
-            })
-            .unwrap_or_default();
-        for page in visible.into_iter().filter(|_| tool_active) {
-            let Ok(page) = u32::try_from(page) else {
-                continue;
-            };
-            let Some(outlines) = self.page_paragraph_outlines(document_id, page, cx) else {
-                continue;
-            };
-            let paragraphs = outlines
-                .iter()
-                .filter(|(anchor, _)| {
-                    editing.is_none_or(|editing| {
-                        (editing.page_index, editing.anchor) != (page, *anchor)
-                    })
-                })
-                .flat_map(|(_, quads)| quads.iter().copied())
-                .collect::<Vec<_>>();
+        // The selected content, and the drawing or image under the pointer.
+        for (page, selected, hover, handles) in self.content_overlays(document_id, cx) {
             match overlays
                 .iter_mut()
                 .find(|overlay| overlay.page_index == page)
             {
-                Some(overlay) => overlay.paragraphs = paragraphs,
+                Some(overlay) => {
+                    overlay.selected = selected;
+                    overlay.hover.extend(hover);
+                    overlay.handles = handles;
+                }
                 None => overlays.push(PageTextOverlay {
                     page_index: page,
-                    paragraphs,
-                    hover: Vec::new(),
-                    frame: Vec::new(),
-                    frame_color: None,
-                    selection: Vec::new(),
-                    caret: None,
-                    marked: Vec::new(),
-                    breaks: Vec::new(),
-                    wraps: Vec::new(),
-                    input: None,
+                    selected,
+                    hover,
+                    handles,
+                    ..Default::default()
+                }),
+            }
+        }
+        // Each page's tables that run into text or off the page.
+        for (page_index, warning) in self.table_warnings(document_id, cx) {
+            match overlays
+                .iter_mut()
+                .find(|overlay| overlay.page_index == page_index)
+            {
+                Some(overlay) => overlay.warnings.push(warning),
+                None => overlays.push(PageTextOverlay {
+                    page_index,
+                    warnings: vec![warning],
+                    ..Default::default()
                 }),
             }
         }
@@ -1592,8 +2352,124 @@ impl DocumentWorkspace {
     }
 }
 
+/// A paragraph for typing into a cell with no base text: an empty line where
+/// the cell's model cell has its first line, in its style, wrapping within
+/// the cell. Returns the page text with the line added, the block and the
+/// line.
+pub(super) fn new_cell_paragraph(
+    layer: &Arc<PageTextLayer>,
+    blocks: &[PageTextBlock],
+    view: &crate::table_editing::TableView,
+    cell: &crate::table_editing::OutputCell,
+) -> Option<(Arc<PageTextLayer>, PageTextBlock, PageTextLine)> {
+    let model = view.model_cell(cell)?;
+    let (dx, dy) = crate::table_editing::model_text_place(layer, &view.table, model)?;
+    let model_line = layer.line(view.table.cells[model].lines.first()?)?;
+    let model_block = blocks
+        .iter()
+        .find(|block| block.lines.contains(&model_line.anchor));
+    let [left, _, right, top] = view.cell_bounds(cell);
+    let model_bounds = view.table.cell_bounds(&view.table.cells[model]);
+    let inset = crate::pdf_tables::cell_inset(layer, &view.table, model);
+    let (pad_left, pad_right) = (inset.left - model_bounds[0], model_bounds[2] - inset.right);
+    let origin = (left + dx, top - dy);
+    let style = model_line
+        .chars
+        .iter()
+        .find(|character| !character.character.is_whitespace())
+        .map_or(0, |character| character.style);
+    let mut line = model_line.clone();
+    line.text.clear();
+    line.chars.clear();
+    line.end_x = 0.;
+    line.read_only = None;
+    line.styles = vec![model_line.styles.get(style)?.clone()];
+    line.matrix[4] = origin.0;
+    line.matrix[5] = origin.1;
+    line.anchor = TextLineAnchor {
+        x_centipoints: (origin.0 * 100.).round() as i64,
+        y_centipoints: (origin.1 * 100.).round() as i64,
+        ordinal: u32::MAX,
+    };
+    let alignment = match model_block.map(|block| block.alignment) {
+        Some(crate::pdf_text_blocks::TextBlockAlignment::Justified) | None => {
+            crate::pdf_text_blocks::TextBlockAlignment::Left
+        }
+        Some(alignment) => alignment,
+    };
+    let block = PageTextBlock {
+        lines: vec![line.anchor],
+        alignment,
+        left: origin.0,
+        right: right - pad_right,
+        pitch: model_block.and_then(|block| block.pitch),
+        edges: Vec::new(),
+        list: None,
+        cell: Some(crate::pdf_text_blocks::BlockCell {
+            table: view.table.key(),
+            cell: model,
+            left: left + pad_left,
+            right: right - pad_right,
+        }),
+    };
+    let mut augmented = (**layer).clone();
+    augmented.lines.push(line.clone());
+    Some((Arc::new(augmented), block, line))
+}
+
+/// The block an editor's paragraph was opened from (a new cell's).
+fn state_block(state: &PageTextEditState) -> PageTextBlock {
+    let paragraph = state.paragraph();
+    PageTextBlock {
+        lines: paragraph.anchors(),
+        alignment: paragraph.alignment(),
+        left: 0.,
+        right: 0.,
+        pitch: None,
+        edges: Vec::new(),
+        list: paragraph.list(),
+        cell: paragraph.cell(),
+    }
+}
+
+/// How far table edits move a block on the page: by its first line's place.
+/// `None` when a deleted row or column removes it.
+fn block_offset(
+    layer: &PageTextLayer,
+    block: &PageTextBlock,
+    tables: &[&crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
+) -> Option<(f64, f64)> {
+    line_offset(layer.line(&block.lines[0])?, tables, moves)
+}
+
+/// How far table edits and moves move a line on the page.
+pub(super) fn line_offset(
+    line: &PageTextLine,
+    tables: &[&crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
+) -> Option<(f64, f64)> {
+    if tables.is_empty() && moves.is_empty() {
+        return Some((0., 0.));
+    }
+    match crate::pdf_tables::line_core_box(line) {
+        Some(rect) => crate::pdf_content_moves::line_offset(tables, moves, rect),
+        None => Some((0., 0.)),
+    }
+}
+
 /// How many pages either side of the visible ones keep their text.
 const KEPT_PAGES_AROUND_VIEW: i64 = 8;
+
+/// `bounds` (left, bottom, right, top) as a quad.
+fn bounds_quad(bounds: [f64; 4]) -> Quad {
+    [
+        (bounds[0], bounds[1]),
+        (bounds[2], bounds[1]),
+        (bounds[2], bounds[3]),
+        (bounds[0], bounds[3]),
+    ]
+}
 
 /// Whether two page-space quads' bounding boxes overlap.
 fn quads_overlap(a: &Quad, b: &Quad) -> bool {
@@ -1636,7 +2512,20 @@ pub(super) fn page_text_overlay_element(
     page_size: (f32, f32),
     coordinate_space: PageCoordinateSpace,
     accent: gpui::Hsla,
+    warning: super::tables::WarningColors,
 ) -> AnyElement {
+    let labels = overlay
+        .warnings
+        .iter()
+        .filter_map(|label| {
+            super::tables::content_warning_label(
+                label.clone(),
+                page_size,
+                coordinate_space,
+                warning,
+            )
+        })
+        .collect::<Vec<_>>();
     let painted = overlay;
     let layer = gpui::div().absolute().inset_0().child(
         canvas(
@@ -1665,31 +2554,87 @@ pub(super) fn page_text_overlay_element(
                         window.paint_path(path, color);
                     }
                 };
-                let stroke_quad = |quad: &Quad, color: gpui::Hsla, window: &mut Window| {
-                    let mut builder = PathBuilder::stroke(px(1.));
-                    builder.move_to(project(quad[0]));
-                    for corner in &quad[1..] {
-                        builder.line_to(project(*corner));
-                    }
-                    builder.close();
-                    if let Ok(path) = builder.build() {
-                        window.paint_path(path, color);
-                    }
+                // A frame: the box round a quad on screen, a few pixels off
+                // the content at any zoom.
+                let frame_bounds = |quad: &Quad| {
+                    let corners = quad.map(project);
+                    let padding = px(super::content::FRAME_PADDING_PIXELS);
+                    let min_x = corners
+                        .iter()
+                        .map(|corner| corner.x)
+                        .fold(px(f32::MAX), Pixels::min);
+                    let max_x = corners
+                        .iter()
+                        .map(|corner| corner.x)
+                        .fold(px(f32::MIN), Pixels::max);
+                    let min_y = corners
+                        .iter()
+                        .map(|corner| corner.y)
+                        .fold(px(f32::MAX), Pixels::min);
+                    let max_y = corners
+                        .iter()
+                        .map(|corner| corner.y)
+                        .fold(px(f32::MIN), Pixels::max);
+                    gpui::Bounds::from_corners(
+                        point(min_x - padding, min_y - padding),
+                        point(max_x + padding, max_y + padding),
+                    )
                 };
-                for quad in &painted.paragraphs {
-                    stroke_quad(quad, accent.opacity(0.35), window);
-                }
+                let stroke_frame = |quad: &Quad, color: gpui::Hsla, window: &mut Window| {
+                    window.paint_quad(gpui::outline(
+                        frame_bounds(quad),
+                        color,
+                        gpui::BorderStyle::Solid,
+                    ));
+                };
+                // Frames only: content keeps its own colours. Selected and
+                // hovered content take markups' selection and hover colours.
+                use super::interaction_chrome::{
+                    ChromeState, hover_colour, paint_feedback_handle, selection_colour,
+                };
                 for quad in &painted.hover {
-                    fill_quad(quad, accent.opacity(0.08), window);
-                    stroke_quad(quad, accent.opacity(0.6), window);
+                    stroke_frame(quad, hover_colour(), window);
                 }
                 for quad in &painted.frame {
-                    stroke_quad(quad, painted.frame_color.unwrap_or(accent), window);
+                    stroke_frame(quad, accent, window);
+                }
+                // The text a table or paragraph runs into, pointed out.
+                for rect in painted.warnings.iter().flat_map(|label| &label.overlapped) {
+                    stroke_frame(&bounds_quad(*rect), warning.icon, window);
+                }
+                for quad in &painted.selected {
+                    stroke_frame(quad, selection_colour(), window);
+                }
+                // Resize handles: markups' handles, white squares filled
+                // under the pointer, on the frame.
+                let frame = painted.selected.first().map(frame_bounds);
+                let pointer = window.mouse_position();
+                for &(x, y) in &painted.handles {
+                    let mut centre = project((x, y));
+                    if let Some(frame) = frame {
+                        let padding = px(super::content::FRAME_PADDING_PIXELS);
+                        let middle = frame.center();
+                        let outwards = |at: Pixels, middle: Pixels| {
+                            if (at - middle).abs() < px(0.5) {
+                                px(0.)
+                            } else if at < middle {
+                                -padding
+                            } else {
+                                padding
+                            }
+                        };
+                        centre.x += outwards(centre.x, middle.x);
+                        centre.y += outwards(centre.y, middle.y);
+                    }
+                    let reach = px(super::content::HANDLE_SIZE_PIXELS / 2. + 2.);
+                    let hot = (pointer.x - centre.x).abs() <= reach
+                        && (pointer.y - centre.y).abs() <= reach;
+                    paint_feedback_handle(centre, ChromeState::Selected, hot, window);
                 }
                 for quad in &painted.selection {
                     fill_quad(quad, accent.opacity(0.3), window);
                 }
-                let mark_color = painted.frame_color.unwrap_or(accent);
+                let mark_color = accent;
                 let marks = painted
                     .breaks
                     .iter()
@@ -1729,10 +2674,13 @@ pub(super) fn page_text_overlay_element(
                     }
                 }
                 if let Some((input, _)) = &painted.input {
-                    // Page space to window pixels, for the IME.
-                    let along = project((1., 0.));
-                    let up = project((0., 1.));
-                    let base = project((0., 0.));
+                    // Page space to window pixels, for the IME; its text
+                    // positions are the base lines', moved by any table
+                    // edit.
+                    let (dx, dy) = painted.input_offset;
+                    let along = project((1. + dx, dy));
+                    let up = project((dx, 1. + dy));
+                    let base = project((dx, dy));
                     let screen = PageTextScreenMap {
                         matrix: [
                             f64::from(f32::from(along.x - base.x)),
@@ -1750,7 +2698,7 @@ pub(super) fn page_text_overlay_element(
         .absolute()
         .inset_0(),
     );
-    layer.into_any_element()
+    layer.children(labels).into_any_element()
 }
 
 /// Receives the editor's keys and IME input. It sits outside the pages so
@@ -1815,6 +2763,8 @@ pub(super) fn page_text_input_element(
             (UndoText, undo),
             (RedoText, redo),
             (FinishEditing, finish),
+            (NextCell, next_cell),
+            (PreviousCell, previous_cell),
         ]
     )
     .into_any_element()

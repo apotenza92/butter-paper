@@ -10,7 +10,7 @@ use std::{
 use crate::{
     annotation_model::{
         Annotation, DecodedRgbaAsset, LengthCalibration, PageRotation, PageScale, PageTransform,
-        PdfRect, PenAnnotation, RetainedAnnotationObstacle, ScalePreset,
+        PdfRect, PenAnnotation, RetainedAnnotationObstacle,
     },
     highlight_compositor::{HighlightRasterMapping, precompose_highlights_multiply_bgra_mapped},
     page_geometry::{
@@ -359,6 +359,15 @@ pub trait NativeDocumentResource: Send + Sync {
     fn page_text(&self, _page_index: u32) -> Result<PageTextLayer, String> {
         Err("page text editing is unavailable for this document".into())
     }
+    /// The editable text of page `page_index` as the kept page `base` has
+    /// it.
+    fn page_base_text(
+        &self,
+        _page_index: u32,
+        _base: &crate::pdf_page_base::PageBase,
+    ) -> Result<PageTextLayer, String> {
+        Err("earlier pages are unavailable for this document".into())
+    }
     /// Whether the document carries digital signatures, which changing its
     /// content invalidates.
     fn digitally_signed(&self) -> bool {
@@ -401,7 +410,6 @@ pub struct OpenedNativeDocument {
     pub(crate) annotations: Vec<Annotation>,
     pub(crate) retained_annotation_obstacles: Vec<RetainedAnnotationObstacle>,
     pub(crate) page_scales: Vec<PageScale>,
-    pub(crate) scale_presets: Vec<ScalePreset>,
     pub(crate) page_length_calibrations: Vec<(u32, LengthCalibration)>,
     pub(crate) page_rotations: Vec<PageRotation>,
     pub(crate) page_coordinate_spaces: Vec<PageCoordinateSpace>,
@@ -456,7 +464,6 @@ impl OpenedNativeDocument {
             annotations: Vec::new(),
             retained_annotation_obstacles: Vec::new(),
             page_scales: Vec::new(),
-            scale_presets: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations,
             page_coordinate_spaces,
@@ -488,11 +495,6 @@ impl OpenedNativeDocument {
 
     pub fn with_page_scales(mut self, page_scales: Vec<PageScale>) -> Self {
         self.page_scales = page_scales;
-        self
-    }
-
-    pub fn with_scale_presets(mut self, scale_presets: Vec<ScalePreset>) -> Self {
-        self.scale_presets = scale_presets;
         self
     }
 
@@ -746,17 +748,26 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
                 *snapshot = snapshot.clone().with_asset(asset);
             }
         }
-        let page_sizes = resource.page_sizes.clone();
-        let page_coordinate_spaces = resource.page_coordinate_spaces.clone();
+        // The file's pages; the session arranges them as the edits do.
+        let page_sizes = resource.file_pages.sizes.clone();
+        let page_coordinate_spaces = resource.file_pages.spaces.clone();
+        let shown_sizes = resource.shown_pages().sizes.clone();
         let current_page = resource.render_page(0, DEFAULT_PAGE_RENDER_WIDTH)?;
         let mut thumbnails = Vec::new();
-        for page_index in 0..u32::try_from(page_sizes.len().min(DEFAULT_THUMBNAIL_COUNT))
-            .map_err(|_| "thumbnail count overflowed".to_owned())?
+        for page_index in 0..u32::try_from(
+            page_sizes
+                .len()
+                .min(shown_sizes.len())
+                .min(DEFAULT_THUMBNAIL_COUNT),
+        )
+        .map_err(|_| "thumbnail count overflowed".to_owned())?
         {
             thumbnails.push(ThumbnailSurface::new(
                 page_index,
-                resource
-                    .render_page(page_index, thumbnail_width(page_sizes[page_index as usize]))?,
+                resource.render_page(
+                    page_index,
+                    thumbnail_width(shown_sizes[page_index as usize]),
+                )?,
             ));
         }
         let title = request
@@ -781,14 +792,68 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
     }
 }
 
+/// Each page's size, rotation and coordinate space.
+#[derive(Clone, Debug, Default)]
+struct PageLists {
+    sizes: Vec<(f32, f32)>,
+    rotations: Vec<PageRotation>,
+    spaces: Vec<PageCoordinateSpace>,
+}
+
+impl PageLists {
+    /// These pages as `slots` arranges them.
+    fn arranged(&self, slots: &[crate::pdf_page_structure::PageSlot]) -> Self {
+        use crate::pdf_page_structure::PageSlot;
+        if slots.is_empty() {
+            return self.clone();
+        }
+        let mut arranged = Self::default();
+        for slot in slots {
+            match *slot {
+                PageSlot::Source { index } | PageSlot::Copy { index } => {
+                    let index = index as usize;
+                    if let (Some(size), Some(rotation), Some(space)) = (
+                        self.sizes.get(index),
+                        self.rotations.get(index),
+                        self.spaces.get(index),
+                    ) {
+                        arranged.sizes.push(*size);
+                        arranged.rotations.push(*rotation);
+                        arranged.spaces.push(*space);
+                    }
+                }
+                PageSlot::Blank { width, height } => {
+                    let Ok(rect) = crate::page_geometry::PdfRect::new(0., 0., width, height) else {
+                        continue;
+                    };
+                    let Ok(space) = PageCoordinateSpace::new(
+                        rect,
+                        rect,
+                        crate::page_geometry::Rotation::Degrees0,
+                        1.,
+                    ) else {
+                        continue;
+                    };
+                    arranged.sizes.push((width as f32, height as f32));
+                    arranged.rotations.push(PageRotation::Degrees0);
+                    arranged.spaces.push(space);
+                }
+            }
+        }
+        arranged
+    }
+}
+
 struct PdfiumWorkerResource {
     /// Orders the requests waiting for `client`.
     gate: RenderGate,
     client: Mutex<Option<WorkerProcessClient>>,
     session_id: SessionId,
-    page_sizes: Vec<(f32, f32)>,
-    page_rotations: Vec<PageRotation>,
-    page_coordinate_spaces: Vec<PageCoordinateSpace>,
+    /// The file's pages, as opened.
+    file_pages: PageLists,
+    /// The pages the worker draws: the file's, as the edits it was last
+    /// sent arrange them.
+    pages: Mutex<Arc<PageLists>>,
     surface_root: PathBuf,
     worker_pid: u32,
     next_request: AtomicU64,
@@ -797,6 +862,8 @@ struct PdfiumWorkerResource {
     released: AtomicBool,
     digitally_signed: AtomicBool,
     form_layer: Mutex<Arc<FormLayer>>,
+    /// The kept pages the worker has been sent, by name.
+    sent_page_bases: Mutex<std::collections::HashSet<String>>,
 }
 
 impl PdfiumWorkerResource {
@@ -866,13 +933,17 @@ impl PdfiumWorkerResource {
                 page_coordinate_spaces.push(coordinate_space_from_worker_geometry(&geometry)?);
                 page_sizes.push(display_size(geometry)?);
             }
+            let file_pages = PageLists {
+                sizes: page_sizes,
+                rotations: page_rotations,
+                spaces: page_coordinate_spaces,
+            };
             Ok(Arc::new(Self {
                 gate: RenderGate::default(),
                 client: Mutex::new(Some(client)),
                 session_id,
-                page_sizes,
-                page_rotations,
-                page_coordinate_spaces,
+                pages: Mutex::new(Arc::new(file_pages.clone())),
+                file_pages,
                 surface_root: surface_root.clone(),
                 worker_pid,
                 next_request: AtomicU64::new(next_request),
@@ -881,12 +952,21 @@ impl PdfiumWorkerResource {
                 released: AtomicBool::new(false),
                 digitally_signed: AtomicBool::new(false),
                 form_layer: Mutex::default(),
+                sent_page_bases: Mutex::default(),
             }))
         })();
         if result.is_err() {
             let _ = fs::remove_dir_all(&surface_root);
         }
         result
+    }
+
+    /// The pages the worker draws now.
+    fn shown_pages(&self) -> Arc<PageLists> {
+        self.pages
+            .lock()
+            .map(|pages| pages.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
     }
 
     fn render_page_with_policy(
@@ -897,12 +977,13 @@ impl PdfiumWorkerResource {
         priority: RenderPriority,
         draft: bool,
     ) -> Result<RasterSurface, String> {
-        let (page_width, page_height) = *self
-            .page_sizes
+        let pages = self.shown_pages();
+        let (page_width, page_height) = *pages
+            .sizes
             .get(page_index as usize)
             .ok_or_else(|| "PDF page is outside the document".to_owned())?;
-        let coordinate_space = self
-            .page_coordinate_spaces
+        let coordinate_space = pages
+            .spaces
             .get(page_index as usize)
             .copied()
             .ok_or_else(|| "PDF page coordinate space is unavailable".to_owned())?;
@@ -1036,11 +1117,17 @@ impl PdfiumWorkerResource {
         let target_rotation =
             PageRotation::from_degrees(i64::from(request.rotation_quarter_turns % 4) * 90)
                 .map_err(|error| error.to_string())?;
-        let delta = target_rotation.delta_from(self.page_rotations[request.page]);
+        let pages = self.shown_pages();
+        let delta = target_rotation.delta_from(
+            *pages
+                .rotations
+                .get(request.page)
+                .ok_or_else(|| "viewer tile page is outside the document".to_owned())?,
+        );
         if delta != PageRotation::Degrees0 {
             let scale =
                 request.zoom_tenths as f32 / 1_000. * request.device_scale_millis as f32 / 1_000.;
-            let source_width = (self.page_sizes[request.page].0 * scale).ceil().max(1.) as u32;
+            let source_width = (pages.sizes[request.page].0 * scale).ceil().max(1.) as u32;
             let full = self
                 .render_page_with_policy(
                     page_index,
@@ -1061,12 +1148,12 @@ impl PdfiumWorkerResource {
                     .map_err(|_| "viewer tile crop height overflowed".to_owned())?,
             );
         }
-        let _page_size = *self
-            .page_sizes
+        let _page_size = *pages
+            .sizes
             .get(request.page)
             .ok_or_else(|| "viewer tile page is outside the document".to_owned())?;
-        let coordinate_space = self
-            .page_coordinate_spaces
+        let coordinate_space = pages
+            .spaces
             .get(request.page)
             .copied()
             .ok_or_else(|| "viewer tile page coordinate space is unavailable".to_owned())?;
@@ -1150,6 +1237,46 @@ impl PdfiumWorkerResource {
 
     fn request_id(&self) -> RequestId {
         RequestId(self.next_request.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Sends the worker each of `bases` it has not been sent.
+    fn send_page_bases(
+        &self,
+        client: &mut WorkerProcessClient,
+        bases: &[crate::pdf_page_base::PageBase],
+    ) -> Result<(), String> {
+        use base64::Engine as _;
+        let mut sent = self
+            .sent_page_bases
+            .lock()
+            .map_err(|_| "kept page lock was poisoned".to_owned())?;
+        for base in bases {
+            if sent.contains(&base.id) {
+                continue;
+            }
+            let pdf = base
+                .pdf
+                .as_ref()
+                .ok_or_else(|| "a kept page is missing its PDF".to_owned())?;
+            match client
+                .exchange(&WorkerRequest::AddPageBase {
+                    request_id: self.request_id(),
+                    session_id: self.session_id,
+                    id: base.id.clone(),
+                    pdf_base64: base64::engine::general_purpose::STANDARD.encode(pdf.as_slice()),
+                })
+                .map_err(worker_error)?
+            {
+                WorkerResponse::PageBaseAdded { session_id, .. }
+                    if session_id == self.session_id =>
+                {
+                    sent.insert(base.id.clone());
+                }
+                WorkerResponse::Failed { error, .. } => return Err(worker_error(error)),
+                response => return Err(unexpected_response("kept page", response)),
+            }
+        }
+        Ok(())
     }
 
     fn finish_release(&self) -> Result<(), String> {
@@ -1242,7 +1369,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
     }
 
     fn page_snap_geometry(&self, page_index: u32) -> Result<PageSnapGeometry, String> {
-        if page_index as usize >= self.page_sizes.len() {
+        if page_index as usize >= self.shown_pages().sizes.len() {
             return Err("PDF page is outside the document".to_owned());
         }
         // Read ahead for snapping, after the tiles of the page on screen.
@@ -1279,7 +1406,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
     }
 
     fn page_text(&self, page_index: u32) -> Result<PageTextLayer, String> {
-        if page_index as usize >= self.page_sizes.len() {
+        if page_index as usize >= self.shown_pages().sizes.len() {
             return Err("PDF page is outside the document".to_owned());
         }
         let _turn = self.gate.enter(RenderPriority::Interactive);
@@ -1295,6 +1422,41 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 request_id: self.request_id(),
                 session_id: self.session_id,
                 page_index,
+                base: None,
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::PageText {
+                session_id, layer, ..
+            } if session_id == self.session_id && layer.page_index == page_index => Ok(layer),
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("page text", response)),
+        }
+    }
+
+    fn page_base_text(
+        &self,
+        page_index: u32,
+        base: &crate::pdf_page_base::PageBase,
+    ) -> Result<PageTextLayer, String> {
+        if page_index as usize >= self.shown_pages().sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        self.send_page_bases(client, std::slice::from_ref(base))?;
+        match client
+            .exchange(&WorkerRequest::PageText {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+                base: Some(base.id.clone()),
             })
             .map_err(worker_error)?
         {
@@ -1326,6 +1488,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         let client = guard
             .as_mut()
             .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        self.send_page_bases(client, &edits.bases)?;
         match client
             .exchange(&WorkerRequest::SetDocumentEdits {
                 request_id: self.request_id(),
@@ -1337,6 +1500,9 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             WorkerResponse::DocumentEditsSet { session_id, .. }
                 if session_id == self.session_id =>
             {
+                if let Ok(mut pages) = self.pages.lock() {
+                    *pages = Arc::new(self.file_pages.arranged(&edits.pages));
+                }
                 Ok(())
             }
             WorkerResponse::Failed { error, .. } => Err(worker_error(error)),

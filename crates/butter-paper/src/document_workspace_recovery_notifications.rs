@@ -233,11 +233,6 @@ impl DocumentWorkspace {
                     recovery_preparation_issue,
                     presentation_error: None,
                     recovery_pending: false,
-                    page_scale_pick_instruction: None,
-                    page_scale_cancel_control: self
-                        .page_scale_control
-                        .as_ref()
-                        .map(|control| control.downgrade()),
                 },
                 true,
                 cx,

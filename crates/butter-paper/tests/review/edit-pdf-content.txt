@@ -1,4 +1,4 @@
-# Edit PDF Content review: run by .github/workflows/review.yml on Linux and Windows
+# Edit PDF review: run by .github/workflows/review.yml on Linux and Windows
 # against a copy of tests/fixtures/text-edit/libreoffice.pdf. Coordinates are
 # window content points below the title bar for a 1300 x 900 window; the
 # captures are for a person to inspect, and review.log records each step.

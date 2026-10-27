@@ -62,8 +62,9 @@ pub fn subscribe_property_slider<T: 'static>(
     )
 }
 
-/// A selected-property header with a title that stays centred when an X is
-/// placed in the trailing lane.
+/// A sidebar panel's header, shared by the properties panels and the page
+/// thumbnails, with a title that stays centred when an X is placed in the
+/// trailing lane.
 #[derive(IntoElement)]
 pub struct PropertyInspectorHeader {
     id: &'static str,
@@ -98,6 +99,7 @@ impl RenderOnce for PropertyInspectorHeader {
             .flex_shrink_0()
             .items_center()
             .px_3()
+            .text_sm()
             .font_semibold()
             .border_b_1()
             .border_color(cx.theme().border)

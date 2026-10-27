@@ -10,7 +10,7 @@ use butter_paper::annotation_model::{PageTransform, PdfPoint};
 use butter_paper::page_geometry::{PdfRect, Rotation as SpaceRotation};
 use butter_paper::page_text_editor::PageTextEditState;
 use butter_paper::pdf_text_blocks::{PageTextBlock, paragraph_blocks};
-use butter_paper::pdf_text_edit::{PageTextEdit, PageTextLayer, PageTextLine};
+use butter_paper::pdf_text_edit::{PageTextEdit, PageTextLayer, PageTextLine, apply_text_edits};
 use butter_paper::pdf_text_reflow::Paragraph;
 use butter_paper::pdf_worker::{
     ClipRect, JobId, RenderRequest, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId,
@@ -346,7 +346,7 @@ fn check_document(
                 };
                 let before = typed_count(&pdfium);
                 match backend.set_document_edits(&mut pdfium, &DocumentEdits::from_text(&edits)) {
-                    Ok(()) => {
+                    Ok(_) => {
                         report.worker_edit_ms = Some(ms(started));
                         let after = typed_count(&pdfium);
                         let read_back = after.len() == before.len()

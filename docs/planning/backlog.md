@@ -35,11 +35,17 @@ alone do not establish these behaviours.
 - Properties the reference had but native lacks: separate fill opacity,
   hatch fill, text vertical alignment and auto-size, image borders, editing
   imported appearances.
+- Scale regions: a sheet with views at several scales (a 1/8" plan beside
+  1/4" details) needs Revu's viewports, a scale per region. Page scale is
+  page-wide, and a PDF's partial viewports are read as page-wide.
+- Imperial measurements show decimal feet or inches; drawings write feet
+  and inches (`36'-6"`), which Revu stores as a two-unit `/D`.
+- A PDF whose `/Annots` names a missing object (a damaged file, some page
+  extractions) does not open; a missing object should read as null, as in
+  PDFium and Revu.
 - Pdf-format follow-ups are listed in [pdf-format.md](pdf-format.md#known-differences-follow-ups).
-- Undo after Save does nothing in the review build (Rectangles too): the
-  Undo action reports no error. Check whether history should survive a save.
 
-## Edit PDF Content
+## Edit PDF
 
 Paragraph editing works and is checked against real Chrome, LibreOffice
 and Quartz output (`tests/page_text_corpus.rs`; see [interactions.md](interactions.md#editing-page-text)
@@ -49,11 +55,35 @@ with `cargo test --workspace`, `cargo xtask check`, the real-PDFium
 `--ignored` worker tests and, for visible changes, a native review with
 inspected captures. Steps are in priority order.
 
-1. **Linux review workflow.** Edit PDF Content, lists, columns and edge resize
+1. **Linux review workflow.** Edit PDF, lists, columns and edge resize
     pass the native review on Windows and on Linux under WSLg. The manual
     `Review` workflow (`.github/workflows/review.yml`) runs Linux under Xvfb
     with software Vulkan, which drew only black windows under WSL (with GL
     too). Run the workflow once pushed and check its Linux captures.
+2. **Table follow-ups.** Ruled tables edit as tables (see
+    [interactions.md](interactions.md#tables) and
+    [pdf-format.md](pdf-format.md#edited-tables)). Still open:
+    - Tables without vertical rules, or without any (borderless, and
+      horizontal-rule-only tables), are not found: infer columns from the
+      text's alignment, and use a tagged PDF's `/Table` structure.
+    - Typing in a growing cell rebuilds the worker's shown document for each
+      keystroke (`table_typing_latency`, release, Apple M-series): 0.6 ms
+      for a light page, 45 ms for a table over 40,000 strokes, and 125 ms
+      for that page in a 204 MB file. About 80 ms of the last is copying and
+      comparing the whole file. Writing only the changed objects' update,
+      and giving PDFium the file and the update without joining them, would
+      remove it. The app's own share is 8 ms (`table_typing_latency_in_the_app`).
+3. **Moving content follow-ups.** Paragraphs, drawings and images move,
+    resize, delete, copy and snap (see
+    [interactions.md](interactions.md#editing-page-content)). Still open:
+    - Paste copies only onto the page they were copied from: another page
+      would need the original's fonts, images and colour spaces copied
+      into its resources.
+    - Paths that touch but share no clip are separate drawings; the lasso
+      selects them together.
+    - Selected content has markups' handles but no rotation knob: drawings
+      and images could turn by their matrix; text would need its text
+      matrix rewritten.
 
 ## Platforms and release
 

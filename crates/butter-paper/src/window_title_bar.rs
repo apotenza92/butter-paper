@@ -64,6 +64,22 @@ pub fn format_window_title_for_application(
     title
 }
 
+/// Window bounds of `size`, centred in the primary display's usable area:
+/// the screen less the menu bar and Dock on macOS (and the taskbar where
+/// the platform reports it), shrunk to fit it.
+pub fn centered_window_bounds(
+    size: gpui::Size<gpui::Pixels>,
+    cx: &gpui::App,
+) -> gpui::Bounds<gpui::Pixels> {
+    match cx.primary_display() {
+        Some(display) => {
+            let area = display.visible_bounds();
+            gpui::Bounds::centered_at(area.center(), size.min(&area.size))
+        }
+        None => gpui::Bounds::centered(None, size, cx),
+    }
+}
+
 /// AppKit owns the macOS title bar, including the user's double-click action
 /// (Fill, Zoom, Minimise or Do Nothing). Other platforms use GPUI Component.
 pub fn title_bar_window_options() -> WindowOptions {

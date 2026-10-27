@@ -328,18 +328,36 @@ pub struct DocumentEdits {
     pub text: Vec<PageTextEdit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forms: Vec<FormFieldEdit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<crate::pdf_tables::PageTableEdit>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moves: Vec<crate::pdf_content_moves::ContentMove>,
+    /// Pages shown as an earlier file had them, which their text and table
+    /// edits apply to. The worker is sent each kept page once
+    /// ([`WorkerRequest::AddPageBase`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bases: Vec<crate::pdf_page_base::PageBase>,
+    /// The pages as arranged, which the other edits name pages of; empty
+    /// when they are the file's, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<crate::pdf_page_structure::PageSlot>,
 }
 
 impl DocumentEdits {
     pub fn from_text(text: &[PageTextEdit]) -> Self {
         Self {
             text: text.to_vec(),
-            forms: Vec::new(),
+            ..Self::default()
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.forms.is_empty()
+        self.text.is_empty()
+            && self.forms.is_empty()
+            && self.tables.is_empty()
+            && self.moves.is_empty()
+            && self.bases.is_empty()
+            && self.pages.is_empty()
     }
 }
 
@@ -363,11 +381,22 @@ pub enum WorkerRequest {
         session_id: SessionId,
         page_index: u32,
     },
-    /// The editable text of a page of the unedited document.
+    /// The editable text of a page of the unedited document, or of the
+    /// kept page `base` names.
     PageText {
         request_id: RequestId,
         session_id: SessionId,
         page_index: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
+    },
+    /// A kept page (a one-page PDF named by its SHA-256), which edits'
+    /// bases and page text requests then name.
+    AddPageBase {
+        request_id: RequestId,
+        session_id: SessionId,
+        id: String,
+        pdf_base64: String,
     },
     /// Replaces the edits renders show. Edits always apply to the unedited
     /// document, so no edits restore it.
@@ -398,6 +427,7 @@ impl WorkerRequest {
             | Self::PageGeometry { request_id, .. }
             | Self::PageSnapGeometry { request_id, .. }
             | Self::PageText { request_id, .. }
+            | Self::AddPageBase { request_id, .. }
             | Self::SetDocumentEdits { request_id, .. }
             | Self::RenderCrop { request_id, .. }
             | Self::Cancel { request_id, .. }
@@ -435,6 +465,10 @@ pub enum WorkerResponse {
         request_id: RequestId,
         session_id: SessionId,
     },
+    PageBaseAdded {
+        request_id: RequestId,
+        session_id: SessionId,
+    },
     Rendered {
         request_id: RequestId,
         job_id: JobId,
@@ -464,6 +498,7 @@ impl WorkerResponse {
             | Self::PageSnapGeometry { request_id, .. }
             | Self::PageText { request_id, .. }
             | Self::DocumentEditsSet { request_id, .. }
+            | Self::PageBaseAdded { request_id, .. }
             | Self::Rendered { request_id, .. }
             | Self::Cancelled { request_id, .. }
             | Self::Closed { request_id, .. }
@@ -498,6 +533,26 @@ pub trait PdfBackend {
         _document: &mut Self::Document,
         _page_index: u32,
     ) -> Result<PageTextLayer, WorkerError> {
+        Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
+
+    /// The editable text of the kept page `base` (added before), as page
+    /// `page_index`.
+    fn page_base_text(
+        &mut self,
+        _document: &mut Self::Document,
+        _page_index: u32,
+        _base: &str,
+    ) -> Result<PageTextLayer, WorkerError> {
+        Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
+
+    fn add_page_base(
+        &mut self,
+        _document: &mut Self::Document,
+        _id: String,
+        _pdf: Vec<u8>,
+    ) -> Result<(), WorkerError> {
         Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
     }
 
@@ -812,9 +867,10 @@ where
                     Err(error) => failed(request_id, None, error),
                 }
             }
-            WorkerRequest::PageText {
+            WorkerRequest::AddPageBase {
                 session_id,
-                page_index,
+                id,
+                pdf_base64,
                 ..
             } => {
                 let Some(document) = self.documents.get_mut(&session_id) else {
@@ -827,7 +883,54 @@ where
                         ),
                     );
                 };
-                match self.backend.page_text(document, page_index) {
+                use base64::Engine as _;
+                let pdf = match base64::engine::general_purpose::STANDARD.decode(&pdf_base64) {
+                    Ok(pdf)
+                        if pdf.len() <= crate::pdf_page_base::MAX_PAGE_BASE_BYTES
+                            && crate::pdf_page_base::page_base_id(&pdf) == id =>
+                    {
+                        pdf
+                    }
+                    _ => {
+                        return failed(
+                            request_id,
+                            None,
+                            WorkerError::with_detail(
+                                WorkerErrorCode::InvalidRequest,
+                                "the kept page does not match its name",
+                            ),
+                        );
+                    }
+                };
+                match self.backend.add_page_base(document, id, pdf) {
+                    Ok(()) => WorkerResponse::PageBaseAdded {
+                        request_id,
+                        session_id,
+                    },
+                    Err(error) => failed(request_id, None, error),
+                }
+            }
+            WorkerRequest::PageText {
+                session_id,
+                page_index,
+                base,
+                ..
+            } => {
+                let Some(document) = self.documents.get_mut(&session_id) else {
+                    return failed(
+                        request_id,
+                        None,
+                        WorkerError::with_detail(
+                            WorkerErrorCode::InvalidRequest,
+                            "session identifier is not open",
+                        ),
+                    );
+                };
+                let layer = match &base {
+                    Some(base) => self.backend.page_base_text(document, page_index, base),
+                    None => self.backend.page_text(document, page_index),
+                };
+                match layer {
                     Ok(layer) => WorkerResponse::PageText {
                         request_id,
                         session_id,

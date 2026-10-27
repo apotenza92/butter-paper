@@ -378,28 +378,17 @@ impl EditPdfContentPropertyInspector {
 
 impl EventEmitter<EditPdfContentPropertyEvent> for EditPdfContentPropertyInspector {}
 
-impl Render for EditPdfContentPropertyInspector {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(snapshot) = self.snapshot.clone() else {
-            return PropertyInspectorPanel::new(
-                EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID,
-                EDIT_PDF_CONTENT_INSPECTOR_HEADER_ID,
-                EDIT_PDF_CONTENT_INSPECTOR_SCROLL_ID,
-                "Edit PDF Content",
-            )
-            .child(
-                div()
-                    .p_3()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Click text on the page to edit it and see its properties."),
-            )
-            .into_any_element();
-        };
+impl EditPdfContentPropertyInspector {
+    /// The text and paragraph sections for the edited paragraph.
+    fn text_sections(
+        &self,
+        snapshot: EditPdfContentPropertySnapshot,
+        cx: &mut Context<Self>,
+    ) -> (gpui::AnyElement, gpui::AnyElement) {
         let bold = cx.entity().downgrade();
         let italic = cx.entity().downgrade();
         let color = cx.entity().downgrade();
         let alignment = cx.entity().downgrade();
-        let sections = cx.entity().downgrade();
         let muted = cx.theme().muted_foreground;
         let scope = if snapshot.selection {
             "Text changes apply to the selected text."
@@ -545,26 +534,56 @@ impl Render for EditPdfContentPropertyInspector {
                     .suffix("lines"),
                 ),
             );
-        let open = self.open_sections;
-        let accordion = Accordion::new("edit-pdf-content-property-sections")
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(open[0]).title("Text").child(text))
-            .item(|item| item.open(open[1]).title("Paragraph").child(paragraph))
-            .on_toggle_click(move |indexes, _, cx| {
-                let _ = sections.update(cx, |this, cx| {
-                    this.open_sections = [indexes.contains(&0), indexes.contains(&1)];
-                    cx.notify();
-                });
-            });
-        PropertyInspectorPanel::new(
+        (text.into_any_element(), paragraph.into_any_element())
+    }
+}
+
+impl Render for EditPdfContentPropertyInspector {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Sections by index: Text, Paragraph.
+        let mut sections: Vec<(usize, &'static str, gpui::AnyElement)> = Vec::new();
+        let snapshot = self.snapshot.clone();
+        if let Some(snapshot) = snapshot.clone() {
+            let (text, paragraph) = self.text_sections(snapshot, cx);
+            sections.push((0, "Text", text));
+            sections.push((1, "Paragraph", paragraph));
+        }
+        let panel = PropertyInspectorPanel::new(
             EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID,
             EDIT_PDF_CONTENT_INSPECTOR_HEADER_ID,
             EDIT_PDF_CONTENT_INSPECTOR_SCROLL_ID,
-            "Edit PDF Content",
-        )
-        .child(accordion)
-        .into_any_element()
+            "Edit PDF",
+        );
+        let hint = || {
+            div()
+                .p_3()
+                .text_color(cx.theme().muted_foreground)
+                .child("Double-click text on the page to edit it and see its properties.")
+        };
+        if sections.is_empty() {
+            return panel.child(hint()).into_any_element();
+        }
+        let open = self.open_sections;
+        let shown = sections
+            .iter()
+            .map(|(index, _, _)| *index)
+            .collect::<Vec<_>>();
+        let owner = cx.entity().downgrade();
+        let mut accordion = Accordion::new("edit-pdf-content-property-sections")
+            .bordered(false)
+            .multiple(true);
+        for (index, title, section) in sections {
+            accordion = accordion.item(|item| item.open(open[index]).title(title).child(section));
+        }
+        let accordion = accordion.on_toggle_click(move |indexes, _, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                for (position, index) in shown.iter().enumerate() {
+                    this.open_sections[*index] = indexes.contains(&position);
+                }
+                cx.notify();
+            });
+        });
+        panel.child(accordion).into_any_element()
     }
 }
 

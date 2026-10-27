@@ -7,8 +7,8 @@
 use super::*;
 use crate::pdf_text_edit::PageTextEdit;
 use crate::pdf_text_selection::{
-    SelectableLine, TextPosition, hit, nearest, paragraph_at, selectable_lines, selection_quads,
-    selection_text, word_at,
+    SelectableLine, TextPosition, hit, nearest, paragraph_at, selectable_lines_with_tables,
+    selection_quads, selection_text, word_at,
 };
 use gpui::ClipboardItem;
 
@@ -30,9 +30,20 @@ pub(super) struct TextSelection {
     pub dragging: bool,
 }
 
-/// A page's lines for selecting, kept until its edits change.
-pub(super) type SelectableTextCache =
-    HashMap<(DocumentId, u32), (u64, Vec<PageTextEdit>, Arc<Vec<SelectableLine>>)>;
+/// A page's lines for selecting, kept until its text or edits change.
+pub(super) type SelectableTextCache = HashMap<
+    (DocumentId, u32),
+    (
+        u64,
+        Arc<crate::pdf_text_edit::PageTextLayer>,
+        Vec<PageTextEdit>,
+        (
+            Vec<crate::pdf_tables::PageTableEdit>,
+            Vec<crate::pdf_content_moves::ContentMove>,
+        ),
+        Arc<Vec<SelectableLine>>,
+    ),
+>;
 
 impl DocumentWorkspace {
     /// The page's lines as it shows them, reading its text from the worker
@@ -50,16 +61,29 @@ impl DocumentWorkspace {
             .into_iter()
             .filter(|edit| edit.page_index == page_index)
             .collect::<Vec<_>>();
-        if let Some((cached_epoch, cached_edits, lines)) =
+        let tables = (
+            self.page_table_edits_of(document_id, cx)
+                .into_iter()
+                .filter(|edit| edit.page_index == page_index)
+                .collect::<Vec<_>>(),
+            self.shown_page_content_moves(document_id, page_index, cx),
+        );
+        if let Some((cached_epoch, cached_layer, cached_edits, cached_tables, lines)) =
             self.selectable_text.get(&(document_id, page_index))
             && *cached_epoch == epoch
+            && Arc::ptr_eq(cached_layer, &layer)
             && *cached_edits == edits
+            && *cached_tables == tables
         {
             return Some((epoch, lines.clone()));
         }
-        let lines = Arc::new(selectable_lines(&layer, &blocks, &edits));
-        self.selectable_text
-            .insert((document_id, page_index), (epoch, edits, lines.clone()));
+        let lines = Arc::new(selectable_lines_with_tables(
+            &layer, &blocks, &edits, &tables.0, &tables.1,
+        ));
+        self.selectable_text.insert(
+            (document_id, page_index),
+            (epoch, layer.clone(), edits, tables, lines.clone()),
+        );
         Some((epoch, lines))
     }
 
@@ -260,16 +284,8 @@ impl DocumentWorkspace {
         }
         vec![page_text::PageTextOverlay {
             page_index: selection.page_index,
-            paragraphs: Vec::new(),
-            hover: Vec::new(),
-            frame: Vec::new(),
-            frame_color: None,
             selection: quads,
-            caret: None,
-            marked: Vec::new(),
-            breaks: Vec::new(),
-            wraps: Vec::new(),
-            input: None,
+            ..Default::default()
         }]
     }
 }

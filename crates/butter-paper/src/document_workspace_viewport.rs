@@ -44,10 +44,14 @@ pub(super) struct ViewportInputs {
     pub pending_image_preview: Option<PendingImagePreview>,
     pub pending_text_box_presentation: Option<PendingTextBoxPresentation>,
     pub page_text_overlays: Vec<PageTextOverlay>,
+    /// The picture of content being dragged, painted where it is going.
+    pub content_sprite: Option<super::content::SpritePaint>,
     pub form_overlays: Vec<FormOverlay>,
     pub relationship_snap_guides: Vec<RelationshipSnapGuide>,
     pub selection_color: Hsla,
     pub semantic_snap_decision: Option<SemanticSnapDecision>,
+    /// The calibration line of the Page Scale dialog.
+    pub calibration_preview: Option<crate::page_scale_control::CalibrationPreview>,
     pub viewer_pages: Vec<ViewerPageRender>,
     /// Each page's tiles from before a zoom, drawn under its tiles.
     pub viewer_zoom_fallback: HashMap<usize, Vec<(crate::viewer::Rect, Arc<RenderImage>)>>,
@@ -86,10 +90,12 @@ impl DocumentWorkspace {
             pending_image_preview,
             pending_text_box_presentation,
             page_text_overlays,
+            content_sprite,
             form_overlays,
             relationship_snap_guides,
             selection_color,
             semantic_snap_decision,
+            calibration_preview,
             viewer_pages,
             viewer_zoom_fallback,
             viewer_pan_margin,
@@ -105,6 +111,7 @@ impl DocumentWorkspace {
         let form_focus =
             forms::form_focus_element(self.form_focus.clone(), cx.entity().downgrade());
         let form_owner = cx.entity().downgrade();
+        let warning_colors = tables::WarningColors::new(cx);
         gpui::div()
                                 .id(DOCUMENT_VIEWPORT_ID)
                                 .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
@@ -360,6 +367,18 @@ impl DocumentWorkspace {
                                                         )
                                                         .children(zoom_fallback_tiles)
                                                         .children(page_tiles)
+                                                        .children(
+                                                            content_sprite
+                                                                .clone()
+                                                                .filter(|sprite| sprite.page_index == page_index)
+                                                                .map(|sprite| {
+                                                                    super::content::content_sprite_element(
+                                                                        sprite,
+                                                                        page_size,
+                                                                        coordinate_space,
+                                                                    )
+                                                                }),
+                                                        )
                                                         .children(quality_marker)
                                                         .child(annotation_layer(
                                                             document_id,
@@ -402,6 +421,10 @@ impl DocumentWorkspace {
                                                                 .map(|(_, marquee)| marquee.clone()),
                                                             Some(cx.entity().downgrade()),
                                                             painted_viewer,
+                                                            calibration_preview.clone().filter(|preview| {
+                                                                preview.document_id == document_id
+                                                                    && preview.page_index == page_index
+                                                            }),
                                                         ))
                                                         .children(
                                                             page_text_overlays
@@ -414,6 +437,7 @@ impl DocumentWorkspace {
                                                                         page_size,
                                                                         coordinate_space,
                                                                         selection_color,
+                                                                        warning_colors,
                                                                     )
                                                                 }),
                                                         )
@@ -482,6 +506,10 @@ impl DocumentWorkspace {
                                                         .map(|(_, marquee)| marquee.clone()),
                                                     Some(cx.entity().downgrade()),
                                                     None,
+                                                    calibration_preview.clone().filter(|preview| {
+                                                        preview.document_id == document_id
+                                                            && preview.page_index == current_page
+                                                    }),
                                                 ))
                                                 .children(
                                                     form_overlays

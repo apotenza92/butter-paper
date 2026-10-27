@@ -21,6 +21,13 @@ impl DocumentWorkspace {
                 workspace.handle_space_pan_down(event, window, cx);
             }))
             .on_key_up(cx.listener(|workspace, event: &KeyUpEvent, window, cx| {
+                // Letting go of an arrow ends a move by arrow keys.
+                if matches!(
+                    event.keystroke.key.as_str(),
+                    "up" | "down" | "left" | "right"
+                ) {
+                    workspace.settle_content_nudge(cx);
+                }
                 workspace.handle_space_pan_up(event, window, cx);
             }))
             .on_action(cx.listener(Self::open_pdf_from_action))
@@ -57,9 +64,17 @@ impl DocumentWorkspace {
                 workspace.apply_document_navigation(DocumentNavigationAction::NextPage, window, cx);
             }))
             .on_action(cx.listener(|workspace, _: &NavigateUp, window, cx| {
+                // Arrow keys move content selected in Edit PDF mode.
+                if workspace.nudge_content_selection((0., 1.), false, cx) {
+                    return;
+                }
                 workspace.apply_document_navigation(DocumentNavigationAction::ArrowUp, window, cx);
             }))
             .on_action(cx.listener(|workspace, _: &NavigateDown, window, cx| {
+                // Arrow keys move content selected in Edit PDF mode.
+                if workspace.nudge_content_selection((0., -1.), false, cx) {
+                    return;
+                }
                 workspace.apply_document_navigation(
                     DocumentNavigationAction::ArrowDown,
                     window,
@@ -67,6 +82,10 @@ impl DocumentWorkspace {
                 );
             }))
             .on_action(cx.listener(|workspace, _: &NavigateLeft, window, cx| {
+                // Arrow keys move content selected in Edit PDF mode.
+                if workspace.nudge_content_selection((-1., 0.), false, cx) {
+                    return;
+                }
                 workspace.apply_document_navigation(
                     DocumentNavigationAction::ArrowLeft,
                     window,
@@ -74,11 +93,27 @@ impl DocumentWorkspace {
                 );
             }))
             .on_action(cx.listener(|workspace, _: &NavigateRight, window, cx| {
+                // Arrow keys move content selected in Edit PDF mode.
+                if workspace.nudge_content_selection((1., 0.), false, cx) {
+                    return;
+                }
                 workspace.apply_document_navigation(
                     DocumentNavigationAction::ArrowRight,
                     window,
                     cx,
                 );
+            }))
+            .on_action(cx.listener(|workspace, _: &NudgeUpFar, _, cx| {
+                workspace.nudge_content_selection((0., 1.), true, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &NudgeDownFar, _, cx| {
+                workspace.nudge_content_selection((0., -1.), true, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &NudgeLeftFar, _, cx| {
+                workspace.nudge_content_selection((-1., 0.), true, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &NudgeRightFar, _, cx| {
+                workspace.nudge_content_selection((1., 0.), true, cx);
             }))
             .on_action(cx.listener(|workspace, _: &NavigatePageUp, window, cx| {
                 workspace.apply_document_navigation(DocumentNavigationAction::PageUp, window, cx);
@@ -135,22 +170,7 @@ impl DocumentWorkspace {
                     .session(document_id, cx)
                     .map(|session| session.read(cx).current_page)
                     .unwrap_or_default();
-                // This listener runs inside a workspace update, so the control
-                // cannot read the workspace back; hand it the page state.
-                let current_scale = workspace.page_scale(document_id, current_page, cx);
-                let mut presets = workspace.scale_presets(document_id, cx);
-                presets.extend(built_in_scale_presets());
-                let control = workspace.ensure_page_scale_control(window, cx);
-                control.update(cx, |control, cx| {
-                    control.open_for_state(
-                        document_id,
-                        current_page,
-                        current_scale,
-                        presets,
-                        window,
-                        cx,
-                    );
-                });
+                workspace.open_page_scale_dialog(document_id, current_page, window, cx);
             }))
             .on_action(cx.listener(Self::select_text_box_tool_from_action))
             .on_action(cx.listener(Self::select_rectangle_tool_from_action))
@@ -171,9 +191,20 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::select_highlight_tool_from_action))
             .on_action(cx.listener(Self::select_image_tool_from_action))
             .on_action(cx.listener(Self::select_snapshot_tool_from_action))
-            .on_action(cx.listener(Self::select_edit_pdf_content_tool_from_action))
+            .on_action(cx.listener(Self::toggle_edit_pdf_from_action))
             .on_action(cx.listener(Self::select_length_tool_from_action))
             .on_action(cx.listener(Self::select_all_annotations_from_action))
+            .on_action(cx.listener(Self::insert_page_before_from_action))
+            .on_action(cx.listener(Self::insert_page_after_from_action))
+            .on_action(cx.listener(Self::insert_page_at_end_from_action))
+            .on_action(cx.listener(Self::duplicate_pages_from_action))
+            .on_action(cx.listener(Self::delete_pages_from_action))
+            .on_action(cx.listener(Self::copy_pages_from_action))
+            .on_action(cx.listener(Self::cut_pages_from_action))
+            .on_action(cx.listener(Self::paste_pages_from_action))
+            .on_action(cx.listener(Self::rotate_pages_left_from_action))
+            .on_action(cx.listener(Self::rotate_pages_right_from_action))
+            .on_action(cx.listener(Self::merge_documents_from_action))
             .on_action(cx.listener(Self::copy_annotations_from_action))
             .on_action(cx.listener(Self::cut_annotations_from_action))
             .on_action(cx.listener(Self::paste_annotations_from_action))
@@ -190,6 +221,11 @@ impl DocumentWorkspace {
                     || (window.has_focused_input(cx) && !pending_editor_focused)
                 {
                     cx.propagate();
+                    return;
+                }
+                // Escape ends a content selection in Edit PDF mode.
+                if workspace.content_selection.is_some() {
+                    workspace.clear_content_selection(cx);
                     return;
                 }
                 if workspace.pending_text_box_editor.is_some() {
@@ -219,17 +255,7 @@ impl DocumentWorkspace {
                     }
                     return;
                 }
-                if workspace
-                    .page_scale_control
-                    .as_ref()
-                    .is_some_and(|control| {
-                        control.update(cx, |control, cx| control.cancel_pick(cx))
-                    })
-                {
-                    if let Some(document_id) = workspace.active_document_id {
-                        workspace.annotation_statuses.remove(&document_id);
-                    }
-                    cx.notify();
+                if workspace.cancel_calibration_pick(window, cx) {
                     return;
                 }
                 let Some(document_id) = workspace.active_document_id else {

@@ -1,12 +1,13 @@
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _,
-    Styled as _, Window, prelude::FluentBuilder as _, px,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Selectable as _,
     button::{Button, ButtonGroup},
     h_flex,
+    switch::Switch,
 };
 
 use crate::accessible_button::accessible_icon_button;
@@ -25,6 +26,9 @@ pub const VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH: f32 = 667.;
 pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
+pub const EDIT_PDF_ID: &str = "viewer-edit-pdf";
+/// The least width of the Edit PDF switch's slot, in rems.
+pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 9.;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FitPreset {
@@ -35,6 +39,8 @@ pub enum FitPreset {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ViewerToolbarStripEvent {
     FitPresetChanged(FitPreset),
+    /// The Edit PDF switch was pressed.
+    EditPdfToggled,
 }
 
 /// Owns the representative viewer-toolbar feature state while GPUI Component
@@ -51,6 +57,9 @@ pub struct ViewerToolbarStrip {
     fit_changes: usize,
     page_view_mode: PageViewMode,
     disabled: bool,
+    /// The Edit PDF switch, at the strip's leading edge, and whether it is
+    /// on; `None` hides it.
+    edit_pdf: Option<bool>,
 }
 
 impl ViewerToolbarStrip {
@@ -67,6 +76,7 @@ impl ViewerToolbarStrip {
             fit_changes: 0,
             page_view_mode: PageViewMode::Continuous,
             disabled: false,
+            edit_pdf: None,
         }
     }
 
@@ -140,6 +150,7 @@ impl ViewerToolbarStrip {
             fit_changes: 0,
             page_view_mode: PageViewMode::Continuous,
             disabled: false,
+            edit_pdf: None,
         }
     }
 
@@ -244,6 +255,18 @@ impl ViewerToolbarStrip {
 
     pub fn is_disabled(&self) -> bool {
         self.disabled
+    }
+
+    /// Shows the Edit PDF switch, on or off, or hides it.
+    pub fn set_edit_pdf(&mut self, edit_pdf: Option<bool>, cx: &mut Context<Self>) {
+        if self.edit_pdf != edit_pdf {
+            self.edit_pdf = edit_pdf;
+            cx.notify();
+        }
+    }
+
+    pub fn edit_pdf(&self) -> Option<bool> {
+        self.edit_pdf
     }
 
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
@@ -429,6 +452,46 @@ impl Render for ViewerToolbarStrip {
                 "Fit Page",
             ));
 
+        // The Edit PDF switch sits at the leading edge; a matching flexible
+        // space after the view controls keeps them centred. Both scroll with
+        // the controls when the strip is narrow.
+        let edit_pdf = self.edit_pdf.map(|on| {
+            // Padded inside: the slot and the trailing space grow alike. The
+            // slot's least width is stated, so it always holds the switch,
+            // its label and padding.
+            h_flex()
+                .flex_1()
+                .flex_shrink_0()
+                .min_w(rems(EDIT_PDF_SLOT_MIN_REMS))
+                .child(
+                    h_flex()
+                        .px_2()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .items_center()
+                        .child(
+                            div()
+                                .id(EDIT_PDF_ID)
+                                .debug_selector(|| EDIT_PDF_ID.into())
+                                .child(
+                                Switch::new("viewer-edit-pdf-switch")
+                                    .label("Edit PDF")
+                                    .checked(on)
+                                    .disabled(disabled)
+                                    .tooltip(if on {
+                                        "Stop editing the PDF's text, drawings and images (Shift+T)"
+                                    } else {
+                                        "Edit the PDF's text, drawings and images (Shift+T)"
+                                    })
+                                    .on_click(cx.listener(|_, _: &bool, _, cx| {
+                                        cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
+                                    })),
+                            ),
+                        ),
+                )
+        });
+        let has_edit_pdf = edit_pdf.is_some();
+
         h_flex()
             .id(VIEWER_TOOLBAR_ID)
             .debug_selector(|| VIEWER_TOOLBAR_ID.into())
@@ -458,6 +521,7 @@ impl Render for ViewerToolbarStrip {
                             .flex_shrink_0()
                             .justify_center()
                             .items_center()
+                            .children(edit_pdf)
                             .child(
                                 h_flex()
                                     .w(px(VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH))
@@ -490,7 +554,8 @@ impl Render for ViewerToolbarStrip {
                                             toolbar.child(h_flex().flex_shrink_0().child(control))
                                         },
                                     ),
-                            ),
+                            )
+                            .when(has_edit_pdf, |content| content.child(h_flex().flex_1())),
                     ),
             )
     }

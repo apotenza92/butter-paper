@@ -8,7 +8,7 @@ use butter_paper::pdf_engine::{
 };
 use butter_paper::pdf_forms::{apply_form_edits, needs_appearances, regenerate_appearances};
 use butter_paper::pdf_text_edit::{
-    PageTextLayer, TextEditError, TextEditLimits, apply_text_edits, extract_page_text,
+    PageTextLayer, TextEditError, TextEditLimits, apply_content_edits, extract_page_text,
 };
 use butter_paper::pdf_worker::{
     AnnotationRenderMode, CancellationRegistry, DocumentEdits, DocumentInfo, FileSurfaceStore,
@@ -98,18 +98,37 @@ fn incremental_update(
 /// The document as renders show it: the source with page-text edits and
 /// filled form fields applied, and appearances drawn for form fields that
 /// lack them. `None` when that is the source itself.
+type EditedDisplay = Option<(PdfMetadataDocument, Vec<u8>)>;
+
 fn edited_display(
     source: &PdfMetadataDocument,
     source_bytes: &[u8],
     edits: &DocumentEdits,
-) -> Result<Option<(PdfMetadataDocument, Vec<u8>)>, WorkerError> {
+) -> Result<EditedDisplay, WorkerError> {
     let draw_fields = needs_appearances(source);
     if edits.is_empty() && !draw_fields {
         return Ok(None);
     }
     let mut edited = editable_copy(source);
-    apply_text_edits(&mut edited, &edits.text, &TextEditLimits::default())
-        .map_err(map_text_edit_error)?;
+    // Pages first: the other edits name pages as arranged.
+    if !edits.pages.is_empty() {
+        let managed =
+            butter_paper::pdf_engine::managed_annotation_slots(&edited).map_err(|error| {
+                WorkerError::with_detail(WorkerErrorCode::MalformedDocument, error.to_string())
+            })?;
+        butter_paper::pdf_page_structure::restructure_pages(&mut edited, &edits.pages, &managed)
+            .map_err(|error| WorkerError::with_detail(WorkerErrorCode::InvalidRequest, error))?;
+    }
+    butter_paper::pdf_page_base::restore_pages(&mut edited, &edits.bases)
+        .map_err(|error| WorkerError::with_detail(WorkerErrorCode::InvalidRequest, error))?;
+    apply_content_edits(
+        &mut edited,
+        &edits.text,
+        &edits.tables,
+        &edits.moves,
+        &TextEditLimits::for_display(),
+    )
+    .map_err(map_text_edit_error)?;
     if draw_fields {
         regenerate_appearances(&mut edited).map_err(|error| {
             WorkerError::with_detail(
@@ -203,6 +222,8 @@ struct PdfiumDocument {
     source_bytes: Vec<u8>,
     password: Option<String>,
     edits: DocumentEdits,
+    /// Kept pages the app sent, by name.
+    page_bases: std::collections::HashMap<String, std::sync::Arc<Vec<u8>>>,
     retained: RetainedPdfiumDocument,
     vector_snapshots: Option<Result<PdfDocument<'static>, WorkerError>>,
 }
@@ -287,6 +308,7 @@ impl PdfBackend for PdfiumBackend {
                 source_bytes,
                 password: password.map(str::to_owned),
                 edits: DocumentEdits::default(),
+                page_bases: Default::default(),
                 retained: RetainedPdfiumDocument::Unprepared,
                 vector_snapshots: None,
             },
@@ -396,6 +418,37 @@ impl PdfBackend for PdfiumBackend {
             .map_err(map_text_edit_error)
     }
 
+    fn page_base_text(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+        base: &str,
+    ) -> Result<PageTextLayer, WorkerError> {
+        let pdf = document.page_bases.get(base).ok_or_else(|| {
+            WorkerError::with_detail(WorkerErrorCode::InvalidRequest, "the kept page is missing")
+        })?;
+        let kept = PdfMetadataDocument::load_mem(pdf).map_err(|error| {
+            WorkerError::with_detail(
+                WorkerErrorCode::MalformedDocument,
+                format!("a kept page cannot be read: {error}"),
+            )
+        })?;
+        let mut layer =
+            extract_page_text(&kept, 0, &TextEditLimits::default()).map_err(map_text_edit_error)?;
+        layer.page_index = page_index;
+        Ok(layer)
+    }
+
+    fn add_page_base(
+        &mut self,
+        document: &mut Self::Document,
+        id: String,
+        pdf: Vec<u8>,
+    ) -> Result<(), WorkerError> {
+        document.page_bases.insert(id, std::sync::Arc::new(pdf));
+        Ok(())
+    }
+
     fn set_document_edits(
         &mut self,
         document: &mut Self::Document,
@@ -404,8 +457,20 @@ impl PdfBackend for PdfiumBackend {
         if document.edits == *edits {
             return Ok(());
         }
-        let (metadata, bytes) = edited_display(&document.source, &document.source_bytes, edits)?
-            .unwrap_or_else(|| (document.source.clone(), document.source_bytes.clone()));
+        let mut edits = edits.clone();
+        for base in &mut edits.bases {
+            let pdf = document.page_bases.get(&base.id).ok_or_else(|| {
+                WorkerError::with_detail(
+                    WorkerErrorCode::InvalidRequest,
+                    "the kept page is missing",
+                )
+            })?;
+            base.pdf = Some(pdf.clone());
+        }
+        let edits = &edits;
+        let shown = edited_display(&document.source, &document.source_bytes, edits)?;
+        let (metadata, bytes) =
+            shown.unwrap_or_else(|| (document.source.clone(), document.source_bytes.clone()));
         document.loaded_pages.clear();
         document.document =
             self.load_display_document(&metadata, bytes, document.password.as_deref())?;
@@ -726,6 +791,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use butter_paper::pdf_text_edit::PageTextEdit;
+    use butter_paper::pdf_text_edit::apply_text_edits;
     use butter_paper::pdf_worker::{
         ClipRect, JobId, RenderRequest, SessionId, SurfaceDescriptor, SurfaceFormat, SurfaceId,
     };
@@ -1684,6 +1750,348 @@ mod tests {
         assert_eq!(render(&mut backend, &mut document), original);
     }
 
+    /// A table edit renders through PDFium: a grown row moves the rows
+    /// below and their borders down, and a new row draws its model's
+    /// borders and its new cell text.
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn table_edits_render_grown_and_new_rows() {
+        use butter_paper::pdf_tables::{
+            BandSource, PageTableEdit, TableBand, TableCellLine, TableCellText, line_box,
+            page_tables,
+        };
+        use butter_paper::pdf_text_edit::TextEditRun;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let bytes = include_bytes!("../../tests/fixtures/text-edit/chrome-table.pdf");
+        let path = env::temp_dir().join(format!("bp-table-{}.pdf", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let (width, height) = (612_u32, 792_u32);
+        let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+            let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, width);
+            request.clip.height = height;
+            request.surface.height = height;
+            request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+            let mut pixels = vec![0; request.surface.byte_len as usize];
+            backend
+                .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                .unwrap();
+            pixels
+        };
+        // Dark pixels in a page-space rectangle: left, bottom, right, top.
+        let dark_in = |pixels: &[u8], rect: [f64; 4]| {
+            let mut count = 0;
+            let top = (f64::from(height) - rect[3]).max(0.) as u32;
+            let bottom = ((f64::from(height) - rect[1]) as u32).min(height);
+            for y in top..bottom {
+                for x in rect[0].max(0.) as u32..(rect[2] as u32).min(width) {
+                    let pixel = &pixels[((y * width + x) * 4) as usize..][..4];
+                    if pixel[0] < 110 && pixel[1] < 110 && pixel[2] < 110 && pixel[3] > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        let layer = backend.page_text(&mut document, 0).unwrap();
+        let table = page_tables(&layer).remove(0);
+        let washers = layer
+            .lines
+            .iter()
+            .find(|line| line.text.trim() == "Washers")
+            .and_then(line_box)
+            .unwrap();
+        let before = render(&mut backend, &mut document);
+        assert!(dark_in(&before, washers) > 20, "the table renders");
+
+        let mut edit = PageTableEdit::unchanged(0, &table);
+        edit.rows[1].size += 20.;
+        let size = edit.rows[3].size;
+        edit.rows.push(TableBand {
+            source: BandSource::New(3),
+            size,
+            set_size: None,
+        });
+        let style = layer.line(&table.cells[9].lines[0]).unwrap().styles[0].clone();
+        edit.cell_texts.push(TableCellText {
+            row: 4,
+            column: 0,
+            lines: vec![TableCellLine {
+                x: 6.,
+                baseline: 14.,
+                runs: vec![TextEditRun {
+                    style,
+                    text: "Nuts and bolts".into(),
+                }],
+                hard_break: false,
+            }],
+        });
+        backend
+            .set_document_edits(
+                &mut document,
+                &DocumentEdits {
+                    tables: vec![edit.clone()],
+                    ..DocumentEdits::default()
+                },
+            )
+            .unwrap();
+        let after = render(&mut backend, &mut document);
+        let moved = [washers[0], washers[1] - 20., washers[2], washers[3] - 20.];
+        assert!(dark_in(&after, washers) < 5, "the row below moved away");
+        assert!(dark_in(&after, moved) > 20, "the row below is drawn lower");
+        let rows = edit.output_rows();
+        let [left, _, right, _] = table.bounds();
+        // The new row's bottom border, a model row's copy, spans the table.
+        let border = dark_in(&after, [left, rows[5] - 1.5, right, rows[5] + 1.5]);
+        assert!(border as f64 > 0.8 * (right - left), "{border}");
+        // Its text is drawn in its first cell.
+        let text = [left + 4., rows[4] - 20., left + 120., rows[4] - 2.];
+        assert!(dark_in(&before, text) == 0 || dark_in(&before, text) < dark_in(&after, text));
+        assert!(dark_in(&after, text) > 30, "the new cell text renders");
+
+        backend
+            .set_document_edits(&mut document, &DocumentEdits::default())
+            .unwrap();
+        assert_eq!(render(&mut backend, &mut document), before);
+    }
+
+    /// Times what typing in a growing table cell costs the worker per
+    /// keystroke: the edits applied, the shown document rebuilt and the
+    /// page redrawn. Prints the times; run with `--nocapture`.
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn table_typing_latency() {
+        use butter_paper::pdf_tables::{PageTableEdit, TableCellLine, TableCellText, page_tables};
+        use butter_paper::pdf_text_edit::TextEditRun;
+        use std::time::Instant;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let cases = [
+            ("one light page", 1, 12, 0),
+            ("one heavy page", 1, 38, 40_000),
+            ("400 heavy pages", 400, 38, 40_000),
+        ];
+        for (name, pages, rows, paths) in cases {
+            let bytes = super::table_pages::table_pages_pdf(pages, rows, paths);
+            let path = env::temp_dir().join(format!("bp-latency-{}.pdf", std::process::id()));
+            std::fs::write(&path, &bytes).unwrap();
+            let source = File::open(&path).unwrap();
+            let started = Instant::now();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+            let opened = started.elapsed();
+            std::fs::remove_file(&path).unwrap();
+            let page = pages as u32 / 2;
+            let layer = backend.page_text(&mut document, page).unwrap();
+            let table = page_tables(&layer).remove(0);
+            let style = layer.line(&table.cells[5].lines[0]).unwrap().styles[0].clone();
+            let width = 1200_u32;
+            // The whole page at about 145% zoom on a Retina display.
+            let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, width);
+            let scale = width as f32 / 612.;
+            let height = (792. * scale) as u32;
+            request.page_index = page;
+            request.transform = [scale, 0., 0., scale, 0., 0.];
+            request.clip.height = height;
+            request.surface.height = height;
+            request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+            let mut pixels = vec![0; request.surface.byte_len as usize];
+            let mut edit_times = Vec::new();
+            let mut render_times = Vec::new();
+            let mut text = String::new();
+            for keystroke in 0..24 {
+                text.push(if keystroke % 6 == 5 { ' ' } else { 'x' });
+                // Each keystroke's edit: the cell's new text, its row grown
+                // a line every twelve characters.
+                let mut edit = PageTableEdit::unchanged(page, &table);
+                edit.rows[1].size += 12. * (keystroke / 12) as f64;
+                edit.cell_texts.push(TableCellText {
+                    row: rows - 1,
+                    column: 1,
+                    lines: vec![TableCellLine {
+                        x: 4.,
+                        baseline: 13.,
+                        runs: vec![TextEditRun {
+                            style: style.clone(),
+                            text: text.clone(),
+                        }],
+                        hard_break: false,
+                    }],
+                });
+                let started = Instant::now();
+                backend
+                    .set_document_edits(
+                        &mut document,
+                        &DocumentEdits {
+                            tables: vec![edit],
+                            ..DocumentEdits::default()
+                        },
+                    )
+                    .unwrap();
+                edit_times.push(started.elapsed());
+                let started = Instant::now();
+                backend
+                    .render_crop(
+                        &mut document,
+                        &request,
+                        &mut pixels,
+                        &AtomicBool::new(false),
+                    )
+                    .unwrap();
+                render_times.push(started.elapsed());
+            }
+            let summary = |times: &mut Vec<std::time::Duration>| {
+                times.sort();
+                format!(
+                    "median {:>6.1} ms, worst {:>6.1} ms",
+                    times[times.len() / 2].as_secs_f64() * 1000.,
+                    times[times.len() - 1].as_secs_f64() * 1000.
+                )
+            };
+            eprintln!(
+                "{name:>16} ({:>5.1} MB, opened in {:>6.1} ms): edits {}; page drawn {}",
+                bytes.len() as f64 / 1e6,
+                opened.as_secs_f64() * 1000.,
+                summary(&mut edit_times),
+                summary(&mut render_times),
+            );
+            backend.close(document);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn a_kept_page_shows_the_page_as_the_earlier_file_had_it() {
+        use butter_paper::pdf_page_base::{PageBase, snapshot_page};
+        use butter_paper::pdf_tables::{PageTableEdit, line_box, page_tables};
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        // The file as saved with its second row grown 20 points.
+        let earlier = PdfMetadataDocument::load_mem(include_bytes!(
+            "../../tests/fixtures/text-edit/chrome-table.pdf"
+        ))
+        .unwrap();
+        let earlier_layer = extract_page_text(&earlier, 0, &TextEditLimits::default()).unwrap();
+        let table = page_tables(&earlier_layer).remove(0);
+        let mut edit = PageTableEdit::unchanged(0, &table);
+        edit.rows[1].size += 20.;
+        let mut saved = earlier.clone();
+        butter_paper::pdf_text_edit::apply_content_edits(
+            &mut saved,
+            &[],
+            &[edit],
+            &[],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        saved.save_to(&mut bytes).unwrap();
+        let path = env::temp_dir().join(format!("bp-kept-{}.pdf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let (width, height) = (612_u32, 792_u32);
+        let render = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument| {
+            let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, width);
+            request.clip.height = height;
+            request.surface.height = height;
+            request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+            let mut pixels = vec![0; request.surface.byte_len as usize];
+            backend
+                .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                .unwrap();
+            pixels
+        };
+        let dark_in = |pixels: &[u8], rect: [f64; 4]| {
+            let mut count = 0;
+            let top = (f64::from(height) - rect[3]).max(0.) as u32;
+            let bottom = ((f64::from(height) - rect[1]) as u32).min(height);
+            for y in top..bottom {
+                for x in rect[0].max(0.) as u32..(rect[2] as u32).min(width) {
+                    let pixel = &pixels[((y * width + x) * 4) as usize..][..4];
+                    if pixel[0] < 110 && pixel[1] < 110 && pixel[2] < 110 && pixel[3] > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        let washers = earlier_layer
+            .lines
+            .iter()
+            .find(|line| line.text.trim() == "Washers")
+            .and_then(line_box)
+            .unwrap();
+        let saved_render = render(&mut backend, &mut document);
+        assert!(
+            dark_in(&saved_render, washers) < 5,
+            "the saved row is lower"
+        );
+
+        // Undo past the save: the page as the earlier file had it.
+        let kept = PageBase::new(0, std::sync::Arc::new(snapshot_page(&earlier, 0).unwrap()));
+        backend
+            .add_page_base(
+                &mut document,
+                kept.id.clone(),
+                kept.pdf.as_deref().unwrap().clone(),
+            )
+            .unwrap();
+        let text = |layer: &PageTextLayer| {
+            layer
+                .lines
+                .iter()
+                .map(|line| (line.text.clone(), line.origin()))
+                .collect::<Vec<_>>()
+        };
+        let kept_layer = backend.page_base_text(&mut document, 0, &kept.id).unwrap();
+        assert_eq!(text(&kept_layer), text(&earlier_layer));
+        assert_ne!(
+            text(&backend.page_text(&mut document, 0).unwrap()),
+            text(&earlier_layer)
+        );
+        let reference = PageBase {
+            pdf: None,
+            ..kept.clone()
+        };
+        backend
+            .set_document_edits(
+                &mut document,
+                &DocumentEdits {
+                    bases: vec![reference],
+                    ..DocumentEdits::default()
+                },
+            )
+            .unwrap();
+        let undone = render(&mut backend, &mut document);
+        assert!(dark_in(&undone, washers) > 20, "the row is where it was");
+
+        // A kept page the worker was not sent is refused.
+        let unknown = PageBase {
+            id: "0".repeat(64),
+            pdf: None,
+            page_index: 0,
+        };
+        assert!(
+            backend
+                .set_document_edits(
+                    &mut document,
+                    &DocumentEdits {
+                        bases: vec![unknown],
+                        ..DocumentEdits::default()
+                    },
+                )
+                .is_err()
+        );
+        backend
+            .set_document_edits(&mut document, &DocumentEdits::default())
+            .unwrap();
+        assert_eq!(render(&mut backend, &mut document), saved_render);
+    }
+
     #[test]
     #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
     fn filled_form_fields_render_and_unfilled_ones_draw_without_appearances() {
@@ -1751,6 +2159,10 @@ mod tests {
                     value: FormValue::Button(check.widgets[0].on_state.clone()),
                 },
             ],
+            tables: Vec::new(),
+            moves: Vec::new(),
+            bases: Vec::new(),
+            pages: Vec::new(),
         };
         backend.set_document_edits(&mut document, &edits).unwrap();
         let filled = render(&mut backend, &mut document);
@@ -1767,6 +2179,78 @@ mod tests {
             .set_document_edits(&mut document, &DocumentEdits::default())
             .unwrap();
         assert_eq!(render(&mut backend, &mut document), before);
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn arranged_pages_render_in_their_new_order() {
+        use butter_paper::pdf_page_structure::PageSlot;
+        use lopdf::{Document, Object, Stream, dictionary};
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        // A white page and a black one, of different sizes.
+        let mut file = Document::with_version("1.7");
+        let root = file.new_object_id();
+        let mut kids = Vec::new();
+        for (fill, width) in [("1 g", 200), ("0 g", 300)] {
+            let content = file.add_object(Stream::new(
+                dictionary! {},
+                format!("{fill} 0 0 {width} 100 re f").into_bytes(),
+            ));
+            kids.push(Object::Reference(file.add_object(dictionary! {
+                "Type" => "Page", "Parent" => root, "Contents" => content,
+                "MediaBox" => vec![0.into(), 0.into(), width.into(), 100.into()],
+            })));
+        }
+        file.objects.insert(
+            root,
+            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => 2 }),
+        );
+        let catalog = file.add_object(dictionary! { "Type" => "Catalog", "Pages" => root });
+        file.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        file.save_to(&mut bytes).unwrap();
+        let path = env::temp_dir().join(format!("bp-arranged-{}.pdf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let edits = DocumentEdits {
+            pages: vec![
+                PageSlot::Source { index: 1 },
+                PageSlot::Blank {
+                    width: 150.,
+                    height: 150.,
+                },
+                PageSlot::Copy { index: 1 },
+                PageSlot::Source { index: 0 },
+            ],
+            ..DocumentEdits::default()
+        };
+        backend.set_document_edits(&mut document, &edits).unwrap();
+        assert_eq!(document.document.pages().len(), 4);
+        let widths = (0..4)
+            .map(|page| document.document.pages().get(page).unwrap().width().value)
+            .collect::<Vec<_>>();
+        assert_eq!(widths, [300., 150., 300., 200.]);
+        // The first page is the black one now.
+        let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, 30);
+        request.clip.height = 10;
+        request.surface.height = 10;
+        request.surface.byte_len = 30 * 10 * 4;
+        let mut pixels = vec![0; request.surface.byte_len as usize];
+        backend
+            .render_crop(
+                &mut document,
+                &request,
+                &mut pixels,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(
+            pixels.chunks(4).all(|pixel| pixel[0] < 40),
+            "page 1 is black"
+        );
     }
 
     #[test]
@@ -2573,6 +3057,10 @@ mod tests {
         assert!(pixels.iter().any(|value| *value != 0));
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/table_pages.rs"]
+mod table_pages;
 
 #[cfg(test)]
 #[path = "butter-paper-pdf-worker/corpus.rs"]

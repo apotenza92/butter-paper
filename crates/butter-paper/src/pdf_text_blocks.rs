@@ -73,6 +73,19 @@ pub struct PageTextBlock {
     pub edges: Vec<(f64, f64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list: Option<TextList>,
+    /// The table cell the block is in: its text wraps within the cell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell: Option<BlockCell>,
+}
+
+/// A table cell holding a block: the table, the cell's index in it, and
+/// where the cell's text may run along its lines, in page space.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct BlockCell {
+    pub table: crate::pdf_tables::TableKey,
+    pub cell: usize,
+    pub left: f64,
+    pub right: f64,
 }
 
 impl PageTextBlock {
@@ -407,6 +420,7 @@ fn finish<'a>(block: Building<'a>) -> Finished<'a> {
             pitch: block.pitch,
             edges,
             list,
+            cell: None,
         },
         first: block.lines[0],
         last: block.lines[count - 1],
@@ -467,14 +481,75 @@ fn continues_in_next_column(blocks: &[Finished<'_>], block: usize, next: usize) 
 }
 
 /// The page's editable lines grouped into paragraph blocks, top to bottom
-/// and left to right. Read-only and blank lines belong to no block.
+/// and left to right. Read-only and blank lines belong to no block. A table
+/// cell's lines group on their own, never with text outside the cell.
 pub fn paragraph_blocks(layer: &PageTextLayer) -> Vec<PageTextBlock> {
-    let mut placed = layer
-        .lines
-        .iter()
-        .filter(|line| line.read_only.is_none())
-        .filter_map(place)
-        .collect::<Vec<_>>();
+    paragraph_blocks_in(layer, &crate::pdf_tables::page_tables(layer))
+}
+
+/// [`paragraph_blocks`] with the page's tables already found.
+pub fn paragraph_blocks_in(
+    layer: &PageTextLayer,
+    tables: &[crate::pdf_tables::PageTable],
+) -> Vec<PageTextBlock> {
+    let mut in_cell = std::collections::HashMap::new();
+    for (table_index, table) in tables.iter().enumerate() {
+        for (cell_index, cell) in table.cells.iter().enumerate() {
+            for anchor in &cell.lines {
+                in_cell.insert(*anchor, (table_index, cell_index));
+            }
+        }
+    }
+    let editable = |line: &&PageTextLine| line.read_only.is_none();
+    let mut blocks = blocks_of(
+        layer
+            .lines
+            .iter()
+            .filter(editable)
+            .filter(|line| !in_cell.contains_key(&line.anchor))
+            .collect(),
+        true,
+    );
+    for (table_index, table) in tables.iter().enumerate() {
+        for (cell_index, cell) in table.cells.iter().enumerate() {
+            let lines = cell
+                .lines
+                .iter()
+                .filter_map(|anchor| layer.line(anchor))
+                .filter(editable)
+                .collect::<Vec<_>>();
+            if lines.is_empty() {
+                continue;
+            }
+            let inset = crate::pdf_tables::cell_inset(layer, table, cell_index);
+            for mut block in blocks_of(lines, false) {
+                block.cell = Some(BlockCell {
+                    table: tables[table_index].key(),
+                    cell: cell_index,
+                    left: inset.left,
+                    right: inset.right,
+                });
+                blocks.push(block);
+            }
+        }
+    }
+    // Top to bottom, then left to right, by first line.
+    let position = |block: &PageTextBlock| {
+        layer
+            .line(&block.lines[0])
+            .map_or((0., 0.), |line| line.origin())
+    };
+    blocks.sort_by(|a, b| {
+        let (a, b) = (position(a), position(b));
+        b.1.total_cmp(&a.1).then(a.0.total_cmp(&b.0))
+    });
+    blocks
+}
+
+/// `lines` grouped into blocks; with `link_columns`, a paragraph running on
+/// into the next column is one block.
+fn blocks_of(lines: Vec<&PageTextLine>, link_columns: bool) -> Vec<PageTextBlock> {
+    let mut placed = lines.into_iter().filter_map(place).collect::<Vec<_>>();
     placed.sort_by(|a, b| {
         b.baseline
             .total_cmp(&a.baseline)
@@ -529,6 +604,9 @@ pub fn paragraph_blocks(layer: &PageTextLayer) -> Vec<PageTextBlock> {
     let mut blocks = blocks.into_iter().map(finish).collect::<Vec<_>>();
     // Join paragraphs that continue in the next column, in reading order.
     'linking: loop {
+        if !link_columns {
+            break;
+        }
         for block in 0..blocks.len() {
             let next = (0..blocks.len())
                 .filter(|next| *next != block && continues_in_next_column(&blocks, block, *next))

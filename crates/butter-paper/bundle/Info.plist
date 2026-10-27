@@ -41,5 +41,7 @@
   <true/>
   <key>NSCameraUsageDescription</key>
   <string>Capture a signature from paper to place in your PDF.</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Butter Paper asks Microsoft Word to convert a PDF only when you choose Convert and Open in Word.</string>
 </dict>
 </plist>

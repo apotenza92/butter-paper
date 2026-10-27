@@ -159,6 +159,8 @@ pub enum SemanticSnapRole {
     Center,
     Intersection,
     Nearest,
+    /// Anywhere along a side of a box Edit PDF frames content with.
+    Edge,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,7 +318,7 @@ impl SemanticSnapSettings {
 
     pub fn is_target_enabled(self, role: SemanticSnapRole) -> bool {
         match role {
-            SemanticSnapRole::GridPoint => true,
+            SemanticSnapRole::GridPoint | SemanticSnapRole::Edge => true,
             SemanticSnapRole::Endpoint => self.endpoint,
             SemanticSnapRole::Midpoint => self.midpoint,
             SemanticSnapRole::Center => self.center,
@@ -764,6 +766,116 @@ pub fn find_object_snap_tracking_point(
     })
 }
 
+/// A box moved so its sides or centre line up with another box's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoxAlignment {
+    /// How far to move the box to line it up.
+    pub adjustment: PdfPoint,
+    /// Guides from each box it lines up with to the moved box.
+    pub tracking: ObjectSnapTrackingResult,
+}
+
+/// Lines `moving` (left, bottom, right, top) up with `targets`: on each
+/// axis, its nearest side or centre within `tolerance_px` of a target's
+/// side or centre, as Figma's and PowerPoint's smart guides do.
+pub fn find_box_alignment(
+    moving: [f64; 4],
+    targets: &[[f64; 4]],
+    window_pixels_per_pdf_point: f64,
+    tolerance_px: f64,
+) -> Option<BoxAlignment> {
+    if !window_pixels_per_pdf_point.is_finite() || window_pixels_per_pdf_point <= 0. {
+        return None;
+    }
+    let features = |low: f64, high: f64| [low, (low + high) / 2., high];
+    // The nearest line-up on one axis: (distance, offset, target index,
+    // target's coordinate).
+    let nearest = |own: [f64; 3], of: &dyn Fn(&[f64; 4]) -> [f64; 3]| {
+        let mut best: Option<(f64, f64, usize, f64)> = None;
+        for (index, target) in targets.iter().enumerate() {
+            for theirs in of(target) {
+                for mine in own {
+                    let offset = theirs - mine;
+                    let distance = offset.abs() * window_pixels_per_pdf_point;
+                    if distance <= tolerance_px
+                        && best.is_none_or(|(current, ..)| distance < current)
+                    {
+                        best = Some((distance, offset, index, theirs));
+                    }
+                }
+            }
+        }
+        best
+    };
+    let x = nearest(features(moving[0], moving[2]), &|target| {
+        features(target[0], target[2])
+    });
+    let y = nearest(features(moving[1], moving[3]), &|target| {
+        features(target[1], target[3])
+    });
+    if x.is_none() && y.is_none() {
+        return None;
+    }
+    let (dx, dy) = (x.map_or(0., |x| x.1), y.map_or(0., |y| y.1));
+    let moved = [
+        moving[0] + dx,
+        moving[1] + dy,
+        moving[2] + dx,
+        moving[3] + dy,
+    ];
+    // Each guide runs from the target's side nearest the moved box to the
+    // moved box's side nearest it.
+    let near = |low: f64, high: f64, other_low: f64, other_high: f64| {
+        if other_low >= high {
+            (high, other_low)
+        } else if other_high <= low {
+            (low, other_high)
+        } else {
+            ((low + high) / 2., (other_low + other_high) / 2.)
+        }
+    };
+    let mut point = PdfPoint {
+        x: (moved[0] + moved[2]) / 2.,
+        y: (moved[1] + moved[3]) / 2.,
+    };
+    let mut guides = Vec::new();
+    let mut distance = f64::MAX;
+    if let Some((x_distance, _, index, at)) = x {
+        let target = targets[index];
+        let (from, to) = near(target[1], target[3], moved[1], moved[3]);
+        point.y = to;
+        guides.push(ObjectSnapTrackingGuide {
+            origin: PdfPoint { x: at, y: from },
+            axis: OrthogonalAxis::Vertical,
+            source: SemanticSnapSource::Content,
+            role: SemanticSnapRole::Edge,
+            owner_id: None,
+        });
+        distance = distance.min(x_distance);
+    }
+    if let Some((y_distance, _, index, at)) = y {
+        let target = targets[index];
+        let (from, to) = near(target[0], target[2], moved[0], moved[2]);
+        point.x = to;
+        guides.push(ObjectSnapTrackingGuide {
+            origin: PdfPoint { x: from, y: at },
+            axis: OrthogonalAxis::Horizontal,
+            source: SemanticSnapSource::Content,
+            role: SemanticSnapRole::Edge,
+            owner_id: None,
+        });
+        distance = distance.min(y_distance);
+    }
+    Some(BoxAlignment {
+        adjustment: PdfPoint { x: dx, y: dy },
+        tracking: ObjectSnapTrackingResult {
+            point,
+            guides,
+            distance_window_px: distance,
+        },
+    })
+}
+
 pub fn find_equal_size_snap(
     moving: crate::annotation_model::PdfRect,
     references: &[SnapGuideRect],
@@ -1010,6 +1122,9 @@ struct Candidate {
 pub struct SemanticSnapIndex {
     candidates: Vec<Candidate>,
     shared_indexes: Vec<Arc<SemanticSnapIndex>>,
+    /// Areas (left, bottom, right, top) whose page-content targets are
+    /// skipped: content being moved does not snap to itself.
+    excluded_content: Vec<[f64; 4]>,
     /// Built on first query and dropped whenever candidates change.
     grid: std::sync::OnceLock<Option<CandidateGrid>>,
 }
@@ -1194,6 +1309,16 @@ impl SemanticSnapIndex {
                     }
                     add_content_rectangle_candidates(&mut content, *rect);
                 }
+                PdfContentPrimitive::Frame { rect } => {
+                    if !rect.x.is_finite()
+                        || !rect.y.is_finite()
+                        || !rect.width.is_finite()
+                        || !rect.height.is_finite()
+                    {
+                        return Err(SemanticSnapError::InvalidContentGeometry);
+                    }
+                    add_content_frame_candidates(&mut content, *rect);
+                }
                 PdfContentPrimitive::Polyline { points, closed } => {
                     if points
                         .iter()
@@ -1225,6 +1350,12 @@ impl SemanticSnapIndex {
         self.candidates.extend(content);
         self.grid = std::sync::OnceLock::new();
         Ok(self)
+    }
+
+    /// Skips page-content targets lying wholly inside any of `areas`.
+    pub fn with_excluded_content(mut self, areas: &[[f64; 4]]) -> Self {
+        self.excluded_content.extend_from_slice(areas);
+        self
     }
 
     pub fn with_shared_index(mut self, index: Arc<SemanticSnapIndex>) -> Self {
@@ -1454,6 +1585,7 @@ impl SemanticSnapIndex {
         Self {
             candidates,
             shared_indexes: Vec::new(),
+            excluded_content: Vec::new(),
             grid: std::sync::OnceLock::new(),
         }
     }
@@ -1510,8 +1642,22 @@ impl SemanticSnapIndex {
         let tolerance_pdf_squared = tolerance_pdf * tolerance_pdf;
         let mut best: Option<(f64, SemanticSnapDecision)> = None;
 
+        let excluded = |point: PdfPoint| {
+            self.excluded_content.iter().any(|area| {
+                point.x >= area[0] && point.x <= area[2] && point.y >= area[1] && point.y <= area[3]
+            })
+        };
         let mut consider = |candidate: &Candidate| {
             if !settings.is_source_enabled(candidate.source) {
+                return;
+            }
+            if candidate.source == SemanticSnapSource::Content
+                && !self.excluded_content.is_empty()
+                && match candidate.geometry {
+                    CandidateGeometry::Point(point) => excluded(point),
+                    CandidateGeometry::Segment { start, end } => excluded(start) && excluded(end),
+                }
+            {
                 return;
             }
             if !settings.is_target_enabled(candidate.role) {
@@ -1884,6 +2030,21 @@ fn add_content_rectangle_candidates(
     add_content_segments(candidates, &corners, true);
 }
 
+/// A content frame: its corners, centre and side midpoints, and each side
+/// along its length.
+fn add_content_frame_candidates(
+    candidates: &mut Vec<Candidate>,
+    rect: crate::pdf_content_geometry::PdfRect,
+) {
+    let start = candidates.len();
+    add_content_rectangle_candidates(candidates, rect);
+    for candidate in &mut candidates[start..] {
+        if candidate.role == SemanticSnapRole::Nearest {
+            candidate.role = SemanticSnapRole::Edge;
+        }
+    }
+}
+
 fn add_content_open_path_candidates(candidates: &mut Vec<Candidate>, points: &[PdfPoint]) {
     if points.is_empty() {
         return;
@@ -2197,6 +2358,7 @@ fn role_priority(role: SemanticSnapRole) -> f64 {
         SemanticSnapRole::Endpoint => 1.,
         SemanticSnapRole::Midpoint => 2.,
         SemanticSnapRole::Center => 3.,
+        SemanticSnapRole::Edge => 7.,
         SemanticSnapRole::Nearest => 8.,
     }
 }
@@ -3340,5 +3502,30 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_moved_box_lines_up_with_another_boxs_sides() {
+        // Another box far below, its left side 3 points right of ours, at a
+        // point a pixel: our left side moves onto it, with a guide between.
+        let target = [103., 100., 250., 120.];
+        let moving = [100., 300., 150., 320.];
+        let aligned = find_box_alignment(moving, &[target], 1., 6.).unwrap();
+        assert_eq!(aligned.adjustment, PdfPoint { x: 3., y: 0. });
+        let [guide] = aligned.tracking.guides.as_slice() else {
+            panic!("one guide");
+        };
+        assert_eq!(guide.axis, OrthogonalAxis::Vertical);
+        assert_eq!(guide.origin, PdfPoint { x: 103., y: 120. });
+        assert_eq!(aligned.tracking.point.y, 300.);
+        // Too far to line up.
+        assert!(find_box_alignment(moving, &[target], 1., 2.).is_none());
+        // Centres line up too, on both axes at once.
+        let aligned =
+            find_box_alignment([0., 0., 10., 10.], &[[20., 1., 32., 9.]], 1., 2.).unwrap();
+        assert_eq!(aligned.adjustment, PdfPoint { x: 0., y: 0. });
+        let aligned =
+            find_box_alignment([0., 0., 10., 10.], &[[8.5, 21., 30., 31.5]], 1., 2.).unwrap();
+        assert_eq!(aligned.adjustment, PdfPoint { x: -1.5, y: 0. });
     }
 }

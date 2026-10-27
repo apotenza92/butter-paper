@@ -441,6 +441,10 @@ fn the_worker_process_renders_filled_fields() {
                     value: FormValue::Button(check.widgets[0].on_state.clone()),
                 },
             ],
+            tables: Vec::new(),
+            moves: Vec::new(),
+            bases: Vec::new(),
+            pages: Vec::new(),
         })
         .unwrap();
     let after = resource.render_page(0, width).unwrap();

@@ -24,10 +24,10 @@ use crate::annotation_model::{
     LineKind, MarkupId, MeasurementPathAnnotation, MeasurementPathKind, PageRotation,
     PageRotationDirection, PageScale, PdfPoint, PdfRect, PenAnnotation, PenAppearance,
     PointerCancelReason, PointerTool, RectangleAnnotation, RectangleAppearance,
-    RectangleResizeHandle, RedactAnnotation, RetainedAnnotationObstacle, ScalePreset,
-    SceneAnnotation, SceneArc, SceneCallout, SceneCloud, SceneCloudPlus, SceneDimension,
-    SceneInteractionFeedback, SceneLength, SceneMeasurementPath, SceneRectangle, SceneRedact,
-    SceneSnapshot, SceneStraightLine, SceneVertexPath, SnapshotAnnotation, SpatialQueryWork,
+    RectangleResizeHandle, RedactAnnotation, RetainedAnnotationObstacle, SceneAnnotation, SceneArc,
+    SceneCallout, SceneCloud, SceneCloudPlus, SceneDimension, SceneInteractionFeedback,
+    SceneLength, SceneMeasurementPath, SceneRectangle, SceneRedact, SceneSnapshot,
+    SceneStraightLine, SceneVertexPath, SnapshotAnnotation, SpatialQueryWork,
     StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
     TextBoxStyle, VertexPathAnnotation, VertexPathKind, box_outline_resize_handle,
     ellipse_move_zone_contains, ellipse_outline_resize_handle,
@@ -409,8 +409,6 @@ pub enum AnnotationTool {
     Length,
     Image,
     Snapshot,
-    /// Edits existing page text in place (Revu's Edit Text).
-    EditPdfContent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -445,7 +443,6 @@ impl AnnotationTool {
             Self::Length => "Length",
             Self::Image => "Insert Image",
             Self::Snapshot => "Snapshot",
-            Self::EditPdfContent => "Edit PDF Content",
         }
     }
 
@@ -468,7 +465,6 @@ impl AnnotationTool {
             Self::Pen => Some("P"),
             Self::Highlight => Some("H"),
             Self::Snapshot => Some("G"),
-            Self::EditPdfContent => Some("Shift+T"),
             Self::Redact | Self::TextBox | Self::Length | Self::Image => None,
         }
     }
@@ -520,7 +516,6 @@ impl AnnotationTool {
             Self::Length => "measure-ruler-dimension-line",
             Self::Image => "markup-image",
             Self::Snapshot => "tool-snapshot",
-            Self::EditPdfContent => "tool-edit-pdf-content",
         }
     }
 
@@ -547,18 +542,12 @@ impl AnnotationTool {
             "measure-ruler-dimension-line" => Some(Self::Length),
             "markup-image" => Some(Self::Image),
             "tool-snapshot" => Some(Self::Snapshot),
-            "tool-edit-pdf-content" => Some(Self::EditPdfContent),
             _ => None,
         }
     }
 
     pub fn uses_crosshair(self) -> bool {
-        !matches!(self, Self::Select | Self::EditPdfContent)
-    }
-
-    /// Whether the tool edits page content rather than drawing a markup.
-    pub fn edits_page_text(self) -> bool {
-        self == Self::EditPdfContent
+        self != Self::Select
     }
 }
 
@@ -1168,6 +1157,17 @@ struct NativeV5SnapObservation {
     latest: Option<SnapResolution>,
 }
 
+/// Page content an editor is changing, whose markups a scene shows moved
+/// with it: content being dragged (moved or resized).
+#[derive(Clone, Copy, Default)]
+pub struct ContentPreview<'a> {
+    pub dragged: Option<(
+        &'a [Vec<crate::pdf_content_moves::MovedContent>],
+        &'a [MarkupId],
+        crate::pdf_content_moves::ContentChange,
+    )>,
+}
+
 #[derive(Default)]
 pub struct AnnotationAdapter {
     tool: AnnotationTool,
@@ -1505,16 +1505,10 @@ impl AnnotationAdapter {
         document_id: u64,
         annotations: Vec<Annotation>,
         page_scales: Vec<(u32, PageScale)>,
-        scale_presets: Vec<ScalePreset>,
         page_rotations: Vec<(u32, PageRotation)>,
     ) -> Result<(), AnnotationError> {
         let mut document = AnnotationDocument::default();
-        document.load_imported_page_scale_state(
-            annotations,
-            page_scales,
-            scale_presets,
-            page_rotations,
-        )?;
+        document.load_imported_page_scale_state(annotations, page_scales, page_rotations)?;
         let sequence_floor = self.replacement_sequence_floor(document_id, &document)?;
         if self
             .active_surface()
@@ -1537,6 +1531,30 @@ impl AnnotationAdapter {
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
             .rotate_page(page_index, direction)
+    }
+
+    /// Rearranges a document's pages ([`AnnotationDocument::arrange_pages`]).
+    pub fn arrange_document_pages(
+        &mut self,
+        document_id: u64,
+        page_count: u32,
+        pages: &[crate::annotation_model::ArrangedPage],
+    ) -> Result<Vec<MarkupId>, AnnotationError> {
+        let copied = self
+            .documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .arrange_pages(page_count, pages)?;
+        // Content read for snapping names pages by where they were.
+        self.clear_semantic_snap_page_content(document_id);
+        Ok(copied)
+    }
+
+    /// A document's pages as arranged; empty when they are the file's.
+    pub fn document_page_slots(&self, document_id: u64) -> &[crate::pdf_page_structure::PageSlot] {
+        self.documents
+            .get(&document_id)
+            .map_or(&[], |document| document.page_slots())
     }
 
     pub fn document_page_rotation(
@@ -1577,6 +1595,83 @@ impl AnnotationAdapter {
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
             .set_page_text_edits(page_index, anchors, edits)
+    }
+
+    /// [`AnnotationDocument::set_page_content_edits`] for a document.
+    pub fn set_document_page_content_edits(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        anchors: &[crate::pdf_text_edit::TextLineAnchor],
+        edits: Vec<PageTextEdit>,
+        tables: Vec<(
+            crate::pdf_tables::TableKey,
+            Option<crate::pdf_tables::PageTableEdit>,
+        )>,
+    ) -> Result<bool, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .set_page_content_edits(page_index, anchors, edits, tables)
+    }
+
+    /// [`AnnotationDocument::set_pages_content_edits`] for a document.
+    pub fn set_document_pages_content_edits(
+        &mut self,
+        document_id: u64,
+        pages: Vec<crate::annotation_model::PageContentEdits>,
+    ) -> Result<bool, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .set_pages_content_edits(pages)
+    }
+
+    pub fn document_page_content_moves(
+        &self,
+        document_id: u64,
+    ) -> &[crate::pdf_content_moves::ContentMove] {
+        self.documents
+            .get(&document_id)
+            .map_or(&[], |document| document.page_content_moves())
+    }
+
+    /// [`AnnotationDocument::change_page_content`] for a document.
+    pub fn change_document_page_content(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        groups: &[Vec<crate::pdf_content_moves::MovedContent>],
+        markups: &[MarkupId],
+        change: crate::pdf_content_moves::ContentChange,
+    ) -> Result<bool, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .change_page_content(page_index, groups, markups, change)
+    }
+
+    /// [`AnnotationDocument::paste_page_content`] for a document.
+    pub fn paste_document_page_content(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        groups: &[Vec<crate::pdf_content_moves::MovedContent>],
+        offset: (f64, f64),
+    ) -> Result<Vec<Vec<crate::pdf_content_moves::MovedContent>>, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .paste_page_content(page_index, groups, offset)
+    }
+
+    pub fn document_page_table_edits(
+        &self,
+        document_id: u64,
+    ) -> &[crate::pdf_tables::PageTableEdit] {
+        self.documents
+            .get(&document_id)
+            .map_or(&[], |document| document.page_table_edits())
     }
 
     pub fn document_form_field_edits(
@@ -2487,6 +2582,262 @@ impl AnnotationAdapter {
         }
     }
 
+    /// Snaps a moving selection, as a markup move does: `point` is the
+    /// pointer, `start` where the move began and `anchors` the selection's
+    /// points as they were. It snaps to the semantic targets (markups other
+    /// than `excluded_ids`, page content outside `excluded_content`, grids),
+    /// then to tracking and to equal spacing beside other markups, setting
+    /// the guides the canvas shows. Returns the snapped pointer.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_moving_point(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        start: PdfPoint,
+        anchors: &[PdfPoint],
+        excluded_ids: &[MarkupId],
+        caption_supplement: &AnnotationSelectionSupplement,
+        initial_bounds: Option<PdfRect>,
+        excluded_content: &[[f64; 4]],
+    ) -> PdfPoint {
+        let index = self
+            .semantic_snap_index(document_id, page_index, excluded_ids, caption_supplement)
+            .with_excluded_content(excluded_content);
+        let delta_x = point.x - start.x;
+        let delta_y = point.y - start.y;
+        let page_size = self
+            .semantic_snap_page_sizes
+            .get(&(document_id, page_index))
+            .copied();
+        let mut best: Option<(SemanticSnapDecision, PdfPoint)> = None;
+        for anchor in anchors {
+            let prospective = PdfPoint {
+                x: anchor.x + delta_x,
+                y: anchor.y + delta_y,
+            };
+            let annotation = index.resolve_point(
+                prospective,
+                &self.semantic_snap_settings,
+                self.observed_pixels_per_point.0,
+            );
+            let grid = page_size.and_then(|(width, height)| {
+                resolve_construction_grid_point(
+                    prospective,
+                    width,
+                    height,
+                    &self.semantic_snap_settings,
+                    self.observed_pixels_per_point.0,
+                )
+            });
+            let decision = match (annotation, grid) {
+                (Some(annotation), Some(grid)) => Some(
+                    if annotation.distance_window_px <= grid.distance_window_px {
+                        annotation
+                    } else {
+                        grid
+                    },
+                ),
+                (annotation @ Some(_), None) => annotation,
+                (None, grid) => grid,
+            };
+            if let Some(decision) = decision
+                && best.as_ref().is_none_or(|(current, _)| {
+                    decision.distance_window_px < current.distance_window_px
+                })
+            {
+                best = Some((decision, prospective));
+            }
+        }
+        let mut resolved = point;
+        if let Some((decision, prospective)) = best {
+            resolved = PdfPoint {
+                x: point.x + decision.point.x - prospective.x,
+                y: point.y + decision.point.y - prospective.y,
+            };
+            self.update_tracking_acquisition(Some(&decision));
+            self.object_snap_tracking_result = None;
+            self.semantic_snap_decision = Some(decision);
+        } else {
+            self.update_tracking_acquisition(None);
+            self.semantic_snap_decision = None;
+            let acquired = self.acquired_tracking_for_enabled_sources();
+            let mut best_tracking: Option<(ObjectSnapTrackingResult, PdfPoint)> = None;
+            for anchor in anchors {
+                let prospective = PdfPoint {
+                    x: anchor.x + delta_x,
+                    y: anchor.y + delta_y,
+                };
+                if let Some(result) = find_object_snap_tracking_point(
+                    prospective,
+                    &acquired,
+                    self.observed_pixels_per_point.0,
+                    self.semantic_snap_settings.sensitivity_window_px(),
+                    &[OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
+                ) && best_tracking.as_ref().is_none_or(|(current, _)| {
+                    result.distance_window_px < current.distance_window_px
+                }) {
+                    best_tracking = Some((result, prospective));
+                }
+            }
+            if let Some((result, prospective)) = best_tracking {
+                resolved = PdfPoint {
+                    x: point.x + result.point.x - prospective.x,
+                    y: point.y + result.point.y - prospective.y,
+                };
+                self.object_snap_tracking_result = Some(result);
+            } else {
+                self.object_snap_tracking_result = None;
+            }
+        }
+
+        let initial_bounds = initial_bounds.or_else(|| {
+            self.cached_moving_initial_bounds(
+                document_id,
+                page_index,
+                anchors,
+                excluded_ids,
+                caption_supplement,
+            )
+        });
+        if let Some(initial_bounds) = initial_bounds {
+            let mut moving_bounds = PdfRect {
+                x: initial_bounds.x + resolved.x - start.x,
+                y: initial_bounds.y + resolved.y - start.y,
+                ..initial_bounds
+            };
+            let references = self.cached_moving_guide_references(
+                document_id,
+                page_index,
+                excluded_ids,
+                caption_supplement,
+            );
+            if let Some(spacing) = find_equal_spacing_snap(
+                moving_bounds,
+                &references,
+                self.observed_pixels_per_point.0,
+                self.semantic_snap_settings.sensitivity_window_px(),
+            ) {
+                resolved.x += spacing.adjustment.x;
+                resolved.y += spacing.adjustment.y;
+                moving_bounds.x += spacing.adjustment.x;
+                moving_bounds.y += spacing.adjustment.y;
+                self.relationship_snap_guides.extend(spacing.guides);
+                self.semantic_snap_decision = None;
+                self.object_snap_tracking_result = None;
+            }
+            if let Some(size) = find_equal_size_snap(
+                moving_bounds,
+                &references,
+                self.observed_pixels_per_point.0,
+                0.5,
+            ) {
+                self.relationship_snap_guides.extend(size.guides);
+            }
+        }
+        resolved
+    }
+
+    /// Snaps a drag of page content in Edit PDF mode as a markup move
+    /// snaps. `anchors` and `bounds` are the content as shown when the drag
+    /// began; markups `moving_ids` move with it. Page content inside
+    /// `bounds` is not a target: it is what moves.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_content_move(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        start: PdfPoint,
+        point: PdfPoint,
+        anchors: &[PdfPoint],
+        bounds: PdfRect,
+        excluded_content: &[[f64; 4]],
+        moving_ids: &[MarkupId],
+        align_to: &[[f64; 4]],
+    ) -> PdfPoint {
+        self.relationship_snap_guides.clear();
+        let resolved = self.resolve_moving_point(
+            document_id,
+            page_index,
+            point,
+            start,
+            anchors,
+            moving_ids,
+            &AnnotationSelectionSupplement::new(),
+            Some(bounds),
+            excluded_content,
+        );
+        // Short of a point to snap to, its box lines up with the others'.
+        let settings = self.semantic_snap_settings;
+        if self.semantic_snap_decision.is_some()
+            || self.object_snap_tracking_result.is_some()
+            || !self.relationship_snap_guides.is_empty()
+            || !settings.is_source_enabled(crate::semantic_snapping::SemanticSnapSource::Content)
+            || !settings.guides_enabled()
+            || !settings
+                .is_guide_enabled(crate::semantic_snapping::SemanticSnapGuideType::Alignment)
+        {
+            return resolved;
+        }
+        let (dx, dy) = (resolved.x - start.x, resolved.y - start.y);
+        let moving = [
+            bounds.x + dx,
+            bounds.y + dy,
+            bounds.x + bounds.width + dx,
+            bounds.y + bounds.height + dy,
+        ];
+        match crate::semantic_snapping::find_box_alignment(
+            moving,
+            align_to,
+            self.observed_pixels_per_point.0,
+            settings.sensitivity_window_px(),
+        ) {
+            Some(aligned) => {
+                self.object_snap_tracking_result = Some(aligned.tracking);
+                PdfPoint {
+                    x: resolved.x + aligned.adjustment.x,
+                    y: resolved.y + aligned.adjustment.y,
+                }
+            }
+            None => resolved,
+        }
+    }
+
+    /// Ends a content drag's snapping: its guides go.
+    pub fn clear_content_move_snap(&mut self) {
+        self.relationship_snap_guides.clear();
+        self.semantic_snap_decision = None;
+        self.object_snap_tracking_result = None;
+    }
+
+    /// A calibration line's end, snapped to the page's drawing and markups
+    /// as a Length end is, whatever tool is armed. The snap shows on the
+    /// page until [`Self::clear_semantic_snap_decision`].
+    pub fn resolve_calibration_point(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+    ) -> PdfPoint {
+        self.relationship_snap_guides.clear();
+        self.object_snap_tracking_result = None;
+        let decision = self
+            .semantic_snap_index(
+                document_id,
+                page_index,
+                &[],
+                &AnnotationSelectionSupplement::new(),
+            )
+            .resolve_point(
+                point,
+                &self.semantic_snap_settings,
+                self.observed_pixels_per_point.0,
+            );
+        let resolved = decision.as_ref().map_or(point, |decision| decision.point);
+        self.semantic_snap_decision = decision;
+        resolved
+    }
+
     fn resolve_semantic_creation_point(
         &mut self,
         document_id: u64,
@@ -2748,142 +3099,17 @@ impl AnnotationAdapter {
             _ => None,
         };
         if let Some((start, anchors, excluded_ids, caption_supplement)) = moving {
-            let index = self.semantic_snap_index(
+            return self.resolve_moving_point(
                 document_id,
                 page_index,
-                &excluded_ids,
-                &caption_supplement,
-            );
-            let delta_x = point.x - start.x;
-            let delta_y = point.y - start.y;
-            let page_size = self
-                .semantic_snap_page_sizes
-                .get(&(document_id, page_index))
-                .copied();
-            let mut best: Option<(SemanticSnapDecision, PdfPoint)> = None;
-            for anchor in &anchors {
-                let prospective = PdfPoint {
-                    x: anchor.x + delta_x,
-                    y: anchor.y + delta_y,
-                };
-                let annotation = index.resolve_point(
-                    prospective,
-                    &self.semantic_snap_settings,
-                    self.observed_pixels_per_point.0,
-                );
-                let grid = page_size.and_then(|(width, height)| {
-                    resolve_construction_grid_point(
-                        prospective,
-                        width,
-                        height,
-                        &self.semantic_snap_settings,
-                        self.observed_pixels_per_point.0,
-                    )
-                });
-                let decision = match (annotation, grid) {
-                    (Some(annotation), Some(grid)) => Some(
-                        if annotation.distance_window_px <= grid.distance_window_px {
-                            annotation
-                        } else {
-                            grid
-                        },
-                    ),
-                    (annotation @ Some(_), None) => annotation,
-                    (None, grid) => grid,
-                };
-                if let Some(decision) = decision
-                    && best.as_ref().is_none_or(|(current, _)| {
-                        decision.distance_window_px < current.distance_window_px
-                    })
-                {
-                    best = Some((decision, prospective));
-                }
-            }
-            let mut resolved = point;
-            if let Some((decision, prospective)) = best {
-                resolved = PdfPoint {
-                    x: point.x + decision.point.x - prospective.x,
-                    y: point.y + decision.point.y - prospective.y,
-                };
-                self.update_tracking_acquisition(Some(&decision));
-                self.object_snap_tracking_result = None;
-                self.semantic_snap_decision = Some(decision);
-            } else {
-                self.update_tracking_acquisition(None);
-                self.semantic_snap_decision = None;
-                let acquired = self.acquired_tracking_for_enabled_sources();
-                let mut best_tracking: Option<(ObjectSnapTrackingResult, PdfPoint)> = None;
-                for anchor in &anchors {
-                    let prospective = PdfPoint {
-                        x: anchor.x + delta_x,
-                        y: anchor.y + delta_y,
-                    };
-                    if let Some(result) = find_object_snap_tracking_point(
-                        prospective,
-                        &acquired,
-                        self.observed_pixels_per_point.0,
-                        self.semantic_snap_settings.sensitivity_window_px(),
-                        &[OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
-                    ) && best_tracking.as_ref().is_none_or(|(current, _)| {
-                        result.distance_window_px < current.distance_window_px
-                    }) {
-                        best_tracking = Some((result, prospective));
-                    }
-                }
-                if let Some((result, prospective)) = best_tracking {
-                    resolved = PdfPoint {
-                        x: point.x + result.point.x - prospective.x,
-                        y: point.y + result.point.y - prospective.y,
-                    };
-                    self.object_snap_tracking_result = Some(result);
-                } else {
-                    self.object_snap_tracking_result = None;
-                }
-            }
-
-            let initial_bounds = self.cached_moving_initial_bounds(
-                document_id,
-                page_index,
+                point,
+                start,
                 &anchors,
                 &excluded_ids,
                 &caption_supplement,
+                None,
+                &[],
             );
-            if let Some(initial_bounds) = initial_bounds {
-                let mut moving_bounds = PdfRect {
-                    x: initial_bounds.x + resolved.x - start.x,
-                    y: initial_bounds.y + resolved.y - start.y,
-                    ..initial_bounds
-                };
-                let references = self.cached_moving_guide_references(
-                    document_id,
-                    page_index,
-                    &excluded_ids,
-                    &caption_supplement,
-                );
-                if let Some(spacing) = find_equal_spacing_snap(
-                    moving_bounds,
-                    &references,
-                    self.observed_pixels_per_point.0,
-                    self.semantic_snap_settings.sensitivity_window_px(),
-                ) {
-                    resolved.x += spacing.adjustment.x;
-                    resolved.y += spacing.adjustment.y;
-                    moving_bounds.x += spacing.adjustment.x;
-                    moving_bounds.y += spacing.adjustment.y;
-                    self.relationship_snap_guides.extend(spacing.guides);
-                    self.semantic_snap_decision = None;
-                    self.object_snap_tracking_result = None;
-                }
-                if let Some(size) = find_equal_size_snap(
-                    moving_bounds,
-                    &references,
-                    self.observed_pixels_per_point.0,
-                    0.5,
-                ) {
-                    self.relationship_snap_guides.extend(size.guides);
-                }
-            }
-            return resolved;
         }
         let manipulated_id = match self.active.as_ref() {
             Some(ActivePointer::Domain {
@@ -3615,9 +3841,18 @@ impl AnnotationAdapter {
     }
 
     pub fn set_image_asset(&mut self, asset: DecodedRgbaAsset) {
+        self.set_image_asset_with_aspect_lock(asset, false);
+    }
+
+    /// The image the Image tool places next, its proportions locked or not.
+    pub fn set_image_asset_with_aspect_lock(
+        &mut self,
+        asset: DecodedRgbaAsset,
+        aspect_locked: bool,
+    ) {
         self.image_asset = Some(PendingImageAsset {
             asset,
-            aspect_locked: false,
+            aspect_locked,
             select_after_placement: false,
         });
     }
@@ -3791,31 +4026,17 @@ impl AnnotationAdapter {
             .apply_page_scale(scale, target, page_count)
     }
 
-    pub fn apply_document_page_scale_with_preset(
+    pub fn remove_document_page_scale(
         &mut self,
         document_id: u64,
-        scale: PageScale,
         target: crate::annotation_model::PageScaleApplyTarget,
         page_count: u32,
-        saved_preset: Option<ScalePreset>,
     ) -> Result<bool, AnnotationError> {
         self.cancel(PointerCancelReason::ToolChanged)?;
         self.documents
             .entry(document_id)
             .or_default()
-            .apply_page_scale_with_preset(scale, target, page_count, saved_preset)
-    }
-
-    pub fn delete_document_scale_preset(
-        &mut self,
-        document_id: u64,
-        preset_id: &str,
-    ) -> Result<bool, AnnotationError> {
-        self.cancel(PointerCancelReason::ToolChanged)?;
-        self.documents
-            .entry(document_id)
-            .or_default()
-            .delete_scale_preset(preset_id)
+            .remove_page_scale(target, page_count)
     }
 
     pub fn length_calibration(&self) -> Option<&LengthCalibration> {
@@ -3852,12 +4073,6 @@ impl AnnotationAdapter {
         self.documents
             .get(&document_id)
             .and_then(|document| document.page_scale(page_index))
-    }
-
-    pub fn document_scale_presets(&self, document_id: u64) -> Option<&[ScalePreset]> {
-        self.documents
-            .get(&document_id)
-            .map(AnnotationDocument::scale_presets)
     }
 
     pub fn begin_length_placement(
@@ -5184,6 +5399,51 @@ impl AnnotationAdapter {
                 )
             })
             .unwrap_or_default()
+    }
+
+    /// Which of `rects` (page content as shown, in page space) the active
+    /// selection marquee on the page selects, by the rule it selects
+    /// markups with: box or lasso, window or crossing. `None` without an
+    /// active marquee there.
+    pub fn marquee_selects_rects(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        rects: &[[f64; 4]],
+    ) -> Option<Vec<bool>> {
+        let Some(ActivePointer::Marquee {
+            document_id: active_document,
+            page_index: active_page,
+            marquee,
+            pdf_points,
+            ..
+        }) = self.active.as_ref()
+        else {
+            return None;
+        };
+        if (*active_document, *active_page) != (document_id, page_index) || !marquee.active {
+            return None;
+        }
+        let marquee = marquee_in_pdf(marquee, pdf_points);
+        Some(
+            rects
+                .iter()
+                .map(|rect| {
+                    let corners = [
+                        (rect[0], rect[1]),
+                        (rect[2], rect[1]),
+                        (rect[2], rect[3]),
+                        (rect[0], rect[3]),
+                    ]
+                    .map(|(x, y)| SelectionPoint::new(x, y))
+                    .to_vec();
+                    crate::selection_geometry::geometry_selected(
+                        &[crate::selection_geometry::SelectionPath::new(corners, true)],
+                        &marquee,
+                    )
+                })
+                .collect(),
+        )
     }
 
     pub fn is_click_placement_pending(&self) -> bool {
@@ -7072,14 +7332,6 @@ impl AnnotationAdapter {
                 .clear_selection();
             return Ok(PointerPhaseOutcome::SelectionChanged(None));
         }
-        // Edit PDF Content changes page content; the workspace owns its presses.
-        if self.tool == AnnotationTool::EditPdfContent {
-            self.documents
-                .entry(document_id)
-                .or_default()
-                .clear_selection();
-            return Ok(PointerPhaseOutcome::SelectionChanged(None));
-        }
         let tool = self.tool;
         let id = if tool == AnnotationTool::Select {
             None
@@ -8386,8 +8638,6 @@ impl AnnotationAdapter {
             AnnotationTool::Dimension => Err(AnnotationError::InvalidGeometry(
                 "dimension creation requires the two-click placement interface".into(),
             )),
-            // Returned before an identifier is allocated.
-            AnnotationTool::EditPdfContent => Ok(PointerPhaseOutcome::SelectionChanged(None)),
             AnnotationTool::Image => {
                 let id = id.expect("drawing tools allocate an annotation ID");
                 let pending = self.image_asset.clone().ok_or_else(|| {
@@ -9139,6 +9389,8 @@ impl AnnotationAdapter {
                 require_pointer(active_pointer, pointer_id)?;
                 marquee.update(viewport_point);
                 pdf_points.push(point);
+                // A click on empty page, without a drag, arms a selection
+                // box from where it was: the next click finishes it.
                 if !marquee.active {
                     self.active = Some(ActivePointer::Marquee {
                         document_id,
@@ -11865,10 +12117,37 @@ impl AnnotationAdapter {
         page_index: u32,
         caption_supplement: &AnnotationSelectionSupplement,
     ) -> AnnotationScene {
+        self.document_scene_with_table_preview(
+            document_id,
+            page_index,
+            caption_supplement,
+            ContentPreview::default(),
+        )
+    }
+
+    /// [`Self::document_scene_with_routing_supplement`], with the markups
+    /// on page content being dragged moved with it.
+    pub fn document_scene_with_table_preview(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        caption_supplement: &AnnotationSelectionSupplement,
+        preview: ContentPreview<'_>,
+    ) -> AnnotationScene {
         let mut scene = self
             .documents
             .get(&document_id)
-            .map(|document| document.document_scene(page_index))
+            .map(|document| {
+                preview
+                    .dragged
+                    .and_then(|(groups, markups, delta)| {
+                        document.with_moved_markups(page_index, groups, markups, delta)
+                    })
+                    .map_or_else(
+                        || document.document_scene(page_index),
+                        |preview| preview.document_scene(page_index),
+                    )
+            })
             .unwrap_or_else(|| empty_scene(page_index));
         let chrome_visible = self.manipulation_chrome_visible(document_id, page_index);
         for annotation in &mut scene.rectangles {
@@ -13629,6 +13908,25 @@ impl AnnotationAdapter {
         Ok(())
     }
 
+    /// [`Self::mark_saved`], keeping pages as the file had them before the
+    /// save for undo to reach back to.
+    pub fn mark_saved_keeping(
+        &mut self,
+        document_id: u64,
+        kept_pages: Vec<crate::pdf_page_base::PageBase>,
+    ) -> Result<(), AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .mark_saved_keeping(kept_pages)
+    }
+
+    pub fn document_page_bases(&self, document_id: u64) -> &[crate::pdf_page_base::PageBase] {
+        self.documents
+            .get(&document_id)
+            .map_or(&[], |document| document.page_bases())
+    }
+
     fn next_id(&mut self, tool: AnnotationTool) -> Result<MarkupId, AnnotationError> {
         if let Some(id) = self.queued_id.take() {
             if let Some(sequence) = comparison_sequence(&id) {
@@ -13663,7 +13961,6 @@ impl AnnotationAdapter {
             AnnotationTool::Dimension => "dimension",
             AnnotationTool::Image => "image",
             AnnotationTool::Snapshot => "snapshot",
-            AnnotationTool::EditPdfContent => "edit-pdf-content",
         };
         MarkupId::new(format!("comparison:{family}:{}", self.next_sequence))
     }
@@ -16298,6 +16595,68 @@ mod tests {
         adapter.set_semantic_snap_settings(settings).unwrap();
         adapter.clear_semantic_snap_page_content_page(7, 0);
         assert!(adapter.manipulation_chrome_visible(7, 0));
+    }
+
+    #[test]
+    fn content_moves_snap_to_markups_and_other_content_but_not_themselves() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(recovery_rectangle(
+                "target", 200.,
+            )))
+            .unwrap();
+        // The moving content's own edge, and another line of content.
+        adapter
+            .set_semantic_snap_page_content(
+                7,
+                PageSnapGeometry {
+                    page_index: 0,
+                    primitives: vec![
+                        crate::pdf_content_geometry::PdfContentPrimitive::Line {
+                            start: crate::pdf_content_geometry::PdfPoint { x: 0., y: 0. },
+                            end: crate::pdf_content_geometry::PdfPoint { x: 10., y: 0. },
+                        },
+                        crate::pdf_content_geometry::PdfContentPrimitive::Line {
+                            start: crate::pdf_content_geometry::PdfPoint { x: 500., y: 400. },
+                            end: crate::pdf_content_geometry::PdfPoint { x: 600., y: 400. },
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        let bounds = PdfRect::new(0., 0., 10., 10.).unwrap();
+        let anchors = [PdfPoint { x: 0., y: 0. }, PdfPoint { x: 10., y: 10. }];
+        let start = PdfPoint { x: 5., y: 5. };
+        let resolve = |adapter: &mut AnnotationAdapter, point: PdfPoint| {
+            adapter.resolve_content_move(
+                7,
+                0,
+                start,
+                point,
+                &anchors,
+                bounds,
+                &[[-1., -1., 11., 11.]],
+                &[],
+                &[],
+            )
+        };
+        // A small move does not stick to the content's own edge.
+        let point = resolve(&mut adapter, PdfPoint { x: 7., y: 5. });
+        assert_eq!((point.x, point.y), (7., 5.));
+        // Near the markup's corner (200, 20), the content's corner snaps
+        // to it, with its guide shown.
+        let point = resolve(&mut adapter, PdfPoint { x: 203., y: 23. });
+        assert_eq!((point.x, point.y), (205., 25.));
+        assert!(adapter.semantic_snap_decision().is_some());
+        // And to other page content.
+        let point = resolve(&mut adapter, PdfPoint { x: 552., y: 403. });
+        assert_eq!(point.y, 405.);
+        adapter.clear_content_move_snap();
+        assert!(adapter.semantic_snap_decision().is_none());
     }
 
     fn recovery_rectangle(id: &str, x: f64) -> Annotation {
