@@ -4,6 +4,19 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.1]
+
+### Tables
+
+- Clicking text drawn inside a table that isn't part of any of its cells
+  edits that text, instead of opening the cell around it and typing into
+  another paragraph.
+
+### Look
+
+- The butterfly icon's lower wings are shorter, pulled back along their
+  diagonals.
+
 ## [0.3.0]
 
 ### Pages
