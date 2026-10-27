@@ -67,8 +67,12 @@ fn built(contents: &[&[u8]], page: Dictionary) -> Document {
     );
     let catalog_id = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     document.trailer.set("Root", catalog_id);
+    tagging::tag_paragraphs(&mut document, page_id);
     reload(&mut document)
 }
+
+#[path = "support/tagging.rs"]
+mod tagging;
 
 /// Pages whose text state the producers above do not exercise.
 fn built_cases() -> Vec<(&'static str, Document)> {
@@ -731,12 +735,15 @@ fn producer_lines_group_into_their_paragraphs() {
             (Left, &["Mono line: B"]),
         ])
     );
+    // An untagged page says nothing of its paragraphs: each line is one.
     // Blank lines of spaces belong to no block.
     assert_eq!(
         blocks("quartz"),
         expect(&[
-            (Left, &["Quartz plain", "Second line "]),
-            (Left, &["A longer par", "only where t"]),
+            (Left, &["Quartz plain"]),
+            (Left, &["Second line "]),
+            (Left, &["A longer par"]),
+            (Left, &["only where t"]),
         ])
     );
 }
@@ -840,6 +847,8 @@ mod paragraphs {
         }
         let mut content = String::new();
         let c = &mut content;
+        // Each paragraph, and each list, is tagged as one.
+        c.push_str("/P <</MCID 0>> BDC\n");
         line(
             c,
             72.,
@@ -855,10 +864,12 @@ mod paragraphs {
             &[20],
         );
         line(c, 72., 676., "psi omega.", &[4]);
+        c.push_str("EMC\n/P <</MCID 1>> BDC\n");
         // One paragraph of Shift+Enter lines.
         line(c, 72., 640., "Strategy", &[]);
         line(c, 72., 628., "Governance and reporting", &[10]);
         line(c, 72., 616., "Testing", &[]);
+        c.push_str("EMC\n/P <</MCID 2>> BDC\n");
         item(
             c,
             "\\225",
@@ -874,6 +885,7 @@ mod paragraphs {
             552.,
             "Second item, spaced below the first.",
         );
+        c.push_str("EMC\n/P <</MCID 3>> BDC\n");
         item(
             c,
             "o",
@@ -883,6 +895,7 @@ mod paragraphs {
         );
         line(c, 126., 508., "wraps.", &[]);
         item(c, "o", 108., 496., "Another sub item.");
+        c.push_str("EMC\n");
         let font = |base: &str| -> Object {
             dictionary! {
                 "Type" => "Font", "Subtype" => "Type1", "BaseFont" => base,
@@ -916,6 +929,7 @@ mod paragraphs {
         let catalog_id =
             document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
         document.trailer.set("Root", catalog_id);
+        super::tagging::tag_paragraphs(&mut document, page_id);
         reload(&mut document)
     }
 
@@ -1267,13 +1281,12 @@ mod paragraphs {
         // Three lines at the foot of the left column, ending mid-sentence,
         // and two at the top of the right one.
         let document = built(
-            &[
-                b"BT /F1 10 Tf 72 700 Td (the quick brown fox jumps over the lazy) Tj \
+            &[b"/P <</MCID 0>> BDC \
+                BT /F1 10 Tf 72 700 Td (the quick brown fox jumps over the lazy) Tj \
                 0 -14 Td (the quick brown fox jumps over the lazy) Tj \
                 0 -14 Td (the quick brown fox jumps over the lazy) Tj ET\n\
                 BT /F1 10 Tf 320 700 Td (the quick brown fox jumps over the lazy) Tj \
-                0 -14 Td (dog sleeps.) Tj ET",
-            ],
+                0 -14 Td (dog sleeps.) Tj ET EMC"],
             Dictionary::new(),
         );
         let before = Arc::new(layer(&document));

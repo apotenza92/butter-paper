@@ -216,20 +216,20 @@ in Word.
 
 Edit PDF edits text a paragraph at a time, as Acrobat does.
 
-- On a tagged page, lines group only as the structure tree groups them:
-  the lines of one paragraph element (`P`, a heading, a caption, a list's
-  items, a cell's text) are one paragraph, in reading order even across
-  columns, and a line in none is a paragraph of its own. Nothing else
-  joins them.
-- On an untagged page, lines group into paragraphs: same font, size and line spacing, sharing a
-  left, right or centre edge (or both edges, justified), in one column.
-  A list (items beginning with the same bullet, or numbered `1.` / `1)`, at
-  one edge, with their wrapped lines at the items' text) is one paragraph.
-  A paragraph that runs to the foot of a column without ending a sentence
-  and continues at the top of the next column of the same width is one
-  paragraph over both. In Edit PDF, every editable paragraph on
-  the visible pages is outlined faintly (not text outside the page's visible
-  area); hovering outlines one strongly. A page's text is read once the view
+- Lines group into paragraphs only as the PDF's structure tree groups
+  them: the lines of one paragraph element (`P`, a heading, a caption, a
+  list's items, a cell's text) are one paragraph, in reading order even
+  across columns. A line in none, and every line of an untagged PDF, is a
+  paragraph of its own (it grows as typed rather than wrapping onto the
+  next line): nothing in the PDF says it continues another.
+- Within a paragraph, its layout reads it: its alignment (a shared left,
+  right or centre edge, or both edges, justified), its line spacing, a
+  list's markers (the same bullet, or `1.` / `1)`, with wrapped lines at
+  the items' text), and where it runs from the foot of one column to the
+  top of the next.
+- In Edit PDF, every editable paragraph on the visible pages is outlined
+  faintly (not text outside the page's visible area); hovering outlines one
+  strongly. A page's text is read once the view
   settles on it and dropped when the view moves far away, so scrolling a long
   document never queues pages it passes.
 - A line is everything drawn on one baseline, however the producer split it

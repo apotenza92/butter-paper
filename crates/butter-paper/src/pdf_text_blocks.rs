@@ -501,7 +501,6 @@ pub fn paragraph_blocks_in(
         }
     }
     let editable = |line: &&PageTextLine| line.read_only.is_none();
-    let tagged = layer.lines.iter().any(|line| line.paragraph.is_some());
     let mut blocks = grouped_blocks(
         layer
             .lines
@@ -510,7 +509,6 @@ pub fn paragraph_blocks_in(
             .filter(|line| !in_cell.contains_key(&line.anchor))
             .collect(),
         true,
-        tagged,
     );
     for (table_index, table) in tables.iter().enumerate() {
         for (cell_index, cell) in table.cells.iter().enumerate() {
@@ -524,7 +522,7 @@ pub fn paragraph_blocks_in(
                 continue;
             }
             let inset = crate::pdf_tables::cell_inset(layer, table, cell_index);
-            for mut block in grouped_blocks(lines, false, tagged) {
+            for mut block in grouped_blocks(lines, false) {
                 block.cell = Some(BlockCell {
                     table: tables[table_index].key(),
                     cell: cell_index,
@@ -548,17 +546,10 @@ pub fn paragraph_blocks_in(
     blocks
 }
 
-/// `lines` grouped into blocks. On a tagged page only lines its structure
-/// tree puts in one paragraph group, and a line in none is a paragraph of
-/// its own; an untagged page groups them by their layout.
-fn grouped_blocks(
-    lines: Vec<&PageTextLine>,
-    link_columns: bool,
-    tagged: bool,
-) -> Vec<PageTextBlock> {
-    if !tagged {
-        return blocks_of(lines, link_columns);
-    }
+/// `lines` grouped into blocks: only lines the structure tree puts in one
+/// paragraph group. A line in none (all of an untagged page's) is a
+/// paragraph of its own: nothing in the PDF says it continues another.
+fn grouped_blocks(lines: Vec<&PageTextLine>, link_columns: bool) -> Vec<PageTextBlock> {
     let mut groups: Vec<(Option<(u32, u16)>, Vec<&PageTextLine>)> = Vec::new();
     for line in lines {
         match line.paragraph.and_then(|paragraph| {
@@ -756,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tagged_page_groups_lines_only_as_its_structure_does() {
+    fn lines_group_only_as_the_structure_tree_does() {
         // An address block: three lines at a paragraph's spacing.
         let texts = [
             "Client name: Mr A Client",
@@ -771,7 +762,11 @@ mod tests {
                 .map(|(text, y)| line(y, text, None))
                 .collect(),
         );
-        assert_eq!(paragraph_blocks(&untagged).len(), 1, "layout groups them");
+        assert_eq!(
+            paragraph_blocks(&untagged).len(),
+            3,
+            "nothing says they are one paragraph"
+        );
         let tagged = layer(
             texts
                 .iter()

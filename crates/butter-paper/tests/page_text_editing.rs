@@ -47,8 +47,11 @@ fn page_text_layer() -> PageTextLayer {
     )
 }
 
+#[path = "support/tagging.rs"]
+mod tagging;
+
 /// One page drawn by `content`, with Helvetica as `/F1` and `page` entries
-/// added to the page dictionary.
+/// added to the page dictionary; its marked content tagged as paragraphs.
 fn text_page(content: &[u8], page: lopdf::Dictionary) -> PageTextLayer {
     let mut document = Document::with_version("1.7");
     let pages_id = document.new_object_id();
@@ -83,6 +86,7 @@ fn text_page(content: &[u8], page: lopdf::Dictionary) -> PageTextLayer {
         "Pages" => pages_id,
     });
     document.trailer.set("Root", catalog_id);
+    tagging::tag_paragraphs(&mut document, page_id);
     extract_page_text(&document, 0, &TextEditLimits::default()).unwrap()
 }
 
@@ -1420,7 +1424,7 @@ fn input_methods_compose_then_commit_into_the_line(cx: &mut TestAppContext) {
 fn typing_in_a_paragraph_rewraps_its_lines_as_one_undo_step(cx: &mut TestAppContext) {
     // Three left-aligned lines, 14 points apart.
     let layer = text_page(
-        b"BT /F1 12 Tf 72 700 Td (The quick brown fox) Tj 0 -14 Td (jumps over the lazy) Tj 0 -14 Td (dog today.) Tj ET",
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (The quick brown fox) Tj 0 -14 Td (jumps over the lazy) Tj 0 -14 Td (dog today.) Tj ET EMC",
         lopdf::Dictionary::new(),
     );
     let space = PageCoordinateSpace::new(
@@ -1504,7 +1508,7 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     };
     use butter_paper::pdf_text_blocks::TextBlockAlignment;
     let layer = text_page(
-        b"BT /F1 12 Tf 72 700 Td (The quick brown fox) Tj 0 -14 Td (jumps over the lazy) Tj 0 -14 Td (dog today.) Tj ET",
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (The quick brown fox) Tj 0 -14 Td (jumps over the lazy) Tj 0 -14 Td (dog today.) Tj ET EMC",
         lopdf::Dictionary::new(),
     );
     let space = PageCoordinateSpace::new(

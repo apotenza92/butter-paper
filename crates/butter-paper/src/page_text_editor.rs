@@ -1632,8 +1632,12 @@ mod tests {
         line
     }
 
-    /// The editor for the block the page's lines group the first into.
-    fn block_editor(lines: Vec<PageTextLine>, caret: usize) -> PageTextEditState {
+    /// The editor for the paragraph the page's first line is in: lines not
+    /// tagged otherwise are tagged as one paragraph of its structure tree.
+    fn block_editor(mut lines: Vec<PageTextLine>, caret: usize) -> PageTextEditState {
+        for line in &mut lines {
+            line.paragraph.get_or_insert((1, 0));
+        }
         let layer = layer(lines);
         let block = crate::pdf_text_blocks::paragraph_blocks(&layer)
             .into_iter()
@@ -1708,11 +1712,14 @@ mod tests {
                 line("Strategy", 600., usize::MAX),
                 line("Governance", 586., usize::MAX),
                 line("Testing", 572., usize::MAX),
-                line(
-                    "A wide line that sets how far the text column reaches",
-                    700.,
-                    usize::MAX,
-                ),
+                PageTextLine {
+                    paragraph: Some((2, 0)),
+                    ..line(
+                        "A wide line that sets how far the text column reaches",
+                        700.,
+                        usize::MAX,
+                    )
+                },
             ],
             8,
         );
@@ -1873,6 +1880,14 @@ mod tests {
             line_at("- Second item", 72., 672.),
             line_at("- Third", 72., 658.),
         ];
+        // One paragraph of the page's structure tree.
+        let lines = lines
+            .into_iter()
+            .map(|mut line| {
+                line.paragraph = Some((1, 0));
+                line
+            })
+            .collect::<Vec<_>>();
         let layer = layer(lines.clone());
         let blocks = crate::pdf_text_blocks::paragraph_blocks(&layer);
         assert_eq!(blocks.len(), 1, "{blocks:?}");
@@ -1992,6 +2007,14 @@ mod tests {
             line_at("into the next column", 300., 700.),
             line_at("where it ends.", 300., 686.),
         ];
+        // One paragraph of the page's structure tree.
+        let lines = lines
+            .into_iter()
+            .map(|mut line| {
+                line.paragraph = Some((1, 0));
+                line
+            })
+            .collect::<Vec<_>>();
         let layer = layer(lines.clone());
         let blocks = crate::pdf_text_blocks::paragraph_blocks(&layer);
         assert_eq!(blocks.len(), 1, "{blocks:?}");

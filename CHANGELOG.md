@@ -124,9 +124,10 @@ All notable Butter Paper changes are recorded here.
 - Right-click a table cell in Edit PDF to insert a row above or below, or
   delete the row. Drag a column border to resize the two columns beside
   it; their text rewraps to fit.
-- On a tagged PDF, Edit PDF's paragraphs are the document's own: lines the
+- Edit PDF's paragraphs are the document's own, from its tags: lines the
   PDF says are separate paragraphs, such as an address block, are no
-  longer joined into one because they sit close together.
+  longer joined into one because they sit close together. A PDF without
+  tags says nothing of its paragraphs, so its lines edit one at a time.
 - Saved tables stay tagged as tables, with new rows, columns and cell text
   in their right place, so they edit as tables when opened again and
   screen readers read them as tables.

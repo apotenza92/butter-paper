@@ -109,6 +109,10 @@ changes it; history is in git.
     paragraphs that flow between columns (OnlyOffice).
   - Signed PDFs: warn that saving invalidates the signatures, then allow
     editing (Revu refuses).
+  - Structure comes from the PDF's own data, never from layout guesses:
+    paragraphs are the structure tree's paragraph elements, and an
+    untagged PDF's lines edit one at a time, as nothing in it says which
+    lines continue each other.
   - Tables edit as tables (beyond Acrobat and Revu, which edit a cell's
     text as loose text), on hard evidence only: a table is what the PDF's
     structure tree declares (a Tagged PDF's `Table`, as Word, Google Docs,
