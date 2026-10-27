@@ -3,7 +3,7 @@
   <desc id="description">A faceted violet origami butterfly on a teal central spine.</desc>
   <defs>
     <clipPath id="silhouette">
-      <path d="M10 10 L67.5 34.4 L102.4 55.4 L128 34.4 L153.6 55.4 L188.5 34.4 L246 10 L186 118.4 L246 217.9 L188.5 195.4 L133.5 176.2 L128 217.9 L122.5 176.2 L67.5 195.4 L10 217.9 L70 118.4 Z"/>
+      <path d="M10 10 L67.5 34.4 L102.4 55.4 L128 34.4 L153.6 55.4 L188.5 34.4 L246 10 L186 118.4 L237 203.0 L188.1 183.9 L133.5 176.2 L128 217.9 L122.5 176.2 L67.9 183.9 L19 203.0 L70 118.4 Z"/>
     </clipPath>
     <linearGradient id="silhouette-base" x1="-10.6" y1="7.5" x2="266.6" y2="236.8" gradientUnits="userSpaceOnUse">
       <stop stop-color="#c8c0ec"/><stop offset=".48" stop-color="#6756b3"/><stop offset="1" stop-color="#2c235f"/>
@@ -20,13 +20,13 @@
     <linearGradient id="upper-right" x1="271.6" y1="10.0" x2="128.0" y2="157.4" gradientUnits="userSpaceOnUse">
       <stop stop-color="#7563c0"/><stop offset="1" stop-color="#392c78"/>
     </linearGradient>
-    <linearGradient id="lower-left-outer" x1="70.0" y1="118.4" x2="10.0" y2="217.9" gradientUnits="userSpaceOnUse">
+    <linearGradient id="lower-left-outer" x1="70.0" y1="118.4" x2="19.0" y2="203.0" gradientUnits="userSpaceOnUse">
       <stop stop-color="#4a3a92"/><stop offset="1" stop-color="#8070c8"/>
     </linearGradient>
     <linearGradient id="lower-left" x1="70.0" y1="118.4" x2="122.5" y2="176.2" gradientUnits="userSpaceOnUse">
       <stop stop-color="#392c78"/><stop offset=".18" stop-color="#49388c"/><stop offset=".52" stop-color="#59469c"/><stop offset="1" stop-color="#7563c0"/>
     </linearGradient>
-    <linearGradient id="lower-right-outer" x1="186.0" y1="118.4" x2="246.0" y2="217.9" gradientUnits="userSpaceOnUse">
+    <linearGradient id="lower-right-outer" x1="186.0" y1="118.4" x2="237.0" y2="203.0" gradientUnits="userSpaceOnUse">
       <stop stop-color="#2c235f"/><stop offset="1" stop-color="#4a3a8f"/>
     </linearGradient>
     <linearGradient id="lower-right" x1="186.0" y1="118.4" x2="133.5" y2="176.2" gradientUnits="userSpaceOnUse">
@@ -41,7 +41,7 @@
   </defs>
 
   <!-- One base silhouette prevents seams at shared facet edges. -->
-  <path d="M10 10 L67.5 34.4 L102.4 55.4 L128 34.4 L153.6 55.4 L188.5 34.4 L246 10 L186 118.4 L246 217.9 L188.5 195.4 L133.5 176.2 L128 217.9 L122.5 176.2 L67.5 195.4 L10 217.9 L70 118.4 Z" fill="url(#silhouette-base)"/>
+  <path d="M10 10 L67.5 34.4 L102.4 55.4 L128 34.4 L153.6 55.4 L188.5 34.4 L246 10 L186 118.4 L237 203.0 L188.1 183.9 L133.5 176.2 L128 217.9 L122.5 176.2 L67.9 183.9 L19 203.0 L70 118.4 Z" fill="url(#silhouette-base)"/>
 
   <!-- Four wings, each an outer and an inner plane, on one central spine. Exact mirrored nodes; no linework. -->
   <g clip-path="url(#silhouette)">
@@ -49,10 +49,10 @@
     <path d="M67.5 34.4 L102.4 55.4 L111.7 93.2 L116.3 128.4 L70 118.4 Z" fill="url(#upper-left)"/>
     <path d="M246 10 L188.5 34.4 L186 118.4 Z" fill="url(#upper-right-outer)"/>
     <path d="M188.5 34.4 L153.6 55.4 L144.3 93.2 L139.7 128.4 L186 118.4 Z" fill="url(#upper-right)"/>
-    <path d="M70 118.4 L67.5 195.4 L10 217.9 Z" fill="url(#lower-left-outer)"/>
-    <path d="M70 118.4 L116.3 128.4 L122.5 176.2 L67.5 195.4 Z" fill="url(#lower-left)"/>
-    <path d="M186 118.4 L188.5 195.4 L246 217.9 Z" fill="url(#lower-right-outer)"/>
-    <path d="M186 118.4 L139.7 128.4 L133.5 176.2 L188.5 195.4 Z" fill="url(#lower-right)"/>
+    <path d="M70 118.4 L67.9 183.9 L19 203.0 Z" fill="url(#lower-left-outer)"/>
+    <path d="M70 118.4 L116.3 128.4 L122.5 176.2 L67.9 183.9 Z" fill="url(#lower-left)"/>
+    <path d="M186 118.4 L188.1 183.9 L237 203.0 Z" fill="url(#lower-right-outer)"/>
+    <path d="M186 118.4 L139.7 128.4 L133.5 176.2 L188.1 183.9 Z" fill="url(#lower-right)"/>
     <path d="M128 34.4 L102.4 55.4 L111.7 93.2 L116.3 128.4 L122.5 176.2 L128 217.9 Z" fill="url(#center-left)"/>
     <path d="M128 34.4 L153.6 55.4 L144.3 93.2 L139.7 128.4 L133.5 176.2 L128 217.9 Z" fill="url(#center-right)"/>
   </g>
