@@ -724,9 +724,10 @@ fn producer_lines_group_into_their_paragraphs() {
                 Left,
                 &["Left column:", "shown otherw", "before paint", "replaced."]
             ),
-            (Left, &["2½ and prime", "any visible "]),
             (Left, &["Serif paragr", "including 20"]),
-            (Left, &["Right column"]),
+            // One paragraph in the structure tree, "Right column:" and the
+            // lines it runs on to.
+            (Left, &["Right column", "2½ and prime", "any visible "]),
             (Left, &["Mono line: B"]),
         ])
     );
@@ -1527,11 +1528,22 @@ mod paragraphs {
                                 || !before.lines.iter().any(|old| old.anchor == line.anchor)
                         })
                         .collect::<Vec<_>>();
+                    // Down a column, then the next column to the right: a
+                    // tagged paragraph runs on into the next column.
+                    let span = |line: &&butter_paper::pdf_text_edit::PageTextLine| {
+                        butter_paper::pdf_tables::line_box(line)
+                            .map_or((line.origin().0, line.origin().0), |b| (b[0], b[2]))
+                    };
                     lines.sort_by(|a, b| {
-                        b.origin()
-                            .1
-                            .total_cmp(&a.origin().1)
-                            .then(a.origin().0.total_cmp(&b.origin().0))
+                        let (a_span, b_span) = (span(a), span(b));
+                        if a_span.0.max(b_span.0) < a_span.1.min(b_span.1) {
+                            b.origin()
+                                .1
+                                .total_cmp(&a.origin().1)
+                                .then(a.origin().0.total_cmp(&b.origin().0))
+                        } else {
+                            a_span.0.total_cmp(&b_span.0)
+                        }
                     });
                     let read = lines
                         .iter()

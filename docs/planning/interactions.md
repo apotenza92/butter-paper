@@ -216,7 +216,12 @@ in Word.
 
 Edit PDF edits text a paragraph at a time, as Acrobat does.
 
-- Lines group into paragraphs: same font, size and line spacing, sharing a
+- On a tagged page, lines group only as the structure tree groups them:
+  the lines of one paragraph element (`P`, a heading, a caption, a list's
+  items, a cell's text) are one paragraph, in reading order even across
+  columns, and a line in none is a paragraph of its own. Nothing else
+  joins them.
+- On an untagged page, lines group into paragraphs: same font, size and line spacing, sharing a
   left, right or centre edge (or both edges, justified), in one column.
   A list (items beginning with the same bullet, or numbered `1.` / `1)`, at
   one edge, with their wrapped lines at the items' text) is one paragraph.

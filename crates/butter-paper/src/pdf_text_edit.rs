@@ -247,6 +247,10 @@ pub struct PageTextLine {
     /// line in, ascending: what ties it to the page's structure tree.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub marked_content_ids: Vec<i64>,
+    /// The paragraph the page's structure tree puts the line in: lines group
+    /// into paragraphs by it alone on a tagged page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph: Option<(u32, u16)>,
 }
 
 impl PageTextLine {
@@ -4846,6 +4850,7 @@ fn group_lines(
                 in_form: false,
                 clip_bounds: None,
                 marked_content_ids,
+                paragraph: None,
             },
             ops: group.members,
             clusters,
@@ -4896,6 +4901,7 @@ pub fn extract_page_text(
     let page = extract_page(document, page_index, limits)?;
     let (rules, fills) = page.rules();
     let objects = page.objects(visible_page_box(document, page_index));
+    let paragraphs = crate::pdf_structure::page_paragraph_elements(document, page.page_id);
     Ok(PageTextLayer {
         page_index,
         fonts: page
@@ -4904,7 +4910,23 @@ pub fn extract_page_text(
             .filter(|font| font.unsupported.is_none())
             .map(|font| font.metrics.clone())
             .collect(),
-        lines: page.lines.into_iter().map(|line| line.public).collect(),
+        lines: page
+            .lines
+            .into_iter()
+            .map(|line| {
+                let mut line = line.public;
+                // A line in one paragraph of the structure tree.
+                let mut found = line
+                    .marked_content_ids
+                    .iter()
+                    .map(|id| paragraphs.get(id).copied());
+                line.paragraph = match found.next() {
+                    Some(Some(first)) if found.all(|other| other == Some(first)) => Some(first),
+                    _ => None,
+                };
+                line
+            })
+            .collect(),
         page_box: visible_page_box(document, page_index),
         tagged_tables: page_id(document, page_index)
             .map(|page| crate::pdf_structure::page_tagged_tables(document, page))
@@ -6880,6 +6902,7 @@ fn new_text_line(origin: (f64, f64), runs: &[TextEditRun]) -> PageTextLine {
         in_form: false,
         clip_bounds: None,
         marked_content_ids: Vec::new(),
+        paragraph: None,
     }
 }
 

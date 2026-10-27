@@ -501,7 +501,8 @@ pub fn paragraph_blocks_in(
         }
     }
     let editable = |line: &&PageTextLine| line.read_only.is_none();
-    let mut blocks = blocks_of(
+    let tagged = layer.lines.iter().any(|line| line.paragraph.is_some());
+    let mut blocks = grouped_blocks(
         layer
             .lines
             .iter()
@@ -509,6 +510,7 @@ pub fn paragraph_blocks_in(
             .filter(|line| !in_cell.contains_key(&line.anchor))
             .collect(),
         true,
+        tagged,
     );
     for (table_index, table) in tables.iter().enumerate() {
         for (cell_index, cell) in table.cells.iter().enumerate() {
@@ -522,7 +524,7 @@ pub fn paragraph_blocks_in(
                 continue;
             }
             let inset = crate::pdf_tables::cell_inset(layer, table, cell_index);
-            for mut block in blocks_of(lines, false) {
+            for mut block in grouped_blocks(lines, false, tagged) {
                 block.cell = Some(BlockCell {
                     table: tables[table_index].key(),
                     cell: cell_index,
@@ -543,6 +545,68 @@ pub fn paragraph_blocks_in(
         let (a, b) = (position(a), position(b));
         b.1.total_cmp(&a.1).then(a.0.total_cmp(&b.0))
     });
+    blocks
+}
+
+/// `lines` grouped into blocks. On a tagged page only lines its structure
+/// tree puts in one paragraph group, and a line in none is a paragraph of
+/// its own; an untagged page groups them by their layout.
+fn grouped_blocks(
+    lines: Vec<&PageTextLine>,
+    link_columns: bool,
+    tagged: bool,
+) -> Vec<PageTextBlock> {
+    if !tagged {
+        return blocks_of(lines, link_columns);
+    }
+    let mut groups: Vec<(Option<(u32, u16)>, Vec<&PageTextLine>)> = Vec::new();
+    for line in lines {
+        match line.paragraph.and_then(|paragraph| {
+            groups
+                .iter_mut()
+                .find(|(other, _)| *other == Some(paragraph))
+        }) {
+            Some((_, group)) => group.push(line),
+            None => groups.push((line.paragraph, vec![line])),
+        }
+    }
+    let tops = groups
+        .iter()
+        .flat_map(|(_, group)| group.iter())
+        .map(|line| (line.anchor, line.origin()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut blocks = Vec::new();
+    for (paragraph, group) in groups {
+        let mut pieces = blocks_of(group, link_columns);
+        if paragraph.is_none() || pieces.len() < 2 {
+            blocks.extend(pieces);
+            continue;
+        }
+        // One paragraph the layout splits (across columns, around a
+        // figure) is one block, its pieces in reading order: down a
+        // column, then the next column to the right.
+        pieces.sort_by(|a, b| {
+            let top = |piece: &PageTextBlock| tops.get(&piece.lines[0]).map_or(0., |o| o.1);
+            if a.left.max(b.left) < a.right.min(b.right) {
+                top(b).total_cmp(&top(a))
+            } else {
+                a.left.total_cmp(&b.left)
+            }
+        });
+        let mut joined = pieces[0].clone();
+        joined.edges = pieces
+            .iter()
+            .flat_map(|piece| (0..piece.lines.len()).map(|index| piece.edges_of(index)))
+            .collect();
+        joined.lines = pieces
+            .iter()
+            .flat_map(|piece| piece.lines.iter().copied())
+            .collect();
+        joined.pitch = joined
+            .pitch
+            .or_else(|| pieces.iter().find_map(|piece| piece.pitch));
+        blocks.push(joined);
+    }
     blocks
 }
 
@@ -635,4 +699,97 @@ fn blocks_of(lines: Vec<&PageTextLine>, link_columns: bool) -> Vec<PageTextBlock
         break;
     }
     blocks.into_iter().map(|finished| finished.block).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pdf_text_edit::{TextLineAnchor, TextLineChar, TextRunStyle};
+
+    fn line(y: f64, text: &str, paragraph: Option<(u32, u16)>) -> PageTextLine {
+        PageTextLine {
+            anchor: TextLineAnchor {
+                x_centipoints: 7200,
+                y_centipoints: (y * 100.) as i64,
+                ordinal: 0,
+            },
+            text: text.into(),
+            chars: text
+                .chars()
+                .enumerate()
+                .map(|(index, character)| TextLineChar {
+                    character,
+                    x: index as f64 * 5.,
+                    advance: 5.,
+                    style: 0,
+                    synthetic: false,
+                })
+                .collect(),
+            end_x: text.chars().count() as f64 * 5.,
+            styles: vec![TextRunStyle {
+                font: b"F1".to_vec(),
+                font_size: 10.,
+                char_spacing: 0.,
+                word_spacing: 0.,
+                fill: None,
+                face: None,
+            }],
+            matrix: [1., 0., 0., 1., 72., y],
+            horizontal_scale: 1.,
+            rise: 0.,
+            ascent: 7.,
+            descent: -2.,
+            fill: None,
+            read_only: None,
+            in_form: false,
+            clip_bounds: None,
+            marked_content_ids: Vec::new(),
+            paragraph,
+        }
+    }
+
+    fn layer(lines: Vec<PageTextLine>) -> PageTextLayer {
+        PageTextLayer {
+            lines,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_tagged_page_groups_lines_only_as_its_structure_does() {
+        // An address block: three lines at a paragraph's spacing.
+        let texts = [
+            "Client name: Mr A Client",
+            "DOB: 81 yo M",
+            "28 Some Street 3036",
+        ];
+        let ys = [700., 688., 676.];
+        let untagged = layer(
+            texts
+                .iter()
+                .zip(ys)
+                .map(|(text, y)| line(y, text, None))
+                .collect(),
+        );
+        assert_eq!(paragraph_blocks(&untagged).len(), 1, "layout groups them");
+        let tagged = layer(
+            texts
+                .iter()
+                .zip(ys)
+                .enumerate()
+                .map(|(index, (text, y))| line(y, text, Some((10 + index as u32, 0))))
+                .collect(),
+        );
+        assert_eq!(paragraph_blocks(&tagged).len(), 3, "three paragraphs");
+        let one = layer(
+            texts
+                .iter()
+                .zip(ys)
+                .map(|(text, y)| line(y, text, Some((10, 0))))
+                .collect(),
+        );
+        let blocks = paragraph_blocks(&one);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].lines.len(), 3);
+    }
 }

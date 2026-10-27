@@ -456,6 +456,100 @@ pub fn page_tagged_tables(document: &Document, page_id: ObjectId) -> Vec<TaggedT
         .collect()
 }
 
+/// Element types that hold a paragraph of text: a line belongs to the
+/// nearest one above its marked content. A list (`L`) holds its items'
+/// markers and text together.
+const PARAGRAPH_TYPES: [&[u8]; 16] = [
+    b"P",
+    b"H",
+    b"H1",
+    b"H2",
+    b"H3",
+    b"H4",
+    b"H5",
+    b"H6",
+    b"Title",
+    b"Caption",
+    b"BlockQuote",
+    b"Note",
+    b"TOCI",
+    b"Lbl",
+    b"TD",
+    b"TH",
+];
+
+/// The paragraph each of page `page_id`'s marked-content identifiers is
+/// in, as its structure tree says: the nearest paragraph element above it,
+/// or the list its list item is in.
+pub fn page_paragraph_elements(
+    document: &Document,
+    page_id: ObjectId,
+) -> BTreeMap<i64, (u32, u16)> {
+    let mut paragraphs = BTreeMap::new();
+    let Some(root) = document
+        .catalog()
+        .ok()
+        .and_then(|catalog| catalog.get(b"StructTreeRoot").ok())
+        .and_then(|root| dictionary(document, root))
+    else {
+        return paragraphs;
+    };
+    let Some(page) = document
+        .get_object(page_id)
+        .ok()
+        .and_then(|page| page.as_dict().ok())
+    else {
+        return paragraphs;
+    };
+    let mut tree = Tree {
+        document,
+        role_map: root
+            .get(b"RoleMap")
+            .ok()
+            .and_then(|map| dictionary(document, map)),
+        read: 0,
+    };
+    for (id, element) in marked_content_elements(document, root, page) {
+        let mut current = element;
+        let mut nearest = None;
+        let mut in_item = false;
+        for _ in 0..MAX_DEPTH {
+            let Some(dictionary) = tree.element(current) else {
+                break;
+            };
+            match tree.kind(dictionary).as_deref() {
+                // A list is one paragraph of items, as the editor continues
+                // its bullets and numbering.
+                Some(b"LI") => in_item = true,
+                Some(b"L") if in_item => {
+                    nearest = Some(current);
+                    break;
+                }
+                Some(kind) if PARAGRAPH_TYPES.contains(&kind) && nearest.is_none() => {
+                    nearest = Some(current);
+                    // A cell ends the search: its paragraphs are its own.
+                    if kind == b"TD" || kind == b"TH" {
+                        break;
+                    }
+                }
+                Some(
+                    b"TD" | b"TH" | b"Table" | b"Sect" | b"Div" | b"Document" | b"Part" | b"Art"
+                    | b"L",
+                ) => break,
+                _ => {}
+            }
+            let Some((parent, _)) = tree.parent(current) else {
+                break;
+            };
+            current = parent;
+        }
+        if let Some(nearest) = nearest {
+            paragraphs.insert(id, nearest);
+        }
+    }
+    paragraphs
+}
+
 /// A table's cells placed on its grid (a cell takes the first free column
 /// in its row), cut to the rows holding the page's content and the rows
 /// around them with no content anywhere (`empty` cells only).

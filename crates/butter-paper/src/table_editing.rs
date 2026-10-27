@@ -632,6 +632,7 @@ mod tests {
             in_form: false,
             clip_bounds: None,
             marked_content_ids: vec![cell],
+            paragraph: None,
         }
     }
 

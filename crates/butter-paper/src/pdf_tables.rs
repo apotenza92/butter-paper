@@ -1312,6 +1312,7 @@ mod tests {
             in_form: false,
             clip_bounds: None,
             marked_content_ids: Vec::new(),
+            paragraph: None,
         }
     }
 

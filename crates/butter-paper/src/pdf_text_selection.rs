@@ -221,6 +221,7 @@ pub fn selectable_lines_with_tables(
                     in_form: false,
                     clip_bounds: None,
                     marked_content_ids: Vec::new(),
+                    paragraph: None,
                 };
                 let chars =
                     layout_text_edit_fitted(layer, &line, &cell_line.runs, Default::default())
@@ -433,6 +434,7 @@ mod tests {
             in_form: false,
             clip_bounds: None,
             marked_content_ids: Vec::new(),
+            paragraph: None,
         }
     }
 
