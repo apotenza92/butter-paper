@@ -68,6 +68,7 @@ pub mod pdf_forms;
 pub mod pdf_merge;
 pub mod pdf_page_base;
 pub mod pdf_page_structure;
+pub mod pdf_structure;
 pub mod pdf_tables;
 pub mod pdf_text_blocks;
 pub mod pdf_text_edit;

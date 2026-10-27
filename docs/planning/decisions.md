@@ -110,13 +110,18 @@ changes it; history is in git.
   - Signed PDFs: warn that saving invalidates the signatures, then allow
     editing (Revu refuses).
   - Tables edit as tables (beyond Acrobat and Revu, which edit a cell's
-    text as loose text): cells wrap and rows grow to fit their text, and
-    Tab moves between cells. Nothing else changes a table's structure:
-    adding, deleting, moving and resizing rows, row grips and the
-    properties' table grid were tried and removed as more than the
-    reference apps do and harder to keep reliable; restructuring goes to
-    Word. Only the table changes: content outside it never moves with it,
-    and nothing moves between pages (as in Acrobat and Revu). A table or
+    text as loose text), on hard evidence only: a table is what the PDF's
+    structure tree declares (a Tagged PDF's `Table`, as Word, Google Docs,
+    LibreOffice and Acrobat write), never a guess from ruled lines. An
+    untagged table's text edits as paragraphs, as in Acrobat and Revu.
+    Cells wrap and rows grow to fit their text, Tab moves between cells,
+    rows are inserted and deleted from the page menu, and a column border
+    drags to resize its two columns (their text rewraps). The structure
+    tree is kept true to the edited rows and columns, so a table stays a
+    table after saving; a table that continues on another page, or has
+    merged cells, keeps its rows (and the continuing one its columns).
+    Only the table changes: content outside it never moves with it, and
+    nothing moves between pages (as in Acrobat and Revu). A table or
     paragraph that grows into other text, or past the page's bottom edge,
     shows a warning label saying so, not an outline, and the user moves
     what is in the way.

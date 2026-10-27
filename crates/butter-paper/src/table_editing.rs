@@ -1,6 +1,6 @@
-//! Editing a table's text with Edit PDF: the table as an edit shows it
-//! ([`TableView`]), and rows that grow to hold their cells' text. Rows and
-//! columns are not added, removed, moved or resized.
+//! Editing a table with Edit PDF: the table as an edit shows it
+//! ([`TableView`]), rows that grow to hold their cells' text, and rows
+//! added and deleted.
 //!
 //! Cells keep their text where it is: a cell's base lines are edited as
 //! paragraphs that wrap at the cell's width, and text typed into a cell the
@@ -215,6 +215,165 @@ impl TableView {
             .filter(with_text)
             .min_by_key(|index| distance(*index))
     }
+}
+
+/// Why `table`'s rows cannot be added or deleted, if they cannot: only a
+/// table the document declares, wholly on its page, without merged cells,
+/// keeps its structure true to its rows.
+pub fn row_change_blocked(table: &PageTable) -> Option<String> {
+    let Some(tags) = &table.tags else {
+        return Some("The document does not declare this table".into());
+    };
+    if tags.continues {
+        return Some("The table continues on another page".into());
+    }
+    if table
+        .cells
+        .iter()
+        .any(|cell| cell.row_span != 1 || cell.column_span != 1)
+    {
+        return Some("The table has merged cells".into());
+    }
+    table
+        .read_only
+        .as_ref()
+        .map(|reason| format!("The table's rows cannot change: {reason}"))
+}
+
+/// Why `table`'s columns cannot be resized, if they cannot: a table that
+/// continues on another page keeps its columns as they are there.
+pub fn column_change_blocked(table: &PageTable) -> Option<String> {
+    let Some(tags) = &table.tags else {
+        return Some("The document does not declare this table".into());
+    };
+    if tags.continues {
+        return Some("The table continues on another page".into());
+    }
+    table
+        .read_only
+        .as_ref()
+        .map(|reason| format!("The table's columns cannot change: {reason}"))
+}
+
+/// How much wider `view`'s edit makes the columns base cell `base` spans.
+pub fn cell_growth(view: &TableView, base: usize) -> f64 {
+    let Some(output) = view.cell_of_base(base) else {
+        return 0.;
+    };
+    let cell = &view.table.cells[base];
+    let base_width =
+        view.table.columns[cell.column + cell.column_span] - view.table.columns[cell.column];
+    let bounds = view.cell_bounds(&output);
+    bounds[2] - bounds[0] - base_width
+}
+
+/// The narrowest base column `column` may be: its widest word with its
+/// cells' gaps either side, so every word still fits on a line.
+fn column_min_width(layer: &PageTextLayer, table: &PageTable, column: usize) -> f64 {
+    let mut narrowest: f64 = 0.;
+    for (index, cell) in table.cells.iter().enumerate() {
+        if cell.column != column || cell.column_span != 1 || cell.lines.is_empty() {
+            continue;
+        }
+        let bounds = table.cell_bounds(cell);
+        let inset = cell_inset(layer, table, index);
+        let gaps = (inset.left - bounds[0]) + (bounds[2] - inset.right);
+        for line in cell.lines.iter().filter_map(|anchor| layer.line(anchor)) {
+            let scale = line.matrix[0].hypot(line.matrix[1]) * line.horizontal_scale;
+            let mut word: f64 = 0.;
+            for character in &line.chars {
+                if character.character.is_whitespace() {
+                    narrowest = narrowest.max(word * scale + gaps);
+                    word = 0.;
+                } else {
+                    word += character.advance;
+                }
+            }
+            narrowest = narrowest.max(word * scale + gaps);
+        }
+    }
+    narrowest
+}
+
+/// Moves the border between output columns `edge - 1` and `edge` by
+/// `delta` points, keeping the table's width: one column widens as the
+/// other narrows, neither below its widest word. The delta it moved by.
+pub fn resize_column(layer: &PageTextLayer, view: &mut TableView, edge: usize, delta: f64) -> f64 {
+    if edge == 0 || edge >= view.edit.columns.len() {
+        return 0.;
+    }
+    let (left, right) = (view.edit.columns[edge - 1], view.edit.columns[edge]);
+    let min = |band: crate::pdf_tables::TableBand| {
+        column_min_width(layer, &view.table, source_index(band.source))
+    };
+    let low = (min(left) - left.size).min(0.);
+    let high = (right.size - min(right)).max(0.);
+    let delta = delta.clamp(low, high);
+    view.edit.columns[edge - 1].size += delta;
+    view.edit.columns[edge].size -= delta;
+    delta
+}
+
+/// A new empty row's height, drawn like base row `model`: one line of its
+/// first text, with that cell's gaps above and below; the row's own height
+/// when it has no text.
+fn new_row_size(layer: &PageTextLayer, table: &PageTable, model: usize) -> f64 {
+    let row_height = table.rows[model] - table.rows[model + 1];
+    table
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.row == model && cell.row_span == 1)
+        .find_map(|(index, cell)| {
+            let first = layer.line(cell.lines.first()?).and_then(line_box)?;
+            let bounds = table.cell_bounds(cell);
+            let inset = cell_inset(layer, table, index);
+            let top_gap = (bounds[3] - first[3]).max(0.);
+            Some(top_gap + (first[3] - first[1]) + inset.bottom_gap)
+        })
+        .map_or(row_height, |size| size.min(row_height))
+}
+
+/// Adds an empty row at output row `index` (0 to the row count), drawn like
+/// output row `model`. Text typed into new cells below moves down with its
+/// row.
+pub fn insert_row(layer: &PageTextLayer, view: &mut TableView, index: usize, model: usize) {
+    let index = index.min(view.edit.rows.len());
+    let Some(model_band) = view.edit.rows.get(model) else {
+        return;
+    };
+    let base = source_index(model_band.source);
+    // Set to its line's height, so fitting rows starts from it rather than
+    // its model's; text typed into it still grows it.
+    let size = new_row_size(layer, &view.table, base);
+    view.edit.rows.insert(
+        index,
+        crate::pdf_tables::TableBand {
+            source: BandSource::New(base),
+            size,
+            set_size: Some(size),
+        },
+    );
+    for text in &mut view.edit.cell_texts {
+        if text.row >= index {
+            text.row += 1;
+        }
+    }
+}
+
+/// Deletes output row `index` with its text. A table keeps its last row.
+pub fn delete_row(view: &mut TableView, index: usize) -> bool {
+    if view.edit.rows.len() <= 1 || index >= view.edit.rows.len() {
+        return false;
+    }
+    view.edit.rows.remove(index);
+    view.edit.cell_texts.retain(|text| text.row != index);
+    for text in &mut view.edit.cell_texts {
+        if text.row > index {
+            text.row -= 1;
+        }
+    }
+    true
 }
 
 /// The lowest point of `anchors`' text as `edits` draw it (lines they add
@@ -442,7 +601,7 @@ mod tests {
         }
     }
 
-    fn line(x: f64, y: f64, text: &str) -> PageTextLine {
+    fn line(x: f64, y: f64, text: &str, cell: i64) -> PageTextLine {
         PageTextLine {
             anchor: TextLineAnchor {
                 x_centipoints: (x * 100.) as i64,
@@ -472,11 +631,12 @@ mod tests {
             read_only: None,
             in_form: false,
             clip_bounds: None,
+            marked_content_ids: vec![cell],
         }
     }
 
-    /// Two columns, three rows 20 high from y 160 down to 100; the first
-    /// row's second cell is empty.
+    /// A declared table of two columns and three rows ruled 20 high from y
+    /// 160 down to 100; the first row's second cell is empty.
     fn layer() -> PageTextLayer {
         let rule = |horizontal: bool, at: f64, from: f64, to: f64| PageRule {
             horizontal,
@@ -495,15 +655,96 @@ mod tests {
         PageTextLayer {
             page_index: 0,
             lines: vec![
-                line(104., 146., "a"),
-                line(104., 126., "b"),
-                line(204., 126., "c"),
-                line(104., 106., "d"),
-                line(204., 106., "e"),
+                line(104., 146., "a", 0),
+                line(104., 126., "b", 2),
+                line(204., 126., "c", 3),
+                line(104., 106., "d", 4),
+                line(204., 106., "e", 5),
             ],
+            tagged_tables: vec![crate::pdf_structure::TaggedTable {
+                row_count: 3,
+                column_count: 2,
+                cells: (0..6)
+                    .map(|index| crate::pdf_structure::TaggedCell {
+                        row: index / 2,
+                        column: index % 2,
+                        row_span: 1,
+                        column_span: 1,
+                        marked_content_ids: vec![index as i64],
+                        element: None,
+                        header: false,
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
             rules,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn rows_are_added_a_line_tall_like_their_model_and_deleted_with_their_text() {
+        let layer = layer();
+        let mut view = view(&layer);
+        assert_eq!(
+            row_change_blocked(&view.table),
+            None,
+            "a declared table on one page with no merged cells"
+        );
+        // Text typed into the empty cell of the first row stays with it.
+        view.edit.cell_texts.push(TableCellText {
+            row: 2,
+            column: 1,
+            lines: Vec::new(),
+        });
+        insert_row(&layer, &mut view, 1, 0);
+        assert_eq!(view.edit.rows.len(), 4);
+        assert_eq!(view.edit.rows[1].source, BandSource::New(0));
+        // "a" sits 7 below the row's top and its box is 9 tall; its cell
+        // keeps 4 below it (its gap above, at most 12).
+        assert!(
+            (view.edit.rows[1].size - (7. + 9. + 4.)).abs() < 1e-9,
+            "{:?}",
+            view.edit.rows[1]
+        );
+        // Fitting the rows to their text keeps the new row a line tall.
+        let size = view.edit.rows[1].size;
+        fit_rows(&layer, &mut view, &[]);
+        assert!(
+            (view.edit.rows[1].size - size).abs() < 0.01,
+            "{:?}",
+            view.edit.rows[1]
+        );
+        assert_eq!(view.edit.cell_texts[0].row, 3);
+        assert!(delete_row(&mut view, 3));
+        assert!(view.edit.cell_texts.is_empty());
+        assert!(delete_row(&mut view, 0) && delete_row(&mut view, 0) && !delete_row(&mut view, 0));
+        assert_eq!(view.edit.rows.len(), 1);
+        // A table that continues on another page keeps its rows.
+        let mut layer = layer.clone();
+        layer.tagged_tables[0].continues = true;
+        assert_eq!(
+            row_change_blocked(&page_tables(&layer)[0]).as_deref(),
+            Some("The table continues on another page")
+        );
+    }
+
+    #[test]
+    fn a_column_border_moves_between_its_columns_down_to_their_widest_words() {
+        let layer = layer();
+        let mut view = view(&layer);
+        let before = view.columns();
+        assert_eq!(resize_column(&layer, &mut view, 1, 30.), 30.);
+        assert_eq!(view.columns()[1], before[1] + 30.);
+        assert_eq!(view.columns()[2], before[2]);
+        // "a" (5 wide) with its 4 either side holds the first column at 13.
+        let moved = resize_column(&layer, &mut view, 1, -500.);
+        assert!(
+            (view.columns()[1] - view.columns()[0] - 13.).abs() < 1e-9,
+            "{moved}"
+        );
+        assert!(cell_growth(&view, 0) < 0.);
+        assert_eq!(resize_column(&layer, &mut view, 0, 10.), 0.);
     }
 
     fn view(layer: &PageTextLayer) -> TableView {
@@ -562,7 +803,8 @@ mod tests {
         for index in [1, 2] {
             let x = layer.lines[index].matrix[4];
             let text = layer.lines[index].text.clone();
-            layer.lines[index] = line(x, 122., &text);
+            let cell = layer.lines[index].marked_content_ids[0];
+            layer.lines[index] = line(x, 122., &text, cell);
         }
         let mut view = view(&layer);
         fit_rows(&layer, &mut view, &[]);
@@ -644,7 +886,7 @@ mod tests {
     fn a_growing_table_leaves_the_content_below_where_it_is() {
         let mut layer = layer();
         layer.page_box = Some([0., 0., 400., 200.]);
-        layer.lines.push(line(104., 80., "below"));
+        layer.lines.push(line(104., 80., "below", -1));
         let mut view = view(&layer);
         fit_rows(&layer, &mut view, &[]);
         assert!(view.edit.is_unchanged());

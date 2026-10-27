@@ -665,7 +665,10 @@ impl DocumentWorkspace {
         cx: &App,
     ) -> Vec<crate::pdf_tables::PageTableEdit> {
         let mut edits = self.page_table_edits_of(document_id, cx);
-        if let Some(live) = self.live_table_edit(document_id, cx) {
+        if let Some(live) = self
+            .live_table_edit(document_id, cx)
+            .or_else(|| self.column_drag_edit(document_id))
+        {
             edits.retain(|edit| !(edit.page_index == live.page_index && edit.key() == live.key()));
             if !live.is_unchanged() {
                 edits.push(live);
@@ -693,7 +696,8 @@ impl DocumentWorkspace {
         cx: &App,
     ) -> Vec<crate::pdf_tables::PageTableEdit> {
         let edits = self.page_table_edits_of(document_id, cx);
-        if self.editing_page_tables(document_id, page_index) {
+        if self.editing_page_tables(document_id, page_index) || self.column_drag_active(document_id)
+        {
             self.desired_page_table_edits(document_id, cx)
         } else {
             edits

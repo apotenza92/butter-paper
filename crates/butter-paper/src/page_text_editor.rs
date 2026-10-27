@@ -1576,6 +1576,7 @@ mod tests {
             read_only: None,
             in_form: false,
             clip_bounds: None,
+            marked_content_ids: Vec::new(),
         }
     }
 
@@ -1598,6 +1599,7 @@ mod tests {
             fonts: vec![font(b"F1"), font(b"F2")],
             lines,
             page_box: None,
+            tagged_tables: Vec::new(),
             rules: Vec::new(),
             fills: Vec::new(),
             objects: Vec::new(),

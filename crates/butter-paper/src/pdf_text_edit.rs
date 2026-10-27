@@ -243,6 +243,10 @@ pub struct PageTextLine {
     /// bottom, right, top); `None` when it is not clipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_bounds: Option<[f64; 4]>,
+    /// The marked-content identifiers the page's own content draws the
+    /// line in, ascending: what ties it to the page's structure tree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marked_content_ids: Vec<i64>,
 }
 
 impl PageTextLine {
@@ -294,8 +298,12 @@ pub struct PageTextLayer {
     /// The page's visible area (its crop box): left, bottom, right, top.
     #[serde(default)]
     pub page_box: Option<[f64; 4]>,
+    /// The tables the page's structure tree declares: the only evidence
+    /// its tables are found by.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tagged_tables: Vec<crate::pdf_structure::TaggedTable>,
     /// The axis-aligned rules and filled rectangles the page's own content
-    /// draws, in page space: what its tables are found from.
+    /// draws, in page space: where a declared table's borders lie.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::pdf_tables::PageRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3091,6 +3099,10 @@ struct ShowOp {
     /// How many marked-content levels enclose the operator up to and
     /// including the outermost `/ActualText` span (zero when none does).
     actual_text_depth: usize,
+    /// The marked-content identifier of the innermost tagged content the
+    /// page's own content draws it in: what links it to the page's
+    /// structure tree.
+    marked_content_id: Option<i64>,
 }
 
 struct ExtractedLine {
@@ -3596,6 +3608,20 @@ fn points_bounds(points: impl Iterator<Item = (f64, f64)>) -> Option<[f64; 4]> {
 
 impl Walk<'_> {
     /// Whether ExtGState `name` sets only default values.
+    /// The marked-content identifier of property list `name` in the
+    /// resources' `/Properties`.
+    fn marked_content_properties_id(&self, scope: &Scope, name: &[u8]) -> Option<i64> {
+        let properties = get_dict(self.document, &scope.resources, b"Properties")?;
+        let list = properties
+            .get(name)
+            .ok()
+            .and_then(|object| resolve_dict(self.document, object))?;
+        match resolve(self.document, list.get(b"MCID").ok()?).ok()? {
+            Object::Integer(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     fn neutral_graphics_state(&self, scope: &Scope, name: &[u8]) -> bool {
         let Some(states) = get_dict(self.document, &scope.resources, b"ExtGState") else {
             return false;
@@ -3779,8 +3805,9 @@ impl Walk<'_> {
         // key, and their indices.
         let mut path = 0u64;
         let mut path_ops: Vec<usize> = Vec::new();
-        // Marked content: each level's ActualText and the first show inside it.
-        let mut marked: Vec<(Option<String>, usize)> = Vec::new();
+        // Marked content: each level's ActualText, the first show inside it
+        // and its marked-content identifier.
+        let mut marked: Vec<(Option<String>, usize, Option<i64>)> = Vec::new();
         for op_index in operation_range {
             // Taken while it is read, as forms add operations; put back below.
             let operation = std::mem::take(&mut self.operations[op_index]);
@@ -4004,8 +4031,15 @@ impl Walk<'_> {
                             state.color.graphics_state = Some(format!("{operands:?}"));
                         }
                     }
-                    b"BMC" => marked.push((None, self.shows.len())),
+                    b"BMC" => marked.push((None, self.shows.len(), None)),
                     b"BDC" => {
+                        let marked_content_id = match operands.last() {
+                            Some(Operand::Dict(entries)) => marked_content_id(entries),
+                            Some(Operand::Name(name)) => {
+                                self.marked_content_properties_id(scope, name)
+                            }
+                            _ => None,
+                        };
                         let actual_text = match operands.last() {
                             Some(Operand::Dict(entries)) => {
                                 entries.iter().find_map(|(key, value)| {
@@ -4019,10 +4053,10 @@ impl Walk<'_> {
                             }
                             _ => None,
                         };
-                        marked.push((actual_text, self.shows.len()));
+                        marked.push((actual_text, self.shows.len(), marked_content_id));
                     }
                     b"EMC" => {
-                        if let Some((Some(text), first_show)) = marked.pop() {
+                        if let Some((Some(text), first_show, _)) = marked.pop() {
                             self.actual_texts.push((text, first_show..self.shows.len()));
                         }
                     }
@@ -4061,8 +4095,14 @@ impl Walk<'_> {
                         text_matrix = multiply([1., 0., 0., 1., advance, 0.], text_matrix);
                         let actual_text_depth = marked
                             .iter()
-                            .position(|(text, _)| text.is_some())
+                            .position(|(text, _, _)| text.is_some())
                             .map_or(0, |outermost| marked.len() - outermost);
+                        // A form's identifiers belong to the form's own
+                        // structure parents, not the page's.
+                        let marked_content_id =
+                            matches!(self.owners[operation.stream], StreamOwner::Page)
+                                .then(|| marked.iter().rev().find_map(|(_, _, id)| *id))
+                                .flatten();
                         self.shows.push(ShowOp {
                             op_index,
                             kind,
@@ -4074,6 +4114,7 @@ impl Walk<'_> {
                             has_string,
                             advance,
                             actual_text_depth,
+                            marked_content_id,
                         });
                     }
                     _ => {}
@@ -4083,6 +4124,16 @@ impl Walk<'_> {
         }
         Ok(())
     }
+}
+
+/// The `/MCID` of an inline marked-content property list.
+fn marked_content_id(entries: &[(Vec<u8>, Operand)]) -> Option<i64> {
+    entries
+        .iter()
+        .find_map(|(key, value)| match (key.as_slice(), value) {
+            (b"MCID", Operand::Number(id)) if id.fract() == 0. && *id >= 0. => Some(*id as i64),
+            _ => None,
+        })
 }
 
 /// A path operator's numbers, hashed without allocating: operators have
@@ -4770,6 +4821,14 @@ fn group_lines(
             });
         }
         let fill = device_fill(&first.state.color);
+        let mut marked_content_ids = group
+            .members
+            .iter()
+            .filter(|member| !shows[**member].glyphs.is_empty())
+            .filter_map(|member| shows[*member].marked_content_id)
+            .collect::<Vec<_>>();
+        marked_content_ids.sort_unstable();
+        marked_content_ids.dedup();
         lines.push(ExtractedLine {
             public: PageTextLine {
                 anchor,
@@ -4786,6 +4845,7 @@ fn group_lines(
                 read_only,
                 in_form: false,
                 clip_bounds: None,
+                marked_content_ids,
             },
             ops: group.members,
             clusters,
@@ -4846,6 +4906,9 @@ pub fn extract_page_text(
             .collect(),
         lines: page.lines.into_iter().map(|line| line.public).collect(),
         page_box: visible_page_box(document, page_index),
+        tagged_tables: page_id(document, page_index)
+            .map(|page| crate::pdf_structure::page_tagged_tables(document, page))
+            .unwrap_or_default(),
         rules,
         fills,
         objects,
@@ -5236,6 +5299,38 @@ pub(crate) fn apply_page_edits(
     let mut table_splices = table_content_splices(&page, tables, moves, page_box)?;
     grow_clips_for_added_lines(&page, &planned, page_box, &mut table_splices);
     let mut cell_lines = table_cell_lines(&page, &layer, tables)?;
+    // The structure declaring each edited table, and a marked-content
+    // identifier for each cell new text is drawn in.
+    let (page_rules, _) = page.rules();
+    let declared = crate::pdf_tables::page_tables(&PageTextLayer {
+        lines: layer.lines.clone(),
+        page_box: layer.page_box,
+        tagged_tables: crate::pdf_structure::page_tagged_tables(document, page.page_id),
+        rules: page_rules,
+        ..Default::default()
+    });
+    let table_tags = tables
+        .iter()
+        .map(|edit| {
+            declared
+                .iter()
+                .find(|table| table.key() == edit.key())
+                .and_then(|table| table.tags.clone())
+        })
+        .collect::<Vec<_>>();
+    let mut cell_marks: BTreeMap<(usize, usize, usize), i64> = BTreeMap::new();
+    if table_tags.iter().any(Option::is_some) {
+        let mut next = crate::pdf_structure::next_marked_content_id(document, page.page_id);
+        for line in &cell_lines {
+            if let (Some(cell), Some(id)) = (line.cell, next.as_mut())
+                && table_tags[cell.0].is_some()
+                && !cell_marks.contains_key(&cell)
+            {
+                cell_marks.insert(cell, *id);
+                *id += 1;
+            }
+        }
+    }
     // Copies draw after what they copy, in its state; copied text is new
     // text.
     let (inserts, copied_lines) = content_copies(&page, &layer, moves, page_box)?;
@@ -5570,11 +5665,19 @@ pub(crate) fn apply_page_edits(
     // New cell text is drawn after the page's content, in the default
     // graphics state: the content is wrapped in `q` and `Q`.
     if !cell_lines.is_empty() {
-        let text = cell_lines_text(
-            &page,
-            &cell_lines,
-            fallback_fonts.get(&None).unwrap_or(&no_fallbacks),
-        )?;
+        let fallbacks = fallback_fonts.get(&None).unwrap_or(&no_fallbacks);
+        // A declared table's new text is tagged as its cell's content.
+        let mut text = String::new();
+        for line in &cell_lines {
+            let drawn = cell_lines_text(&page, std::slice::from_ref(line), fallbacks)?;
+            match line.cell.and_then(|cell| cell_marks.get(&cell)) {
+                Some(id) => text.push_str(&format!("/P <</MCID {id}>> BDC\n{drawn}\nEMC\n")),
+                None => {
+                    text.push_str(&drawn);
+                    text.push('\n');
+                }
+            }
+        }
         let mut open = Stream::new(Dictionary::new(), b"q\n".to_vec());
         if limits.compress_streams {
             open.compress()?;
@@ -5595,6 +5698,30 @@ pub(crate) fn apply_page_edits(
     page_dictionary.set("Contents", contents);
     if page_resources_changed {
         page_dictionary.set("Resources", Object::Dictionary(page_resources_dictionary));
+    }
+    // The structure follows the tables' rows, columns and new text.
+    for (index, (edit, tags)) in tables.iter().zip(&table_tags).enumerate() {
+        let Some(tags) = tags else {
+            continue;
+        };
+        let band = |band: &crate::pdf_tables::TableBand| match band.source {
+            crate::pdf_tables::BandSource::Base(base) => crate::pdf_structure::Band::Base(base),
+            crate::pdf_tables::BandSource::New(_) => crate::pdf_structure::Band::New,
+        };
+        let texts = cell_marks
+            .iter()
+            .filter(|((table, ..), _)| *table == index)
+            .map(|((_, row, column), id)| (*row, *column, *id))
+            .collect::<Vec<_>>();
+        crate::pdf_structure::retag_table(
+            document,
+            page.page_id,
+            tags,
+            &edit.rows.iter().map(band).collect::<Vec<_>>(),
+            &edit.columns.iter().map(band).collect::<Vec<_>>(),
+            &texts,
+        )
+        .map_err(TextEditError::ReadOnly)?;
     }
     Ok(())
 }
@@ -6659,6 +6786,7 @@ fn content_copies(
                     origin,
                     runs,
                     layout,
+                    cell: None,
                 });
             }
         }
@@ -6671,6 +6799,9 @@ struct CellLine {
     origin: (f64, f64),
     runs: Vec<TextEditRun>,
     layout: TextLineLayout,
+    /// The edited table (its index in the page's table edits), row and
+    /// column it is drawn in; `None` for copied content.
+    cell: Option<(usize, usize, usize)>,
 }
 
 /// The new cell text `tables` draw, laid out at its cells in the edited
@@ -6717,6 +6848,7 @@ fn table_cell_lines(
                     origin,
                     runs,
                     layout,
+                    cell: Some((index, text.row, text.column)),
                 });
             }
         }
@@ -6747,6 +6879,7 @@ fn new_text_line(origin: (f64, f64), runs: &[TextEditRun]) -> PageTextLine {
         read_only: None,
         in_form: false,
         clip_bounds: None,
+        marked_content_ids: Vec::new(),
     }
 }
 

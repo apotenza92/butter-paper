@@ -251,9 +251,29 @@ text edits and applied in the same pass to the unedited file. It records
 the base table's row and column boundaries and its rows and columns as
 edited: each a base band at a size, or a new band like a base one (a row
 dragged to a height also keeps that height as `set_size`), plus new cell
-text. Content outside the table never moves with it. The app now only
-writes base bands at the size their text needs; new, deleted, moved and
-set-height bands are still read and drawn as described here.
+text. Content outside the table never moves with it. The app writes base
+bands at the size their text needs or a column border was dragged to, and
+new rows (a line of their model's text tall, kept as their `set_size` so
+fitting rows to text starts from it) and deleted ones; moved bands are
+still read and drawn as described here.
+
+Tables are found only from the structure tree (`pdf_structure.rs`): the
+page's `/StructParents` entry in `/ParentTree` names the element of each
+marked-content identifier, whose nearest `TD`/`TH`, `TR` (directly or in
+`THead`/`TBody`/`TFoot`) and `Table` ancestors place it, with `/RowSpan`
+and `/ColSpan` from `/Table` attributes and `/RoleMap` applied. Saving an
+edited table keeps the tree true to it:
+
+- New cell text is drawn in `/P <</MCID n>> BDC … EMC`, `n` the page's next
+  free identifier; an `MCR` for it is added to its cell's `/K` and the
+  page's `/ParentTree` array maps `n` to the cell.
+- A new row is a new `TR` of new `TD`s (`TH` where its model row is all
+  header cells), inserted among the page's rows; a new column adds a cell
+  to each row. Deleted rows and columns leave the tree, and the
+  identifiers of their content map to `null`.
+- Rows and columns of a table that continues on another page, or has
+  merged cells, are not changed: the save refuses rather than leave the
+  tree untrue.
 
 - Only the page's own content streams change. A path construction operator
   in the table is rewritten with its points moved. A subpath that runs

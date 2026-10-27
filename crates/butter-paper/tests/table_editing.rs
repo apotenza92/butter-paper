@@ -11,13 +11,14 @@ use butter_paper::document_resource::{
     NativeDocumentResource, OpenedNativeDocument, RasterSurface, ThumbnailSurface,
 };
 use butter_paper::document_workspace::{
-    DocumentId, DocumentWorkspace, document_annotation_layer_id, init_document_workspace_actions,
+    DeleteTableRow, DocumentId, DocumentWorkspace, InsertTableRowBelow,
+    document_annotation_layer_id, init_document_workspace_actions,
 };
 use butter_paper::page_view_control::PageViewMode;
 use butter_paper::pdf_tables::{BandSource, page_tables};
 use butter_paper::pdf_text_edit::{PageTextLayer, TextEditLimits, extract_page_text};
 use butter_paper::pdf_worker::DocumentEdits;
-use gpui::{AppContext as _, Modifiers, TestAppContext, point, px};
+use gpui::{AppContext as _, Modifiers, MouseButton, TestAppContext, point, px};
 use gpui_component::Root;
 
 fn raster(width: u32, height: u32) -> RasterSurface {
@@ -292,6 +293,140 @@ fn typing_in_a_cell_grows_its_row_as_one_undoable_edit(cx: &mut TestAppContext) 
     assert!(snapshot.page_text_edits.is_empty());
     let shown_now = shown.lock().unwrap().last().cloned().unwrap();
     assert!(shown_now.tables.is_empty() && shown_now.text.is_empty());
+}
+
+/// Right-clicks page point `at` and chooses `action` from the page menu.
+fn row_menu_action(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    at: (f64, f64),
+    action: impl gpui::Action,
+) {
+    let at = window_point(cx, document_id, at);
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| {
+        focus.focus(window, cx);
+        window.dispatch_action(action.boxed_clone(), cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    // Choosing an item closes the menu.
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn rows_are_added_and_deleted_from_the_page_menu_as_undoable_edits(cx: &mut TestAppContext) {
+    let layer = chrome_table();
+    let table = page_tables(&layer).remove(0);
+    let washers = line_end(&layer, "Washers");
+    let (workspace, document_id, shown, cx) = table_workspace(cx, layer);
+    row_menu_action(cx, &workspace, document_id, washers, InsertTableRowBelow);
+    let edits = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .page_table_edits
+    });
+    assert_eq!(edits.len(), 1, "{edits:#?}");
+    let rows = &edits[0].rows;
+    assert_eq!(rows.len(), table.row_count() + 1);
+    assert_eq!(rows[3].source, BandSource::New(2));
+    assert!(rows[3].size > 0. && rows[3].size <= table.rows[2] - table.rows[3]);
+    assert_eq!(shown.lock().unwrap().last().unwrap().tables, edits);
+
+    row_menu_action(cx, &workspace, document_id, washers, DeleteTableRow);
+    let rows = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .page_table_edits[0]
+            .rows
+            .clone()
+    });
+    assert_eq!(rows.len(), table.row_count());
+    assert!(!rows.iter().any(|row| row.source == BandSource::Base(2)));
+    for _ in 0..2 {
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.undo_annotations(document_id, cx)
+            })
+            .unwrap();
+    }
+    cx.run_until_parked();
+    let snapshot = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx).unwrap()
+    });
+    assert!(snapshot.page_table_edits.is_empty());
+}
+
+#[gpui::test]
+fn dragging_a_column_border_resizes_its_columns_and_rewraps_their_text(cx: &mut TestAppContext) {
+    let layer = chrome_table();
+    let table = page_tables(&layer).remove(0);
+    let (workspace, document_id, _, cx) = table_workspace(cx, layer);
+    let y = (table.rows[1] + table.rows[2]) / 2.;
+    let from = window_point(cx, document_id, (table.columns[1], y));
+    let to = window_point(cx, document_id, (table.columns[1] - 400., y));
+    // The page's text loads under the pointer.
+    cx.simulate_mouse_move(from, None, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(from, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    for step in 1..=8 {
+        let at = from + (to - from) * (step as f32 / 8.);
+        cx.simulate_mouse_move(at, Some(MouseButton::Left), Modifiers::default());
+    }
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let snapshot = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx).unwrap()
+    });
+    assert_eq!(snapshot.page_table_edits.len(), 1, "{snapshot:#?}");
+    let edit = &snapshot.page_table_edits[0];
+    let width = |index: usize| table.columns[index + 1] - table.columns[index];
+    let narrowed = width(0) - edit.columns[0].size;
+    assert!(narrowed > 100., "{narrowed}");
+    assert!((edit.columns[1].size - width(1) - narrowed).abs() < 1e-6);
+    // "Bolts, M8 zinc-plated" no longer fits on one line: it wraps, and
+    // its row grows to hold it.
+    assert!(
+        snapshot
+            .page_text_edits
+            .iter()
+            .any(|edit| !edit.layout.extra_lines.is_empty()),
+        "{:#?}",
+        snapshot.page_text_edits
+    );
+    assert!(edit.rows[1].size > table.rows[1] - table.rows[2]);
+    // The third column kept its width, and its text as it was.
+    assert!(
+        snapshot
+            .page_text_edits
+            .iter()
+            .all(|edit| (edit.anchor.x_centipoints as f64) / 100. < table.columns[2]),
+        "{:#?}",
+        snapshot.page_text_edits
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(document_id, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let snapshot = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx).unwrap()
+    });
+    assert!(snapshot.page_table_edits.is_empty() && snapshot.page_text_edits.is_empty());
 }
 
 #[gpui::test]

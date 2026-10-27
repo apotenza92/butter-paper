@@ -639,6 +639,10 @@ impl DocumentWorkspace {
             }
             return false;
         }
+        // A table's inner column border, which a drag resizes.
+        if self.begin_column_drag(interaction, point, cx) {
+            return true;
+        }
         // Copies are drawn over the page's own content.
         if let Some(hover) = self.content_copy_at(interaction, point, cx) {
             self.commit_page_text_editing(cx);
@@ -1873,6 +1877,18 @@ impl DocumentWorkspace {
             self.content_hover = None;
             return true;
         }
+        let edge = self
+            .table_column_edge_at(interaction, point, cx)
+            .map(|_| interaction.document_id);
+        if self.column_edge_hover != edge {
+            self.column_edge_hover = edge;
+            cx.notify();
+        }
+        if edge.is_some() {
+            self.page_text_hover = None;
+            self.content_hover = None;
+            return true;
+        }
         // Copies, and the band of a paragraph a table covers, come before
         // the text under them, as a press takes them.
         let on_top = self
@@ -1900,6 +1916,9 @@ impl DocumentWorkspace {
 
     /// The cursor while selected content is dragged.
     pub(super) fn content_drag_cursor(&self, document_id: DocumentId) -> Option<CursorStyle> {
+        if self.column_drag_active(document_id) {
+            return Some(CursorStyle::ResizeColumn);
+        }
         self.content_drag
             .filter(|drag| drag.document_id == document_id && drag.moved && !drag.keyboard)
             .map(|drag| match drag.mode {
@@ -1917,6 +1936,9 @@ impl DocumentWorkspace {
     /// edits, a move cursor where a press selects content to drag, and
     /// not-allowed over text that cannot be edited.
     pub(super) fn content_cursor(&self, document_id: DocumentId) -> Option<CursorStyle> {
+        if self.column_edge_hover == Some(document_id) {
+            return Some(CursorStyle::ResizeColumn);
+        }
         if let Some((hover_document, handle)) = self.content_handle_hover
             && hover_document == document_id
         {

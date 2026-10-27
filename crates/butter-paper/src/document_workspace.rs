@@ -23,6 +23,7 @@ pub use pages::{
     CopyPages, CutPages, DeletePages, DuplicatePages, InsertPageAfter, InsertPageAtEnd,
     InsertPageBefore, PastePages, RotatePagesLeft, RotatePagesRight,
 };
+pub use tables::{DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow};
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
 #[path = "document_workspace_page_scale.rs"]
@@ -2851,6 +2852,12 @@ pub struct DocumentWorkspace {
     content_edit_mode: HashSet<DocumentId>,
     /// The page content selected in Edit PDF mode, and its drag.
     content_selection: Option<content::ContentSelection>,
+    /// The table row a right-click in Edit PDF was on.
+    table_menu_target: Option<tables::TableMenuTarget>,
+    /// A table's inner column border being dragged, and the document whose
+    /// pointer is over one.
+    column_drag: Option<tables::ColumnDrag>,
+    column_edge_hover: Option<DocumentId>,
     content_drag: Option<content::ContentDrag>,
     /// Counts arrow-key moves, so a move ends once none follows it.
     content_nudges: u64,
@@ -4428,6 +4435,9 @@ impl DocumentWorkspace {
             right_rail_overflow_hover: None,
             content_edit_mode: HashSet::new(),
             content_selection: None,
+            table_menu_target: None,
+            column_drag: None,
+            column_edge_hover: None,
             content_drag: None,
             content_nudges: 0,
             thumbnail_refreshes: HashMap::new(),
@@ -19000,7 +19010,8 @@ impl DocumentWorkspace {
             self.pan_drag = None;
             return false;
         }
-        if self.update_content_drag(position, modifiers, cx)
+        if self.update_column_drag(position, cx)
+            || self.update_content_drag(position, modifiers, cx)
             || self.update_page_text_drag(position, cx)
             || self.update_text_selection_drag(position, cx)
         {
@@ -19060,7 +19071,8 @@ impl DocumentWorkspace {
             self.pan_drag = None;
             return true;
         }
-        if self.finish_content_drag(cx)
+        if self.finish_column_drag(cx)
+            || self.finish_content_drag(cx)
             || self.finish_page_text_drag(cx)
             || self.finish_text_selection_drag(cx)
         {
@@ -23085,19 +23097,51 @@ fn annotation_layer(
     if context_control.is_none() {
         return layer.into_any_element();
     }
+    let row_target = context_control.clone();
     layer
+        .on_mouse_down(MouseButton::Right, move |event, _, cx| {
+            if let Some(workspace) = row_target.as_ref().and_then(WeakEntity::upgrade) {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.note_table_menu_target(document_id, page_index, event.position, cx)
+                });
+            }
+        })
         .context_menu(move |menu, _, cx| {
             // Edit PDF as the document is now, as its switch shows it.
-            let (editing_pdf, edit_pdf_available) = context_control
+            let (editing_pdf, edit_pdf_available, table_row) = context_control
                 .as_ref()
                 .and_then(WeakEntity::upgrade)
-                .map_or((false, false), |workspace| {
+                .map_or((false, false, None), |workspace| {
                     let workspace = workspace.read(cx);
                     (
                         workspace.content_edit_mode(document_id),
                         workspace.content_edit_available(document_id, cx),
+                        workspace.table_menu_row(document_id),
                     )
                 });
+            // A table row right-clicked in Edit PDF: its row items first.
+            let menu = match table_row {
+                Some(blocked) => {
+                    let disabled = blocked.is_some();
+                    let menu = menu
+                        .menu_with_disabled(
+                            "Insert Row Above",
+                            Box::new(InsertTableRowAbove),
+                            disabled,
+                        )
+                        .menu_with_disabled(
+                            "Insert Row Below",
+                            Box::new(InsertTableRowBelow),
+                            disabled,
+                        )
+                        .menu_with_disabled("Delete Row", Box::new(DeleteTableRow), disabled);
+                    match blocked {
+                        Some(reason) => menu.label(reason).separator(),
+                        None => menu.separator(),
+                    }
+                }
+                None => menu,
+            };
             menu.menu("Select tool", Box::new(SelectTool))
                 .menu("Hand tool", Box::new(PanTool))
                 .menu_with_check_and_disabled(

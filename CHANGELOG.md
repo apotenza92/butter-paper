@@ -115,6 +115,19 @@ All notable Butter Paper changes are recorded here.
 - Undo works after saving. It did nothing once a document had been saved,
   because the crash-recovery copy refused to go back past the saved state.
 
+### Tables
+
+- Tables are found only where the PDF says it has one (its tags, as Word,
+  Google Docs, LibreOffice and Acrobat write them), never guessed from
+  ruled lines. Text that ran past a cell border, or a table that grew into
+  the text below it, no longer stops a table being a table.
+- Right-click a table cell in Edit PDF to insert a row above or below, or
+  delete the row. Drag a column border to resize the two columns beside
+  it; their text rewraps to fit.
+- Saved tables stay tagged as tables, with new rows, columns and cell text
+  in their right place, so they edit as tables when opened again and
+  screen readers read them as tables.
+
 ### Editing PDFs
 
 - Edit PDF is now a switch at the left of the toolbar above the page (or

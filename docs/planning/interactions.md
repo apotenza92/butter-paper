@@ -210,7 +210,7 @@ in Word.
   Otherwise
   each painted path and each image is its own. A table's rules and fills,
   and a drawing covering most of the page (a background), are not picked:
-  tables change through their grips.
+  tables change through their rows' menu and column borders.
 
 ### Editing page text
 
@@ -306,14 +306,14 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
 
 ### Tables
 
-A ruled grid the page draws (stroked lines or thin filled rectangles, as
-Word, LibreOffice and Chrome draw borders) whose text sits in its cells is a
-table. A missing border merges cells; a line crossing a border, or text
-beside text in one cell, means the grid is not a table of that text, and its
-text edits as ordinary paragraphs. So does a grid with no text in any
-cell: it is a drawing's. A rule that crosses only one other rule, and does
-not reach well past it on both sides, is not a border: a drawing's strokes
-touching a table do not change its grid.
+A table is what the document's structure tree declares (Tagged PDF), and
+nothing else: its cells hold the text drawn in their marked content, so
+text running past a border is still its cell's. A ruled grid with no
+declared table is drawing, and its text edits as ordinary paragraphs, as in
+Acrobat and Revu. A row or column reaches as far as its cells' text; its
+edges sit on the borders the page draws between rows and columns (else
+midway), so a border stays its row's as the row grows. Rows at a page's
+top or bottom whose text is drawn on another page are that page's.
 
 - Each cell's lines group into paragraphs of their own, and a cell's text
   wraps at the cell's width (a single line wraps too, rather than growing).
@@ -338,19 +338,31 @@ touching a table do not change its grid.
   A cell with no text takes typing in its model cell's font, size and place; its text is kept
   with the table and drawn as new text. Inside a table, its cells take a
   press rather than text outside the table that it now covers.
-- Rows and columns are never added, removed, moved or resized by hand,
-  as in Acrobat and Revu: only text changes a table, and a row's height
-  follows its text. Tab and Shift-Tab finish the cell and edit the next
-  or previous one, its text selected; in the last cell (or the first,
-  with Shift) they do nothing, and the cell stays edited.
+- Right-clicking a cell in Edit PDF puts Insert Row Above, Insert Row
+  Below and Delete Row at the top of the page menu. A new row is empty,
+  drawn like the clicked row (its borders and fills) and a line of its
+  text tall; Delete Row takes the row's text with it, and a table keeps
+  its last row. Each is one undo step.
+- A table's inner column border shows the column-resize cursor; dragging
+  it widens one column as it narrows the other, keeping the table's width,
+  and stops where a column's widest word with its cell's gaps no longer
+  fits. On release the two columns' text rewraps at their new widths and
+  rows grow to hold it, as one undo step. Markups and form fields over a
+  border take the press first.
+- A table that continues on another page, or has merged cells, keeps its
+  rows (the menu items are disabled, with the reason); a continuing one
+  keeps its columns too. Tab and Shift-Tab finish the cell and edit the
+  next or previous one, its text selected; in the last cell (or the
+  first, with Shift) they do nothing, and the cell stays edited.
 - Backspace in an empty paragraph continues the paragraph above it in its
   cell (outside tables, the one above it) from its end.
 - The Edit PDF properties show the edited cell's text and paragraph
   settings, as for any paragraph.
 - Each page's part of a table is its own table: nothing joins a table's
   parts across a page break, and nothing moves between pages. A table
-  whose text or drawing a Form XObject draws, or that has text Edit PDF
-  cannot edit, keeps its rows as they are; its cells' text still edits.
+  whose text a Form XObject draws, that has text Edit PDF cannot edit, or
+  a line running across cells, keeps its rows and columns as they are;
+  its cells' text still edits.
 - Undo and redo reach back past a save: a page the save rewrote around its
   tables shows, in earlier states, as the file had it before the save.
 

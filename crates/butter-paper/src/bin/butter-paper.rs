@@ -4495,6 +4495,89 @@ mod review_driver {
                             pause(cx, 50).await;
                         }
                     }
+                    "page-right-click" => {
+                        // page-right-click W PAGE X Y: a right click at a
+                        // point of the active document's page PAGE
+                        // (1-based), in PDF points.
+                        let window = number(1) as usize;
+                        let page_index = number(2) as u32 - 1;
+                        let pdf_point = butter_paper::annotation_model::PdfPoint {
+                            x: f64::from(number(3)),
+                            y: f64::from(number(4)),
+                        };
+                        let position = cx.update(|cx| {
+                            let entry = document_window_entries(cx).into_iter().nth(window)?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let position = workspace.page_point_in_window(
+                                workspace.active_document_id()?,
+                                page_index,
+                                pdf_point,
+                            )?;
+                            Some(script_point(&entry, position, cx))
+                        });
+                        let Some(position) = position else {
+                            writeln!(log, "{line}: page {} is not painted", page_index + 1).unwrap();
+                            continue;
+                        };
+                        dispatch(cx, window, PlatformInput::MouseMove(MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers: Modifiers::default(),
+                        }));
+                        pause(cx, 300).await;
+                        for down in [true, false] {
+                            let event = if down {
+                                PlatformInput::MouseDown(MouseDownEvent {
+                                    button: MouseButton::Right,
+                                    position,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                    first_mouse: false,
+                                })
+                            } else {
+                                PlatformInput::MouseUp(MouseUpEvent {
+                                    button: MouseButton::Right,
+                                    position,
+                                    modifiers: Modifiers::default(),
+                                    click_count: 1,
+                                })
+                            };
+                            dispatch(cx, window, event);
+                            pause(cx, 50).await;
+                        }
+                        pause(cx, 600).await;
+                    }
+                    "dispatch" => {
+                        // dispatch W ACTION: a table row action, as its page
+                        // menu item sends it.
+                        use butter_paper::document_workspace::{
+                            DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow,
+                        };
+                        let action: Box<dyn gpui::Action> = match words[2] {
+                            "insert-row-above" => Box::new(InsertTableRowAbove),
+                            "insert-row-below" => Box::new(InsertTableRowBelow),
+                            "delete-row" => Box::new(DeleteTableRow),
+                            other => {
+                                writeln!(log, "unknown action {other}").unwrap();
+                                continue;
+                            }
+                        };
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(window).cloned()
+                                && let Some(workspace) = entry.workspace.upgrade()
+                            {
+                                let focus = workspace.read(cx).focus_handle();
+                                let _ = entry.handle.update(cx, |_, window, cx| {
+                                    window.close_all_dialogs(cx);
+                                    focus.focus(window, cx);
+                                    window.dispatch_action(action, cx);
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
+                    }
                     "page-drag" => {
                         // page-drag W PAGE X1 Y1 X2 Y2: a left drag between
                         // two points of the active document's page PAGE

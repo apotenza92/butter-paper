@@ -67,6 +67,9 @@ pub struct Paragraph {
     format: ParagraphFormat,
     /// The table cell the paragraph is in.
     cell: Option<crate::pdf_text_blocks::BlockCell>,
+    /// Every line is laid out afresh, though the text is unchanged: its
+    /// cell's width changed.
+    reflow: bool,
 }
 
 /// A line of the wrapped paragraph: its characters, and where it is drawn.
@@ -399,7 +402,15 @@ impl Paragraph {
             breaks,
             format: ParagraphFormat::default(),
             cell: block.cell,
+            reflow: false,
         })
+    }
+
+    /// The paragraph laid out afresh at its edges, for a cell whose column
+    /// was resized.
+    pub fn reflowed(mut self) -> Self {
+        self.reflow = true;
+        self
     }
 
     /// The table cell the paragraph is in.
@@ -697,8 +708,8 @@ impl Paragraph {
         ranges: &[Range<usize>],
     ) -> Result<Vec<WrappedLine>, TextEditError> {
         let count = self.lines.len();
-        // A chosen alignment places every line afresh.
-        let restyled = !self.format.is_default();
+        // A chosen alignment, or a resized cell, places every line afresh.
+        let restyled = !self.format.is_default() || self.reflow;
         let prefix = base
             .iter()
             .zip(text)

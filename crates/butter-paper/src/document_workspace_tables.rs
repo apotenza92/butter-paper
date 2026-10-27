@@ -8,7 +8,413 @@ use crate::pdf_text_blocks::PageTextBlock;
 use crate::pdf_text_edit::{PageTextLayer, TextLineAnchor};
 use crate::table_editing::TableView;
 
+gpui::actions!(
+    document_workspace,
+    [
+        /// Adds an empty row above the table row right-clicked in Edit PDF.
+        InsertTableRowAbove,
+        /// Adds an empty row below the table row right-clicked in Edit PDF.
+        InsertTableRowBelow,
+        /// Deletes the table row right-clicked in Edit PDF, with its text.
+        DeleteTableRow
+    ]
+);
+
+/// The table row a right-click in Edit PDF was on: what the page menu's
+/// row items change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct TableMenuTarget {
+    pub document_id: DocumentId,
+    pub page_index: u32,
+    pub key: TableKey,
+    /// The row in the table as it is shown.
+    pub row: usize,
+}
+
+/// How near a table's inner column border, in pixels, a press drags it.
+const COLUMN_EDGE_PIXELS: f64 = 4.;
+
+/// A table's inner column border being dragged: the table edit it began
+/// with and the edit it shows now.
+#[derive(Clone, Debug)]
+pub(super) struct ColumnDrag {
+    pub document_id: DocumentId,
+    pub page_index: u32,
+    pub key: TableKey,
+    /// The output column edge being moved.
+    pub edge: usize,
+    pub start_x: f64,
+    pub base: crate::pdf_tables::PageTableEdit,
+    pub edit: crate::pdf_tables::PageTableEdit,
+    pub moved: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RowChange {
+    Above,
+    Below,
+    Delete,
+}
+
 impl DocumentWorkspace {
+    /// Notes the table row under a right-click at `position`, in Edit PDF
+    /// mode, for the page menu's row items.
+    pub(super) fn note_table_menu_target(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.table_menu_target = None;
+        if !self.content_edit_mode(document_id) {
+            return;
+        }
+        let Some(interaction) = self
+            .page_interactions
+            .get(&(document_id, page_index))
+            .copied()
+        else {
+            return;
+        };
+        let Some(point) = Self::interaction_point(interaction, position, true) else {
+            return;
+        };
+        let Some((_, _, tables)) = self.loaded_page_text(document_id, page_index) else {
+            return;
+        };
+        let shown = self.shown_page_table_edits(document_id, page_index, cx);
+        for table in tables.iter() {
+            let key = table.key();
+            let view = TableView::new(
+                page_index,
+                table.clone(),
+                shown.iter().find(|edit| edit.key() == key),
+            );
+            if let Some(cell) = view.cell_at(point.x, point.y) {
+                self.table_menu_target = Some(TableMenuTarget {
+                    document_id,
+                    page_index,
+                    key,
+                    row: cell.row,
+                });
+                return;
+            }
+        }
+    }
+
+    /// The right-clicked table row, and why its table's rows cannot change
+    /// if they cannot.
+    pub(super) fn table_menu_row(&self, document_id: DocumentId) -> Option<Option<String>> {
+        let target = self
+            .table_menu_target
+            .filter(|target| target.document_id == document_id)?;
+        let (_, _, tables) = self.loaded_page_text(document_id, target.page_index)?;
+        let table = tables.iter().find(|table| table.key() == target.key)?;
+        Some(crate::table_editing::row_change_blocked(table))
+    }
+
+    pub(super) fn insert_table_row_above_from_action(
+        &mut self,
+        _: &InsertTableRowAbove,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_table_row(RowChange::Above, cx);
+    }
+
+    pub(super) fn insert_table_row_below_from_action(
+        &mut self,
+        _: &InsertTableRowBelow,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_table_row(RowChange::Below, cx);
+    }
+
+    pub(super) fn delete_table_row_from_action(
+        &mut self,
+        _: &DeleteTableRow,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_table_row(RowChange::Delete, cx);
+    }
+
+    /// Adds or deletes the right-clicked row, as one undo step.
+    fn change_table_row(&mut self, change: RowChange, cx: &mut Context<Self>) {
+        let Some(target) = self.table_menu_target.take() else {
+            return;
+        };
+        // Text being typed is kept first, so the row change follows it.
+        self.commit_page_text_editing(cx);
+        let document_id = target.document_id;
+        let Some((layer, _, tables)) = self.loaded_page_text(document_id, target.page_index) else {
+            return;
+        };
+        let Some(table) = tables.iter().find(|table| table.key() == target.key) else {
+            return;
+        };
+        if let Some(reason) = crate::table_editing::row_change_blocked(table) {
+            self.annotation_statuses.insert(document_id, reason);
+            cx.notify();
+            return;
+        }
+        let edit = self.page_table_edit(document_id, target.page_index, target.key, cx);
+        let mut view = TableView::new(target.page_index, table.clone(), edit.as_ref());
+        let changed = match change {
+            RowChange::Above => {
+                crate::table_editing::insert_row(&layer, &mut view, target.row, target.row);
+                true
+            }
+            RowChange::Below => {
+                crate::table_editing::insert_row(&layer, &mut view, target.row + 1, target.row);
+                true
+            }
+            RowChange::Delete => crate::table_editing::delete_row(&mut view, target.row),
+        };
+        if !changed {
+            return;
+        }
+        let page_index = target.page_index;
+        let tables = vec![(target.key, Some(view.edit))];
+        let result = self.update_annotation_history_with_result(
+            document_id,
+            cx,
+            move |annotations, document_id| {
+                annotations.set_document_page_content_edits(
+                    document_id,
+                    page_index,
+                    &[],
+                    Vec::new(),
+                    tables,
+                )
+            },
+        );
+        if let Err(error) = result {
+            self.annotation_statuses
+                .insert(document_id, format!("The table was not changed: {error}"));
+        }
+        self.sync_document_edits(document_id, cx);
+        cx.notify();
+    }
+
+    /// The inner column border of a table near `point`, whose columns can
+    /// be resized: its table and output column edge.
+    pub(super) fn table_column_edge_at(
+        &self,
+        interaction: PageInteraction,
+        point: PdfPoint,
+        cx: &App,
+    ) -> Option<(TableKey, usize)> {
+        let (document_id, page_index) = (interaction.document_id, interaction.page_index);
+        let tolerance = interaction
+            .transform
+            .tolerance_points(COLUMN_EDGE_PIXELS)
+            .ok()?;
+        let (_, _, tables) = self.loaded_page_text(document_id, page_index)?;
+        let shown = self.shown_page_table_edits(document_id, page_index, cx);
+        for table in tables.iter() {
+            if crate::table_editing::column_change_blocked(table).is_some() {
+                continue;
+            }
+            let key = table.key();
+            let view = TableView::new(
+                page_index,
+                table.clone(),
+                shown.iter().find(|edit| edit.key() == key),
+            );
+            let [_, bottom, _, top] = view.bounds();
+            if point.y < bottom || point.y > top {
+                continue;
+            }
+            let columns = view.columns();
+            if let Some(edge) = (1..columns.len().saturating_sub(1))
+                .find(|edge| (point.x - columns[*edge]).abs() <= tolerance)
+            {
+                return Some((key, edge));
+            }
+        }
+        None
+    }
+
+    /// Starts dragging a table's inner column border, if `point` is on one.
+    pub(super) fn begin_column_drag(
+        &mut self,
+        interaction: PageInteraction,
+        point: PdfPoint,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((key, edge)) = self.table_column_edge_at(interaction, point, cx) else {
+            return false;
+        };
+        self.commit_page_text_editing(cx);
+        let (document_id, page_index) = (interaction.document_id, interaction.page_index);
+        let Some((_, _, tables)) = self.loaded_page_text(document_id, page_index) else {
+            return false;
+        };
+        let Some(table) = tables.iter().find(|table| table.key() == key) else {
+            return false;
+        };
+        let edit = self.page_table_edit(document_id, page_index, key, cx);
+        let view = TableView::new(page_index, table.clone(), edit.as_ref());
+        self.column_drag = Some(ColumnDrag {
+            document_id,
+            page_index,
+            key,
+            edge,
+            start_x: point.x,
+            base: view.edit.clone(),
+            edit: view.edit,
+            moved: false,
+        });
+        cx.notify();
+        true
+    }
+
+    /// Moves the dragged column border with the pointer.
+    pub(super) fn update_column_drag(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(drag) = self.column_drag.as_ref() else {
+            return false;
+        };
+        let (document_id, page_index) = (drag.document_id, drag.page_index);
+        let Some(interaction) = self
+            .page_interactions
+            .get(&(document_id, page_index))
+            .copied()
+        else {
+            return true;
+        };
+        let Some(point) = Self::interaction_point(interaction, position, false) else {
+            return true;
+        };
+        let Some((layer, _, tables)) = self.loaded_page_text(document_id, page_index) else {
+            return true;
+        };
+        let Some(drag) = self.column_drag.as_mut() else {
+            return true;
+        };
+        let Some(table) = tables.iter().find(|table| table.key() == drag.key) else {
+            return true;
+        };
+        let mut view = TableView::new(page_index, table.clone(), Some(&drag.base));
+        crate::table_editing::resize_column(&layer, &mut view, drag.edge, point.x - drag.start_x);
+        drag.moved |= view.edit != drag.edit;
+        drag.edit = view.edit;
+        self.sync_document_edits(document_id, cx);
+        cx.notify();
+        true
+    }
+
+    /// Ends a column border drag: the two columns' text rewraps at their
+    /// new widths and rows grow to hold it, as one undo step.
+    pub(super) fn finish_column_drag(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(drag) = self.column_drag.take() else {
+            return false;
+        };
+        if drag.moved {
+            self.commit_table_rewrapped(drag.document_id, drag.page_index, drag.key, drag.edit, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    /// The dragged column border's table edit, shown while it is dragged.
+    pub(super) fn column_drag_edit(
+        &self,
+        document_id: DocumentId,
+    ) -> Option<crate::pdf_tables::PageTableEdit> {
+        self.column_drag
+            .as_ref()
+            .filter(|drag| drag.document_id == document_id)
+            .map(|drag| drag.edit.clone())
+    }
+
+    pub(super) fn column_drag_active(&self, document_id: DocumentId) -> bool {
+        self.column_drag
+            .as_ref()
+            .is_some_and(|drag| drag.document_id == document_id)
+    }
+
+    /// Keeps table `key`'s `edit` with its cells' paragraphs wrapped at
+    /// their columns' widths and its rows tall enough for them.
+    fn commit_table_rewrapped(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        key: TableKey,
+        edit: crate::pdf_tables::PageTableEdit,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((layer, blocks, tables)) = self.loaded_page_text(document_id, page_index) else {
+            return;
+        };
+        let Some(table) = tables.iter().find(|table| table.key() == key) else {
+            return;
+        };
+        let mut view = TableView::new(page_index, table.clone(), Some(&edit));
+        let before = self.page_table_edit(document_id, page_index, key, cx);
+        let before = TableView::new(page_index, table.clone(), before.as_ref());
+        let mut anchors = Vec::new();
+        let mut edits = Vec::new();
+        for block in blocks.iter() {
+            // Only cells whose width changed reflow; others keep their text.
+            let Some(cell) = block.cell.filter(|cell| cell.table == key) else {
+                continue;
+            };
+            let growth = crate::table_editing::cell_growth(&view, cell.cell);
+            if (growth - crate::table_editing::cell_growth(&before, cell.cell)).abs() < 1e-6 {
+                continue;
+            }
+            let mut block = block.clone();
+            if let Some(cell) = block.cell.as_mut() {
+                cell.right += growth;
+            }
+            let Some(paragraph) = crate::pdf_text_reflow::Paragraph::new(layer.clone(), &block)
+                .map(crate::pdf_text_reflow::Paragraph::reflowed)
+            else {
+                continue;
+            };
+            let Ok(state) =
+                self.paragraph_edit_state(document_id, page_index, paragraph, &block, None, cx)
+            else {
+                continue;
+            };
+            anchors.extend(block.lines.iter().copied());
+            edits.extend(state.edits());
+        }
+        let mut shown = self
+            .page_text_edits_of(document_id, cx)
+            .into_iter()
+            .filter(|edit| edit.page_index == page_index && !anchors.contains(&edit.anchor))
+            .collect::<Vec<_>>();
+        shown.extend(edits.iter().cloned());
+        crate::table_editing::fit_rows(&layer, &mut view, &shown);
+        let tables = vec![(key, Some(view.edit))];
+        let result = self.update_annotation_history_with_result(
+            document_id,
+            cx,
+            move |annotations, document_id| {
+                annotations.set_document_page_content_edits(
+                    document_id,
+                    page_index,
+                    &anchors,
+                    edits,
+                    tables,
+                )
+            },
+        );
+        if let Err(error) = result {
+            self.annotation_statuses
+                .insert(document_id, format!("The table was not changed: {error}"));
+        }
+        self.sync_document_edits(document_id, cx);
+    }
+
     /// The table `key` on a loaded page, as the document edits it.
     pub(super) fn page_table_view(
         &self,
