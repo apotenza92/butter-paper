@@ -519,8 +519,9 @@ fn tab_moves_between_cells_and_stays_in_the_last(cx: &mut TestAppContext) {
     assert_eq!(price.text(), "$88.00!");
 }
 
-/// A table grown into the paragraph below it says so in a label, rather
-/// than being outlined; the paragraph stays where it is.
+/// A table grown into the paragraph below it says so in a label under
+/// that paragraph, rather than being outlined; the paragraph stays where
+/// it is.
 #[gpui::test]
 fn a_table_grown_into_the_text_below_is_labelled(cx: &mut TestAppContext) {
     let layer = chrome_table();
@@ -529,7 +530,7 @@ fn a_table_grown_into_the_text_below_is_labelled(cx: &mut TestAppContext) {
         &layer,
         "Delivery is expected within two weeks of the order date.",
     );
-    let (workspace, document_id, shown, cx) = table_workspace(cx, layer);
+    let (workspace, document_id, shown, cx) = table_workspace(cx, layer.clone());
     // Laid out as pages, which the labels are drawn over.
     workspace.update(cx, |workspace, cx| {
         workspace
@@ -538,16 +539,27 @@ fn a_table_grown_into_the_text_below_is_labelled(cx: &mut TestAppContext) {
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    // Whether the label shows, under the table's bottom as shown now.
+    // Whether the label shows, under the text the table covers, at its
+    // left edge.
+    let delivery_line = layer
+        .lines
+        .iter()
+        .find(|line| line.text.trim().starts_with("Delivery is expected"))
+        .unwrap()
+        .clone();
     let label = |cx: &mut gpui::VisualTestContext| {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let bounds = cx.debug_bounds("content-warning-Overlaps")?;
-        let live = shown.lock().unwrap().last().cloned().unwrap();
-        let rows = live.tables.first()?.output_rows();
-        let bottom = window_point(cx, document_id, (100., *rows.last()?));
+        let _ = &shown;
+        let (left, baseline) = delivery_line.origin();
+        let under = window_point(cx, document_id, (left, baseline));
         assert!(
-            bounds.top() >= bottom.y,
-            "the label {bounds:?} is under the table's bottom {bottom:?}"
+            bounds.top() >= under.y && bounds.top() <= under.y + px(30.),
+            "the label {bounds:?} is just under the covered text {under:?}"
+        );
+        assert!(
+            (bounds.left() - under.x).abs() < px(8.),
+            "the label {bounds:?} is at the covered text's left {under:?}"
         );
         Some(bounds)
     };
@@ -590,6 +602,40 @@ fn a_table_grown_into_the_text_below_is_labelled(cx: &mut TestAppContext) {
         label(cx).is_none(),
         "moved out of the way, nothing is overlapped"
     );
+}
+
+/// Text the page always drew inside a table, which no cell's tags hold,
+/// is not text an edited table runs into.
+#[gpui::test]
+fn text_drawn_inside_a_table_is_not_overlapped_by_its_edits(cx: &mut TestAppContext) {
+    let mut layer = chrome_table();
+    let quantity = layer
+        .lines
+        .iter_mut()
+        .find(|line| line.text.trim() == "200")
+        .unwrap();
+    quantity.marked_content_ids.clear();
+    quantity.paragraph = None;
+    let washers = line_end(&layer, "Washers");
+    let (workspace, document_id, shown, cx) = table_workspace(cx, layer);
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .refresh_viewport_async(document_id, 900., 1000., 1., cx)
+            .unwrap();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    click_page_point(cx, document_id, washers);
+    type_text(
+        cx,
+        " and spring washers in assorted sizes for the site works",
+    );
+    assert!(
+        !shown.lock().unwrap().last().unwrap().tables.is_empty(),
+        "the table grows"
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("content-warning-Overlaps").is_none());
 }
 
 #[path = "support/table_pages.rs"]

@@ -1093,19 +1093,8 @@ impl DocumentWorkspace {
 
     /// Whether the page draws `line` inside one of its tables.
     fn drawn_inside_a_table(&self, interaction: PageInteraction, line: &PageTextLine) -> bool {
-        let Some((_, _, tables)) =
-            self.loaded_page_text(interaction.document_id, interaction.page_index)
-        else {
-            return false;
-        };
-        let Some([left, bottom, right, top]) = crate::pdf_tables::line_core_box(line) else {
-            return false;
-        };
-        let (x, y) = ((left + right) / 2., (bottom + top) / 2.);
-        tables.iter().any(|table| {
-            let [left, bottom, right, top] = table.bounds();
-            (left..=right).contains(&x) && (bottom..=top).contains(&y)
-        })
+        self.loaded_page_text(interaction.document_id, interaction.page_index)
+            .is_some_and(|(_, _, tables)| tables.iter().any(|table| table.draws_inside(line)))
     }
 
     /// The table cell a hit paragraph is in, in the table as it is shown.
@@ -1159,11 +1148,14 @@ impl DocumentWorkspace {
         let view = crate::table_editing::TableView::new(page_index, table.clone(), Some(&edit));
         let shown = view.bounds();
         let past_page = layer.page_box.is_some_and(|page| shown[1] < page[1] - 0.5);
+        // The table's own text, and text the page always drew inside it,
+        // which no cell's tags hold, is not run into.
         let in_table = |line: &PageTextLine| {
-            table
-                .cells
-                .iter()
-                .any(|cell| cell.lines.contains(&line.anchor))
+            table.draws_inside(line)
+                || table
+                    .cells
+                    .iter()
+                    .any(|cell| cell.lines.contains(&line.anchor))
         };
         // Text that is not the table's, where table edits and moves by
         // hand leave it, under the table as edited.

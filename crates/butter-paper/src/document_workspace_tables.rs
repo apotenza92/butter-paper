@@ -556,8 +556,9 @@ impl WarningColors {
 const WARNING_LABEL_GAP_PX: f32 = 4.;
 const WARNING_LABEL_ROOM_PX: f32 = 30.;
 
-/// A label under content that runs into other text or off the page, at
-/// its left edge, so the page shows what is wrong without outlining it.
+/// A label for content that runs into other text or off the page, so the
+/// page shows what is wrong without outlining it: under the text it runs
+/// into, at that text's left edge, or under content that runs off the page.
 /// It takes no presses: the page under it edits as before.
 pub(super) fn content_warning_label(
     warning: ContentWarning,
@@ -573,7 +574,24 @@ pub(super) fn content_warning_label(
         contained_page_bounds_for_space(layer_bounds, page_size, coordinate_space)?;
     // Page points as fractions of the page layer, which is drawn scaled.
     let kind = warning.kind;
-    let [left, bottom, right, top] = warning.bounds;
+    // Under what is wrong: the text it runs into, or its own bottom edge.
+    let anchor = match kind {
+        ContentWarningKind::Overlaps => warning
+            .overlapped
+            .iter()
+            .copied()
+            .reduce(|a, b| {
+                [
+                    a[0].min(b[0]),
+                    a[1].min(b[1]),
+                    a[2].max(b[2]),
+                    a[3].max(b[3]),
+                ]
+            })
+            .unwrap_or(warning.bounds),
+        ContentWarningKind::PastPage => warning.bounds,
+    };
+    let [left, bottom, right, top] = anchor;
     let corners = [(left, bottom), (right, bottom), (left, top), (right, top)].map(|(x, y)| {
         let local = transform.point_to_local_pixels(PdfPoint { x, y });
         (

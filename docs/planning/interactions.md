@@ -329,11 +329,13 @@ top or bottom whose text is drawn on another page are that page's.
   finished edit and its table are one undo step. Removing lines shortens
   a row as adding lines lengthens it, keeping any room it had to spare.
 - Content outside a table never moves with it: in Edit PDF, a table that
-  grows into other text, or past the page's bottom edge, shows a label
-  under its left edge ("Overlaps other text" or "Runs off the bottom of
-  the page"; just inside the page's bottom when there is no room below),
-  and each line of text it covers is framed in the warning colour, where
-  it is drawn; that text is moved by hand, and the frames and label go
+  grows into other text, or past the page's bottom edge, shows a label:
+  "Overlaps other text" under the left edge of the text it covers, or
+  "Runs off the bottom of the page" under its own left edge (just inside
+  the page's bottom when there is no room below). Each line of text it
+  covers is framed in the warning colour, where it is drawn; text the page
+  already drew inside the table is not covered, whether or not a cell's
+  tags hold it; that text is moved by hand, and the frames and label go
   once nothing is covered. An edited paragraph that does so shows the
   same while it is edited. The label takes no presses. The band round a
   covered paragraph still drags it where it lies inside the table (the

@@ -255,6 +255,18 @@ impl PageTable {
             (0..self.row_count()).find(|row| y <= self.rows[*row] && y >= self.rows[row + 1])?;
         self.cell_at_unit(row, column)
     }
+
+    /// Whether the page draws `line` inside the table, as it was: the
+    /// middle of its letters within the table's bounds, whether or not a
+    /// cell's tags hold it.
+    pub fn draws_inside(&self, line: &PageTextLine) -> bool {
+        let Some([left, bottom, right, top]) = line_core_box(line) else {
+            return false;
+        };
+        let (x, y) = ((left + right) / 2., (bottom + top) / 2.);
+        let [table_left, table_bottom, table_right, table_top] = self.bounds();
+        (table_left..=table_right).contains(&x) && (table_bottom..=table_top).contains(&y)
+    }
 }
 
 /// A line's visible box in page space: left, bottom, right, top; `None`
