@@ -1272,3 +1272,126 @@ fn real_component_manager_renders_dynamic_rows_validation_and_create_flow(cx: &m
         "custom-native-1",
     );
 }
+
+// The application window's composition: Root's dialog layer over the document,
+// and lost focus restored as the application restores it.
+struct TemplateFocusShell {
+    manager: Entity<TemplateManagerView>,
+    document: FocusHandle,
+    _focus_lost: gpui::Subscription,
+}
+
+impl Render for TemplateFocusShell {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui::ParentElement as _;
+        let _keep_manager_alive = &self.manager;
+        let dialogs = Root::render_dialog_layer(window, cx);
+        div()
+            .id("template-focus-document")
+            .size_full()
+            .track_focus(&self.document)
+            .children(dialogs)
+    }
+}
+
+#[gpui::test]
+fn removing_a_template_by_keyboard_keeps_focus_in_the_manager(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let slot = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let manager = cx.new(|cx| {
+                TemplateManagerView::new(
+                    TemplateManagerModel::new(
+                        vec![
+                            TemplateManagerRecord::built_in(
+                                "built-in-blank",
+                                "Blank Paper",
+                                "A3 · Landscape",
+                            ),
+                            TemplateManagerRecord::generated(
+                                "custom-grid",
+                                "Site Grid",
+                                "A3 · Landscape · Square grid",
+                                square_grid_request(),
+                            ),
+                        ],
+                        "custom-grid",
+                    )
+                    .unwrap(),
+                    window,
+                    cx,
+                )
+            });
+            let document = cx.focus_handle();
+            slot.replace(Some((manager.clone(), document.clone())));
+            let shell = cx.new(|cx| TemplateFocusShell {
+                manager,
+                document,
+                _focus_lost: cx.on_focus_lost(
+                    window,
+                    |shell: &mut TemplateFocusShell, window, cx| {
+                        butter_paper::application_shell::restore_lost_focus(
+                            &shell.document,
+                            window,
+                            cx,
+                        );
+                    },
+                ),
+            });
+            Root::new(shell, window, cx)
+        }
+    });
+    let (manager, document) = slot.borrow().clone().unwrap();
+    let settle = |cx: &mut gpui::VisualTestContext| {
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.executor().advance_clock(Duration::from_millis(300));
+            cx.run_until_parked();
+        }
+    };
+    let press_space = |cx: &mut gpui::VisualTestContext| {
+        let space = gpui::Keystroke::parse("space").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: space.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke: space });
+    };
+    cx.update(|window, cx| {
+        document.focus(window, cx);
+        TemplateManagerView::open_dialog(&manager, window, cx);
+    });
+    settle(cx);
+    // Tab reaches Site Grid's Remove button; Space presses it and Enter
+    // confirms the removal, which takes the focused button away with its row.
+    cx.simulate_keystrokes("tab tab");
+    settle(cx);
+    press_space(cx);
+    settle(cx);
+    cx.simulate_keystrokes("enter");
+    settle(cx);
+    assert!(manager.read_with(cx, |manager, _| {
+        !manager
+            .model()
+            .records()
+            .iter()
+            .any(|record| record.id() == "custom-grid")
+    }));
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "the manager stays open"
+    );
+    assert!(
+        !cx.update(|window, _| document.is_focused(window)),
+        "focus stays in the manager, not the document behind it"
+    );
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Escape still closes the manager"
+    );
+}

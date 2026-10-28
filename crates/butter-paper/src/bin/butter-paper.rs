@@ -326,15 +326,9 @@ impl ComponentStory {
                 });
                 window.refresh();
             });
-        // When the focused element goes away (a closed popover, panel or tab)
-        // GPUI leaves nothing focused, and the document's single-key shortcuts
-        // would stay dead until the next page press. Return focus to it.
         let focus_lost_subscription = cx.on_focus_lost(window, |story, window, cx| {
-            story
-                .document_workspace
-                .read(cx)
-                .focus_handle()
-                .focus(window, cx);
+            let document = story.document_workspace.read(cx).focus_handle();
+            butter_paper::application_shell::restore_lost_focus(&document, window, cx);
         });
         let menu_bar_visible = !menu_bar_visibility_supported
             || shared_application(cx).preferences.get().menu_bar_visible();
@@ -3990,6 +3984,13 @@ mod review_driver {
                 match words[0] {
                     "toggle-menu-bar" => {
                         cx.update(|cx| cx.dispatch_action(&ToggleApplicationMenuBar));
+                        pause(cx, 800).await;
+                    }
+                    "merge-documents" => {
+                        // As File ▸ Merge Documents… sends it.
+                        cx.update(|cx| {
+                            cx.dispatch_action(&butter_paper::document_workspace::MergeDocuments)
+                        });
                         pause(cx, 800).await;
                     }
                     "convert-to-word" => {

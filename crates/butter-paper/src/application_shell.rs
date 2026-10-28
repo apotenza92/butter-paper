@@ -32,6 +32,31 @@ pub fn focus_initial_command_context(focus: &gpui::FocusHandle, window: &mut gpu
     window.on_next_frame(move |window, cx| focus.focus(window, cx));
 }
 
+/// Where focus goes when the focused element goes away (a closed popover,
+/// panel or tab) and GPUI leaves nothing focused: back to the document, so its
+/// single-key shortcuts keep working. While a dialog is open focus stays in
+/// it: on the nearest part still shown (a removed row's button gives way to
+/// its list), or else on the dialog itself (a closed confirmation's button
+/// that was removed). Sent to the document behind, the dialog's Cancel,
+/// Escape and Tab would no longer reach it.
+pub fn restore_lost_focus(
+    document: &gpui::FocusHandle,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) {
+    use gpui_component::WindowExt as _;
+    if window.has_active_dialog(cx) {
+        match window.focus_lost_restore_target(cx) {
+            Some(target) if !target.contains(document, window) => target.focus(window, cx),
+            _ => {
+                window.focus_active_dialog(cx);
+            }
+        }
+        return;
+    }
+    document.focus(window, cx);
+}
+
 gpui::actions!(
     application_shell,
     [

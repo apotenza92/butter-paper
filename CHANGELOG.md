@@ -4,6 +4,13 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Dialogs
+
+- Removing a PDF from Merge Documents, or a template from the Template
+  Library, with the keyboard no longer moves focus to the document behind the
+  dialog, where Cancel, Escape and Tab stopped reaching the dialog. The same
+  holds in any dialog whose focused control goes away.
+
 ### Look
 
 - A new icon: a folded paper butterfly, butter yellow for the stable app and

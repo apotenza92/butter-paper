@@ -623,3 +623,269 @@ fn merge_documents_lists_open_and_dropped_pdfs_and_merges_them_in_order(cx: &mut
     assert_eq!(merged, pages, "every page of every document");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[gpui::test]
+fn merge_documents_cancel_closes_the_dialog(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_MERGE_CANCEL_ID;
+    use butter_paper::generated_document::GeneratedDocumentStore;
+    use gpui_component::WindowExt as _;
+    use std::time::Duration;
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.join(format!(
+        "target/test-scratch/merge-cancel-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let store = GeneratedDocumentStore::new(root.join("generated")).unwrap();
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| {
+                DocumentWorkspace::with_opener_and_generated_store(
+                    Arc::new(CountingOpener),
+                    store,
+                    cx,
+                )
+            });
+            workspace_slot.replace(Some(workspace.clone()));
+            let shell = cx.new(|_| MergeModalShell(workspace));
+            Root::new(shell, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let ids = ["bp-multi-page-v1.pdf", "bp-annotation-all-v1.pdf"].map(|name| {
+        let file = manifest.join("tests/fixtures").join(name);
+        workspace.update(cx, |workspace, cx| workspace.open_path(file, cx))
+    });
+    cx.run_until_parked();
+    let settle = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+    };
+    // Opened as File ▸ Merge Documents… and a tab's menu open it: on the
+    // next frame.
+    workspace.update(cx, |workspace, cx| workspace.request_merge_dialog(cx));
+    settle(cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    let cancel = cx.debug_bounds(DOCUMENT_MERGE_CANCEL_ID).unwrap();
+    cx.simulate_click(cancel.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Cancel closes Merge Documents"
+    );
+    // File ▸ Merge Documents… dispatches the action to the focused workspace.
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| {
+        window.activate_window();
+        workspace_focus.focus(window, cx);
+    });
+    settle(cx);
+    cx.dispatch_action(butter_paper::document_workspace::MergeDocuments);
+    settle(cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    let check = cx.debug_bounds("document-merge-check-0").unwrap();
+    cx.simulate_click(check.center(), gpui::Modifiers::none());
+    settle(cx);
+    let cancel = cx.debug_bounds(DOCUMENT_MERGE_CANCEL_ID).unwrap();
+    cx.simulate_click(cancel.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Cancel closes Merge Documents opened from the menu, after ticking a row"
+    );
+    // A tab's menu: right-click the tab, choose Merge Documents….
+    let tab_id = butter_paper::document_workspace::document_session_tab_id(ids[0]);
+    let tab = cx.debug_bounds(tab_id.leak()).unwrap();
+    let press = gpui::point(tab.left() + gpui::px(6.), tab.center().y);
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Right,
+        position: press,
+        modifiers: gpui::Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Right,
+        position: press,
+        modifiers: gpui::Modifiers::none(),
+        click_count: 1,
+    });
+    settle(cx);
+    eprintln!(
+        "PROBE menu open, dialog? {}",
+        cx.update(|window, cx| window.has_active_dialog(cx))
+    );
+    // The menu's only item sits just below and right of the press.
+    let item = gpui::point(press.x + gpui::px(40.), press.y + gpui::px(16.));
+    cx.simulate_click(item, gpui::Modifiers::none());
+    settle(cx);
+    assert!(
+        cx.update(|window, cx| window.has_active_dialog(cx)),
+        "the tab menu opens Merge Documents"
+    );
+    let cancel = cx.debug_bounds(DOCUMENT_MERGE_CANCEL_ID).unwrap();
+    cx.simulate_click(cancel.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Cancel closes Merge Documents opened from a tab's menu"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// Root holds the open dialogs; like the application's window, the test window
+// paints that layer so the stock dialog controls can be clicked.
+struct MergeModalShell(gpui::Entity<DocumentWorkspace>);
+impl gpui::Render for MergeModalShell {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        let dialogs = Root::render_dialog_layer(window, cx);
+        gpui::div()
+            .size_full()
+            .child(self.0.clone())
+            .children(dialogs)
+    }
+}
+
+#[gpui::test]
+fn merge_documents_keeps_focus_when_a_focused_row_is_removed(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_MERGE_CANCEL_ID;
+    use butter_paper::generated_document::GeneratedDocumentStore;
+    use gpui_component::WindowExt as _;
+    use std::time::Duration;
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.join(format!(
+        "target/test-scratch/merge-focus-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let store = GeneratedDocumentStore::new(root.join("generated")).unwrap();
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| {
+                DocumentWorkspace::with_opener_and_generated_store(
+                    Arc::new(CountingOpener),
+                    store,
+                    cx,
+                )
+            });
+            workspace_slot.replace(Some(workspace.clone()));
+            let shell = cx.new(|cx| MergeFocusShell::new(workspace, window, cx));
+            Root::new(shell, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    for name in ["bp-multi-page-v1.pdf", "bp-annotation-all-v1.pdf"] {
+        let file = manifest.join("tests/fixtures").join(name);
+        workspace.update(cx, |workspace, cx| workspace.open_path(file, cx));
+    }
+    cx.run_until_parked();
+    let settle = |cx: &mut gpui::VisualTestContext| {
+        for _ in 0..3 {
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            cx.executor().advance_clock(Duration::from_millis(300));
+            cx.run_until_parked();
+        }
+    };
+    workspace.update(cx, |workspace, cx| workspace.request_merge_dialog(cx));
+    settle(cx);
+    let dialog = workspace
+        .read_with(cx, |workspace, _| workspace.merge_dialog())
+        .unwrap();
+    let added = manifest.join("tests/fixtures/bp-coordinate-space-v1.pdf");
+    dialog.update(cx, |dialog, cx| dialog.add_paths(vec![added], cx));
+    settle(cx);
+    // Keyboard users reach the added row's remove button with Tab and press
+    // it; the button goes with its row.
+    cx.simulate_keystrokes("tab tab tab tab");
+    settle(cx);
+    let space = gpui::Keystroke::parse("space").unwrap();
+    cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: space.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    cx.simulate_event(gpui::KeyUpEvent { keystroke: space });
+    settle(cx);
+    assert_eq!(
+        dialog.read_with(cx, |dialog, _| dialog.chosen().len()),
+        2,
+        "the added row is removed"
+    );
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    assert!(
+        !cx.update(|window, cx| workspace_focus.contains_focused(window, cx)),
+        "focus stays in the dialog, not the document behind it"
+    );
+    let cancel = cx.debug_bounds(DOCUMENT_MERGE_CANCEL_ID).unwrap();
+    cx.simulate_click(cancel.center(), gpui::Modifiers::none());
+    settle(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "Cancel still closes the dialog"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// The application window's composition: Root's dialog layer painted over the
+// workspace, and lost focus restored as the application restores it.
+struct MergeFocusShell {
+    workspace: gpui::Entity<DocumentWorkspace>,
+    _focus_lost: gpui::Subscription,
+}
+impl MergeFocusShell {
+    fn new(
+        workspace: gpui::Entity<DocumentWorkspace>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> Self {
+        let focus_lost = cx.on_focus_lost(window, |shell, window, cx| {
+            let document = shell.workspace.read(cx).focus_handle();
+            butter_paper::application_shell::restore_lost_focus(&document, window, cx);
+        });
+        Self {
+            workspace,
+            _focus_lost: focus_lost,
+        }
+    }
+}
+impl gpui::Render for MergeFocusShell {
+    fn render(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        let dialogs = Root::render_dialog_layer(window, cx);
+        gpui::div()
+            .size_full()
+            .child(self.workspace.clone())
+            .children(dialogs)
+    }
+}
