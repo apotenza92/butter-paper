@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.3]
+
 ### Dialogs
 
 - Removing a PDF from Merge Documents, or a template from the Template
