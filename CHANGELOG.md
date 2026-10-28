@@ -4,6 +4,15 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.2]
+
+### Tables
+
+- Text drawn inside a table that isn't part of any of its cells no longer
+  makes editing the table warn "Overlaps other text" and frame that text.
+- The "Overlaps other text" label sits under the text that is covered,
+  instead of under the table.
+
 ## [0.3.1]
 
 ### Tables
