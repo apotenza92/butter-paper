@@ -242,8 +242,9 @@ fn both_workspace_tab_paths_use_stock_outline_without_visual_overrides() {
 #[test]
 fn close_controls_overlay_naturally_sized_labels_without_a_reserved_suffix() {
     let source = workspace_source();
-    assert_eq!(count(r"\.child\(\s*session_tab_close_lane\(\)", &source), 2);
-    assert_eq!(count(r"\.child\(session_tab_overlay_label\(", &source), 2);
+    // The document strip, the blank workspace's strip and its New Tab.
+    assert_eq!(count(r"\.child\(\s*session_tab_close_lane\(\)", &source), 3);
+    assert_eq!(count(r"\.child\(session_tab_overlay_label\(", &source), 3);
     let label = between(
         &source,
         "fn session_tab_overlay_label",
@@ -267,7 +268,8 @@ fn close_affordances_reveal_on_tab_hover_and_keyboard_focus_without_removing_lay
             r"\.opacity\(if reveal_close \{ 1\. \} else \{ 0\. \}\)\s*\.focus\(\|style\| style\.opacity\(1\.\)\)",
             &source
         ),
-        2
+        // Document tabs in both strips, and the New Tab.
+        3
     );
 }
 

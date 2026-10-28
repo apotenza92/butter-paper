@@ -19,14 +19,25 @@ use crate::{
 };
 
 pub const BUILT_IN_BLANK_ID: &str = "built-in-blank";
-pub const BUILT_IN_TEMPLATE_IDS: [&str; 6] = [
+/// Built-in templates: each paper at A3 landscape, then at A4 portrait. The A3
+/// identifiers predate the A4 set and stay unsuffixed because stored
+/// libraries and last-used selections refer to them.
+pub const BUILT_IN_TEMPLATE_IDS: [&str; 12] = [
     BUILT_IN_BLANK_ID,
     "built-in-dots",
     "built-in-grid",
     "built-in-lined",
     "built-in-isometric",
     "built-in-triangle",
+    "built-in-blank-a4",
+    "built-in-dots-a4",
+    "built-in-grid-a4",
+    "built-in-lined-a4",
+    "built-in-isometric-a4",
+    "built-in-triangle-a4",
 ];
+/// Suffix of the A4 portrait built-in identifiers.
+pub const BUILT_IN_A4_SUFFIX: &str = "-a4";
 const INDEX_VERSION: u32 = 1;
 pub(crate) const INDEX_FILE: &str = "library.json";
 pub(crate) const SENTINEL_FILE: &str = ".butter-paper-template-library-v1";
@@ -282,6 +293,28 @@ impl TemplateLibrary {
         Ok(())
     }
 
+    /// Where an imported template's managed source is, without reading it
+    /// to verify its checksum: for previews, which must not hold the library
+    /// while a large source is hashed.
+    pub fn unverified_managed_source_path(
+        &self,
+        id: &str,
+    ) -> Result<PathBuf, TemplateLibraryError> {
+        validate_imported_id(id)?;
+        if !self
+            .records
+            .iter()
+            .any(|record| matches!(record, TemplateRecord::ImportedPdf { .. }) && record.id() == id)
+        {
+            return Err(TemplateLibraryError(
+                "the PDF template no longer exists".into(),
+            ));
+        }
+        let path = self.root.join(id).join(SOURCE_FILE);
+        reject_symlink(&path, "managed template source")?;
+        Ok(path)
+    }
+
     pub fn managed_source_path(&self, id: &str) -> Result<PathBuf, TemplateLibraryError> {
         validate_imported_id(id)?;
         let Some(TemplateRecord::ImportedPdf { sha256, .. }) =
@@ -433,7 +466,14 @@ impl Default for StoredIndex {
 }
 
 pub fn built_in_request(id: &str) -> Option<GeneratedDocumentRequest> {
-    let pattern = match id {
+    if !BUILT_IN_TEMPLATE_IDS.contains(&id) {
+        return None;
+    }
+    let (base, (width_mm, height_mm)) = match id.strip_suffix(BUILT_IN_A4_SUFFIX) {
+        Some(base) => (base, (210., 297.)),
+        None => (id, (420., 297.)),
+    };
+    let pattern = match base {
         BUILT_IN_BLANK_ID => None,
         "built-in-dots" => Some(GeneratedPattern::Dots {
             spacing_mm: 10.,
@@ -459,8 +499,8 @@ pub fn built_in_request(id: &str) -> Option<GeneratedDocumentRequest> {
     };
     Some(GeneratedDocumentRequest {
         title: "Untitled".into(),
-        width_mm: 420.,
-        height_mm: 297.,
+        width_mm,
+        height_mm,
         pattern,
     })
 }
@@ -771,5 +811,65 @@ impl From<GeneratedDocumentError> for TemplateLibraryError {
 impl From<crate::pdf_engine::PdfPersistenceError> for TemplateLibraryError {
     fn from(error: crate::pdf_engine::PdfPersistenceError) -> Self {
         Self(error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "target/test-scratch/template-library-{label}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn every_built_in_has_an_a4_portrait_twin_with_the_same_pattern() {
+        let (a3, a4) = BUILT_IN_TEMPLATE_IDS.split_at(6);
+        for (a3_id, a4_id) in a3.iter().zip(a4) {
+            assert_eq!(*a4_id, format!("{a3_id}{BUILT_IN_A4_SUFFIX}"));
+            let a3_request = built_in_request(a3_id).unwrap();
+            let a4_request = built_in_request(a4_id).unwrap();
+            assert_eq!((a3_request.width_mm, a3_request.height_mm), (420., 297.));
+            assert_eq!((a4_request.width_mm, a4_request.height_mm), (210., 297.));
+            assert_eq!(a3_request.pattern, a4_request.pattern, "{a4_id}");
+            let pdf = String::from_utf8_lossy(&a4_request.to_pdf_bytes().unwrap()).into_owned();
+            assert!(
+                pdf.contains("/MediaBox [0 0 595.2756 841.8898]"),
+                "{a4_id} generates an A4 portrait page"
+            );
+        }
+        assert!(built_in_request("built-in-unknown-a4").is_none());
+        assert!(built_in_request("built-in-blank-a3").is_none());
+    }
+
+    #[test]
+    fn a4_built_ins_are_selectable_reserved_and_migrated_from_legacy_settings() {
+        let root = scratch("a4");
+        let mut library = TemplateLibrary::open(root.clone()).unwrap();
+        library.select("built-in-dots-a4").unwrap();
+        assert!(
+            library
+                .add_generated(
+                    "built-in-grid-a4",
+                    "Clash",
+                    built_in_request("built-in-grid-a4").unwrap()
+                )
+                .is_err()
+        );
+        drop(library);
+        let mut library = TemplateLibrary::open(root.clone()).unwrap();
+        assert_eq!(library.last_template_id(), "built-in-dots-a4");
+        // A legacy A4 portrait grid default maps onto its built-in, not a copy.
+        library
+            .migrate_legacy_blank_request(built_in_request("built-in-grid-a4"))
+            .unwrap();
+        assert_eq!(library.last_template_id(), "built-in-grid-a4");
+        assert!(library.records().is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 }

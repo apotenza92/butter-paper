@@ -189,7 +189,7 @@ use crate::{
     },
     annotation_paint_path::{InkPaintPathSegment, build_ink_paint_path},
     generated_document::{
-        GeneratedDocumentRequest, GeneratedDocumentStore, GeneratedPattern, OwnedGeneratedDocument,
+        GeneratedDocumentRequest, GeneratedDocumentStore, OwnedGeneratedDocument,
     },
     image_asset_decode::{
         DecodedImageFile, SanitizedSignatureFile, decode_image_path, sanitize_signature_path,
@@ -1067,36 +1067,8 @@ pub const fn save_as_command_label(save_in_progress: bool) -> &'static str {
 fn generated_document_request_for_template(
     template_id: &str,
 ) -> Result<GeneratedDocumentRequest, String> {
-    let pattern = match template_id {
-        "built-in-blank" => None,
-        "built-in-dots" => Some(GeneratedPattern::Dots {
-            spacing_mm: 10.,
-            color: "#d1d5db".into(),
-        }),
-        "built-in-grid" => Some(GeneratedPattern::SquareGrid {
-            spacing_mm: 10.,
-            color: "#d1d5db".into(),
-        }),
-        "built-in-lined" => Some(GeneratedPattern::Ruled {
-            spacing_mm: 10.,
-            color: "#d1d5db".into(),
-        }),
-        "built-in-isometric" => Some(GeneratedPattern::Isometric {
-            spacing_mm: 10.,
-            color: "#d1d5db".into(),
-        }),
-        "built-in-triangle" => Some(GeneratedPattern::Triangle {
-            spacing_mm: 10.,
-            color: "#d1d5db".into(),
-        }),
-        _ => return Err(format!("Unknown built-in template: {template_id}")),
-    };
-    Ok(GeneratedDocumentRequest {
-        title: "Untitled".into(),
-        width_mm: 420.,
-        height_mm: 297.,
-        pattern,
-    })
+    crate::template_library::built_in_request(template_id)
+        .ok_or_else(|| format!("Unknown built-in template: {template_id}"))
 }
 
 pub fn document_thumbnail_id(document_id: DocumentId, page_index: u32) -> String {
@@ -1142,6 +1114,9 @@ pub fn document_viewer_tile_id(
 ) -> String {
     format!("{document_id}-viewer-{generation}-page-{page_index}-tile-{tile_index}")
 }
+
+pub const DOCUMENT_NEW_TAB_ID: &str = "document-new-tab";
+pub const DOCUMENT_NEW_TAB_CLOSE_ID: &str = "document-new-tab-close";
 
 pub fn document_session_tab_id(document_id: DocumentId) -> String {
     format!("{document_id}-session-tab")
@@ -2791,6 +2766,14 @@ pub struct DocumentWorkspace {
     word_replace_prompt: Option<(DocumentId, PathBuf)>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
     session_tab_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
+    /// A New Tab is open and showing the start page (Open, recent files),
+    /// with no document active. Opening or choosing a document replaces it.
+    new_tab_open: bool,
+    /// The document that was active when the New Tab opened, shown again
+    /// when it closes.
+    new_tab_return: Option<DocumentId>,
+    new_tab_bounds: Rc<Cell<Bounds<Pixels>>>,
+    new_tab_hovered: bool,
     session_tabs_overflow: bool,
     session_tab_reveal: Option<DocumentId>,
     session_tab_last_active: Option<DocumentId>,
@@ -4407,6 +4390,10 @@ impl DocumentWorkspace {
             word_replace_prompt: None,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
+            new_tab_open: false,
+            new_tab_return: None,
+            new_tab_bounds: Rc::new(Cell::new(Bounds::default())),
+            new_tab_hovered: false,
             session_tabs_overflow: false,
             session_tab_reveal: None,
             session_tab_last_active: None,
@@ -10515,6 +10502,9 @@ impl DocumentWorkspace {
                     cx.notify();
                 });
                 self.active_document_id = Some(request.document_id);
+                // A document opened from a New Tab takes its place.
+                self.new_tab_open = false;
+                self.new_tab_return = None;
                 self.remember_recent_document(request.document_id, cx);
                 if let Some(recovered) = startup_recovery {
                     session.update(cx, |session, cx| {
@@ -11145,7 +11135,10 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(document_id) = self.active_document_id {
+        if self.new_tab_open {
+            self.close_new_tab(cx);
+            self.workspace_focus.focus(window, cx);
+        } else if let Some(document_id) = self.active_document_id {
             self.request_close_document(document_id, cx);
             // The closed tab's focus handle is removed with its session.
             // Keep command dispatch rooted in the workspace for repeated closes.
@@ -19258,6 +19251,94 @@ impl DocumentWorkspace {
         true
     }
 
+    /// Ends what belongs to the active document before another document or
+    /// a New Tab takes its place: its signature popover, scale pick, pointer
+    /// gesture and pending image.
+    fn leave_active_document(&mut self, cx: &mut Context<Self>) {
+        let Some(previous) = self.active_document_id else {
+            return;
+        };
+        if self.signature_popover_open {
+            self.dismiss_signature_popover(previous, None, cx);
+        }
+        if let Some(control) = self.page_scale_control.clone() {
+            control.update(cx, |control, cx| {
+                control.cancel_for_document(previous, cx);
+            });
+        }
+        self.cancel_annotation_pointer(cx);
+        if let Some(session) = self.session(previous, cx).cloned() {
+            session.update(cx, |session, cx| {
+                session.annotations.clear_pending_image_asset();
+                cx.notify();
+            });
+        }
+    }
+
+    /// Opens a New Tab on the start page, where Open and the recent files
+    /// are, leaving the active document's tab in place. A New Tab already
+    /// open is shown again.
+    pub fn open_new_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.new_tab_open {
+            self.leave_active_document(cx);
+            self.new_tab_return = self.active_document_id;
+            self.new_tab_open = true;
+        }
+        self.active_document_id = None;
+        self.sync_active_viewer_toolbar(cx);
+        cx.notify();
+    }
+
+    /// Closes the New Tab and shows the document that was active before it,
+    /// or else the last one ready.
+    pub fn close_new_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.new_tab_open {
+            return;
+        }
+        self.new_tab_open = false;
+        let ready = |workspace: &Self, id: DocumentId, cx: &Context<Self>| {
+            workspace.session(id, cx).is_some_and(|session| {
+                matches!(session.read(cx).status, NativeDocumentStatus::Ready)
+            })
+        };
+        let next = self
+            .new_tab_return
+            .take()
+            .filter(|id| ready(self, *id, cx))
+            .or_else(|| {
+                self.sessions
+                    .iter()
+                    .rev()
+                    .map(|session| session.read(cx).id)
+                    .find(|id| ready(self, *id, cx))
+            });
+        if let Some(document_id) = next {
+            self.activate_document(document_id, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn is_new_tab_open(&self) -> bool {
+        self.new_tab_open
+    }
+
+    /// A double-click on the tab bar's empty space opens a New Tab, as in
+    /// browsers; one on a tab is the tab's own.
+    fn open_new_tab_from_tab_bar(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        if event.click_count != 2 {
+            return;
+        }
+        let on_tab = self
+            .sessions
+            .iter()
+            .filter_map(|session| self.session_tab_bounds.get(&session.read(cx).id))
+            .any(|bounds| bounds.get().contains(&event.position))
+            || (self.new_tab_open && self.new_tab_bounds.get().contains(&event.position));
+        if !on_tab {
+            self.open_new_tab(cx);
+        }
+    }
+
     pub fn activate_document(&mut self, document_id: DocumentId, cx: &mut Context<Self>) -> bool {
         let ready = self
             .session(document_id, cx)
@@ -19265,29 +19346,13 @@ impl DocumentWorkspace {
         if !ready {
             return false;
         }
+        if self.new_tab_open {
+            self.new_tab_open = false;
+            self.new_tab_return = None;
+            cx.notify();
+        }
         if self.active_document_id != Some(document_id) {
-            let previous_document_id = self.active_document_id;
-            if self.signature_popover_open
-                && let Some(previous) = previous_document_id
-            {
-                self.dismiss_signature_popover(previous, None, cx);
-            }
-            if let (Some(previous), Some(control)) =
-                (previous_document_id, self.page_scale_control.clone())
-            {
-                control.update(cx, |control, cx| {
-                    control.cancel_for_document(previous, cx);
-                });
-            }
-            self.cancel_annotation_pointer(cx);
-            if let Some(previous) = previous_document_id
-                && let Some(session) = self.session(previous, cx).cloned()
-            {
-                session.update(cx, |session, cx| {
-                    session.annotations.clear_pending_image_asset();
-                    cx.notify();
-                });
-            }
+            self.leave_active_document(cx);
             if let Some(session) = self.session(document_id, cx).cloned() {
                 session.update(cx, |session, cx| {
                     session.annotations.clear_pending_image_asset();
@@ -23330,7 +23395,7 @@ fn rail_tool_secondary_click(
 /// Snap settings section with an Electron-style legend.
 fn snap_section(label: &'static str, body: gpui::AnyElement, cx: &App) -> gpui::AnyElement {
     v_flex()
-        .gap_2()
+        .gap_3()
         .child(
             gpui::div()
                 .text_sm()
@@ -23350,14 +23415,22 @@ fn snap_separator(cx: &App) -> gpui::AnyElement {
         .into_any_element()
 }
 
+/// Two columns of options, in rows that size to their content: a CSS grid
+/// here gave its last row less height than its text and clipped descenders.
 fn snap_tile_grid(tiles: Vec<gpui::AnyElement>) -> gpui::AnyElement {
-    gpui::div()
-        .grid()
-        .grid_cols(2)
-        .gap_2()
-        .w_full()
-        .children(tiles)
-        .into_any_element()
+    let mut tiles = tiles.into_iter();
+    let mut rows = Vec::new();
+    while let Some(first) = tiles.next() {
+        let second = tiles.next();
+        rows.push(
+            h_flex()
+                .w_full()
+                .gap_3()
+                .child(gpui::div().flex_1().min_w_0().child(first))
+                .child(gpui::div().flex_1().min_w_0().children(second)),
+        );
+    }
+    v_flex().w_full().gap_3().children(rows).into_any_element()
 }
 
 /// A stock checkbox for one snapping option, followed by its snap marker
@@ -23379,7 +23452,6 @@ fn snap_tile(
                 .label(label)
                 .checked(selected)
                 .disabled(disabled)
-                .small()
                 .on_click(move |checked, _, cx| on_toggle(*checked, cx)),
         )
         .when_some(glyph, |row, glyph| {
@@ -23408,7 +23480,6 @@ fn snap_switch_row(
                 .label(label)
                 .checked(checked)
                 .disabled(disabled)
-                .small()
                 .on_click(move |checked, _, cx| on_toggle(*checked, cx)),
         )
         .into_any_element()
@@ -24748,6 +24819,9 @@ fn session_tab_close_lane() -> gpui::Div {
 
 impl Render for DocumentWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Overlays this draw records are the ones open; a prompt for a tab
+        // that has closed is no longer drawn, so it no longer blocks presses.
+        crate::overlay_state::begin_overlay_render(cx);
         // Release the GPU textures of tile and thumbnail images that are no
         // longer drawn; the window would otherwise keep every one.
         for session in self.sessions.clone() {

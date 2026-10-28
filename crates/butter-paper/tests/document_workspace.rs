@@ -45479,6 +45479,12 @@ fn tabs_scrolled_out_of_view_cannot_be_grabbed(cx: &mut TestAppContext) {
         "pressing the Open button must not start dragging the tab hidden beneath it"
     );
     cx.simulate_mouse_up(press, MouseButton::Left, Modifiers::default());
+    // The press was a click on +, which opened a New Tab; go back.
+    workspace.update(cx, |workspace, cx| workspace.close_new_tab(cx));
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
 
     // A visible tab in the overflowing strip can still be grabbed.
     let (visible, _) =
@@ -46645,4 +46651,193 @@ fn standard(label: &str) -> usize {
         .iter()
         .position(|scale| scale.label == label)
         .unwrap_or_else(|| panic!("{label} is a standard scale"))
+}
+
+#[gpui::test]
+fn new_tab_opens_the_start_page_and_gives_way_to_a_document(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{DOCUMENT_NEW_TAB_CLOSE_ID, DOCUMENT_NEW_TAB_ID};
+    cx.update(gpui_component::init);
+    cx.update(init_document_workspace_actions);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let open = |name: &str,
+                workspace: &gpui::Entity<DocumentWorkspace>,
+                cx: &mut gpui::VisualTestContext| {
+        let request = workspace.update(cx, |workspace, cx| {
+            workspace.begin_open(PathBuf::from(name), cx)
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(
+                &request,
+                Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+                cx,
+            )
+        });
+        request.document_id
+    };
+    let first = open("first.pdf", &workspace, cx);
+    let second = open("second.pdf", &workspace, cx);
+    let draw = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+    let active = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, _| {
+            (workspace.active_document_id(), workspace.is_new_tab_open())
+        })
+    };
+    draw(cx);
+
+    // + opens a New Tab on the start page; the documents keep their tabs.
+    let target = cx.debug_bounds(DOCUMENT_TAB_OPEN_ID).unwrap().center();
+    cx.simulate_click(target, Modifiers::default());
+    draw(cx);
+    assert_eq!(active(&workspace, cx), (None, true));
+    assert!(cx.debug_bounds(DOCUMENT_NEW_TAB_ID).is_some());
+    assert!(cx.debug_bounds("document-1-session-tab").is_some());
+
+    // Choosing a document's tab replaces the New Tab.
+    let target = cx.debug_bounds("document-1-session-tab").unwrap().center();
+    cx.simulate_click(target, Modifiers::default());
+    draw(cx);
+    assert_eq!(active(&workspace, cx), (Some(first), false));
+    assert!(cx.debug_bounds(DOCUMENT_NEW_TAB_ID).is_none());
+
+    // Closing the New Tab shows the document that was active before it.
+    workspace.update(cx, |workspace, cx| workspace.open_new_tab(cx));
+    draw(cx);
+    let target = cx.debug_bounds(DOCUMENT_NEW_TAB_CLOSE_ID).unwrap().center();
+    cx.simulate_click(target, Modifiers::default());
+    draw(cx);
+    assert_eq!(active(&workspace, cx), (Some(first), false));
+
+    // A double-click on the tab bar's empty space opens a New Tab; one on a
+    // tab does not.
+    let tab = cx.debug_bounds("document-2-session-tab").unwrap();
+    let bar = cx
+        .debug_bounds("document-workspace-native-session-tab-bar")
+        .unwrap();
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: tab.center(),
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position: tab.center(),
+        modifiers: Modifiers::default(),
+        click_count: 2,
+    });
+    draw(cx);
+    assert!(
+        !active(&workspace, cx).1,
+        "a double-click on a tab is the tab's own"
+    );
+    let blank = gpui::point(
+        tab.right() + (bar.right() - tab.right()) / 2.,
+        tab.center().y,
+    );
+    cx.simulate_event(gpui::MouseDownEvent {
+        button: gpui::MouseButton::Left,
+        position: blank,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui::MouseUpEvent {
+        button: gpui::MouseButton::Left,
+        position: blank,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+    });
+    draw(cx);
+    assert_eq!(active(&workspace, cx), (None, true));
+
+    // Close Document closes the New Tab.
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.dispatch_action(CloseDocument);
+    draw(cx);
+    assert!(!active(&workspace, cx).1);
+    assert!(workspace.read_with(cx, |workspace, _| workspace.sessions().len()) == 2);
+
+    // A document opened from a New Tab takes its place.
+    workspace.update(cx, |workspace, cx| workspace.open_new_tab(cx));
+    let third = open("third.pdf", &workspace, cx);
+    draw(cx);
+    assert_eq!(active(&workspace, cx), (Some(third), false));
+    let _ = second;
+}
+
+#[gpui::test]
+fn closing_a_dirty_tab_from_its_prompt_leaves_no_overlay_open(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let mut ids = Vec::new();
+    for name in ["first.pdf", "second.pdf"] {
+        let request = workspace.update(cx, |workspace, cx| {
+            workspace.begin_open(PathBuf::from(name), cx)
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(
+                &request,
+                Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+                cx,
+            )
+        });
+        ids.push(request.document_id);
+    }
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+    };
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                ids[1],
+                0,
+                MarkupId::new("workspace:rectangle:stale-prompt").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    draw(cx);
+    // The dirty tab's close prompt opens, then closes the tab.
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace
+            .request_close_document(ids[1], cx)),
+        CloseRequestDisposition::ConfirmationRequired
+    );
+    draw(cx);
+    assert!(cx.update(|_, cx| butter_paper::overlay_state::any_overlay_open(cx)));
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace
+            .resolve_dirty_close_discard(cx)),
+        DirtyCloseResolution::Discarded
+    );
+    draw(cx);
+    assert!(
+        !cx.update(|_, cx| butter_paper::overlay_state::any_overlay_open(cx)),
+        "a closed tab's prompt must not stay recorded as open, or every canvas press is ignored"
+    );
 }

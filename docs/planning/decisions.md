@@ -208,4 +208,10 @@ changes it; history is in git.
   renamed within its volume keeps its place at the new path, found by file
   identity (bookmark, file ID) rather than by searching; one deleted, moved
   to the Trash or Recycle Bin, or otherwise not found leaves the list.
+- The + beside the tabs, and a double-click on the tab bar's empty space,
+  open a New Tab: the blank workspace (Open and the recent files) in a tab of
+  its own after the documents. There is at most one. Choosing another tab or
+  opening a document replaces it; closing it (its X or ⌘W) shows the document
+  that was active before. The blank workspace's Open button still opens the
+  file picker.
 - On macOS, ⌘W closes the active tab; with no tabs, it closes the window.

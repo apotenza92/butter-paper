@@ -38,7 +38,7 @@ impl DocumentWorkspace {
     ) -> Option<Popover> {
         let count = self.recovery_attention_count(cx);
         let open = self.recovery_notifications_open && count > 0;
-        crate::overlay_state::set_overlay_open("recovery-notifications", open, cx);
+        crate::overlay_state::sync_overlay_open("recovery-notifications", open, cx);
         if count == 0 {
             return None;
         }

@@ -2818,6 +2818,7 @@ fn build_document_window(
                 document_workspace.downgrade(),
                 shared.generated_store.clone(),
             );
+            manager.bind_preview_renderer(shared.opener.clone(), cx);
             manager
         })
     });

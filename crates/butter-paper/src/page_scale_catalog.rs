@@ -395,6 +395,7 @@ const PAPER_SIZES: &[PaperSize] = &[
     iso("A2", 420., 594.),
     iso("A3", 297., 420.),
     iso("A4", 210., 297.),
+    iso("A5", 148., 210.),
     iso("B0", 1000., 1414.),
     iso("B1", 707., 1000.),
     iso("B2", 500., 707.),
@@ -413,6 +414,22 @@ const PAPER_SIZES: &[PaperSize] = &[
     inches("ANSI D", 22., 34.),
     inches("ANSI E", 34., 44.),
 ];
+
+/// The standard sheet a page of `width_mm` × `height_mm` is cut to, in either
+/// orientation (`A3` for 420 × 297 mm), with its place in the catalogue so
+/// lists of sizes keep the catalogue's order. A size within a quarter of a
+/// millimetre of a sheet is that sheet; anything else is no standard sheet.
+pub fn paper_size_mm(width_mm: f64, height_mm: f64) -> Option<(usize, &'static str)> {
+    let (short, long) = (width_mm.min(height_mm), width_mm.max(height_mm));
+    PAPER_SIZES
+        .iter()
+        .enumerate()
+        .find(|(_, paper)| {
+            let unit = paper.unit_points() / POINTS_PER_MM;
+            (paper.short * unit - short).abs() <= 0.25 && (paper.long * unit - long).abs() <= 0.25
+        })
+        .map(|(index, paper)| (index, paper.name))
+}
 
 /// The paper a page is, as its width and height read: `A1, 841 × 594 mm`,
 /// `ARCH D, 36 × 24 in`, or just the size when it is no standard sheet.
@@ -596,6 +613,21 @@ mod tests {
         assert_eq!(paper_label(2592., 1728.), "ARCH D, 36 × 24 in");
         assert_eq!(paper_label(612., 792.), "Letter, 8.5 × 11 in");
         assert_eq!(paper_label(1000., 700.), "13.89 × 9.72 in");
+    }
+
+    #[test]
+    fn millimetre_sizes_are_named_for_their_sheet_in_either_orientation() {
+        let name = |width, height| paper_size_mm(width, height).map(|(_, name)| name);
+        assert_eq!(name(420., 297.), Some("A3"));
+        assert_eq!(name(297., 420.), Some("A3"));
+        assert_eq!(name(210., 297.), Some("A4"));
+        assert_eq!(name(297., 210.), Some("A4"));
+        assert_eq!(name(148., 210.), Some("A5"));
+        assert_eq!(name(215.9, 279.4), Some("Letter"));
+        assert_eq!(name(210., 297.5), None);
+        assert_eq!(name(500., 300.), None);
+        let order = |width, height| paper_size_mm(width, height).unwrap().0;
+        assert!(order(420., 297.) < order(210., 297.), "A3 lists before A4");
     }
 
     #[test]

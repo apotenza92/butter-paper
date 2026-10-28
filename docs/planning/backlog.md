@@ -18,6 +18,9 @@ alone do not establish these behaviours.
 
 ## Interface
 
+- While a New Tab is open, the tab strip is the blank workspace's simpler one:
+  document tabs cannot be dragged to reorder or into a new window, and there
+  is no overflow menu. Draw the New Tab in the document strip instead.
 - Stock popup menus initially select a heading on the first Down press, so
   titled mouse-wheel menus need a second Down to reach Zoom. Fix initial and
   wraparound selection to skip non-actionable rows in gpui-kit.

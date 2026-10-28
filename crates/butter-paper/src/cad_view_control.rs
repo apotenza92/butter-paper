@@ -291,6 +291,7 @@ impl EventEmitter<CadViewControlEvent> for CadViewControl {}
 
 impl Render for CadViewControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::overlay_state::begin_overlay_render(cx);
         self.initialize_input(window, cx);
         let active = self.active && !self.disabled;
         let disabled = self.disabled;

@@ -4,8 +4,8 @@ use gpui::{
     Anchor, AppContext as _, Bounds, ClickEvent, Context, DispatchPhase, Entity, EventEmitter,
     FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, Role, ScrollHandle,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, accesskit::Live, canvas,
-    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    accesskit::Live, canvas, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
@@ -13,12 +13,13 @@ use gpui_component::{
     dialog::Cancel,
     h_flex,
     popover::Popover,
+    select::{Select, SelectEvent, SelectState},
     tab::{Tab, TabBar},
     v_flex,
 };
 
 use crate::accessible_button::{accessible_icon_button, close_icon_button};
-use crate::template_preview::{TemplatePreview, template_preview_card};
+use crate::template_preview::{TemplatePreview, group_by_paper_size, template_preview_card};
 
 pub const DOCUMENT_TAB_BAR_ID: &str = "document-tab-bar";
 pub const DOCUMENT_TAB_SURFACE_ID: &str = "document-tab-surface";
@@ -36,6 +37,7 @@ pub const TEMPLATE_PICKER_CLOSE_ID: &str = "template-picker-close";
 pub const TEMPLATE_SAVE_DOCUMENT_ID: &str = "template-picker-save-document";
 pub const TEMPLATE_PICKER_LIST_ID: &str = "template-picker-list";
 pub const TEMPLATE_PICKER_PREVIEW_ID: &str = "template-picker-preview";
+pub const TEMPLATE_PICKER_PAPER_SIZE_ID: &str = "template-picker-paper-size";
 /// Electron's picker is 560 px wide; the native footer's extra Save Document
 /// as Template action needs a little more room.
 /// Wide enough that each half keeps the 348px the list had beside the old
@@ -159,7 +161,9 @@ pub fn template_picker_item_id(template_id: &str) -> String {
     format!("template-picker-item-{template_id}")
 }
 
-pub const BUILT_IN_TEMPLATES: [TemplateDefinition; 6] = [
+/// Built-in templates in `template_library::BUILT_IN_TEMPLATE_IDS` order: each
+/// paper at A3 landscape, then at A4 portrait.
+pub const BUILT_IN_TEMPLATES: [TemplateDefinition; 12] = [
     TemplateDefinition {
         id: "built-in-blank",
         name: "Blank Paper",
@@ -184,15 +188,45 @@ pub const BUILT_IN_TEMPLATES: [TemplateDefinition; 6] = [
         id: "built-in-triangle",
         name: "Triangle Grid",
     },
+    TemplateDefinition {
+        id: "built-in-blank-a4",
+        name: "Blank Paper",
+    },
+    TemplateDefinition {
+        id: "built-in-dots-a4",
+        name: "Dot Grid",
+    },
+    TemplateDefinition {
+        id: "built-in-grid-a4",
+        name: "Square Grid",
+    },
+    TemplateDefinition {
+        id: "built-in-lined-a4",
+        name: "Ruled Paper",
+    },
+    TemplateDefinition {
+        id: "built-in-isometric-a4",
+        name: "Isometric Grid",
+    },
+    TemplateDefinition {
+        id: "built-in-triangle-a4",
+        name: "Triangle Grid",
+    },
 ];
 
-pub const TEMPLATE_ITEM_IDS: [&str; 6] = [
+pub const TEMPLATE_ITEM_IDS: [&str; 12] = [
     "template-picker-item-built-in-blank",
     "template-picker-item-built-in-dots",
     "template-picker-item-built-in-grid",
     "template-picker-item-built-in-lined",
     "template-picker-item-built-in-isometric",
     "template-picker-item-built-in-triangle",
+    "template-picker-item-built-in-blank-a4",
+    "template-picker-item-built-in-dots-a4",
+    "template-picker-item-built-in-grid-a4",
+    "template-picker-item-built-in-lined-a4",
+    "template-picker-item-built-in-isometric-a4",
+    "template-picker-item-built-in-triangle-a4",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -305,6 +339,12 @@ pub struct TemplateSplitControl {
     templates: Vec<TemplateCatalogItem>,
     selected_template_id: String,
     last_template_id: String,
+    /// The paper size whose templates the picker lists.
+    paper_size: String,
+    /// Created on first render, which owns the window a Select needs.
+    paper_size_select: Option<Entity<SelectState<Vec<SharedString>>>>,
+    paper_size_select_synced: Option<(Vec<SharedString>, SharedString)>,
+    _paper_size_subscription: Option<Subscription>,
     creating: bool,
     save_document_enabled: bool,
     picker_focus: FocusHandle,
@@ -312,15 +352,129 @@ pub struct TemplateSplitControl {
 
 impl TemplateSplitControl {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let templates = BUILT_IN_TEMPLATES.map(TemplateCatalogItem::from).to_vec();
+        let paper_size = templates[0].preview.paper_size();
         Self {
             picker_open: false,
-            templates: BUILT_IN_TEMPLATES.map(TemplateCatalogItem::from).to_vec(),
+            templates,
             selected_template_id: BUILT_IN_TEMPLATES[0].id.into(),
             last_template_id: BUILT_IN_TEMPLATES[0].id.into(),
+            paper_size,
+            paper_size_select: None,
+            paper_size_select_synced: None,
+            _paper_size_subscription: None,
             creating: false,
             save_document_enabled: false,
             picker_focus: cx.focus_handle(),
         }
+    }
+
+    /// The paper sizes among the templates, in the order the picker offers
+    /// them: standard sheets, then custom sizes, then imported PDFs.
+    pub fn paper_sizes(&self) -> Vec<String> {
+        group_by_paper_size(self.templates.iter().map(|template| &template.preview))
+            .into_iter()
+            .map(|(size, _)| size)
+            .collect()
+    }
+
+    /// The paper size whose templates the picker lists.
+    pub fn paper_size(&self) -> &str {
+        &self.paper_size
+    }
+
+    /// The templates the picker lists for its paper size.
+    pub fn visible_templates(&self) -> Vec<&TemplateCatalogItem> {
+        self.templates
+            .iter()
+            .filter(|template| template.preview.paper_size() == self.paper_size)
+            .collect()
+    }
+
+    fn paper_size_of(&self, template_id: &str) -> String {
+        self.templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .unwrap_or(&self.templates[0])
+            .preview
+            .paper_size()
+    }
+
+    /// Lists the templates of `paper_size` and selects the one most like the
+    /// current selection: the same template name (Dot Grid A3 → Dot Grid
+    /// A4), else the same pattern, else the first in that size.
+    pub fn select_paper_size(&mut self, paper_size: &str, cx: &mut Context<Self>) {
+        if paper_size == self.paper_size {
+            return;
+        }
+        let current = self
+            .templates
+            .iter()
+            .find(|template| template.id == self.selected_template_id)
+            .cloned();
+        let candidates = self
+            .templates
+            .iter()
+            .filter(|template| template.preview.paper_size() == paper_size)
+            .collect::<Vec<_>>();
+        let Some(first) = candidates.first() else {
+            return;
+        };
+        let successor = current
+            .as_ref()
+            .and_then(|current| {
+                candidates
+                    .iter()
+                    .find(|template| template.name == current.name)
+                    .or_else(|| {
+                        candidates.iter().find(|template| {
+                            template.preview.pattern_kind() == current.preview.pattern_kind()
+                        })
+                    })
+            })
+            .unwrap_or(first)
+            .id
+            .clone();
+        self.paper_size = paper_size.into();
+        self.selected_template_id = successor.clone();
+        cx.emit(TemplateSplitEvent::SelectionChanged(successor));
+        cx.notify();
+    }
+
+    fn sync_paper_size_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let select = match &self.paper_size_select {
+            Some(select) => select.clone(),
+            None => {
+                let select =
+                    cx.new(|cx| SelectState::new(Vec::<SharedString>::new(), None, window, cx));
+                self._paper_size_subscription = Some(cx.subscribe_in(
+                    &select,
+                    window,
+                    |control, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                        if let SelectEvent::Confirm(Some(paper_size)) = event {
+                            control.select_paper_size(paper_size, cx);
+                        }
+                    },
+                ));
+                self.paper_size_select = Some(select.clone());
+                select
+            }
+        };
+        let wanted = (
+            self.paper_sizes()
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Vec<_>>(),
+            SharedString::from(self.paper_size.clone()),
+        );
+        if self.paper_size_select_synced.as_ref() == Some(&wanted) {
+            return;
+        }
+        select.update(cx, |select, cx| {
+            select.set_items(wanted.0.clone(), window, cx);
+            select.set_selected_value(&wanted.1, window, cx);
+        });
+        self.paper_size_select_synced = Some(wanted);
     }
 
     pub fn is_picker_open(&self) -> bool {
@@ -380,6 +534,7 @@ impl TemplateSplitControl {
             .id
             .clone();
         self.templates = templates;
+        self.paper_size = self.paper_size_of(&last_used);
         self.last_template_id = last_used.clone();
         self.selected_template_id = last_used;
         cx.notify();
@@ -401,6 +556,7 @@ impl TemplateSplitControl {
             .unwrap_or(&self.templates[0])
             .id
             .clone();
+        self.paper_size = self.paper_size_of(&template_id);
         self.last_template_id = template_id.clone();
         self.selected_template_id = template_id.clone();
         self.picker_open = false;
@@ -415,7 +571,9 @@ impl TemplateSplitControl {
 impl EventEmitter<TemplateSplitEvent> for TemplateSplitControl {}
 
 impl Render for TemplateSplitControl {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::overlay_state::begin_overlay_render(cx);
+        self.sync_paper_size_select(window, cx);
         let current_template = self
             .templates
             .iter()
@@ -463,6 +621,12 @@ impl Render for TemplateSplitControl {
         let picker_content_focus = self.picker_focus.clone();
         let selected_template_id = self.selected_template_id.clone();
         let templates = self.templates.clone();
+        let visible_templates = self
+            .visible_templates()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let paper_size_select = self.paper_size_select.clone();
         let creating = self.creating;
         let save_document_enabled = self.save_document_enabled;
         let picker = Popover::new("document-tab-template-picker-popover")
@@ -475,6 +639,7 @@ impl Render for TemplateSplitControl {
                     control.picker_open = *open;
                     if *open {
                         control.selected_template_id = control.last_template_id.clone();
+                        control.paper_size = control.paper_size_of(&control.last_template_id);
                         cx.emit(TemplateSplitEvent::SelectionChanged(
                             control.selected_template_id.clone(),
                         ));
@@ -492,7 +657,7 @@ impl Render for TemplateSplitControl {
                     .find(|template| template.id == selected_template_id)
                     .unwrap_or(&templates[0])
                     .clone();
-                let template_rows = templates.clone().into_iter().map(|template| {
+                let template_rows = visible_templates.clone().into_iter().map(|template| {
                     let stable_id = template_picker_item_id(&template.id);
                     let control = picker_content_control.clone();
                     let is_selected = selected_template_id == template.id;
@@ -609,14 +774,41 @@ impl Render for TemplateSplitControl {
                             .gap_3()
                             .child(
                                 v_flex()
-                                    .id(TEMPLATE_PICKER_LIST_ID)
                                     .flex_1()
                                     .min_w_0()
-                                    // Six built-in rows fit; custom templates scroll.
-                                    .max_h(px(356.))
-                                    .overflow_y_scroll()
-                                    .gap_1()
-                                    .children(template_rows),
+                                    .gap_2()
+                                    .when_some(paper_size_select.clone(), |column, select| {
+                                        column.child(
+                                            h_flex()
+                                                .id(TEMPLATE_PICKER_PAPER_SIZE_ID)
+                                                .debug_selector(|| {
+                                                    TEMPLATE_PICKER_PAPER_SIZE_ID.into()
+                                                })
+                                                .gap_2()
+                                                .child(
+                                                    gpui::div()
+                                                        .flex_none()
+                                                        .text_sm()
+                                                        .child("Paper size"),
+                                                )
+                                                .child(
+                                                    gpui::div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .child(Select::new(&select)),
+                                                ),
+                                        )
+                                    })
+                                    .child(
+                                        v_flex()
+                                            .id(TEMPLATE_PICKER_LIST_ID)
+                                            .min_w_0()
+                                            // Six built-in rows fit; custom templates scroll.
+                                            .max_h(px(356.))
+                                            .overflow_y_scroll()
+                                            .gap_1()
+                                            .children(template_rows),
+                                    ),
                             )
                             // The list and preview split the picker evenly.
                             .child(template_preview_card(
@@ -1338,6 +1530,7 @@ impl EventEmitter<DocumentTabBarCommand> for DocumentTabBarTemplateSeam {}
 
 impl Render for DocumentTabBarTemplateSeam {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::overlay_state::begin_overlay_render(cx);
         let tab_ids: Vec<String> = self.tabs.iter().map(|tab| tab.id.clone()).collect();
         let tab_count = self.tabs.len();
         let mut rendered_tabs = Vec::with_capacity(tab_count);

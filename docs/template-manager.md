@@ -10,10 +10,22 @@ an invitation to invent a new contract.
 
 ## Records, order, and authority
 
-The visible order is the six built-ins, custom generated records in insertion
-order, then imported PDFs in durable index order. Stable built-in IDs are
-`built-in-blank`, `built-in-dots`, `built-in-grid`, `built-in-lined`,
-`built-in-isometric`, and `built-in-triangle`.
+The record order is the built-ins, custom generated records in insertion
+order, then imported PDFs in durable index order. Each built-in paper exists
+at A3 landscape (`built-in-blank`, `built-in-dots`, `built-in-grid`,
+`built-in-lined`, `built-in-isometric`, `built-in-triangle`) and at A4
+portrait (the same IDs with an `-a4` suffix). The A3 IDs predate the A4 set
+and stay unsuffixed because stored libraries refer to them.
+
+Templates are shown by paper size. A size that matches a named sheet of the
+page-scale paper catalogue in either orientation shows its name (`A3 ·
+Landscape`); any other size shows `W × H mm`. The Template Library lists the
+records under a heading per size: named sheets in catalogue order, then custom
+sizes in first-appearance order, then `Imported PDFs`, whose page size is not
+recorded. The New from template picker lists one size at a time, chosen from
+a paper-size Select that defaults to the last-used template's size. Changing
+the size selects the template with the same name in that size, else one with
+the same pattern, else the first.
 
 One application-owned template library is the durable authority. It owns
 custom settings, imported metadata and managed PDF bytes, and the last-used

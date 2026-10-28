@@ -5,17 +5,24 @@
 //! by the template name, its size summary and a page-grid badge.
 
 use gpui::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, Rgba, SharedString,
-    Styled as _, div, prelude::FluentBuilder as _, px, rgb, svg,
+    AnyElement, App, Global, InteractiveElement as _, IntoElement, ParentElement as _, RenderImage,
+    Rgba, SharedString, Styled as _, div, img, prelude::FluentBuilder as _, px, rgb, svg,
 };
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
+use std::{collections::HashMap, sync::Arc};
 
 use crate::generated_document::{GeneratedDocumentRequest, GeneratedPattern};
+use crate::page_scale_catalog::paper_size_mm;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TemplatePreview {
     Generated(GeneratedDocumentRequest),
-    ImportedPdf { page_count: usize },
+    ImportedPdf {
+        page_count: usize,
+        /// Key of the template's first-page image in
+        /// [`ImportedTemplatePreviews`]: its identifier and source checksum.
+        first_page_key: Option<String>,
+    },
 }
 
 impl TemplatePreview {
@@ -27,23 +34,57 @@ impl TemplatePreview {
         )
     }
 
-    /// "420 × 297 mm · Landscape" or "3 pages · Imported PDF".
+    /// "A3 · Landscape", "500 × 300 mm · Landscape" or "3 pages · Imported PDF".
     pub fn summary(&self) -> String {
         match self {
             Self::Generated(request) => format!(
-                "{} × {} mm · {}",
-                format_mm(request.width_mm),
-                format_mm(request.height_mm),
+                "{} · {}",
+                self.paper_size(),
                 if request.width_mm >= request.height_mm {
                     "Landscape"
                 } else {
                     "Portrait"
                 }
             ),
-            Self::ImportedPdf { page_count } => format!(
+            Self::ImportedPdf { page_count, .. } => format!(
                 "{page_count} {} · Imported PDF",
                 if *page_count == 1 { "page" } else { "pages" }
             ),
+        }
+    }
+
+    /// The paper the template is cut to: a standard sheet's name in either
+    /// orientation ("A3"), otherwise its size ("500 × 300 mm"). Imported PDFs
+    /// record no page size, so they share one group.
+    pub fn paper_size(&self) -> String {
+        match self {
+            Self::Generated(request) => match paper_size_mm(request.width_mm, request.height_mm) {
+                Some((_, name)) => name.into(),
+                None => format!(
+                    "{} × {} mm",
+                    format_mm(request.width_mm),
+                    format_mm(request.height_mm)
+                ),
+            },
+            Self::ImportedPdf { .. } => IMPORTED_PDF_PAPER_SIZE.into(),
+        }
+    }
+
+    /// Where the template's paper size lists: standard sheets in catalogue
+    /// order, then custom sizes, then imported PDFs.
+    fn paper_size_order(&self) -> (u8, usize) {
+        match self {
+            Self::Generated(request) => paper_size_mm(request.width_mm, request.height_mm)
+                .map_or((1, 0), |(index, _)| (0, index)),
+            Self::ImportedPdf { .. } => (2, 0),
+        }
+    }
+
+    /// The pattern drawn on the page, if any ("dots", "grid", …).
+    pub fn pattern_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::Generated(request) => request.pattern.as_ref().map(|p| pattern_style(p).0),
+            Self::ImportedPdf { .. } => None,
         }
     }
 
@@ -57,6 +98,69 @@ impl TemplatePreview {
             Self::ImportedPdf { .. } => "Page grid not defined".into(),
         }
     }
+}
+
+/// Debug selector of an imported template's rendered first page.
+pub const TEMPLATE_PREVIEW_FIRST_PAGE_ID: &str = "template-preview-first-page";
+
+/// Width in pixels at which imported templates' first pages are drawn.
+pub const IMPORTED_FIRST_PAGE_WIDTH: u32 = 640;
+
+/// The cache key of an imported template's first-page image: its stable
+/// identifier and the checksum of its managed source.
+pub fn imported_first_page_key(template_id: &str, sha256: &str) -> String {
+    format!("{template_id}:{sha256}")
+}
+
+/// An imported template's first page, as far as it has been drawn.
+#[derive(Clone)]
+pub enum ImportedFirstPage {
+    Loading,
+    Ready(Arc<RenderImage>),
+    Failed,
+}
+
+/// Application-wide first-page images of imported templates, keyed by
+/// [`imported_first_page_key`], so every window's picker and library share one
+/// render per template source.
+#[derive(Default)]
+pub struct ImportedTemplatePreviews(HashMap<String, ImportedFirstPage>);
+
+impl Global for ImportedTemplatePreviews {}
+
+impl ImportedTemplatePreviews {
+    pub fn get(key: &str, cx: &App) -> Option<ImportedFirstPage> {
+        cx.try_global::<Self>()?.0.get(key).cloned()
+    }
+
+    pub fn set(key: impl Into<String>, page: ImportedFirstPage, cx: &mut App) {
+        cx.default_global::<Self>().0.insert(key.into(), page);
+    }
+}
+
+/// The paper-size group of templates imported from PDFs.
+pub const IMPORTED_PDF_PAPER_SIZE: &str = "Imported PDFs";
+
+/// Template positions grouped under their paper size, for lists organised by
+/// size. Standard sheets come first in catalogue order (A3 before A4), then
+/// custom sizes in the order they first appear, then imported PDFs; each
+/// group keeps its templates' order.
+pub fn group_by_paper_size<'a>(
+    previews: impl IntoIterator<Item = &'a TemplatePreview>,
+) -> Vec<(String, Vec<usize>)> {
+    let mut groups: Vec<((u8, usize), String, Vec<usize>)> = Vec::new();
+    for (index, preview) in previews.into_iter().enumerate() {
+        let size = preview.paper_size();
+        match groups.iter_mut().find(|(_, label, _)| *label == size) {
+            Some((_, _, members)) => members.push(index),
+            None => groups.push((preview.paper_size_order(), size, vec![index])),
+        }
+    }
+    groups.sort_by_key(|(order, _, _)| *order);
+    groups
+        .into_iter()
+        .map(|(_, label, members)| (label, members))
+        .collect()
 }
 
 fn format_mm(value: f64) -> String {
@@ -188,7 +292,43 @@ pub fn template_preview_page(
     let frame_height = if compact { 128. } else { 192. };
     let padding = if compact { 8. } else { 12. };
     let inner = (frame_width - padding * 2., frame_height - padding * 2.);
+    let first_page = match preview {
+        TemplatePreview::ImportedPdf {
+            first_page_key: Some(key),
+            ..
+        } => match ImportedTemplatePreviews::get(key, cx) {
+            Some(ImportedFirstPage::Ready(image)) => Some(image),
+            _ => None,
+        },
+        _ => None,
+    };
     let page = match preview {
+        _ if let Some(image) = first_page => {
+            let size = image.size(0);
+            let (width, height) = fitted_page(
+                f64::from(size.width.0.max(1)),
+                f64::from(size.height.0.max(1)),
+                inner,
+            );
+            div()
+                .id(page_id)
+                .debug_selector(move || page_id.into())
+                .flex_none()
+                .w(px(width))
+                .h(px(height))
+                .overflow_hidden()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(rgb(0xffffff))
+                .shadow_xs()
+                .child(
+                    img(image)
+                        .id(TEMPLATE_PREVIEW_FIRST_PAGE_ID)
+                        .debug_selector(|| TEMPLATE_PREVIEW_FIRST_PAGE_ID.into())
+                        .size_full(),
+                )
+                .into_any_element()
+        }
         TemplatePreview::Generated(request) => {
             let (width, height) = fitted_page(request.width_mm, request.height_mm, inner);
             let color = request
@@ -322,11 +462,14 @@ mod tests {
     #[test]
     fn summaries_match_the_electron_template_card() {
         let dots = TemplatePreview::for_built_in("built-in-dots");
-        assert_eq!(dots.summary(), "420 × 297 mm · Landscape");
+        assert_eq!(dots.summary(), "A3 · Landscape");
         assert_eq!(dots.grid_summary(), "Page grid · 10 mm");
         let blank = TemplatePreview::for_built_in("built-in-blank");
         assert_eq!(blank.grid_summary(), "No page grid");
-        let imported = TemplatePreview::ImportedPdf { page_count: 1 };
+        let imported = TemplatePreview::ImportedPdf {
+            page_count: 1,
+            first_page_key: None,
+        };
         assert_eq!(imported.summary(), "1 page · Imported PDF");
         assert_eq!(imported.grid_summary(), "Page grid not defined");
         let portrait = GeneratedDocumentRequest {
@@ -375,6 +518,61 @@ mod tests {
         assert_eq!(
             fitted_page(210., 297., (100., 200.)),
             (100., 100. * 297. / 210.)
+        );
+    }
+
+    fn sized(width_mm: f64, height_mm: f64) -> TemplatePreview {
+        TemplatePreview::Generated(GeneratedDocumentRequest {
+            width_mm,
+            height_mm,
+            ..GeneratedDocumentRequest::a3_landscape_blank()
+        })
+    }
+
+    #[test]
+    fn templates_name_their_paper_in_either_orientation() {
+        assert_eq!(sized(420., 297.).paper_size(), "A3");
+        assert_eq!(sized(297., 420.).summary(), "A3 · Portrait");
+        assert_eq!(sized(210., 297.).summary(), "A4 · Portrait");
+        assert_eq!(sized(297., 210.).summary(), "A4 · Landscape");
+        assert_eq!(sized(500., 300.).summary(), "500 × 300 mm · Landscape");
+        assert_eq!(
+            TemplatePreview::for_built_in("built-in-grid-a4").summary(),
+            "A4 · Portrait"
+        );
+        assert_eq!(
+            TemplatePreview::ImportedPdf {
+                page_count: 2,
+                first_page_key: None
+            }
+            .paper_size(),
+            IMPORTED_PDF_PAPER_SIZE
+        );
+    }
+
+    #[test]
+    fn templates_group_by_paper_size_in_catalogue_order() {
+        let previews = [
+            sized(500., 300.),
+            TemplatePreview::ImportedPdf {
+                page_count: 1,
+                first_page_key: None,
+            },
+            sized(210., 297.),
+            sized(420., 297.),
+            sized(297., 210.),
+            sized(100., 100.),
+            sized(297., 420.),
+        ];
+        assert_eq!(
+            group_by_paper_size(&previews),
+            vec![
+                ("A3".to_owned(), vec![3, 6]),
+                ("A4".to_owned(), vec![2, 4]),
+                ("500 × 300 mm".to_owned(), vec![0]),
+                ("100 × 100 mm".to_owned(), vec![5]),
+                (IMPORTED_PDF_PAPER_SIZE.to_owned(), vec![1]),
+            ]
         );
     }
 }

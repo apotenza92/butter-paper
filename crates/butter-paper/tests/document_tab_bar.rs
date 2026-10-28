@@ -15,13 +15,15 @@ use butter_paper::{
         DocumentTabActivationOrigin, DocumentTabBarTemplateSeam, DocumentTabEvent,
         DocumentTabReorderEvent, DocumentTabReorderOrigin, TEMPLATE_CONTROL_GROUP_ID,
         TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_MANAGE_ID, TEMPLATE_PICKER_CLOSE_ID,
-        TEMPLATE_PICKER_ID, TEMPLATE_PICKER_POPOVER_ID, TEMPLATE_PRIMARY_ID,
-        TEMPLATE_SAVE_DOCUMENT_ID, TemplateCatalogItem, TemplateCreationOrigin,
-        TemplateSplitControl, TemplateSplitEvent, dirty_close_title,
+        TEMPLATE_PICKER_ID, TEMPLATE_PICKER_PAPER_SIZE_ID, TEMPLATE_PICKER_POPOVER_ID,
+        TEMPLATE_PRIMARY_ID, TEMPLATE_SAVE_DOCUMENT_ID, TemplateCatalogItem,
+        TemplateCreationOrigin, TemplateSplitControl, TemplateSplitEvent, dirty_close_title,
         document_tab_close_accessible_label, document_tab_close_id, document_tab_hover_mask_id,
         document_tab_id, document_tab_label_id, format_document_tab_label,
     },
+    generated_document::{GeneratedDocumentRequest, GeneratedPattern},
     page_view_control::{PageViewControl, PageViewMode},
+    template_preview::TemplatePreview,
     viewer_toolbar_strip::{VIEWER_TOOLBAR_CONTENT_ID, ViewerToolbarStrip},
     zoom_control::{DEFAULT_VIEWER_ZOOM, ZoomControl},
 };
@@ -310,7 +312,7 @@ fn template_split_starts_at_the_frozen_contract_and_rendered_ids(cx: &mut TestAp
     assert_eq!(TEMPLATE_MANAGE_ID, "template-picker-manage");
     assert_eq!(TEMPLATE_CREATE_ID, "template-picker-create");
     assert_eq!(TEMPLATE_SAVE_DOCUMENT_ID, "template-picker-save-document");
-    assert_eq!(BUILT_IN_TEMPLATES.len(), 6);
+    assert_eq!(BUILT_IN_TEMPLATES.len(), 12);
     assert_eq!(
         BUILT_IN_TEMPLATES.map(|template| (template.id, template.name)),
         [
@@ -320,6 +322,12 @@ fn template_split_starts_at_the_frozen_contract_and_rendered_ids(cx: &mut TestAp
             ("built-in-lined", "Ruled Paper"),
             ("built-in-isometric", "Isometric Grid"),
             ("built-in-triangle", "Triangle Grid"),
+            ("built-in-blank-a4", "Blank Paper"),
+            ("built-in-dots-a4", "Dot Grid"),
+            ("built-in-grid-a4", "Square Grid"),
+            ("built-in-lined-a4", "Ruled Paper"),
+            ("built-in-isometric-a4", "Isometric Grid"),
+            ("built-in-triangle-a4", "Triangle Grid"),
         ]
     );
 
@@ -473,6 +481,150 @@ fn template_split_consumes_dynamic_catalog_and_emits_active_document_save_comman
         assert_eq!(
             tabs.save_document_as_template_commands()[0].document_name,
             "Project Grid"
+        );
+    });
+}
+
+#[gpui::test]
+fn template_picker_filters_by_paper_size_and_carries_the_pattern_across_sizes(
+    cx: &mut TestAppContext,
+) {
+    let (cx, entities) = open_harness(cx);
+    let control = entities
+        .document_tabs
+        .read_with(cx, |tabs, _| tabs.template_control());
+    control.read_with(cx, |control, _| {
+        assert_eq!(control.paper_sizes(), ["A3", "A4"]);
+        assert_eq!(control.paper_size(), "A3");
+    });
+
+    click_target(cx, TEMPLATE_PICKER_ID);
+    draw(cx);
+    bounds(cx, TEMPLATE_PICKER_PAPER_SIZE_ID);
+    click_target(cx, "template-picker-item-built-in-dots");
+    draw(cx);
+
+    // Choosing A4 from the stock Select by keyboard keeps the picker open and
+    // moves Dot Grid A3 to Dot Grid A4.
+    click_target(cx, TEMPLATE_PICKER_PAPER_SIZE_ID);
+    draw(cx);
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert!(tabs.is_picker_open(), "Escape closes only the size menu");
+    });
+    click_target(cx, TEMPLATE_PICKER_PAPER_SIZE_ID);
+    draw(cx);
+    cx.simulate_keystrokes("down enter");
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert!(tabs.is_picker_open(), "the size menu is part of the picker");
+        assert_eq!(tabs.selected_template_id(), "built-in-dots-a4");
+        assert_eq!(tabs.last_template_id(), "built-in-blank");
+    });
+    control.read_with(cx, |control, _| assert_eq!(control.paper_size(), "A4"));
+    for stable_id in &TEMPLATE_ITEM_IDS[..6] {
+        assert!(cx.debug_bounds(stable_id).is_none(), "{stable_id} is A3");
+    }
+    for stable_id in &TEMPLATE_ITEM_IDS[6..] {
+        bounds(cx, stable_id);
+    }
+
+    click_target(cx, TEMPLATE_CREATE_ID);
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert_eq!(
+            tabs.creation_events().last().unwrap().template_id,
+            "built-in-dots-a4"
+        );
+        assert_eq!(tabs.last_template_id(), "built-in-dots-a4");
+    });
+
+    // Reopening defaults to the last template's size.
+    click_target(cx, TEMPLATE_PICKER_ID);
+    draw(cx);
+    control.read_with(cx, |control, _| assert_eq!(control.paper_size(), "A4"));
+    bounds(cx, "template-picker-item-built-in-dots-a4");
+    control.update(cx, |control, cx| control.select_paper_size("A3", cx));
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert_eq!(tabs.selected_template_id(), "built-in-dots");
+    });
+}
+
+#[gpui::test]
+fn template_picker_offers_custom_and_imported_sizes_after_standard_sheets(cx: &mut TestAppContext) {
+    let (cx, entities) = open_harness(cx);
+    let generated = |width_mm, height_mm, pattern| {
+        TemplatePreview::Generated(GeneratedDocumentRequest {
+            title: "Untitled".into(),
+            width_mm,
+            height_mm,
+            pattern,
+        })
+    };
+    let lines = Some(GeneratedPattern::Ruled {
+        spacing_mm: 8.,
+        color: "#000000".into(),
+    });
+    entities.document_tabs.update(cx, |tabs, cx| {
+        tabs.apply_template_catalog(
+            vec![
+                TemplateCatalogItem::new("built-in-blank", "Blank Paper"),
+                TemplateCatalogItem::new("built-in-lined", "Ruled Paper"),
+                TemplateCatalogItem::new("custom-wide-blank", "Wide")
+                    .with_preview(generated(500., 300., None)),
+                TemplateCatalogItem::new("custom-wide-lines", "Wide Lines")
+                    .with_preview(generated(500., 300., lines)),
+                TemplateCatalogItem::new("custom-a4", "Portrait Notes")
+                    .with_preview(generated(210., 297., None)),
+                TemplateCatalogItem::new("imported-00000000-0000-4000-8000-000000000001", "Form")
+                    .with_preview(TemplatePreview::ImportedPdf {
+                        page_count: 2,
+                        first_page_key: None,
+                    }),
+            ],
+            "custom-a4",
+            cx,
+        );
+    });
+    draw(cx);
+    let control = entities
+        .document_tabs
+        .read_with(cx, |tabs, _| tabs.template_control());
+    control.update(cx, |control, cx| {
+        assert_eq!(
+            control.paper_sizes(),
+            ["A3", "A4", "500 × 300 mm", "Imported PDFs"]
+        );
+        assert_eq!(control.paper_size(), "A4", "the last template's size");
+        assert_eq!(
+            control
+                .visible_templates()
+                .iter()
+                .map(|template| template.id.as_str())
+                .collect::<Vec<_>>(),
+            ["custom-a4"]
+        );
+        control.select_paper_size("A3", cx);
+        assert_eq!(control.selected_template_id(), "built-in-blank");
+        control.select_paper_size("Not a size", cx);
+        assert_eq!(control.paper_size(), "A3");
+    });
+    click_target(cx, TEMPLATE_PICKER_ID);
+    draw(cx);
+    control.update(cx, |control, cx| control.select_paper_size("A3", cx));
+    draw(cx);
+    click_target(cx, "template-picker-item-built-in-lined");
+    draw(cx);
+    control.update(cx, |control, cx| {
+        // No "Ruled Paper" in the custom size: the same pattern wins.
+        control.select_paper_size("500 × 300 mm", cx);
+        assert_eq!(control.selected_template_id(), "custom-wide-lines");
+        control.select_paper_size("Imported PDFs", cx);
+        assert_eq!(
+            control.selected_template_id(),
+            "imported-00000000-0000-4000-8000-000000000001"
         );
     });
 }
@@ -2198,7 +2350,11 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
             .read_with(cx, |tabs, _| tabs.is_picker_open())
     );
     bounds(cx, TEMPLATE_PICKER_POPOVER_ID);
-    for stable_id in TEMPLATE_ITEM_IDS {
+    // The picker lists the last template's paper size: the six A3 built-ins.
+    for stable_id in &TEMPLATE_ITEM_IDS[6..] {
+        assert!(cx.debug_bounds(stable_id).is_none(), "{stable_id} is A4");
+    }
+    for stable_id in &TEMPLATE_ITEM_IDS[..6] {
         assert_eq!(
             bounds(cx, stable_id).size.width,
             px(butter_paper::document_tab_bar::TEMPLATE_PICKER_COLUMN_WIDTH),
@@ -2224,7 +2380,11 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
             .read_with(cx, |tabs, _| tabs.is_picker_open())
     );
 
-    for (template, stable_id) in BUILT_IN_TEMPLATES.into_iter().zip(TEMPLATE_ITEM_IDS) {
+    for (template, stable_id) in BUILT_IN_TEMPLATES
+        .into_iter()
+        .zip(TEMPLATE_ITEM_IDS)
+        .take(6)
+    {
         click_target(cx, stable_id);
         draw(cx);
         entities.document_tabs.read_with(cx, |tabs, _| {
@@ -2321,7 +2481,8 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         .read_with(cx, |tabs, _| tabs.picker_focus_handle());
     cx.update(|window, cx| {
         picker_focus.focus(window, cx);
-        // The header's X, then the first two rows.
+        // The header's X, the paper-size Select, then the first two rows.
+        window.focus_next(cx);
         window.focus_next(cx);
         window.focus_next(cx);
         window.focus_next(cx);

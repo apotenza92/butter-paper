@@ -554,11 +554,11 @@ impl DocumentWorkspace {
             Button::new(DOCUMENT_TAB_OPEN_ID)
                 .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
                 .icon(IconName::Plus)
-                .tooltip("Open PDF")
+                .tooltip("New Tab")
                 .on_click(cx.listener(|workspace, _, _, cx| {
-                    workspace.prompt_to_open_documents(cx);
+                    workspace.open_new_tab(cx);
                 })),
-            "Open PDF",
+            "New Tab",
         );
         let recovery_button = self.render_recovery_notifications_button(cx);
         let update_button = cx
@@ -894,6 +894,12 @@ impl DocumentWorkspace {
                         strip.border_r_1()
                     })
                     .border_color(cx.theme().border)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|workspace, event: &MouseDownEvent, _, cx| {
+                            workspace.open_new_tab_from_tab_bar(event, cx);
+                        }),
+                    )
                     .on_prepaint(move |_, _, cx| {
                         // Read after child prepaint has refreshed the tab bounds.
                         let overflow_scroll = overflow_scroll.clone();

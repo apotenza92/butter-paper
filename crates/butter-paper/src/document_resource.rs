@@ -648,8 +648,23 @@ pub struct DocumentRecoveryRequest {
     pub target_rotations: Vec<PageRotation>,
 }
 
+/// The document identity of first-page previews of files that are not open
+/// as documents (imported templates). Never a session's identity.
+pub const FIRST_PAGE_PREVIEW_DOCUMENT_ID: DocumentId = DocumentId::new(u64::MAX);
+static FIRST_PAGE_PREVIEW_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 pub trait NativeDocumentOpener: Send + Sync {
     fn open(&self, request: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String>;
+
+    /// The first page of the PDF at `path`, drawn as a thumbnail `width`
+    /// pixels wide, for a preview of a file that is not open as a document.
+    /// Blocking: call it off the UI thread.
+    fn render_first_page(&self, path: &Path, width: u32) -> Result<RasterSurface, String> {
+        let opened = self.open(&first_page_preview_request(path))?;
+        let page = opened.resource.render_thumbnail(0, width);
+        let _ = opened.close();
+        page
+    }
 
     /// Opens a document whose content is already edited (a recovered
     /// session), so its first renders show the edits.
@@ -667,6 +682,14 @@ pub trait NativeDocumentOpener: Send + Sync {
         Ok(opened)
     }
 }
+fn first_page_preview_request(path: &Path) -> OpenDocumentRequest {
+    OpenDocumentRequest {
+        document_id: FIRST_PAGE_PREVIEW_DOCUMENT_ID,
+        generation: FIRST_PAGE_PREVIEW_GENERATION.fetch_add(1, Ordering::Relaxed),
+        path: path.to_owned(),
+    }
+}
+
 pub struct PdfiumWorkerBackend {
     worker_executable: PathBuf,
     pdfium_library: PathBuf,
@@ -686,6 +709,20 @@ impl PdfiumWorkerBackend {
 impl NativeDocumentOpener for PdfiumWorkerBackend {
     fn open(&self, request: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String> {
         self.open_with_edits(request, &DocumentEdits::default())
+    }
+
+    /// Only the worker's page: none of the annotations, thumbnails and
+    /// hashing a document session opens with.
+    fn render_first_page(&self, path: &Path, width: u32) -> Result<RasterSurface, String> {
+        let resource = PdfiumWorkerResource::open(
+            &self.worker_executable,
+            &self.pdfium_library,
+            &self.surface_root,
+            &first_page_preview_request(path),
+        )?;
+        let page = resource.render_thumbnail(0, width);
+        let _ = resource.close();
+        page
     }
 
     fn open_with_edits(
@@ -1671,6 +1708,50 @@ fn unexpected_response(operation: &str, response: WorkerResponse) -> String {
 
 #[cfg(test)]
 mod raster_colour_tests {
+    #[test]
+    #[ignore = "requires the checksum-pinned development PDFium library and the worker binary"]
+    fn a_first_page_preview_draws_the_page_without_opening_a_session() {
+        use super::*;
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let worker = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(|deps| deps.parent())
+            .unwrap()
+            .join(if cfg!(windows) {
+                "butter-paper-pdf-worker.exe"
+            } else {
+                "butter-paper-pdf-worker"
+            });
+        let library = std::path::PathBuf::from(
+            std::env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY names libpdfium"),
+        );
+        let surfaces = manifest_dir.join(format!(
+            "target/test-scratch/first-page-preview-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&surfaces).unwrap();
+        let backend = PdfiumWorkerBackend::new(worker, library, surfaces.clone());
+        let page = backend
+            .render_first_page(
+                &manifest_dir.join("tests/fixtures/bp-multi-page-v1.pdf"),
+                320,
+            )
+            .unwrap();
+        assert!(page.width() > 0 && page.width() <= 320, "{}", page.width());
+        assert!(page.height() > 0);
+        assert!(
+            backend
+                .render_first_page(&manifest_dir.join("tests/fixtures/missing.pdf"), 320)
+                .is_err()
+        );
+        assert!(
+            std::fs::read_dir(&surfaces).unwrap().next().is_none(),
+            "the preview's worker releases its surfaces"
+        );
+        let _ = std::fs::remove_dir_all(surfaces);
+    }
+
     #[test]
     #[ignore = "requires the checksum-pinned development PDFium library and the worker binary"]
     fn opening_a_revu_vector_snapshot_rasterises_its_form_for_the_canvas() {

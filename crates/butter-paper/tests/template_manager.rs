@@ -1,3 +1,6 @@
+use butter_paper::document_resource::{
+    NativeDocumentOpener, OpenDocumentRequest, OpenedNativeDocument, RasterSurface,
+};
 use butter_paper::document_workspace::{
     CloseRequestDisposition, DirtyCloseResolution, DocumentId, DocumentWorkspace,
     DocumentWorkspaceTemplateCommand,
@@ -19,14 +22,17 @@ use butter_paper::template_manager::{
     TemplateManagerEvent, TemplateManagerMode, TemplateManagerModel, TemplateManagerRecord,
     TemplateManagerView, draft_preview_svg, legacy_blank_request_from_json,
     next_custom_template_id, next_imported_template_id, route_workspace_template_command,
-    template_manager_dialog_width, template_manager_uses_stacked_layout,
+    template_manager_dialog_width, template_manager_section_id,
+    template_manager_uses_stacked_layout,
 };
+use butter_paper::template_preview::TEMPLATE_PREVIEW_FIRST_PAGE_ID;
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
     Render, ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext, Window, div, point, px,
     size,
 };
 use gpui_component::{Root, WindowExt as _};
+use std::sync::Arc;
 use std::{cell::RefCell, rc::Rc};
 use std::{
     fs,
@@ -540,7 +546,7 @@ fn persistent_manager_restarts_imports_removes_and_keeps_one_storage_authority()
     )
     .unwrap();
     let mut store = PersistentTemplateManager::open(library_root.clone()).unwrap();
-    assert_eq!(store.snapshot().unwrap().records().len(), 6);
+    assert_eq!(store.snapshot().unwrap().records().len(), 12);
     assert_eq!(
         store.select("built-in-grid").unwrap().last_used_id(),
         "built-in-grid"
@@ -558,14 +564,14 @@ fn persistent_manager_restarts_imports_removes_and_keeps_one_storage_authority()
         )
         .unwrap();
     assert_eq!(imported.last_used_id(), imported_id);
-    assert_eq!(imported.records().len(), 8);
+    assert_eq!(imported.records().len(), 14);
     drop(store);
 
     fs::write(&source, b"the original source is no longer authoritative").unwrap();
     let mut store = PersistentTemplateManager::open(library_root).unwrap();
     let restarted = store.snapshot().unwrap();
     assert_eq!(restarted.last_used_id(), imported_id);
-    assert_eq!(restarted.records().len(), 8);
+    assert_eq!(restarted.records().len(), 14);
     assert_eq!(
         restarted
             .records()
@@ -589,6 +595,289 @@ fn persistent_manager_restarts_imports_removes_and_keeps_one_storage_authority()
 }
 
 #[test]
+fn library_groups_templates_by_paper_size_with_a4_built_ins() {
+    let root = owned_test_root("paper-size-groups");
+    let library_root = root.join("library");
+    let source = root.join("Site Form.pdf");
+    fs::create_dir_all(&root).unwrap();
+    fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
+        &source,
+    )
+    .unwrap();
+    let mut store = PersistentTemplateManager::open(library_root).unwrap();
+    let imported_id = "imported-00000000-0000-4000-8000-0000000000aa";
+    store
+        .import_pdf(
+            imported_id,
+            "Site Form.pdf",
+            "2026-10-28T00:00:00Z",
+            &source,
+        )
+        .unwrap();
+    store
+        .save_generated(
+            "custom-wide",
+            "Wide",
+            GeneratedDocumentRequest {
+                width_mm: 500.,
+                height_mm: 300.,
+                ..square_grid_request()
+            },
+        )
+        .unwrap();
+    let model = store
+        .save_generated(
+            "custom-a4-landscape",
+            "A4 Landscape Grid",
+            GeneratedDocumentRequest {
+                width_mm: 297.,
+                height_mm: 210.,
+                ..square_grid_request()
+            },
+        )
+        .unwrap();
+
+    let summary = |id: &str| {
+        let record = model.records().iter().find(|record| record.id() == id);
+        let record = record.unwrap();
+        format!("{} · {}", record.summary(), record.preview().grid_summary())
+    };
+    assert_eq!(
+        summary("built-in-dots"),
+        "A3 · Landscape · Page grid · 10 mm"
+    );
+    assert_eq!(
+        summary("built-in-dots-a4"),
+        "A4 · Portrait · Page grid · 10 mm"
+    );
+    assert_eq!(summary("built-in-blank-a4"), "A4 · Portrait · No page grid");
+    assert_eq!(
+        summary("custom-a4-landscape"),
+        "A4 · Landscape · Page grid · 10 mm"
+    );
+    assert_eq!(
+        summary("custom-wide"),
+        "500 × 300 mm · Landscape · Page grid · 10 mm"
+    );
+
+    assert_eq!(
+        model.records_by_paper_size(),
+        vec![
+            (
+                "A3".to_owned(),
+                vec![
+                    "built-in-blank",
+                    "built-in-dots",
+                    "built-in-grid",
+                    "built-in-lined",
+                    "built-in-isometric",
+                    "built-in-triangle",
+                ],
+            ),
+            (
+                "A4".to_owned(),
+                vec![
+                    "built-in-blank-a4",
+                    "built-in-dots-a4",
+                    "built-in-grid-a4",
+                    "built-in-lined-a4",
+                    "built-in-isometric-a4",
+                    "built-in-triangle-a4",
+                    "custom-a4-landscape",
+                ],
+            ),
+            ("500 × 300 mm".to_owned(), vec!["custom-wide"]),
+            ("Imported PDFs".to_owned(), vec![imported_id]),
+        ]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn template_library_renders_a_heading_above_each_paper_size(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let preview_record = |id: &str, name: &str| TemplateManagerRecord::built_in(id, name, "");
+    let model = TemplateManagerModel::new(
+        vec![
+            preview_record("built-in-blank", "Blank Paper"),
+            preview_record("built-in-dots", "Dot Grid"),
+            preview_record("built-in-blank-a4", "Blank Paper"),
+            TemplateManagerRecord::imported(
+                "imported-00000000-0000-4000-8000-000000000000",
+                "Site Form",
+                1,
+            ),
+        ],
+        "built-in-blank-a4",
+    )
+    .unwrap();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let manager = cx.new(|cx| TemplateManagerView::new(model, window, cx));
+        Root::new(manager, window, cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // Debug selectors are `&'static str`; leaking a few test strings is fine.
+    let selector = |id: String| -> &'static str { Box::leak(id.into_boxed_str()) };
+    let top = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+        cx.debug_bounds(id)
+            .unwrap_or_else(|| panic!("missing {id}"))
+            .top()
+    };
+    let a3 = top(cx, selector(template_manager_section_id(0)));
+    let blank = top(cx, "template-manager-item-built-in-blank");
+    let dots = top(cx, "template-manager-item-built-in-dots");
+    let a4 = top(cx, selector(template_manager_section_id(1)));
+    let blank_a4 = top(cx, "template-manager-item-built-in-blank-a4");
+    let imported = top(cx, selector(template_manager_section_id(2)));
+    let site_form = top(
+        cx,
+        "template-manager-item-imported-00000000-0000-4000-8000-000000000000",
+    );
+    assert!(a3 < blank && blank < dots && dots < a4 && a4 < blank_a4);
+    assert!(blank_a4 < imported && imported < site_form);
+    assert!(
+        cx.debug_bounds(selector(template_manager_section_id(3)))
+            .is_none()
+    );
+
+    // Selecting across a heading still selects the template.
+    let site_form_bounds = cx
+        .debug_bounds("template-manager-item-imported-00000000-0000-4000-8000-000000000000")
+        .unwrap();
+    cx.simulate_click(site_form_bounds.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID)
+            .is_some()
+    );
+}
+
+#[gpui::test]
+fn a_long_template_name_truncates_beside_its_remove_control(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let imported_id = "imported-00000000-0000-4000-8000-000000000000";
+    let long_name = "Imported site inspection form with a very long descriptive name for the job";
+    let model = TemplateManagerModel::new(
+        vec![
+            TemplateManagerRecord::built_in("built-in-blank", "Blank Paper", ""),
+            TemplateManagerRecord::imported(imported_id, long_name, 3),
+        ],
+        imported_id,
+    )
+    .unwrap();
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let manager = cx.new(|cx| TemplateManagerView::new(model, window, cx));
+        Root::new(manager, window, cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let row = cx
+        .debug_bounds("template-manager-item-imported-00000000-0000-4000-8000-000000000000")
+        .unwrap();
+    let remove = cx
+        .debug_bounds("template-manager-remove-imported-00000000-0000-4000-8000-000000000000")
+        .unwrap();
+    assert!(
+        remove.left() >= row.left() && remove.right() <= row.right(),
+        "the Remove control {remove:?} stays inside its row {row:?}"
+    );
+    assert!(
+        remove.size.width <= px(32.),
+        "Remove is a compact icon button, not the template's name: {remove:?}"
+    );
+    if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+        assert!(tree.contains(&format!("Remove {long_name}")), "{tree}");
+    }
+}
+
+struct FirstPageRenderer(Result<(u32, u32), String>);
+
+impl NativeDocumentOpener for FirstPageRenderer {
+    fn open(&self, _: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String> {
+        Err("previews only".into())
+    }
+
+    fn render_first_page(&self, path: &std::path::Path, _: u32) -> Result<RasterSurface, String> {
+        assert!(path.ends_with("source.pdf"), "{path:?}");
+        let (width, height) = self.0.clone()?;
+        RasterSurface::new(width, height, vec![255; (width * height * 4) as usize])
+    }
+}
+
+fn imported_preview_state(
+    cx: &mut TestAppContext,
+    renderer: FirstPageRenderer,
+    label: &str,
+) -> (bool, bool) {
+    cx.update(gpui_component::init);
+    let root = owned_test_root(label);
+    let library_root = root.join("library");
+    let source = root.join("Site Form.pdf");
+    fs::create_dir_all(&root).unwrap();
+    fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
+        &source,
+    )
+    .unwrap();
+    PersistentTemplateManager::open(library_root.clone())
+        .unwrap()
+        .import_pdf(
+            "imported-00000000-0000-4000-8000-0000000000bb",
+            "Site Form.pdf",
+            "2026-10-28T00:00:00Z",
+            &source,
+        )
+        .unwrap();
+    let manager_slot = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let manager_slot = manager_slot.clone();
+        move |window, cx| {
+            let manager = cx
+                .new(|cx| TemplateManagerView::open_persistent(library_root, window, cx).unwrap());
+            manager_slot.replace(Some(manager.clone()));
+            Root::new(manager, window, cx)
+        }
+    });
+    let manager = manager_slot.borrow().clone().unwrap();
+    manager.update(cx, |manager, cx| {
+        manager.bind_preview_renderer(Arc::new(renderer), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let state = (
+        cx.debug_bounds(TEMPLATE_PREVIEW_FIRST_PAGE_ID).is_some(),
+        cx.debug_bounds(TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID)
+            .is_some(),
+    );
+    fs::remove_dir_all(root).unwrap();
+    state
+}
+
+#[gpui::test]
+fn an_imported_template_previews_its_first_page(cx: &mut TestAppContext) {
+    assert_eq!(
+        imported_preview_state(cx, FirstPageRenderer(Ok((60, 85))), "first-page"),
+        (true, true),
+        "the preview page shows the rendered first page"
+    );
+}
+
+#[gpui::test]
+fn an_imported_template_keeps_the_placeholder_when_its_page_cannot_be_drawn(
+    cx: &mut TestAppContext,
+) {
+    assert_eq!(
+        imported_preview_state(
+            cx,
+            FirstPageRenderer(Err("broken".into())),
+            "first-page-fails"
+        ),
+        (false, true),
+        "the placeholder page remains"
+    );
+}
+
+#[test]
 fn legacy_request_migrates_once_and_materialized_templates_keep_independent_sources() {
     let root = owned_test_root("legacy-and-materialize");
     let library_root = root.join("library");
@@ -606,7 +895,7 @@ fn legacy_request_migrates_once_and_materialized_templates_keep_independent_sour
         .migrate_legacy_blank_request(Some(square_grid_request()))
         .unwrap();
     assert_eq!(migrated.last_used_id(), "built-in-grid");
-    assert_eq!(migrated.records().len(), 6);
+    assert_eq!(migrated.records().len(), 12);
     drop(manager);
     let mut manager = PersistentTemplateManager::open(library_root.clone()).unwrap();
     let second = manager
@@ -707,7 +996,7 @@ fn malformed_legacy_data_falls_back_and_snapshot_keeps_generated_before_imported
         .map(|record| record.id().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(
-        &ids[6..],
+        &ids[12..],
         &[
             "custom-after-import",
             "imported-00000000-0000-4000-8000-000000000001"
@@ -808,7 +1097,7 @@ fn workspace_save_command_routes_once_through_the_retained_manager_and_recovers(
     cx.run_until_parked();
     assert_eq!(
         manager.read_with(cx, |manager, _| manager.model().records().len()),
-        7,
+        13,
         "a duplicate command while storage is busy must be suppressed"
     );
     assert!(!manager.read_with(cx, |manager, _| manager.is_storage_busy()));
@@ -822,7 +1111,7 @@ fn workspace_save_command_routes_once_through_the_retained_manager_and_recovers(
     cx.run_until_parked();
     assert_eq!(
         manager.read_with(cx, |manager, _| manager.model().records().len()),
-        7
+        13
     );
     assert!(manager.read_with(cx, |manager, _| manager.model().error().is_some()));
     fs::remove_dir_all(root).unwrap();
@@ -877,7 +1166,7 @@ fn injected_native_picker_completion_imports_persistently_and_recovers_from_fail
     cx.run_until_parked();
     assert_eq!(
         manager.read_with(cx, |manager, _| manager.model().records().len()),
-        6,
+        12,
         "a cancelled generation must not apply its completed storage result"
     );
     assert_eq!(

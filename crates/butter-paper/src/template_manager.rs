@@ -4,8 +4,9 @@
 //! durable template library and document workspace remain the storage and
 //! document authorities.
 
-use crate::accessible_button::close_icon_button;
+use crate::accessible_button::{accessible_icon_button, close_icon_button};
 use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
+use crate::document_resource::NativeDocumentOpener;
 use crate::generated_document::{
     GeneratedDocumentRequest, GeneratedDocumentStore, OwnedGeneratedDocument,
 };
@@ -17,7 +18,8 @@ use gpui::{
     svg,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, IconName, IndexPath, Selectable as _, Sizable as _,
+    WindowExt as _,
     alert::Alert,
     button::{Button, ButtonGroup, ButtonVariants as _},
     dialog::{DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle},
@@ -103,19 +105,87 @@ pub fn template_manager_uses_stacked_layout(viewport_width: f32) -> bool {
     viewport_width < 720.
 }
 
+/// Stable debug selector of the Template Library's heading for paper-size
+/// section `section`.
+pub fn template_manager_section_id(section: usize) -> String {
+    format!("template-manager-section-{section}")
+}
+
 struct TemplateListDelegate {
     owner: WeakEntity<TemplateManagerView>,
     records: Vec<TemplateManagerRecord>,
+    /// Paper-size headings with the positions in `records` listed under each.
+    sections: Vec<(String, Vec<usize>)>,
     selected_index: Option<IndexPath>,
     syncing_snapshot: bool,
     storage_busy: bool,
 }
 
+impl TemplateListDelegate {
+    fn set_records(&mut self, records: Vec<TemplateManagerRecord>) {
+        self.sections = paper_size_sections(&records);
+        self.records = records;
+    }
+
+    fn record_at(&self, index: IndexPath) -> Option<&TemplateManagerRecord> {
+        let position = *self.sections.get(index.section)?.1.get(index.row)?;
+        self.records.get(position)
+    }
+
+    fn index_of(&self, template_id: &str) -> Option<IndexPath> {
+        self.sections
+            .iter()
+            .enumerate()
+            .find_map(|(section, (_, members))| {
+                members
+                    .iter()
+                    .position(|&position| self.records[position].id() == template_id)
+                    .map(|row| IndexPath::new(row).section(section))
+            })
+    }
+}
+
+fn paper_size_sections(records: &[TemplateManagerRecord]) -> Vec<(String, Vec<usize>)> {
+    let previews = records
+        .iter()
+        .map(TemplateManagerRecord::preview)
+        .collect::<Vec<_>>();
+    crate::template_preview::group_by_paper_size(&previews)
+}
+
 impl ListDelegate for TemplateListDelegate {
     type Item = ListItem;
 
-    fn items_count(&self, _: usize, _: &App) -> usize {
-        self.records.len()
+    fn sections_count(&self, _: &App) -> usize {
+        self.sections.len().max(1)
+    }
+
+    fn items_count(&self, section: usize, _: &App) -> usize {
+        self.sections
+            .get(section)
+            .map_or(0, |(_, members)| members.len())
+    }
+
+    fn render_section_header(
+        &mut self,
+        section: usize,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<impl IntoElement> {
+        let (label, _) = self.sections.get(section)?;
+        let stable_id = template_manager_section_id(section);
+        Some(
+            div()
+                .id(stable_id.clone())
+                .debug_selector(move || stable_id.clone())
+                .px_2()
+                .pt_2()
+                .pb_1()
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(cx.theme().muted_foreground)
+                .child(label.clone()),
+        )
     }
 
     fn set_selected_index(
@@ -132,10 +202,7 @@ impl ListDelegate for TemplateListDelegate {
         if !self.syncing_snapshot
             && let (Some(index), Some(owner)) = (index, self.owner.upgrade())
         {
-            let selected_id = self
-                .records
-                .get(index.row)
-                .map(|record| record.id().to_owned());
+            let selected_id = self.record_at(index).map(|record| record.id().to_owned());
             owner.update(cx, |manager, cx| {
                 if let Some(id) = selected_id {
                     let _ = manager.model.select(&id);
@@ -152,7 +219,7 @@ impl ListDelegate for TemplateListDelegate {
         _: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
-        let record = self.records.get(index.row)?.clone();
+        let record = self.record_at(index)?.clone();
         let selected = self.selected_index == Some(index);
         let stable_id = format!("template-manager-item-{}", record.id());
         let removable = record.removable();
@@ -167,17 +234,24 @@ impl ListDelegate for TemplateListDelegate {
                 .selected(selected)
                 .group(group_id.clone())
                 .child(
+                    // Zero intrinsic width, filling the row: a long name
+                    // truncates beside the Remove control instead of pushing
+                    // it out of the row.
                     v_flex()
-                        .min_w_0()
+                        .w_0()
+                        .min_w_full()
+                        .overflow_hidden()
                         .gap_0p5()
                         .child(
                             div()
+                                .truncate()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .child(record.name().to_owned()),
                         )
                         .child(
                             div()
+                                .truncate()
                                 .text_sm()
                                 .text_color(cx.theme().muted_foreground)
                                 .child({
@@ -188,31 +262,40 @@ impl ListDelegate for TemplateListDelegate {
                 )
                 .when(removable, |row| {
                     let button_id = format!("template-manager-remove-{remove_id}");
+                    let label = format!("Remove {}", record.name());
                     row.suffix(move |_, _| {
                         let remove_id = remove_id.clone();
                         let remove_name = remove_name.clone();
                         let remove_owner = remove_owner.clone();
-                        Button::new(button_id.clone())
-                            .debug_selector({
-                                let button_id = button_id.clone();
-                                move || button_id.clone()
-                            })
-                            .label(format!("Remove {}", record.name()))
-                            .danger()
-                            .disabled(storage_busy)
-                            .opacity(0.)
-                            .group_hover(group_id.clone(), |style| style.opacity(1.))
-                            .focus(|style| style.opacity(1.))
-                            .on_click(move |_, window, cx| {
-                                cx.stop_propagation();
-                                TemplateManagerView::confirm_remove_template(
-                                    remove_owner.clone(),
-                                    remove_id.clone(),
-                                    remove_name.clone(),
-                                    window,
-                                    cx,
-                                );
-                            })
+                        // Shown on hover or focus, as other remove controls are.
+                        accessible_icon_button(
+                            Button::new(button_id.clone())
+                                .debug_selector({
+                                    let button_id = button_id.clone();
+                                    move || button_id.clone()
+                                })
+                                .icon(IconName::Delete)
+                                .ghost()
+                                .danger()
+                                .small()
+                                .flex_none()
+                                .tooltip(label.clone())
+                                .disabled(storage_busy)
+                                .opacity(0.)
+                                .group_hover(group_id.clone(), |style| style.opacity(1.))
+                                .focus(|style| style.opacity(1.))
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    TemplateManagerView::confirm_remove_template(
+                                        remove_owner.clone(),
+                                        remove_id.clone(),
+                                        remove_name.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            label.clone(),
+                        )
                     })
                 }),
         )
@@ -259,6 +342,9 @@ pub enum TemplateManagerRecord {
         id: String,
         name: String,
         page_count: usize,
+        /// Checksum of the managed source, when the library knows it; keys
+        /// the cached first-page preview.
+        sha256: Option<String>,
     },
 }
 
@@ -294,7 +380,16 @@ impl TemplateManagerRecord {
             id: id.into(),
             name: name.into(),
             page_count,
+            sha256: None,
         }
+    }
+
+    /// This imported record with the checksum of its managed source.
+    pub fn with_sha256(mut self, checksum: impl Into<String>) -> Self {
+        if let Self::ImportedPdf { sha256, .. } = &mut self {
+            *sha256 = Some(checksum.into());
+        }
+        self
     }
 
     pub fn id(&self) -> &str {
@@ -318,8 +413,16 @@ impl TemplateManagerRecord {
         match self {
             Self::BuiltIn { id, .. } => TemplatePreview::for_built_in(id),
             Self::Generated { request, .. } => TemplatePreview::Generated(request.clone()),
-            Self::ImportedPdf { page_count, .. } => TemplatePreview::ImportedPdf {
+            Self::ImportedPdf {
+                id,
+                page_count,
+                sha256,
+                ..
+            } => TemplatePreview::ImportedPdf {
                 page_count: *page_count,
+                first_page_key: sha256
+                    .as_deref()
+                    .map(|sha256| crate::template_preview::imported_first_page_key(id, sha256)),
             },
         }
     }
@@ -427,6 +530,23 @@ impl TemplateManagerModel {
 
     pub fn records(&self) -> &[TemplateManagerRecord] {
         &self.records
+    }
+
+    /// Template identifiers under their paper-size headings, in the order the
+    /// Template Library lists them.
+    pub fn records_by_paper_size(&self) -> Vec<(String, Vec<&str>)> {
+        paper_size_sections(&self.records)
+            .into_iter()
+            .map(|(label, members)| {
+                (
+                    label,
+                    members
+                        .into_iter()
+                        .map(|position| self.records[position].id())
+                        .collect(),
+                )
+            })
+            .collect()
     }
 
     pub fn selected_id(&self) -> &str {
@@ -632,15 +752,8 @@ impl TemplateManagerModel {
         request
             .to_pdf_bytes()
             .map_err(|error| TemplateManagerError(error.to_string()))?;
-        let orientation = if request.width_mm >= request.height_mm {
-            "Landscape"
-        } else {
-            "Portrait"
-        };
-        let summary = format!(
-            "{} × {} mm · {orientation}",
-            request.width_mm, request.height_mm
-        );
+        let summary =
+            crate::template_preview::TemplatePreview::Generated(request.clone()).summary();
         self.records.push(TemplateManagerRecord::generated(
             template_id,
             name,
@@ -1020,6 +1133,13 @@ impl PersistentTemplateManager {
             .map_err(|error| TemplateManagerError(error.to_string()))
     }
 
+    /// The managed source's location for a preview, without hashing it.
+    pub fn preview_source_path(&self, template_id: &str) -> Result<PathBuf, TemplateManagerError> {
+        self.library
+            .unverified_managed_source_path(template_id)
+            .map_err(|error| TemplateManagerError(error.to_string()))
+    }
+
     pub fn select(
         &mut self,
         template_id: &str,
@@ -1048,43 +1168,33 @@ impl PersistentTemplateManager {
 
 fn manager_record_from_library(record: &TemplateRecord) -> TemplateManagerRecord {
     match record {
-        TemplateRecord::Generated { id, name, request } => {
-            let orientation = if request.width_mm >= request.height_mm {
-                "Landscape"
-            } else {
-                "Portrait"
-            };
-            TemplateManagerRecord::generated(
-                id,
-                name,
-                format!(
-                    "{} × {} mm · {orientation}",
-                    request.width_mm, request.height_mm
-                ),
-                request.clone(),
-            )
-        }
+        TemplateRecord::Generated { id, name, request } => TemplateManagerRecord::generated(
+            id,
+            name,
+            crate::template_preview::TemplatePreview::Generated(request.clone()).summary(),
+            request.clone(),
+        ),
         TemplateRecord::ImportedPdf {
             id,
             name,
             page_count,
+            sha256,
             ..
-        } => TemplateManagerRecord::imported(id, name, *page_count),
+        } => TemplateManagerRecord::imported(id, name, *page_count).with_sha256(sha256),
     }
 }
 
 fn built_in_manager_records() -> Vec<TemplateManagerRecord> {
-    [
-        ("built-in-blank", "Blank Paper"),
-        ("built-in-dots", "Dot Grid"),
-        ("built-in-grid", "Square Grid"),
-        ("built-in-lined", "Ruled Paper"),
-        ("built-in-isometric", "Isometric Grid"),
-        ("built-in-triangle", "Triangle Grid"),
-    ]
-    .into_iter()
-    .map(|(id, name)| TemplateManagerRecord::built_in(id, name, "A3 · Landscape"))
-    .collect()
+    crate::document_tab_bar::BUILT_IN_TEMPLATES
+        .into_iter()
+        .map(|template| {
+            TemplateManagerRecord::built_in(
+                template.id,
+                template.name,
+                crate::template_preview::TemplatePreview::for_built_in(template.id).summary(),
+            )
+        })
+        .collect()
 }
 
 /// Real GPUI Component presentation around application-owned manager state.
@@ -1106,6 +1216,7 @@ pub struct TemplateManagerView {
     pending_document_generation: Option<u64>,
     draft_error_target: Option<DraftInputTarget>,
     scroll_handle: ScrollHandle,
+    preview_renderer: Option<Arc<dyn NativeDocumentOpener>>,
 }
 
 impl TemplateManagerView {
@@ -1123,25 +1234,18 @@ impl TemplateManagerView {
         let height_input = cx.new(|cx| InputState::new(window, cx));
         let spacing_input = cx.new(|cx| InputState::new(window, cx));
         let color_input = cx.new(|cx| InputState::new(window, cx));
-        let selected_index = model
-            .records()
-            .iter()
-            .position(|record| record.id() == model.selected_id())
-            .map(IndexPath::new);
-        let list_owner = cx.weak_entity();
-        let template_list = cx.new(|cx| {
-            ListState::new(
-                TemplateListDelegate {
-                    owner: list_owner,
-                    records: model.records().to_vec(),
-                    selected_index,
-                    syncing_snapshot: false,
-                    storage_busy: false,
-                },
-                window,
-                cx,
-            )
-        });
+        let mut delegate = TemplateListDelegate {
+            owner: cx.weak_entity(),
+            records: Vec::new(),
+            sections: Vec::new(),
+            selected_index: None,
+            syncing_snapshot: false,
+            storage_busy: false,
+        };
+        delegate.set_records(model.records().to_vec());
+        let selected_index = delegate.index_of(model.selected_id());
+        delegate.selected_index = selected_index;
+        let template_list = cx.new(|cx| ListState::new(delegate, window, cx));
         if let Some(selected_index) = selected_index {
             template_list.update(cx, |list, cx| {
                 list.delegate_mut().syncing_snapshot = true;
@@ -1190,6 +1294,7 @@ impl TemplateManagerView {
             pending_document_generation: None,
             draft_error_target: None,
             scroll_handle: ScrollHandle::new(),
+            preview_renderer: None,
         }
     }
 
@@ -1253,6 +1358,7 @@ impl TemplateManagerView {
             return false;
         }
         self.model = model;
+        self.request_imported_previews(cx);
         cx.notify();
         true
     }
@@ -1283,6 +1389,67 @@ impl TemplateManagerView {
     pub fn focus_template_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.template_list
             .update(cx, |list, cx| list.focus(window, cx));
+    }
+
+    /// Draws imported templates' first pages with `renderer` (the PDF worker
+    /// backend) for their previews, off the UI thread. Until one is drawn, or
+    /// if drawing fails, its preview keeps the placeholder page.
+    pub fn bind_preview_renderer(
+        &mut self,
+        renderer: Arc<dyn NativeDocumentOpener>,
+        cx: &mut Context<Self>,
+    ) {
+        self.preview_renderer = Some(renderer);
+        self.request_imported_previews(cx);
+    }
+
+    fn request_imported_previews(&mut self, cx: &mut Context<Self>) {
+        use crate::template_preview::{
+            IMPORTED_FIRST_PAGE_WIDTH, ImportedFirstPage, ImportedTemplatePreviews,
+            imported_first_page_key,
+        };
+        let (Some(renderer), Some(persistent)) =
+            (self.preview_renderer.clone(), self.persistent.clone())
+        else {
+            return;
+        };
+        for record in self.model.records() {
+            let TemplateManagerRecord::ImportedPdf {
+                id,
+                sha256: Some(sha256),
+                ..
+            } = record
+            else {
+                continue;
+            };
+            let key = imported_first_page_key(id, sha256);
+            if ImportedTemplatePreviews::get(&key, cx).is_some() {
+                continue;
+            }
+            ImportedTemplatePreviews::set(key.clone(), ImportedFirstPage::Loading, cx);
+            let (renderer, persistent, id) = (renderer.clone(), persistent.clone(), id.clone());
+            let render = cx.background_spawn(async move {
+                let path = persistent
+                    .lock()
+                    .map_err(|_| "template storage lock was poisoned".to_owned())?
+                    .preview_source_path(&id)
+                    .map_err(|error| error.to_string())?;
+                renderer
+                    .render_first_page(&path, IMPORTED_FIRST_PAGE_WIDTH)?
+                    .into_render_image()
+            });
+            cx.spawn(async move |_, cx| {
+                let page = match render.await {
+                    Ok(image) => ImportedFirstPage::Ready(image),
+                    Err(_) => ImportedFirstPage::Failed,
+                };
+                cx.update(|cx| {
+                    ImportedTemplatePreviews::set(key, page, cx);
+                    cx.refresh_windows();
+                });
+            })
+            .detach();
+        }
     }
 
     pub fn bind_document_workspace(
@@ -1774,14 +1941,13 @@ impl TemplateManagerView {
     }
 
     fn sync_template_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_imported_previews(cx);
         let records = self.model.records().to_vec();
         let storage_busy = self.storage_busy();
-        let selected = records
-            .iter()
-            .position(|record| record.id() == self.model.selected_id())
-            .map(IndexPath::new);
+        let selected_id = self.model.selected_id().to_owned();
         self.template_list.update(cx, |list, cx| {
-            list.delegate_mut().records = records;
+            list.delegate_mut().set_records(records);
+            let selected = list.delegate().index_of(&selected_id);
             list.delegate_mut().storage_busy = storage_busy;
             list.delegate_mut().syncing_snapshot = true;
             list.set_selected_index(selected, window, cx);
@@ -1891,6 +2057,7 @@ pub fn route_workspace_template_command(
 
 impl Render for TemplateManagerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.request_imported_previews(cx);
         let viewport_width = f32::from(window.viewport_size().width);
         let constrained = template_manager_uses_stacked_layout(viewport_width);
         let compact_browse_footer = viewport_width < 752.;

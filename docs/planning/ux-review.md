@@ -28,6 +28,7 @@ For each compound control, specify which elements should respond together. Exerc
 - At high zoom, scroll a page behind the toolbar and bottom bar; hover and presses on that chrome must remain outside the canvas even when the page's unclipped bounds extend underneath.
 - A cursor promises its action: a press must start exactly what the cursor shows (resize cursor resizes, open hand moves, arrow does nothing). Derive cursor and press from one hit test with the same tolerances and view scale, and test pressing where each cursor shows, including at the edge of its reach.
 - Menu/popover triggers must agree with open state and return to the correct state after dismissal. Disabled controls must not advertise an available action through hover feedback.
+- After a popover or prompt goes away without being closed (its tab closes, its branch stops rendering, its window closes), draw on the page in every open document. An overlay still recorded as open makes the canvas ignore every press while the cursor still changes.
 - In a dialog, remove a row or item from the keyboard (Tab to its control, Space, then confirm any prompt) and check the dialog still owns focus: Escape, Cancel and Tab must still work. A removed focused control, or a closed confirmation whose return target was removed, must not send focus to the document behind the dialog.
 - Do not infer a root cause solely from a screenshot: stale hover, wrong capture state and mismatched event ownership are hypotheses to test.
 

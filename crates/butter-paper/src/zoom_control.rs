@@ -178,6 +178,7 @@ pub fn format_zoom_percent(zoom: f64) -> String {
 
 impl Render for ZoomControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::overlay_state::begin_overlay_render(cx);
         let disabled = self.disabled;
         let icon_color = if disabled {
             cx.theme().muted_foreground.opacity(0.5)

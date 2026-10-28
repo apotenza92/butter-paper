@@ -161,11 +161,11 @@ impl DocumentWorkspace {
             Button::new(DOCUMENT_TAB_OPEN_ID)
                 .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
                 .icon(IconName::Plus)
-                .tooltip("Open PDF")
+                .tooltip("New Tab")
                 .on_click(cx.listener(|workspace, _, _, cx| {
-                    workspace.prompt_to_open_documents(cx);
+                    workspace.open_new_tab(cx);
                 })),
-            "Open PDF",
+            "New Tab",
         );
         let document_actions = h_flex()
             .flex_shrink_0()
@@ -227,7 +227,17 @@ impl DocumentWorkspace {
                         }),
                     close_label,
                 );
+                let tab_bounds = self
+                    .session_tab_bounds
+                    .get(&document_id)
+                    .expect("every retained session tab must own a bounds cell")
+                    .clone();
+                let bounds_trace =
+                    canvas(move |bounds, _, _| tab_bounds.set(bounds), |_, _, _, _| {})
+                        .absolute()
+                        .inset_0();
                 Tab::new()
+                    .child(bounds_trace)
                     .on_hover(cx.listener(move |workspace, hovered, _, cx| {
                         let next = if *hovered {
                             Some(document_id)
@@ -258,6 +268,59 @@ impl DocumentWorkspace {
                     .child(session_tab_close_lane().child(close))
             })
             .collect::<Vec<_>>();
+        let new_tab_index = session_tabs.len();
+        let new_tab = self.new_tab_open.then(|| {
+            let reveal_close = self.new_tab_hovered;
+            let close_control = cx.entity().downgrade();
+            let close_label = document_tab_close_accessible_label("New Tab");
+            let new_tab_bounds = self.new_tab_bounds.clone();
+            let close = accessible_icon_button(
+                Button::new(DOCUMENT_NEW_TAB_CLOSE_ID)
+                    .opacity(if reveal_close { 1. } else { 0. })
+                    .focus(|style| style.opacity(1.))
+                    .debug_selector(|| DOCUMENT_NEW_TAB_CLOSE_ID.into())
+                    .accessibility_id(DOCUMENT_NEW_TAB_CLOSE_ID)
+                    .rounded(cx.theme().radius_full())
+                    .ghost()
+                    .small()
+                    .icon(IconName::Close)
+                    .tooltip(close_label.clone())
+                    .on_click(move |_: &ClickEvent, _, cx| {
+                        let _ =
+                            close_control.update(cx, |workspace, cx| workspace.close_new_tab(cx));
+                        cx.stop_propagation();
+                    }),
+                close_label,
+            );
+            Tab::new()
+                .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
+                .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| {
+                    if workspace.new_tab_hovered != *hovered {
+                        workspace.new_tab_hovered = *hovered;
+                        cx.notify();
+                    }
+                }))
+                .debug_selector(|| DOCUMENT_NEW_TAB_ID.into())
+                .group(DOCUMENT_NEW_TAB_ID)
+                .child(
+                    canvas(
+                        move |bounds, _, _| new_tab_bounds.set(bounds),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .child(session_tab_overlay_label(
+                    "New Tab".into(),
+                    "New Tab".into(),
+                    DOCUMENT_NEW_TAB_ID.into(),
+                    reveal_close,
+                    false,
+                    cx,
+                ))
+                .aria_label("New Tab")
+                .child(session_tab_close_lane().child(close))
+        });
         let inactive_tab_click_control = cx.entity().downgrade();
         let inactive_tab_click_ids = session_tabs
             .iter()
@@ -286,6 +349,12 @@ impl DocumentWorkspace {
                     .border_color(cx.theme().border)
                     .min_w_0()
                     .max_w_full()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|workspace, event: &MouseDownEvent, _, cx| {
+                            workspace.open_new_tab_from_tab_bar(event, cx);
+                        }),
+                    )
                     .child(
                         TabBar::new("document-workspace-session-tabs-component")
                             .outline()
@@ -293,6 +362,8 @@ impl DocumentWorkspace {
                             // Use stock scrolling, not the always-visible optional tab menu.
                             .menu(false)
                             .children(inactive_session_tabs)
+                            .children(new_tab)
+                            .when(self.new_tab_open, |tabs| tabs.selected_index(new_tab_index))
                             .on_click(move |tab_ix, window, cx| {
                                 let focus = inactive_tab_click_control
                                     .update(cx, |workspace, cx| {

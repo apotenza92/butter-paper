@@ -4,6 +4,36 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Markup
+
+- Drawing could stop working in every document, with the cursor changing but
+  nothing drawn, after a tab with unsaved changes was closed from its prompt.
+  A prompt or popover that is no longer shown can no longer block the page.
+
+### Snapping
+
+- The snap settings panel uses full-size controls with room between them, and
+  no longer cuts off the bottoms of labels such as "Page grid".
+
+### Templates
+
+- Templates name their paper: the built-ins read "A3 · Landscape" rather than
+  "420 × 297 mm · Landscape", and custom sizes keep their millimetres.
+- Blank Paper and every patterned built-in now also come in A4 portrait.
+- New from template has a Paper size dropdown that lists one size at a time and
+  keeps your pattern when you switch size, and the Template Library groups its
+  templates under a heading for each paper size.
+- Templates imported from a PDF show their first page as their preview.
+- A template's Remove button fits its row however long the name, appearing as
+  a small delete icon on hover or keyboard focus.
+
+### Tabs
+
+- The + beside the tabs, or a double-click on the tab bar's empty space, opens
+  a New Tab showing Open and your recent files, instead of going straight to
+  the file picker. Opening a file or choosing another tab replaces it; closing
+  it returns to the document you were on.
+
 ### Look
 
 - Butter Paper describes itself as a PDF editor as well as a markup app: on the

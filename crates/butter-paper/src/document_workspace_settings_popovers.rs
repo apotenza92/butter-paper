@@ -102,10 +102,10 @@ impl DocumentWorkspace {
                 v_flex()
                     .id(DOCUMENT_SNAP_POPOVER_ID)
                     .debug_selector(|| DOCUMENT_SNAP_POPOVER_ID.into())
-                    .w_80()
+                    .w_96()
                     .max_h(window.viewport_size().height - px(32.))
                     .overflow_y_scroll()
-                    .gap_3()
+                    .gap_4()
                     .child(popover_header(
                         "Snap settings",
                         close_icon_button(DOCUMENT_SNAP_CLOSE_ID, "Close").on_click(
@@ -148,7 +148,7 @@ impl DocumentWorkspace {
                     .child(snap_section(
                         "Construction grid",
                         v_flex()
-                            .gap_2()
+                            .gap_3()
                             .child(snap_switch_row(
                                 DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
                                 "Snap to grid",
@@ -180,7 +180,7 @@ impl DocumentWorkspace {
                     .child(snap_section(
                         "Dimension increments",
                         v_flex()
-                            .gap_2()
+                            .gap_3()
                             .child(snap_switch_row(
                                 DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
                                 "Snap dimensions",
@@ -252,7 +252,7 @@ impl DocumentWorkspace {
                     .child(snap_section(
                         "Snap guides",
                         v_flex()
-                            .gap_2()
+                            .gap_3()
                             .child(snap_switch_row(
                                 DOCUMENT_SNAP_GUIDES_ID,
                                 "Show snap guides",
