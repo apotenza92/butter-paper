@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.4]
+
 ### Markup
 
 - Drawing could stop working in every document, with the cursor changing but
