@@ -111,7 +111,7 @@ pub fn windows_registry_commands(executable: &Path) -> Vec<Vec<String>> {
         add(
             &format!(r"HKCU\{capabilities}"),
             Some("ApplicationDescription"),
-            "PDF review and markup",
+            "PDF editing and markup",
         ),
         add(
             &format!(r"HKCU\{capabilities}\FileAssociations"),

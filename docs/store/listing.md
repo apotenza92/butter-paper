@@ -12,15 +12,15 @@ https://apps.microsoft.com/detail/9N4KN0XNRNHC). Package family
 
 ## Short description
 
-Free, open-source PDF review and markup.
+Free, open-source PDF editing and markup.
 
 ## Description
 
 Certification needs a real description (policy 10.1.4.3).
 
-Butter Paper is a free, open-source PDF markup app for everyday document
-review, including architecture, engineering and construction drawings. It is a
-lightweight alternative to Bluebeam Revu.
+Butter Paper is a free, open-source PDF editor and markup app for everyday
+document review, including architecture, engineering and construction
+drawings. It is a lightweight alternative to Bluebeam Revu.
 
 - Mark up PDFs with text boxes, callouts, clouds, arrows, highlights, ink,
   shapes, stamps, images and redactions.

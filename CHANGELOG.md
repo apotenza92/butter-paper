@@ -4,6 +4,12 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Look
+
+- Butter Paper describes itself as a PDF editor as well as a markup app: on the
+  download page, in the Windows app and default-app settings, on the Linux
+  launcher and in Homebrew.
+
 ## [0.3.3]
 
 ### Dialogs

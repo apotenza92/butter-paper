@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="description" content="Butter Paper is a free, open-source PDF markup app for macOS, Windows, and Linux. It is a cross-platform alternative to Bluebeam Revu for everyday document review, including architecture, engineering, and construction workflows." />
+    <meta name="description" content="Butter Paper is a free, open-source PDF editor and markup app for macOS, Windows, and Linux. It is a cross-platform alternative to Bluebeam Revu for everyday document review, including architecture, engineering, and construction workflows." />
     <title>Download Butter Paper</title>
     <link id="favicon" rel="icon" type="image/svg+xml" />
     <style>
@@ -220,6 +220,11 @@
       .github-link svg {
         height: 22px;
         width: 22px;
+      }
+
+      .built-with {
+        color: var(--text-muted);
+        font-size: 0.8rem;
       }
 
       .version-display {
@@ -524,9 +529,9 @@
     </header>
     <main class="container">
       <img id="app-icon" class="icon" src="./assets/brand/icon.svg" alt="Butter Paper origami butterfly" />
-      <p class="brand-kicker">PDF review and markup</p>
+      <p class="brand-kicker">PDF editing and markup</p>
       <h1 id="page-title">Butter Paper</h1>
-      <p class="subtitle">Butter Paper is a free, open-source PDF markup app for macOS, Windows, and Linux. It is a cross-platform alternative to Bluebeam Revu for everyday document review, including architecture, engineering, and construction workflows.</p>
+      <p class="subtitle">Butter Paper is a free, open-source PDF editor and markup app for macOS, Windows, and Linux. It is a cross-platform alternative to Bluebeam Revu for everyday document review, including architecture, engineering, and construction workflows.</p>
 
       <div class="release-controls">
         <div class="channel-toggle" aria-label="Release channel">
@@ -553,6 +558,7 @@
             <span>Open source</span>
           </a>
           <div id="version-display" class="version-display"></div>
+          <span class="built-with">Built natively in Rust with GPUI</span>
         </div>
       </section>
 
