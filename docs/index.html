@@ -19,29 +19,32 @@
       }
 
       :root {
-        color-scheme: light dark;
-        --accent: #08756c;
-        --accent-hover: #07675f;
-        --action-text: #07675f;
-        --background: radial-gradient(circle at 50% -15%, #ffffff 0%, #f7f3ea 52%, #edf3f0 100%);
-        --border: #c9d6d1;
-        --button-shadow: rgba(8, 117, 108, 0.23);
-        --code-background: #e8efec;
-        --text: #182321;
-        --text-muted: #67716d;
+        --accent: #f7cd57;
+        --accent-hover: #eab43a;
+        --accent-text: #1f1c17;
+        --action-text: #8a5a00;
+        --background: radial-gradient(circle at 50% -15%, #ffffff 0%, #f7f3ea 52%, #faf0d6 100%);
+        --border: #e3d8bd;
+        --button-shadow: rgba(217, 154, 40, 0.28);
+        --code-background: #f3ecd9;
+        --focus-ring: #8a5a00;
+        --text: #1f1c17;
+        --text-muted: #6e685d;
       }
 
       @media (prefers-color-scheme: dark) {
         :root {
-          --accent: #08756c;
-          --accent-hover: #07675f;
-          --action-text: #71c6bc;
-          --background: radial-gradient(circle at 50% -15%, #263532 0%, #182321 52%, #101816 100%);
-          --border: #39504b;
-          --button-shadow: rgba(39, 152, 139, 0.24);
-          --code-background: #22312e;
+          --accent: #f7cd57;
+          --accent-hover: #fde28a;
+          --accent-text: #1f1c17;
+          --action-text: #f7cd57;
+          --background: radial-gradient(circle at 50% -15%, #2b2720 0%, #1f1c17 52%, #15130f 100%);
+          --border: #4a4334;
+          --button-shadow: rgba(247, 205, 87, 0.18);
+          --code-background: #2a261e;
+          --focus-ring: #f7cd57;
           --text: #f7f3ea;
-          --text-muted: #a9b7b2;
+          --text-muted: #b5ad9c;
         }
       }
 
@@ -85,7 +88,7 @@
       }
 
       .repository-link:focus-visible {
-        outline: 3px solid var(--button-shadow);
+        outline: 3px solid var(--focus-ring);
         outline-offset: 2px;
       }
 
@@ -95,28 +98,32 @@
       }
 
       body.beta-mode {
-        --accent: #6756b3;
-        --accent-hover: #59469c;
-        --action-text: #59469c;
-        --background: radial-gradient(circle at 50% -15%, #ffffff 0%, #f7f3ea 52%, #f0edf8 100%);
-        --border: #d1cbe8;
-        --button-shadow: rgba(103, 86, 179, 0.24);
-        --code-background: #efecf8;
-        --text: #182321;
-        --text-muted: #67716d;
+        --accent: #2f6cb6;
+        --accent-hover: #22589c;
+        --accent-text: #ffffff;
+        --action-text: #22589c;
+        --background: radial-gradient(circle at 50% -15%, #ffffff 0%, #f5f6f8 52%, #e8eff8 100%);
+        --border: #c9d6e8;
+        --button-shadow: rgba(47, 108, 182, 0.24);
+        --code-background: #e9eff7;
+        --focus-ring: #2f6cb6;
+        --text: #1f1c17;
+        --text-muted: #6e685d;
       }
 
       @media (prefers-color-scheme: dark) {
         body.beta-mode {
-          --accent: #6756b3;
-          --accent-hover: #59469c;
-          --action-text: #b7ace6;
-          --background: radial-gradient(circle at 50% -15%, #302a4a 0%, #1e1b2d 52%, #14121e 100%);
-          --border: #4e466e;
-          --button-shadow: rgba(137, 121, 208, 0.25);
-          --code-background: #29243e;
+          --accent: #2f6cb6;
+          --accent-hover: #22589c;
+          --accent-text: #ffffff;
+          --action-text: #9cc1ee;
+          --background: radial-gradient(circle at 50% -15%, #1f2b40 0%, #151d2c 52%, #0e1420 100%);
+          --border: #33445f;
+          --button-shadow: rgba(76, 138, 210, 0.25);
+          --code-background: #1c2638;
+          --focus-ring: #9cc1ee;
           --text: #f7f3ea;
-          --text-muted: #bab4ca;
+          --text-muted: #aab3c2;
         }
       }
 
@@ -325,15 +332,15 @@
       }
 
       .selector-button:hover:not(.active):not(:disabled) {
-        border-color: var(--accent);
-        color: var(--accent);
+        border-color: var(--action-text);
+        color: var(--action-text);
         position: relative;
       }
 
       .selector-button.active {
         background: var(--accent);
         border-color: var(--accent);
-        color: white;
+        color: var(--accent-text);
         position: relative;
       }
 
@@ -341,7 +348,7 @@
       .download-button:focus-visible,
       .command-box:focus-visible,
       summary:focus-visible {
-        outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+        outline: 3px solid var(--focus-ring);
         outline-offset: 3px;
       }
 
@@ -360,7 +367,7 @@
         background: var(--accent);
         border-radius: 8px;
         box-shadow: 0 8px 22px var(--button-shadow);
-        color: white;
+        color: var(--accent-text);
         display: inline-flex;
         font-size: 0.92rem;
         font-weight: 600;
@@ -421,7 +428,7 @@
       }
 
       .command-box:hover {
-        border-color: var(--accent);
+        border-color: var(--action-text);
         transform: translateY(-1px);
       }
 

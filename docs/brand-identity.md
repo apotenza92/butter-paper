@@ -30,42 +30,45 @@ The machine-readable source is [`assets/brand/palette.json`](../assets/brand/pal
 
 | Role | Name | Value | Use |
 | --- | --- | --- | --- |
-| Primary | Trace Teal | `#08756C` | Brand recognition, primary actions, stable identity |
-| Human accent | Markup Coral | `#E7654C` | Review marks, editorial emphasis, the stable icon spine |
-| Exploratory accent | Studio Violet | `#6756B3` | Beta identity and future-facing communication |
-| Ink | Carbon | `#182321` | Headings, body text, dark surfaces |
+| Primary | Butter | `#F7CD57` | Brand recognition, primary actions, stable identity; carries Ink text |
+| Beta | Blueprint | `#2F6CB6` | Beta identity; carries white text |
+| Human accent | Markup Coral | `#E7654C` | Review marks and editorial emphasis |
+| Ink | Ink | `#1F1C17` | Headings, body text, dark surfaces, text on Butter |
 | Ground | Vellum | `#F7F3EA` | Marketing backgrounds and warm open space |
-| Primary tint | Sea Glass | `#98BEB6` | Teal planes and supporting brand surfaces |
-| Quiet surface | Trace | `#DCE7E3` | Borders, panels, and subtle structure |
-| Secondary ink | Pencil | `#67716D` | Supporting text and technical labels |
+| Primary tint | Cream | `#FAF0D6` | Butter-tinted surfaces and background washes |
+| Quiet surface | Rule | `#E3D8BD` | Borders, panels, and subtle structure |
+| Secondary ink | Pencil | `#6E685D` | Supporting text and technical labels |
+| Link ink | Gold Ink | `#8A5A00` | Butter-family links and hover text on light grounds |
 
-Trace Teal leads the identity. Markup Coral represents the human act of review. Studio Violet is secondary and should not compete with Trace Teal outside beta contexts.
+Butter leads the identity. It is too light for text on light grounds: put Ink text on Butter, and use Gold Ink where Butter-family colour must be read as text. Markup Coral represents the human act of review. Blueprint belongs to beta and should not compete with Butter elsewhere.
 
 ## Release channels
 
-Release colours derive from the master palette. They are not separate brands.
+Each channel is the same folded butterfly in a different paper. They are not separate brands; the per-channel colours are in `channels` in the palette file.
 
-- **Stable:** Trace Teal wings with a Markup Coral central spine.
-- **Beta:** Studio Violet wings with a Trace Teal central spine.
+- **Stable:** butter-yellow paper.
+- **Beta:** blueprint-blue paper.
 
 Stable and beta must use the same icon geometry. Use the canonical sources:
 
 - [`butter-paper-origami.svg`](../assets/icon-source/butter-paper-origami.svg)
 - [`butter-paper-origami-beta.svg`](../assets/icon-source/butter-paper-origami-beta.svg)
 
-The butterfly has four wings, each an outer and an inner plane, joined to one central spine that runs from head to tail. Its outline is close to square so it fills a square icon slot: the upper wingtips, lower wingtips and spine tail meet the bounding box, the head is level with the top folds, and the lower wingtips are level with the tail.
+The butterfly is Akira Yoshizawa's traditional origami butterfly, folded from one sheet on a waterbomb base. Two triangular forewings sit under a nearly straight top edge, each notched where it meets the hindwings. The hindwings are one diamond flap folded down in front of the forewings and split up the middle, and a small tab is folded over the top centre. It is drawn about 16% taller than the folded model, close to square at about 1.13:1, so it fills square icon slots. Light falls from the upper left: each forewing bows slightly and dips into the centre valley fold, the right half is the shaded side, the hindwing flap's folded edge catches the light and casts a tight shadow on the forewings, and fine paper grain covers every face. Both channels share every fold, light and grain; only the paper colour differs.
 
-Do not redraw or simplify the icon for marketing layouts. Preserve every approved fold and node. After changing a master, regenerate every application icon with `python3 assets/icon-source/render_app_icons.py` (needs Inkscape and Pillow).
+The renderer centres the glyph optically, a little below its box centre because the wide forewings make it top-heavy. On macOS and Linux it spans 80% of the canvas width, clear of the tile's rounded corners; Windows taskbar and file icons fill their slot, and Start tiles centre it in a padded square.
+
+Do not redraw or simplify the icon for marketing layouts. After changing a master, regenerate every application icon with `python3 assets/icon-source/render_app_icons.py` (needs Inkscape and Pillow).
 
 ## Visual system
 
-- Use warm Vellum space with Carbon typography.
-- Use folded planes, controlled gradients, and sharp shared nodes.
-- Use colour to show depth. Do not add internal outlines to the butterfly.
+- Use warm Vellum space with Ink typography.
+- Use folded paper planes with soft directional light, fine paper grain and slightly softened corners.
+- Use colour and shade to show depth. Do not add internal outlines to the butterfly.
 - Keep marketing layouts spacious and technically ordered.
 - Use Geist where the product font is available. Use the platform sans-serif stack elsewhere.
 - Keep documents and PDF pages neutral. Brand colour belongs to the product around the document, not on the document itself.
 
 ## Colour proportion
 
-For general marketing layouts, start with approximately 50% Vellum, 25% Carbon or white content, 15% Trace Teal, 6% Markup Coral, and 4% Studio Violet. This is a guide, not a required formula. Use violet only when it has a clear role.
+For general marketing layouts, start with approximately 50% Vellum, 25% Ink or white content, 15% Butter, 6% Markup Coral, and 4% Blueprint. This is a guide, not a required formula. Use Blueprint only when it has a clear role.

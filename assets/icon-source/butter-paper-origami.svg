@@ -1,59 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 228" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
   <title id="title">Butter Paper origami butterfly</title>
-  <desc id="description">A faceted teal origami butterfly on a coral central spine.</desc>
-  <defs>
-    <clipPath id="silhouette">
-      <path d="M10 10 L67.5 34.4 L102.4 55.4 L128 34.4 L153.6 55.4 L188.5 34.4 L246 10 L186 118.4 L237 203.0 L188.1 183.9 L133.5 176.2 L128 217.9 L122.5 176.2 L67.9 183.9 L19 203.0 L70 118.4 Z"/>
-    </clipPath>
-    <linearGradient id="silhouette-base" x1="-10.6" y1="7.5" x2="266.6" y2="236.8" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#98beb6"/><stop offset=".48" stop-color="#08756c"/><stop offset="1" stop-color="#03443f"/>
-    </linearGradient>
-    <linearGradient id="upper-left-outer" x1="10.0" y1="10.0" x2="70.0" y2="118.4" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#b2cec7"/><stop offset="1" stop-color="#86b2a8"/>
-    </linearGradient>
-    <linearGradient id="upper-left" x1="-15.6" y1="10.0" x2="128.0" y2="157.4" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7fb8af"/><stop offset="1" stop-color="#27988b"/>
-    </linearGradient>
-    <linearGradient id="upper-right-outer" x1="246.0" y1="10.0" x2="186.0" y2="118.4" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#4eaaa0"/><stop offset="1" stop-color="#08756c"/>
-    </linearGradient>
-    <linearGradient id="upper-right" x1="271.6" y1="10.0" x2="128.0" y2="157.4" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#16877c"/><stop offset="1" stop-color="#03443f"/>
-    </linearGradient>
-    <linearGradient id="lower-left-outer" x1="70.0" y1="118.4" x2="19.0" y2="203.0" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#0b6b63"/><stop offset="1" stop-color="#2c9a8e"/>
-    </linearGradient>
-    <linearGradient id="lower-left" x1="70.0" y1="118.4" x2="122.5" y2="176.2" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#03443f"/><stop offset=".18" stop-color="#075d56"/><stop offset=".52" stop-color="#08756c"/><stop offset="1" stop-color="#16877c"/>
-    </linearGradient>
-    <linearGradient id="lower-right-outer" x1="186.0" y1="118.4" x2="237.0" y2="203.0" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#033b37"/><stop offset="1" stop-color="#0a5f58"/>
-    </linearGradient>
-    <linearGradient id="lower-right" x1="186.0" y1="118.4" x2="133.5" y2="176.2" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#022e2b"/><stop offset=".18" stop-color="#033b37"/><stop offset=".52" stop-color="#034c47"/><stop offset="1" stop-color="#07675f"/>
-    </linearGradient>
-    <linearGradient id="center-left" x1="115.4" y1="35.2" x2="128.0" y2="217.9" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#f38a72"/><stop offset="1" stop-color="#e7654c"/>
-    </linearGradient>
-    <linearGradient id="center-right" x1="140.6" y1="35.2" x2="128.0" y2="217.9" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#e7654c"/><stop offset="1" stop-color="#a93428"/>
-    </linearGradient>
-  </defs>
-
-  <!-- One base silhouette prevents seams at shared facet edges. -->
-  <path d="M10 10 L67.5 34.4 L102.4 55.4 L128 34.4 L153.6 55.4 L188.5 34.4 L246 10 L186 118.4 L237 203.0 L188.1 183.9 L133.5 176.2 L128 217.9 L122.5 176.2 L67.9 183.9 L19 203.0 L70 118.4 Z" fill="url(#silhouette-base)"/>
-
-  <!-- Four wings, each an outer and an inner plane, on one central spine. Exact mirrored nodes; no linework. -->
-  <g clip-path="url(#silhouette)">
-    <path d="M10 10 L67.5 34.4 L70 118.4 Z" fill="url(#upper-left-outer)"/>
-    <path d="M67.5 34.4 L102.4 55.4 L111.7 93.2 L116.3 128.4 L70 118.4 Z" fill="url(#upper-left)"/>
-    <path d="M246 10 L188.5 34.4 L186 118.4 Z" fill="url(#upper-right-outer)"/>
-    <path d="M188.5 34.4 L153.6 55.4 L144.3 93.2 L139.7 128.4 L186 118.4 Z" fill="url(#upper-right)"/>
-    <path d="M70 118.4 L67.9 183.9 L19 203.0 Z" fill="url(#lower-left-outer)"/>
-    <path d="M70 118.4 L116.3 128.4 L122.5 176.2 L67.9 183.9 Z" fill="url(#lower-left)"/>
-    <path d="M186 118.4 L188.1 183.9 L237 203.0 Z" fill="url(#lower-right-outer)"/>
-    <path d="M186 118.4 L139.7 128.4 L133.5 176.2 L188.1 183.9 Z" fill="url(#lower-right)"/>
-    <path d="M128 34.4 L102.4 55.4 L111.7 93.2 L116.3 128.4 L122.5 176.2 L128 217.9 Z" fill="url(#center-left)"/>
-    <path d="M128 34.4 L153.6 55.4 L144.3 93.2 L139.7 128.4 L133.5 176.2 L128 217.9 Z" fill="url(#center-right)"/>
-  </g>
+  <desc id="description">A butter-yellow paper butterfly after Yoshizawa, folded from one sheet.</desc>
+  <defs><linearGradient id="fore-l" x1="10" y1="46" x2="128" y2="120" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f7cd57"/><stop offset="0.45" stop-color="#fde28a"/><stop offset="0.85" stop-color="#f7cd57"/><stop offset="1" stop-color="#eab43a"/></linearGradient><linearGradient id="fore-r" x1="246" y1="46" x2="128" y2="120" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#eab43a"/><stop offset="0.45" stop-color="#f7cd57"/><stop offset="0.85" stop-color="#eab43a"/><stop offset="1" stop-color="#d99a28"/></linearGradient><linearGradient id="hind-l" x1="70" y1="150" x2="127" y2="200" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f7cd57"/><stop offset="0.6" stop-color="#eab43a"/><stop offset="1" stop-color="#eab43a"/></linearGradient><linearGradient id="hind-r" x1="186" y1="150" x2="129" y2="200" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#eab43a"/><stop offset="0.6" stop-color="#d99a28"/><stop offset="1" stop-color="#d99a28"/></linearGradient><linearGradient id="tab-l" x1="116" y1="79" x2="128" y2="104" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fde28a"/><stop offset="1" stop-color="#f7cd57"/></linearGradient><linearGradient id="tab-r" x1="140" y1="79" x2="128" y2="104" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f7cd57"/><stop offset="1" stop-color="#eab43a"/></linearGradient><clipPath id="fore-face"><path d="M10.9 48.3 Q10 46 12.4 46.7 L125.6 81.3 Q128 82 128 84.5 L128 157.5 Q128 160 125.5 159.7 L54.5 150.3 Q52 150 51.1 147.7 Z"/></clipPath><clipPath id="hind-face"><path d="M71.3 152.1 Q70 150 71.8 148.2 L125.2 95.8 Q127 94 127 96.5 L127 169.5 Q127 172 126.6 174.5 L118.4 223.5 Q118 226 116.7 223.9 Z"/></clipPath><filter id="contact" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="1.8"/></filter><filter id="contact-small" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1"/></filter><filter id="grain" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="1.6 .7" numOctaves="2" seed="11" result="noise"/><feColorMatrix in="noise" type="matrix" values=".16 0 0 0 .87  .16 0 0 0 .87  .16 0 0 0 .87  0 0 0 0 1" result="speck"/><feComposite in="speck" in2="SourceAlpha" operator="in" result="grainy"/><feBlend in="grainy" in2="SourceGraphic" mode="multiply"/></filter></defs>
+  <g filter="url(#grain)"><g transform="translate(0 136) scale(1 1.16) translate(0 -136)"><g><path d="M10.9 48.3 Q10 46 12.4 46.7 L125.6 81.3 Q128 82 128 84.5 L128 157.5 Q128 160 125.5 159.7 L54.5 150.3 Q52 150 51.1 147.7 Z" fill="url(#fore-l)"/><g clip-path="url(#fore-face)"><path d="M71.3 152.1 Q70 150 71.8 148.2 L125.2 95.8 Q127 94 127 96.5 L127 169.5 Q127 172 126.6 174.5 L118.4 223.5 Q118 226 116.7 223.9 Z" fill="#3a2400" opacity=".22" filter="url(#contact)" transform="translate(-1.5 -3)"/></g><path d="M71.3 152.1 Q70 150 71.8 148.2 L125.2 95.8 Q127 94 127 96.5 L127 169.5 Q127 172 126.6 174.5 L118.4 223.5 Q118 226 116.7 223.9 Z" fill="url(#hind-l)"/><g clip-path="url(#hind-face)"><path d="M72 150 L127 96" stroke="#fff" stroke-opacity=".3" stroke-width="1.6" stroke-linecap="round" fill="none"/></g><g clip-path="url(#hind-face)"><path d="M116.6 80.4 Q116 79 117.5 79.4 L126.5 81.6 Q128 82 128 83.5 L128 102.5 Q128 104 127.4 102.6 Z" fill="#3a2400" opacity=".25" filter="url(#contact-small)" transform="translate(0 2)"/></g><path d="M116.6 80.4 Q116 79 117.5 79.4 L126.5 81.6 Q128 82 128 83.5 L128 102.5 Q128 104 127.4 102.6 Z" fill="url(#tab-l)"/></g><g transform="translate(256 0) scale(-1 1)"><path d="M10.9 48.3 Q10 46 12.4 46.7 L125.6 81.3 Q128 82 128 84.5 L128 157.5 Q128 160 125.5 159.7 L54.5 150.3 Q52 150 51.1 147.7 Z" fill="url(#fore-r)"/><g clip-path="url(#fore-face)"><path d="M71.3 152.1 Q70 150 71.8 148.2 L125.2 95.8 Q127 94 127 96.5 L127 169.5 Q127 172 126.6 174.5 L118.4 223.5 Q118 226 116.7 223.9 Z" fill="#3a2400" opacity=".22" filter="url(#contact)" transform="translate(-1.5 -3)"/></g><path d="M71.3 152.1 Q70 150 71.8 148.2 L125.2 95.8 Q127 94 127 96.5 L127 169.5 Q127 172 126.6 174.5 L118.4 223.5 Q118 226 116.7 223.9 Z" fill="url(#hind-r)"/><g clip-path="url(#hind-face)"><path d="M72 150 L127 96" stroke="#fff" stroke-opacity=".3" stroke-width="1.6" stroke-linecap="round" fill="none"/></g><g clip-path="url(#hind-face)"><path d="M116.6 80.4 Q116 79 117.5 79.4 L126.5 81.6 Q128 82 128 83.5 L128 102.5 Q128 104 127.4 102.6 Z" fill="#3a2400" opacity=".25" filter="url(#contact-small)" transform="translate(0 2)"/></g><path d="M116.6 80.4 Q116 79 117.5 79.4 L126.5 81.6 Q128 82 128 83.5 L128 102.5 Q128 104 127.4 102.6 Z" fill="url(#tab-r)"/></g></g></g>
 </svg>

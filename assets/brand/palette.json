@@ -1,26 +1,27 @@
 {
   "brand": {
-    "traceTeal": "#08756C",
+    "butter": "#F7CD57",
+    "blueprint": "#2F6CB6",
     "markupCoral": "#E7654C",
-    "studioViolet": "#6756B3",
-    "carbon": "#182321",
+    "ink": "#1F1C17",
     "vellum": "#F7F3EA",
-    "seaGlass": "#98BEB6",
-    "trace": "#DCE7E3",
-    "pencil": "#67716D"
+    "cream": "#FAF0D6",
+    "rule": "#E3D8BD",
+    "pencil": "#6E685D",
+    "goldInk": "#8A5A00"
   },
   "channels": {
     "stable": {
-      "primary": "#08756C",
-      "dark": "#03443F",
-      "light": "#98BEB6",
-      "fold": "#E7654C"
+      "light": "#FDE28A",
+      "paper": "#F7CD57",
+      "shade": "#EAB43A",
+      "deep": "#D99A28"
     },
     "beta": {
-      "primary": "#6756B3",
-      "dark": "#2C235F",
-      "light": "#C8C0EC",
-      "fold": "#08756C"
+      "light": "#4C8AD2",
+      "paper": "#2F6CB6",
+      "shade": "#22589C",
+      "deep": "#174681"
     }
   }
 }

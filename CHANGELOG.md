@@ -4,6 +4,15 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Look
+
+- A new icon: a folded paper butterfly, butter yellow for the stable app and
+  blueprint blue for the beta. It sits optically centred with room around
+  it on macOS and Linux, and Windows Start tiles pad it instead of filling
+  the tile edge to edge.
+- The download page follows the new colours: butter for stable, blueprint
+  for beta. Its keyboard focus ring is now clearly visible on every theme.
+
 ## [0.3.2]
 
 ### Tables

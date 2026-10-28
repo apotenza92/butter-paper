@@ -27,10 +27,9 @@ SOURCE = Path(__file__).resolve().parent
 ASSETS = SOURCE.parent
 ROOT = ASSETS.parent
 CANVAS = 1024
-# The glyph spans 88% of the canvas width, sitting 2.5% low so it looks
-# centred on the macOS tile.
-VISIBLE_WIDTH = 0.88
-OPTICAL_OFFSET = 0.025
+# The glyph spans 80% of the canvas width, which keeps the wingtips clear of
+# the macOS tile's rounded corners, and is optically centred.
+VISIBLE_WIDTH = 0.80
 LINUX_SIZES = (16, 22, 24, 32, 48, 64, 72, 96, 128, 256, 512, 1024)
 ICNS_ENTRIES = (
     ("icp4", 16), ("icp5", 32), ("icp6", 64), ("ic07", 128), ("ic08", 256),
@@ -71,7 +70,7 @@ def glyph(svg, width):
 def artwork(svg):
     art = glyph(svg, round(CANVAS * VISIBLE_WIDTH))
     canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
-    top = (CANVAS - art.height) // 2 + round(CANVAS * OPTICAL_OFFSET)
+    top = (CANVAS - art.height) // 2 + round(render_store_assets.optical_drop(art))
     canvas.alpha_composite(art, ((CANVAS - art.width) // 2, top))
     return canvas
 
