@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.5]
+
 ### Tabs
 
 - With a New Tab open, the other tabs can still be dragged to reorder them or
