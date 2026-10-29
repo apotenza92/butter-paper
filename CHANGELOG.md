@@ -4,6 +4,17 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Tabs
+
+- With a New Tab open, the other tabs can still be dragged to reorder them or
+  into a new window, and the overflow menu still appears; the New Tab scrolls
+  into view when it opens.
+
+### Templates
+
+- A template saved or removed in another window shows up in the Template
+  Library list straight away, instead of after it is next reopened.
+
 ## [0.3.4]
 
 ### Markup

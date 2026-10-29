@@ -650,6 +650,7 @@ impl DocumentWorkspace {
             // measured overflow state rather than enabling it for every document.
             .menu(false)
             .children(rendered_session_tabs)
+            .children(self.render_new_tab(cx))
             .on_click(move |tab_ix, window, cx| {
                 let focus = tab_bar_click_control
                     .update(cx, |workspace, cx| {
@@ -673,6 +674,9 @@ impl DocumentWorkspace {
             })
             .when_some(selected_session_ix, |tabs, selected_ix| {
                 tabs.selected_index(selected_ix)
+            })
+            .when(self.new_tab_open, |tabs| {
+                tabs.selected_index(session_tab_count)
             });
         let reorder_announcement = self.session_tab_reorder_announcement.clone();
         let reorder_status = gpui::div()
@@ -914,16 +918,24 @@ impl DocumentWorkspace {
                                 overflow_scroll.bounds().size.width,
                             );
                             let _ = overflow_control.update(cx, |workspace, cx| {
-                                if let Some(id) = workspace.session_tab_reveal.take()
-                                    && let Some(tab) = workspace.session_tab_bounds.get(&id)
-                                {
-                                    let tab = tab.get();
-                                    let right = workspace
-                                        .session_tab_close_bounds
-                                        .get(&id)
-                                        .map(|bounds| bounds.get().right())
-                                        .unwrap_or(tab.right())
-                                        .max(tab.right());
+                                let reveal = if std::mem::take(&mut workspace.new_tab_reveal) {
+                                    workspace
+                                        .new_tab_open
+                                        .then(|| workspace.new_tab_bounds.get())
+                                        .map(|tab| (tab, tab.right()))
+                                } else {
+                                    workspace.session_tab_reveal.take().and_then(|id| {
+                                        let tab = workspace.session_tab_bounds.get(&id)?.get();
+                                        let right = workspace
+                                            .session_tab_close_bounds
+                                            .get(&id)
+                                            .map(|bounds| bounds.get().right())
+                                            .unwrap_or(tab.right())
+                                            .max(tab.right());
+                                        Some((tab, right))
+                                    })
+                                };
+                                if let Some((tab, right)) = reveal {
                                     let viewport = workspace.session_tab_scroll.bounds();
                                     let correction = if tab.left() < viewport.left() {
                                         viewport.left() - tab.left()

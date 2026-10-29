@@ -1684,3 +1684,42 @@ fn removing_a_template_by_keyboard_keeps_focus_in_the_manager(cx: &mut TestAppCo
         "Escape still closes the manager"
     );
 }
+
+#[gpui::test]
+fn a_template_saved_in_another_window_appears_in_the_list(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let root = owned_test_root("shared-reload");
+    let library_root = root.join("library");
+    let manager_slot = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let manager_slot = manager_slot.clone();
+        let library_root = library_root.clone();
+        move |window, cx| {
+            let manager = cx
+                .new(|cx| TemplateManagerView::open_persistent(library_root, window, cx).unwrap());
+            manager_slot.replace(Some(manager.clone()));
+            Root::new(manager, window, cx)
+        }
+    });
+    let manager = manager_slot.borrow().clone().unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("template-manager-remove-custom-grid")
+            .is_none()
+    );
+    // Another window saves a template into the same library.
+    let shared = manager.read_with(cx, |manager, _| manager.shared_persistent().unwrap());
+    shared
+        .lock()
+        .unwrap()
+        .save_generated("custom-grid", "Site Grid", square_grid_request())
+        .unwrap();
+    assert!(manager.update(cx, |manager, cx| manager.reload_from_shared(cx)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("template-manager-remove-custom-grid")
+            .is_some(),
+        "the list shows the new template, not the records it had before"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

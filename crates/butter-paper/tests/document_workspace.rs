@@ -45479,21 +45479,24 @@ fn tabs_scrolled_out_of_view_cannot_be_grabbed(cx: &mut TestAppContext) {
         "pressing the Open button must not start dragging the tab hidden beneath it"
     );
     cx.simulate_mouse_up(press, MouseButton::Left, Modifiers::default());
-    // The press was a click on +, which opened a New Tab; go back.
-    workspace.update(cx, |workspace, cx| workspace.close_new_tab(cx));
+    // The press was a click on +, which opened a New Tab; the documents
+    // keep their strip.
     for _ in 0..2 {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
     }
+    assert!(workspace.read_with(cx, |workspace, _| workspace.is_new_tab_open()));
 
-    // A visible tab in the overflowing strip can still be grabbed.
+    // A visible tab in the overflowing strip can still be grabbed: the New
+    // Tab scrolled the strip to its end, beside the last document.
+    let last = documents.len() - 1;
     let (visible, _) =
-        workspace.read_with(cx, |workspace, cx| workspace.session_tab_geometry(1, cx));
+        workspace.read_with(cx, |workspace, cx| workspace.session_tab_geometry(last, cx));
     let visible = visible.unwrap();
     cx.simulate_mouse_down(visible.center(), MouseButton::Left, Modifiers::default());
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.session_tab_drag_state()),
-        Some((documents[1], false)),
+        Some((documents[last], false)),
         "visible tabs in an overflowing strip must stay draggable"
     );
 }
@@ -46700,6 +46703,16 @@ fn new_tab_opens_the_start_page_and_gives_way_to_a_document(cx: &mut TestAppCont
     assert_eq!(active(&workspace, cx), (None, true));
     assert!(cx.debug_bounds(DOCUMENT_NEW_TAB_ID).is_some());
     assert!(cx.debug_bounds("document-1-session-tab").is_some());
+    // The documents' tabs stay in the document strip: pressing one starts a
+    // drag, as it does with a document open.
+    let tab = cx.debug_bounds("document-1-session-tab").unwrap().center();
+    cx.simulate_mouse_down(tab, MouseButton::Left, Modifiers::default());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.session_tab_drag_state()),
+        Some((first, false))
+    );
+    cx.simulate_mouse_up(tab, MouseButton::Left, Modifiers::default());
+    draw(cx);
 
     // Choosing a document's tab replaces the New Tab.
     let target = cx.debug_bounds("document-1-session-tab").unwrap().center();

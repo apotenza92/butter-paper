@@ -1217,6 +1217,9 @@ pub struct TemplateManagerView {
     draft_error_target: Option<DraftInputTarget>,
     scroll_handle: ScrollHandle,
     preview_renderer: Option<Arc<dyn NativeDocumentOpener>>,
+    /// The list shows records older than the model's (another window changed
+    /// the library); it is rebuilt on the next draw, which has the window.
+    template_list_stale: bool,
 }
 
 impl TemplateManagerView {
@@ -1295,6 +1298,7 @@ impl TemplateManagerView {
             draft_error_target: None,
             scroll_handle: ScrollHandle::new(),
             preview_renderer: None,
+            template_list_stale: false,
         }
     }
 
@@ -1358,6 +1362,7 @@ impl TemplateManagerView {
             return false;
         }
         self.model = model;
+        self.template_list_stale = true;
         self.request_imported_previews(cx);
         cx.notify();
         true
@@ -2057,6 +2062,9 @@ pub fn route_workspace_template_command(
 
 impl Render for TemplateManagerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.template_list_stale) {
+            self.sync_template_list(window, cx);
+        }
         self.request_imported_previews(cx);
         let viewport_width = f32::from(window.viewport_size().width);
         let constrained = template_manager_uses_stacked_layout(viewport_width);

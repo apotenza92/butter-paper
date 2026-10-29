@@ -2774,6 +2774,8 @@ pub struct DocumentWorkspace {
     new_tab_return: Option<DocumentId>,
     new_tab_bounds: Rc<Cell<Bounds<Pixels>>>,
     new_tab_hovered: bool,
+    /// Scroll the New Tab into view once it is laid out.
+    new_tab_reveal: bool,
     session_tabs_overflow: bool,
     session_tab_reveal: Option<DocumentId>,
     session_tab_last_active: Option<DocumentId>,
@@ -4394,6 +4396,7 @@ impl DocumentWorkspace {
             new_tab_return: None,
             new_tab_bounds: Rc::new(Cell::new(Bounds::default())),
             new_tab_hovered: false,
+            new_tab_reveal: false,
             session_tabs_overflow: false,
             session_tab_reveal: None,
             session_tab_last_active: None,
@@ -19284,6 +19287,7 @@ impl DocumentWorkspace {
             self.new_tab_return = self.active_document_id;
             self.new_tab_open = true;
         }
+        self.new_tab_reveal = true;
         self.active_document_id = None;
         self.sync_active_viewer_toolbar(cx);
         cx.notify();

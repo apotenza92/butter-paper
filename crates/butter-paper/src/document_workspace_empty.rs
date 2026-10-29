@@ -134,6 +134,64 @@ impl DocumentWorkspace {
         )
     }
 
+    /// The New Tab, after the document tabs, while one is open.
+    pub(super) fn render_new_tab(&mut self, cx: &mut Context<Self>) -> Option<Tab> {
+        if !self.new_tab_open {
+            return None;
+        }
+        let reveal_close = self.new_tab_hovered;
+        let close_control = cx.entity().downgrade();
+        let close_label = document_tab_close_accessible_label("New Tab");
+        let new_tab_bounds = self.new_tab_bounds.clone();
+        let close = accessible_icon_button(
+            Button::new(DOCUMENT_NEW_TAB_CLOSE_ID)
+                .opacity(if reveal_close { 1. } else { 0. })
+                .focus(|style| style.opacity(1.))
+                .debug_selector(|| DOCUMENT_NEW_TAB_CLOSE_ID.into())
+                .accessibility_id(DOCUMENT_NEW_TAB_CLOSE_ID)
+                .rounded(cx.theme().radius_full())
+                .ghost()
+                .small()
+                .icon(IconName::Close)
+                .tooltip(close_label.clone())
+                .on_click(move |_: &ClickEvent, _, cx| {
+                    let _ = close_control.update(cx, |workspace, cx| workspace.close_new_tab(cx));
+                    cx.stop_propagation();
+                }),
+            close_label,
+        );
+        Some(
+            Tab::new()
+                .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
+                .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| {
+                    if workspace.new_tab_hovered != *hovered {
+                        workspace.new_tab_hovered = *hovered;
+                        cx.notify();
+                    }
+                }))
+                .debug_selector(|| DOCUMENT_NEW_TAB_ID.into())
+                .group(DOCUMENT_NEW_TAB_ID)
+                .child(
+                    canvas(
+                        move |bounds, _, _| new_tab_bounds.set(bounds),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .child(session_tab_overlay_label(
+                    "New Tab".into(),
+                    "New Tab".into(),
+                    DOCUMENT_NEW_TAB_ID.into(),
+                    reveal_close,
+                    false,
+                    cx,
+                ))
+                .aria_label("New Tab")
+                .child(session_tab_close_lane().child(close)),
+        )
+    }
+
     pub(super) fn render_without_document(
         &mut self,
         root: gpui::Stateful<gpui::Div>,
@@ -269,117 +327,73 @@ impl DocumentWorkspace {
             })
             .collect::<Vec<_>>();
         let new_tab_index = session_tabs.len();
-        let new_tab = self.new_tab_open.then(|| {
-            let reveal_close = self.new_tab_hovered;
-            let close_control = cx.entity().downgrade();
-            let close_label = document_tab_close_accessible_label("New Tab");
-            let new_tab_bounds = self.new_tab_bounds.clone();
-            let close = accessible_icon_button(
-                Button::new(DOCUMENT_NEW_TAB_CLOSE_ID)
-                    .opacity(if reveal_close { 1. } else { 0. })
-                    .focus(|style| style.opacity(1.))
-                    .debug_selector(|| DOCUMENT_NEW_TAB_CLOSE_ID.into())
-                    .accessibility_id(DOCUMENT_NEW_TAB_CLOSE_ID)
-                    .rounded(cx.theme().radius_full())
-                    .ghost()
-                    .small()
-                    .icon(IconName::Close)
-                    .tooltip(close_label.clone())
-                    .on_click(move |_: &ClickEvent, _, cx| {
-                        let _ =
-                            close_control.update(cx, |workspace, cx| workspace.close_new_tab(cx));
-                        cx.stop_propagation();
-                    }),
-                close_label,
-            );
-            Tab::new()
-                .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
-                .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| {
-                    if workspace.new_tab_hovered != *hovered {
-                        workspace.new_tab_hovered = *hovered;
-                        cx.notify();
-                    }
-                }))
-                .debug_selector(|| DOCUMENT_NEW_TAB_ID.into())
-                .group(DOCUMENT_NEW_TAB_ID)
-                .child(
-                    canvas(
-                        move |bounds, _, _| new_tab_bounds.set(bounds),
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset_0(),
-                )
-                .child(session_tab_overlay_label(
-                    "New Tab".into(),
-                    "New Tab".into(),
-                    DOCUMENT_NEW_TAB_ID.into(),
-                    reveal_close,
-                    false,
-                    cx,
-                ))
-                .aria_label("New Tab")
-                .child(session_tab_close_lane().child(close))
-        });
+        let new_tab = self.render_new_tab(cx);
         let inactive_tab_click_control = cx.entity().downgrade();
         let inactive_tab_click_ids = session_tabs
             .iter()
             .map(|(document_id, _, _, _)| *document_id)
             .collect::<Vec<_>>();
         let inactive_tab_focus_handles = self.session_tab_focus_handles.clone();
-        let session_tab_strip = h_flex()
-            .id(DOCUMENT_SESSION_TABS_ID)
-            .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
-            .w_full()
-            .px_3()
-            .items_stretch()
-            .gap_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                gpui::div()
-                    .id("document-workspace-native-session-tab-bar")
-                    .debug_selector(|| "document-workspace-native-session-tab-bar".into())
-                    .flex_1()
-                    .py_2()
-                    .pr_3()
-                    // Preserve the pinned Tab's 32px frame plus py_2 even with no tabs.
-                    .min_h(px(32.) + window.rem_size())
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .min_w_0()
-                    .max_w_full()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|workspace, event: &MouseDownEvent, _, cx| {
-                            workspace.open_new_tab_from_tab_bar(event, cx);
-                        }),
-                    )
-                    .child(
-                        TabBar::new("document-workspace-session-tabs-component")
-                            .outline()
-                            .max_width(px(190.))
-                            // Use stock scrolling, not the always-visible optional tab menu.
-                            .menu(false)
-                            .children(inactive_session_tabs)
-                            .children(new_tab)
-                            .when(self.new_tab_open, |tabs| tabs.selected_index(new_tab_index))
-                            .on_click(move |tab_ix, window, cx| {
-                                let focus = inactive_tab_click_control
-                                    .update(cx, |workspace, cx| {
-                                        let &document_id = inactive_tab_click_ids.get(*tab_ix)?;
-                                        let _ = workspace.activate_document(document_id, cx);
-                                        inactive_tab_focus_handles.get(&document_id).cloned()
-                                    })
-                                    .ok()
-                                    .flatten();
-                                if let Some(focus) = focus {
-                                    focus.focus(window, cx);
-                                }
+        // With documents open, a New Tab sits in the document strip, where tabs
+        // keep dragging, keyboard reordering and the overflow menu.
+        let session_tab_strip = if self.new_tab_open && !session_tabs.is_empty() {
+            self.render_session_tab_strip(session_tabs.clone(), window, cx)
+        } else {
+            h_flex()
+                .id(DOCUMENT_SESSION_TABS_ID)
+                .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
+                .w_full()
+                .px_3()
+                .items_stretch()
+                .gap_3()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(
+                    gpui::div()
+                        .id("document-workspace-native-session-tab-bar")
+                        .debug_selector(|| "document-workspace-native-session-tab-bar".into())
+                        .flex_1()
+                        .py_2()
+                        .pr_3()
+                        // Preserve the pinned Tab's 32px frame plus py_2 even with no tabs.
+                        .min_h(px(32.) + window.rem_size())
+                        .border_r_1()
+                        .border_color(cx.theme().border)
+                        .min_w_0()
+                        .max_w_full()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|workspace, event: &MouseDownEvent, _, cx| {
+                                workspace.open_new_tab_from_tab_bar(event, cx);
                             }),
-                    ),
-            )
-            .child(document_actions);
+                        )
+                        .child(
+                            TabBar::new("document-workspace-session-tabs-component")
+                                .outline()
+                                .max_width(px(190.))
+                                // Use stock scrolling, not the always-visible optional tab menu.
+                                .menu(false)
+                                .children(inactive_session_tabs)
+                                .children(new_tab)
+                                .when(self.new_tab_open, |tabs| tabs.selected_index(new_tab_index))
+                                .on_click(move |tab_ix, window, cx| {
+                                    let focus = inactive_tab_click_control
+                                        .update(cx, |workspace, cx| {
+                                            let &document_id =
+                                                inactive_tab_click_ids.get(*tab_ix)?;
+                                            let _ = workspace.activate_document(document_id, cx);
+                                            inactive_tab_focus_handles.get(&document_id).cloned()
+                                        })
+                                        .ok()
+                                        .flatten();
+                                    if let Some(focus) = focus {
+                                        focus.focus(window, cx);
+                                    }
+                                }),
+                        ),
+                )
+                .child(document_actions)
+        };
         root.child(session_tab_strip).child(
             h_flex()
                 .flex_1()
