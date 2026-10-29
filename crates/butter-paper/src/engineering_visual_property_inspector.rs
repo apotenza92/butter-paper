@@ -720,7 +720,7 @@ fn color_field(
                     .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID.into())
                     .child(
                         Button::new("engineering-visual-property-inspector-apply-color-button")
-                            .label("Apply color")
+                            .label("Apply colour")
                             .disabled(disabled)
                             .on_click(move |_, _, cx| {
                                 let _ = inspector

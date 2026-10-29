@@ -119,7 +119,7 @@ impl DocumentWorkspace {
                             Button::new(DOCUMENT_WORD_KEEP_BOTH_ID)
                                 .debug_selector(|| DOCUMENT_WORD_KEEP_BOTH_ID.into())
                                 .outline()
-                                .label("Keep Both")
+                                .label("Keep both")
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
                                     let pdf = keep_pdf.clone();

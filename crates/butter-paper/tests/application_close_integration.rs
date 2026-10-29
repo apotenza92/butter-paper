@@ -4970,7 +4970,13 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
             .annotation_tool(document_id, cx)),
         Some(AnnotationTool::TextBox),
     );
-    cx.simulate_mouse_down(placement, MouseButton::Left, Modifiers::default());
+    // A Text Box is drawn like a rectangle: one corner, then the other.
+    cx.simulate_click(placement, Modifiers::default());
+    cx.simulate_mouse_down(
+        point(placement.x + px(10.), placement.y + px(10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     let editor_focus = workspace
@@ -5015,8 +5021,10 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert_eq!(created_text_box.id.as_str(), "workspace:text:1");
     assert_eq!(created_text_box.page_index, 0);
     assert_eq!(created_text_box.content(), expected_content);
-    assert!((created_text_box.layout_rect.x - 68.5).abs() < 0.001);
-    assert!((created_text_box.layout_rect.y - 72.3).abs() < 0.001);
+    // The box hangs from the first corner clicked, grown past the small box
+    // drawn to fit its two lines.
+    assert!((created_text_box.layout_rect.x - 72.).abs() < 0.01);
+    assert!((created_text_box.layout_rect.y - 62.4).abs() < 0.01);
     assert!((created_text_box.layout_rect.width - 85.2).abs() < 0.001);
     assert!((created_text_box.layout_rect.height - 33.6).abs() < 0.001);
     assert_eq!(created_text_box.style().font_family(), "Helvetica");
@@ -5669,7 +5677,13 @@ fn application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_an
     let layer = cx
         .debug_bounds(layer_id)
         .expect("the deterministic annotation canvas must render");
-    cx.simulate_mouse_down(layer.center(), MouseButton::Left, Modifiers::default());
+    // A Text Box is drawn like a rectangle: one corner, then the other.
+    cx.simulate_click(layer.center(), Modifiers::default());
+    cx.simulate_mouse_down(
+        point(layer.center().x + px(60.), layer.center().y + px(30.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     let editor_focus = workspace
@@ -6005,7 +6019,8 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     let text_tool_point = cx.debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID).unwrap().center();
     cx.simulate_click(text_tool_point, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_mouse_down(to_view(350., 520.), MouseButton::Left, Modifiers::default());
+    cx.simulate_click(to_view(350., 520.), Modifiers::default());
+    cx.simulate_mouse_down(to_view(400., 500.), MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     let text_editor_focus = workspace
@@ -6044,7 +6059,9 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // The image fills the box clicked out for it.
     cx.simulate_click(to_view(450., 180.), Modifiers::default());
+    cx.simulate_click(to_view(530., 120.), Modifiers::default());
     let image_id = MarkupId::new("workspace:image:8").unwrap();
     let created = workspace
         .read_with(cx, |workspace, cx| {

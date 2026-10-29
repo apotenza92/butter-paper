@@ -181,8 +181,89 @@ pub(super) fn rotate_feedback_point(
     )
 }
 
+/// A handle or rotation knob held back to paint over every markup.
+enum DeferredChrome {
+    Handle {
+        center: Point<Pixels>,
+        degrees: f64,
+        state: ChromeState,
+        hot: bool,
+    },
+    Rotation {
+        start: Point<Pixels>,
+        end: Point<Pixels>,
+        center: Point<Pixels>,
+        state: ChromeState,
+        hot: bool,
+    },
+}
+
+thread_local! {
+    static DEFERRED_CHROME: std::cell::RefCell<Option<Vec<DeferredChrome>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// From now until [`paint_deferred_chrome`], handles and rotation knobs are
+/// held back, so a markup painted later never covers another's handles.
+pub(super) fn defer_chrome() {
+    DEFERRED_CHROME.with(|deferred| *deferred.borrow_mut() = Some(Vec::new()));
+}
+
+/// Paints the handles and knobs held back since [`defer_chrome`], above
+/// everything painted since.
+pub(super) fn paint_deferred_chrome(window: &mut Window) {
+    let held = DEFERRED_CHROME.with(|deferred| deferred.borrow_mut().take());
+    for chrome in held.into_iter().flatten() {
+        match chrome {
+            DeferredChrome::Handle {
+                center,
+                degrees,
+                state,
+                hot,
+            } => paint_handle_now(center, degrees, state, hot, window),
+            DeferredChrome::Rotation {
+                start,
+                end,
+                center,
+                state,
+                hot,
+            } => paint_rotation_now(start, end, center, state, hot, window),
+        }
+    }
+}
+
+/// Holds `chrome` back if painting is deferred; otherwise returns it.
+fn hold(chrome: DeferredChrome) -> Option<DeferredChrome> {
+    DEFERRED_CHROME.with(|deferred| match deferred.borrow_mut().as_mut() {
+        Some(held) => {
+            held.push(chrome);
+            None
+        }
+        None => Some(chrome),
+    })
+}
+
 /// A handle turned with its markup's rotation.
 pub(super) fn paint_rotated_feedback_handle(
+    center: Point<Pixels>,
+    degrees: f64,
+    state: ChromeState,
+    hot: bool,
+    window: &mut Window,
+) {
+    if hold(DeferredChrome::Handle {
+        center,
+        degrees,
+        state,
+        hot,
+    })
+    .is_some()
+    {
+        paint_handle_now(center, degrees, state, hot, window);
+    }
+}
+
+fn paint_handle_now(
     center: Point<Pixels>,
     degrees: f64,
     state: ChromeState,
@@ -254,6 +335,27 @@ fn rotation_feedback_quad(
 /// Connector follows the descriptor projection, including its page-rotation quirks.
 /// Caller suppresses both primitives when locked.
 pub(super) fn paint_rotation_feedback(
+    start: Point<Pixels>,
+    end: Point<Pixels>,
+    center: Point<Pixels>,
+    state: ChromeState,
+    hot: bool,
+    window: &mut Window,
+) {
+    if hold(DeferredChrome::Rotation {
+        start,
+        end,
+        center,
+        state,
+        hot,
+    })
+    .is_some()
+    {
+        paint_rotation_now(start, end, center, state, hot, window);
+    }
+}
+
+fn paint_rotation_now(
     start: Point<Pixels>,
     end: Point<Pixels>,
     center: Point<Pixels>,

@@ -725,9 +725,13 @@ pub const DOCUMENT_RECOVERY_DISCARD_CANCEL_ID: &str = "document-workspace-recove
 pub const DOCUMENT_RECOVERY_DISCARD_CONFIRM_ID: &str =
     "document-workspace-recovery-discard-confirm";
 pub const VIEWPORT_OPEN_DOCUMENT_ID: &str = "viewport-open-document";
+pub const VIEWPORT_NEW_DOCUMENT_ID: &str = "viewport-new-document";
 
 const MIDDLE_DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const MIDDLE_CLICK_SLOP_PX: f32 = 8.;
+/// How far a press must move before its release counts as a drag rather
+/// than a click, as for the adapter's drawing tools.
+const PLACEMENT_DRAG_THRESHOLD_PX: f64 = 3.;
 
 fn middle_click_distance(a: gpui::Point<Pixels>, b: gpui::Point<Pixels>) -> f32 {
     f32::from(a.x - b.x).hypot(f32::from(a.y - b.y))
@@ -2740,8 +2744,6 @@ pub struct DocumentWorkspace {
     document_recovery_store_error: Option<String>,
     recovery_confirmation_pending: HashSet<DocumentId>,
     next_annotation_sequence: u64,
-    annotation_clipboard: Vec<Annotation>,
-    annotation_paste_sequence: u64,
     next_pointer_id: u64,
     next_painted_state_sequence: u64,
     page_interactions: HashMap<(DocumentId, u32), PageInteraction>,
@@ -2784,6 +2786,12 @@ pub struct DocumentWorkspace {
     hot_annotation_handle: Option<(DocumentId, u32, MarkupId, usize)>,
     select_hover_hit: Option<(DocumentId, u32, HitTarget)>,
     pending_image_hover: Option<(DocumentId, u32, PdfPoint)>,
+    /// Where the press that began a two-point placement the workspace drives
+    /// (Length, Dimension, Text Box) was. Releasing it past the drag threshold finishes
+    /// the placement there, as a second click would.
+    placement_press: Option<gpui::Point<Pixels>>,
+    /// A Text Box whose first corner is placed, awaiting its opposite one.
+    text_box_placement: Option<TextBoxPlacement>,
     session_tab_scroll: ScrollHandle,
     session_tab_close_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
     session_tab_pointer_drag: Option<DocumentSessionTabPointerDragState>,
@@ -2978,6 +2986,9 @@ pub struct DocumentWorkspace {
     viewer_session_subscriptions: HashMap<DocumentId, Subscription>,
     generated_document_store: Option<GeneratedDocumentStore>,
     pending_template_id: Option<String>,
+    /// The paper turned this way for the pending template, when the picker
+    /// turned it.
+    pending_template_orientation: Option<crate::template_preview::PaperOrientation>,
     pending_template_document_id: Option<DocumentId>,
     template_manage_requests: u64,
     template_save_requests: u64,
@@ -3904,6 +3915,34 @@ struct PendingSessionRestore {
     restart_views: Vec<(PathBuf, RestartView)>,
 }
 
+#[derive(Clone, Copy)]
+struct TextBoxPlacement {
+    document_id: DocumentId,
+    page_index: u32,
+    start: PdfPoint,
+    current: PdfPoint,
+    start_position: gpui::Point<Pixels>,
+}
+
+/// Markups copied or cut, shared by every window so they paste into any open
+/// document.
+#[derive(Clone, Default)]
+struct MarkupClipboard {
+    annotations: Vec<Annotation>,
+    /// The workspace and document they were copied from or last pasted into.
+    source: Option<(gpui::EntityId, DocumentId)>,
+    /// Pastes since, which step each copy away from the last.
+    pastes: u64,
+}
+
+impl gpui::Global for MarkupClipboard {}
+
+fn markup_clipboard(cx: &App) -> &MarkupClipboard {
+    static EMPTY: std::sync::LazyLock<MarkupClipboard> =
+        std::sync::LazyLock::new(MarkupClipboard::default);
+    cx.try_global::<MarkupClipboard>().unwrap_or(&EMPTY)
+}
+
 struct PendingTextBoxEditor {
     document_id: DocumentId,
     page_index: u32,
@@ -3969,6 +4008,8 @@ enum PendingTextEditorTarget {
         rect: PdfRect,
         style: TextBoxStyle,
         interaction: PageInteraction,
+        /// The size the box was drawn at: it grows past it to fit its text.
+        minimum: (f64, f64),
     },
     ExistingTextBox {
         id: MarkupId,
@@ -4161,13 +4202,13 @@ fn pending_text_box_size(
     (width, line_count * line_height + inset * 2.)
 }
 
+/// A new text box over the area drawn for it, from its top-left corner.
 fn initial_pending_text_box_rect(
-    anchor: PdfPoint,
+    area: PdfRect,
     style: &TextBoxStyle,
     text_system: &gpui::WindowTextSystem,
 ) -> Result<PdfRect, AnnotationError> {
-    let (width, height) = pending_text_box_size("", style, text_system);
-    PdfRect::new(anchor.x - width / 2., anchor.y - height / 2., width, height)
+    resized_pending_text_box_rect(area, "", style, text_system, (area.width, area.height))
 }
 
 fn resized_pending_text_box_rect(
@@ -4175,9 +4216,11 @@ fn resized_pending_text_box_rect(
     content: &str,
     style: &TextBoxStyle,
     text_system: &gpui::WindowTextSystem,
+    minimum: (f64, f64),
 ) -> Result<PdfRect, AnnotationError> {
     let top = current.y + current.height;
     let (width, height) = pending_text_box_size(content, style, text_system);
+    let (width, height) = (width.max(minimum.0), height.max(minimum.1));
     PdfRect::new(current.x, top - height, width, height)
 }
 
@@ -4373,8 +4416,6 @@ impl DocumentWorkspace {
             document_recovery_store_error: None,
             recovery_confirmation_pending: HashSet::new(),
             next_annotation_sequence: 1,
-            annotation_clipboard: Vec::new(),
-            annotation_paste_sequence: 0,
             next_pointer_id: 1,
             next_painted_state_sequence: 1,
             page_interactions: HashMap::new(),
@@ -4405,6 +4446,8 @@ impl DocumentWorkspace {
             hot_annotation_handle: None,
             select_hover_hit: None,
             pending_image_hover: None,
+            placement_press: None,
+            text_box_placement: None,
             session_tab_scroll: ScrollHandle::new(),
             session_tab_close_bounds: HashMap::new(),
             session_tab_pointer_drag: None,
@@ -4541,6 +4584,7 @@ impl DocumentWorkspace {
             viewer_session_subscriptions: HashMap::new(),
             generated_document_store: None,
             pending_template_id: None,
+            pending_template_orientation: None,
             pending_template_document_id: None,
             template_manage_requests: 0,
             template_save_requests: 0,
@@ -5878,12 +5922,24 @@ impl DocumentWorkspace {
             || !scene.lengths.is_empty()
             || !scene.images.is_empty()
             || !scene.snapshots.is_empty();
+        // Page content selected in Edit PDF copies and cuts like markups, and
+        // selected page text copies.
+        let has_content_selection = self.content_selection.as_ref().is_some_and(|selection| {
+            selection.document_id == document_id && !selection.groups.is_empty()
+        });
+        let has_page_text = self.selected_page_text(document_id, cx).is_some();
+        let can_paste_content = self
+            .content_clipboard
+            .as_ref()
+            .is_some_and(|clipboard| clipboard.document_id == document_id)
+            && self.editing_content(document_id, cx);
         DocumentEditCapabilities {
             can_undo: undo_depth > 0 && !saving,
             can_redo: redo_depth > 0 && !saving,
-            can_cut: has_selection && !saving,
-            can_copy: has_selection,
-            can_paste: !self.annotation_clipboard.is_empty() && !saving,
+            can_cut: (has_selection || has_content_selection) && !saving,
+            can_copy: has_selection || has_content_selection || has_page_text,
+            can_paste: (!markup_clipboard(cx).annotations.is_empty() || can_paste_content)
+                && !saving,
             can_select_all: page_has_annotations,
             can_delete: has_unlocked_selection && !saving,
         }
@@ -6309,12 +6365,14 @@ impl DocumentWorkspace {
             TemplateSplitEvent::CreateRequested {
                 template_id,
                 origin,
+                orientation,
             } => {
                 if self.external_template_authority {
                     cx.emit(DocumentWorkspaceTemplateCommand::Create(
                         TemplateCreationEvent {
                             template_id,
                             origin,
+                            orientation,
                         },
                     ));
                     return;
@@ -6323,6 +6381,7 @@ impl DocumentWorkspace {
                     return;
                 }
                 self.pending_template_id = Some(template_id.clone());
+                self.pending_template_orientation = orientation;
                 let workspace = cx.entity().downgrade();
                 cx.defer(move |cx| {
                     let _ = workspace.update(cx, |workspace, cx| {
@@ -6387,7 +6446,12 @@ impl DocumentWorkspace {
             return GeneratedTemplateRequestDisposition::Rejected(error);
         };
         let request = match generated_document_request_for_template(&template_id) {
-            Ok(request) => request,
+            Ok(request) => match self.pending_template_orientation.take() {
+                Some(orientation) => {
+                    crate::template_preview::oriented_request(request, orientation)
+                }
+                None => request,
+            },
             Err(error) => {
                 self.last_file_error = Some(error.clone());
                 self.finish_template_creation(cx);
@@ -8361,10 +8425,47 @@ impl DocumentWorkspace {
         Ok(changed)
     }
 
+    /// A Text Box is drawn like a rectangle: drag its box, or click one
+    /// corner and then the other. The editor then opens over that box.
+    fn place_text_box_corner(
+        &mut self,
+        interaction: PageInteraction,
+        point: PdfPoint,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.pending_text_box_editor.is_some() {
+            return false;
+        }
+        if let Some(placement) = self.text_box_placement
+            && (placement.document_id, placement.page_index)
+                == (interaction.document_id, interaction.page_index)
+        {
+            // A second click on the first corner leaves the box pending.
+            if (position - placement.start_position).magnitude() < PLACEMENT_DRAG_THRESHOLD_PX {
+                return true;
+            }
+            self.text_box_placement = None;
+            let area = PdfRect::from_corners(placement.start, point);
+            return self.begin_pending_text_box(interaction, area, window, cx);
+        }
+        self.text_box_placement = Some(TextBoxPlacement {
+            document_id: interaction.document_id,
+            page_index: interaction.page_index,
+            start: point,
+            current: point,
+            start_position: position,
+        });
+        self.placement_press = Some(position);
+        cx.notify();
+        true
+    }
+
     fn begin_pending_text_box(
         &mut self,
         interaction: PageInteraction,
-        anchor: PdfPoint,
+        area: PdfRect,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -8389,7 +8490,7 @@ impl DocumentWorkspace {
         let Ok(style) = crate::annotation_adapter::text_box_tool_style(&properties) else {
             return false;
         };
-        let Ok(rect) = initial_pending_text_box_rect(anchor, &style, window.text_system()) else {
+        let Ok(rect) = initial_pending_text_box_rect(area, &style, window.text_system()) else {
             return false;
         };
         let input = cx.new(|cx| TextareaState::new(window, cx).rows(3).soft_wrap(false));
@@ -8422,6 +8523,7 @@ impl DocumentWorkspace {
                 rect,
                 style,
                 interaction,
+                minimum: (area.width, area.height),
             },
             authority: None,
             input: input.clone(),
@@ -8441,7 +8543,13 @@ impl DocumentWorkspace {
         let Some(editor) = self.pending_text_box_editor.as_ref() else {
             return Ok(());
         };
-        let PendingTextEditorTarget::NewTextBox { rect, style, .. } = &editor.target else {
+        let PendingTextEditorTarget::NewTextBox {
+            rect,
+            style,
+            minimum,
+            ..
+        } = &editor.target
+        else {
             return Ok(());
         };
         let next = resized_pending_text_box_rect(
@@ -8449,6 +8557,7 @@ impl DocumentWorkspace {
             &editor.input.read(cx).value(),
             style,
             window.text_system(),
+            *minimum,
         )
         .map_err(|error| error.to_string())?;
         let Some(editor) = self.pending_text_box_editor.as_mut() else {
@@ -14487,6 +14596,25 @@ impl DocumentWorkspace {
         Ok(())
     }
 
+    /// A right-click on a markup that isn't selected selects it, so the menu
+    /// acts on what is under the pointer.
+    fn select_hovered_markup_for_menu(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((hovered_document, hovered_page, id)) = self.hovered_annotation.clone() else {
+            return;
+        };
+        if (hovered_document, hovered_page) != (document_id, page_index)
+            || self.selected_annotation_ids(document_id, cx).contains(&id)
+        {
+            return;
+        }
+        self.select_annotation(document_id, &id, cx);
+    }
+
     pub fn select_annotation(
         &mut self,
         document_id: DocumentId,
@@ -14913,8 +15041,12 @@ impl DocumentWorkspace {
             .unwrap_or_default();
         let count = copied.len();
         if count > 0 {
-            self.annotation_clipboard = copied;
-            self.annotation_paste_sequence = 0;
+            let source = (cx.entity_id(), document_id);
+            cx.set_global(MarkupClipboard {
+                annotations: copied,
+                source: Some(source),
+                pastes: 0,
+            });
             self.annotation_statuses.insert(
                 document_id,
                 if count == 1 {
@@ -14959,8 +15091,14 @@ impl DocumentWorkspace {
                 .map(|_| ())
         })?;
         let count = copied.len();
-        self.annotation_clipboard = copied;
-        self.annotation_paste_sequence = 0;
+        let source = (cx.entity_id(), document_id);
+        cx.set_global(MarkupClipboard {
+            annotations: copied,
+            source: Some(source),
+            // A cut leaves no original to step away from: the first paste
+            // goes back where it was.
+            pastes: u64::MAX,
+        });
         self.annotation_statuses.insert(
             document_id,
             if has_unlocked {
@@ -14985,7 +15123,8 @@ impl DocumentWorkspace {
         page_index: u32,
         cx: &mut Context<Self>,
     ) -> Result<Vec<MarkupId>, String> {
-        if self.annotation_clipboard.is_empty() {
+        let clipboard = markup_clipboard(cx).clone();
+        if clipboard.annotations.is_empty() {
             return Err("annotation clipboard is empty".into());
         }
         let Some(session) = self.session(document_id, cx).cloned() else {
@@ -14994,12 +15133,22 @@ impl DocumentWorkspace {
         if session.read(cx).save_status == NativeDocumentSaveStatus::Saving {
             return Err("document save is in progress".into());
         }
-        let previous_paste_sequence = self.annotation_paste_sequence;
         let previous_annotation_sequence = self.next_annotation_sequence;
-        self.annotation_paste_sequence = self.annotation_paste_sequence.saturating_add(1);
-        let offset = 12. * self.annotation_paste_sequence as f64;
-        let mut pasted = Vec::with_capacity(self.annotation_clipboard.len());
-        for source in &self.annotation_clipboard {
+        // Pastes into the document copied from step away from the original
+        // (and each other); in another document they land where they were.
+        let same_document = clipboard.source == Some((cx.entity_id(), document_id));
+        let pastes = if same_document {
+            clipboard.pastes.wrapping_add(1)
+        } else {
+            0
+        };
+        let offset = if same_document {
+            12. * pastes as f64
+        } else {
+            0.
+        };
+        let mut pasted = Vec::with_capacity(clipboard.annotations.len());
+        for source in &clipboard.annotations {
             let family = match source {
                 Annotation::Rectangle(_) => "rectangle",
                 Annotation::Ellipse(_) => "ellipse",
@@ -15042,7 +15191,6 @@ impl DocumentWorkspace {
             match copied {
                 Ok(annotation) => pasted.push(annotation),
                 Err(error) => {
-                    self.annotation_paste_sequence = previous_paste_sequence;
                     self.next_annotation_sequence = previous_annotation_sequence;
                     return Err(error);
                 }
@@ -15056,11 +15204,17 @@ impl DocumentWorkspace {
         let inserted = match inserted {
             Ok(inserted) => inserted,
             Err(error) => {
-                self.annotation_paste_sequence = previous_paste_sequence;
                 self.next_annotation_sequence = previous_annotation_sequence;
                 return Err(error);
             }
         };
+        // Later pastes step on from this one, in whichever document it was.
+        let workspace_id = cx.entity_id();
+        cx.set_global(MarkupClipboard {
+            annotations: clipboard.annotations,
+            source: Some((workspace_id, document_id)),
+            pastes: if same_document { pastes } else { 0 },
+        });
         self.annotation_statuses.insert(
             document_id,
             if inserted.len() == 1 {
@@ -15774,23 +15928,58 @@ impl DocumentWorkspace {
                     && pending.document_generation == session.generation
             });
         if preview_blocked {
-            session
+            return session
                 .annotations
-                .canonical_document_scene(document_id.value(), page_index)
-        } else {
-            // Markups on content being dragged move with it.
-            let dragged = self.dragged_content(document_id, page_index);
-            session.annotations.document_scene_with_table_preview(
-                document_id.value(),
-                page_index,
-                caption_supplement,
-                crate::annotation_adapter::ContentPreview {
-                    dragged: dragged.as_ref().map(|(groups, markups, delta)| {
-                        (groups.as_slice(), markups.as_slice(), *delta)
-                    }),
-                },
-            )
+                .canonical_document_scene(document_id.value(), page_index);
         }
+        // Markups on content being dragged move with it.
+        let dragged = self.dragged_content(document_id, page_index);
+        let mut scene = session.annotations.document_scene_with_table_preview(
+            document_id.value(),
+            page_index,
+            caption_supplement,
+            crate::annotation_adapter::ContentPreview {
+                dragged: dragged.as_ref().map(|(groups, markups, delta)| {
+                    (groups.as_slice(), markups.as_slice(), *delta)
+                }),
+            },
+        );
+        if let Some(preview) = self.text_box_placement_preview(document_id, page_index, session) {
+            scene.rectangles.push(preview);
+        }
+        scene
+    }
+
+    /// A Text Box being placed shows the box it will fill as a dashed
+    /// outline in its text colour.
+    fn text_box_placement_preview(
+        &self,
+        document_id: DocumentId,
+        page_index: u32,
+        session: &NativeDocumentSession,
+    ) -> Option<crate::annotation_model::SceneRectangle> {
+        let placement = self.text_box_placement.filter(|placement| {
+            (placement.document_id, placement.page_index) == (document_id, page_index)
+                && placement.start != placement.current
+        })?;
+        if session.annotations.tool() != AnnotationTool::TextBox {
+            return None;
+        }
+        let properties = session.annotations.tool_properties(AnnotationTool::TextBox);
+        let appearance =
+            RectangleAppearance::new(properties.colour, 1., None::<String>, properties.opacity)
+                .ok()?
+                .with_stroke_style(StrokeStyle::Dashed);
+        Some(crate::annotation_model::SceneRectangle {
+            id: MarkupId::new("workspace:text-box-placement").ok()?,
+            rect: PdfRect::from_corners(placement.start, placement.current),
+            rotation_degrees: 0.,
+            appearance,
+            selected: false,
+            locked: false,
+            preview: true,
+            feedback: crate::annotation_model::SceneInteractionFeedback::Creation,
+        })
     }
 
     pub fn thumbnail_annotation_scene(
@@ -16834,8 +17023,10 @@ impl DocumentWorkspace {
             Ok::<(), String>(())
         })?;
         self.dismiss_signature_popover(document_id, Some(window), cx);
-        self.annotation_statuses
-            .insert(document_id, "Click the page to place the signature".into());
+        self.annotation_statuses.insert(
+            document_id,
+            "Click or drag on the page to place the signature".into(),
+        );
         self.workspace_focus.focus(window, cx);
         cx.notify();
         Ok(())
@@ -16916,7 +17107,7 @@ impl DocumentWorkspace {
             session.annotations.queue_next_annotation_id(id.clone());
             let outcome = session
                 .annotations
-                .pointer_down(document_id.value(), page_index, 5, point, 0.)
+                .place_image_at(document_id.value(), page_index, point)
                 .map_err(|error| error.to_string())?;
             if outcome != PointerPhaseOutcome::AnnotationCreated(id) {
                 return Err(format!(
@@ -17107,7 +17298,7 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return;
         };
-        let (vertex_path_pending, measurement_path_pending, cloud_pending, cloud_plus_pending) = {
+        let (vertex_path_pending, measurement_path_pending, cloud_pending) = {
             let session = session.read(cx);
             (
                 session.annotations.vertex_path_pending(document_id.value()),
@@ -17115,20 +17306,12 @@ impl DocumentWorkspace {
                     .annotations
                     .measurement_path_pending(document_id.value()),
                 session.annotations.cloud_pending(document_id.value()),
-                session.annotations.cloud_plus_pending(document_id.value()),
             )
         };
-        if !vertex_path_pending
-            && !measurement_path_pending
-            && !cloud_pending
-            && !cloud_plus_pending
-        {
+        if !vertex_path_pending && !measurement_path_pending && !cloud_pending {
             cx.propagate();
             return;
         }
-        let page_index = session.read(cx).current_page;
-        let caption_supplement =
-            self.annotation_caption_selection_paths(document_id, page_index, cx);
         let outcome = self.update_annotation_history_with_result(
             document_id,
             cx,
@@ -17137,9 +17320,6 @@ impl DocumentWorkspace {
                     annotations.finish_measurement_path(document_id)
                 } else if cloud_pending {
                     annotations.finish_cloud(document_id)
-                } else if cloud_plus_pending {
-                    annotations
-                        .finish_cloud_plus_with_routing_supplement(document_id, &caption_supplement)
                 } else {
                     annotations.finish_vertex_path(document_id)
                 };
@@ -17149,14 +17329,6 @@ impl DocumentWorkspace {
                 outcome
             },
         );
-        let created_cloud_plus_id = if cloud_plus_pending {
-            match &outcome {
-                Ok(PointerPhaseOutcome::AnnotationCreated(id)) => Some(id.clone()),
-                _ => None,
-            }
-        } else {
-            None
-        };
         if matches!(
             outcome,
             Ok(PointerPhaseOutcome::AnnotationCreated(_)) | Ok(PointerPhaseOutcome::Ignored)
@@ -17172,16 +17344,6 @@ impl DocumentWorkspace {
                 self.annotation_statuses
                     .insert(document_id, error.to_string());
             }
-        }
-        if let Some(id) = created_cloud_plus_id {
-            let page_index = session.read(cx).current_page;
-            let _ = self.begin_pending_composite_text_editor(
-                document_id,
-                page_index,
-                PendingTextEditorTarget::NewCloudPlus { id },
-                window,
-                cx,
-            );
         }
         cx.notify();
     }
@@ -17307,7 +17469,7 @@ impl DocumentWorkspace {
             && !self.copy_selected_page_text(document_id, cx)
         {
             if content {
-                self.annotation_clipboard.clear();
+                cx.set_global(MarkupClipboard::default());
             }
             self.copy_selected_annotations(document_id, cx);
         }
@@ -17353,7 +17515,7 @@ impl DocumentWorkspace {
             return;
         }
         // Copied page content pastes as copies in Edit PDF mode.
-        if self.paste_content(cx) && self.annotation_clipboard.is_empty() {
+        if self.paste_content(cx) && markup_clipboard(cx).annotations.is_empty() {
             return;
         }
         let Some(document_id) = self.active_document_id else {
@@ -17608,6 +17770,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.placement_press = None;
         let pressed_hot_annotation_handle = self.hot_annotation_handle.clone();
         // The cursor a drag keeps: the grabbed control's, or the moving cursor
         // when the press lands on an item to move it.
@@ -17860,101 +18023,6 @@ impl DocumentWorkspace {
             cx.notify();
             return true;
         }
-        if tool == AnnotationTool::Cloud
-            && click_count >= 2
-            && session
-                .read(cx)
-                .annotations
-                .cloud_pending(interaction.document_id.value())
-        {
-            let pointer_id = self.next_pointer_id;
-            let outcome = self.update_annotation_history_with_result(
-                interaction.document_id,
-                cx,
-                |annotations, document_id| {
-                    annotations.pointer_down(
-                        document_id,
-                        interaction.page_index,
-                        pointer_id,
-                        point,
-                        interaction.transform.tolerance_points(4.)?,
-                    )?;
-                    let outcome = annotations.finish_cloud(document_id)?;
-                    if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
-                        annotations.set_tool(AnnotationTool::Select)?;
-                    }
-                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
-                },
-            );
-            match outcome {
-                Ok(PointerPhaseOutcome::AnnotationCreated(_)) => {
-                    self.annotation_statuses.remove(&interaction.document_id);
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
-                }
-            }
-            cx.notify();
-            return true;
-        }
-        if tool == AnnotationTool::CloudPlus
-            && click_count >= 2
-            && session
-                .read(cx)
-                .annotations
-                .cloud_plus_pending(interaction.document_id.value())
-        {
-            let tolerance = match interaction.transform.tolerance_points(4.) {
-                Ok(tolerance) => tolerance,
-                Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
-                    cx.notify();
-                    return true;
-                }
-            };
-            let outcome = self.update_annotation_history_with_result(
-                interaction.document_id,
-                cx,
-                |annotations, document_id| {
-                    let outcome = annotations.pointer_double_click(
-                        document_id,
-                        interaction.page_index,
-                        point,
-                        tolerance,
-                    )?;
-                    if matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
-                        annotations.set_tool(AnnotationTool::Select)?;
-                    }
-                    Ok::<PointerPhaseOutcome, AnnotationError>(outcome)
-                },
-            );
-            match outcome {
-                Ok(PointerPhaseOutcome::AnnotationCreated(id)) => {
-                    self.active_annotation_pointer = None;
-                    self.annotation_statuses.remove(&interaction.document_id);
-                    let _ = self.begin_pending_composite_text_editor(
-                        interaction.document_id,
-                        interaction.page_index,
-                        PendingTextEditorTarget::NewCloudPlus { id },
-                        window,
-                        cx,
-                    );
-                }
-                Ok(PointerPhaseOutcome::Ignored) => {
-                    self.active_annotation_pointer = None;
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
-                }
-            }
-            cx.notify();
-            return true;
-        }
         // A double-click on a rotation knob turns the item back to 0°.
         if tool == AnnotationTool::Select
             && click_count >= 2
@@ -18158,7 +18226,7 @@ impl DocumentWorkspace {
             }
         }
         if tool == AnnotationTool::TextBox {
-            return self.begin_pending_text_box(interaction, point, window, cx);
+            return self.place_text_box_corner(interaction, point, position, window, cx);
         }
         if tool == AnnotationTool::Length {
             if session
@@ -18214,6 +18282,7 @@ impl DocumentWorkspace {
                 Ok(PointerPhaseOutcome::PlacementPending) => {
                     self.next_annotation_sequence = self.next_annotation_sequence.saturating_add(1);
                     self.annotation_statuses.remove(&interaction.document_id);
+                    self.placement_press = Some(position);
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -18289,6 +18358,7 @@ impl DocumentWorkspace {
                 Ok(PointerPhaseOutcome::PlacementPending) => {
                     self.next_annotation_sequence = self.next_annotation_sequence.saturating_add(1);
                     self.annotation_statuses.remove(&interaction.document_id);
+                    self.placement_press = Some(position);
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -18382,9 +18452,6 @@ impl DocumentWorkspace {
                 || session
                     .annotations
                     .cloud_pending(interaction.document_id.value())
-                || session
-                    .annotations
-                    .cloud_plus_pending(interaction.document_id.value())
                 || session
                     .annotations
                     .arc_placement_pending(interaction.document_id.value())
@@ -18682,6 +18749,14 @@ impl DocumentWorkspace {
         let Some(point) = Self::interaction_point(interaction, position, true) else {
             return self.clear_hover_candidate(cx);
         };
+        if let Some(placement) = self.text_box_placement.as_mut()
+            && (placement.document_id, placement.page_index)
+                == (interaction.document_id, interaction.page_index)
+        {
+            placement.current = point;
+            cx.notify();
+            return true;
+        }
         if self.page_scale_picking(cx) {
             self.clear_hover_candidate(cx);
             self.hover_calibration_point(
@@ -18721,10 +18796,6 @@ impl DocumentWorkspace {
             .read(cx)
             .annotations
             .cloud_pending(interaction.document_id.value());
-        let cloud_plus_pending = session
-            .read(cx)
-            .annotations
-            .cloud_plus_pending(interaction.document_id.value());
         let arc_pending = session
             .read(cx)
             .annotations
@@ -18734,7 +18805,6 @@ impl DocumentWorkspace {
             && !vertex_path_pending
             && !measurement_path_pending
             && !cloud_pending
-            && !cloud_plus_pending
             && !arc_pending
         {
             let tool = session.read(cx).annotations.tool();
@@ -18805,15 +18875,6 @@ impl DocumentWorkspace {
                     session
                         .annotations
                         .update_cloud_hover(
-                            interaction.document_id.value(),
-                            interaction.page_index,
-                            point,
-                        )
-                        .map_err(|error| error.to_string())?;
-                } else if cloud_plus_pending {
-                    session
-                        .annotations
-                        .update_cloud_plus_hover(
                             interaction.document_id.value(),
                             interaction.page_index,
                             point,
@@ -19014,6 +19075,11 @@ impl DocumentWorkspace {
             return true;
         }
         let Some(active) = self.active_annotation_pointer else {
+            // A Length, Dimension or Text Box being dragged out previews as it
+            // hovers.
+            if self.placement_press.is_some() {
+                return self.update_annotation_hover(position, modifiers, cx);
+            }
             return false;
         };
         let Some(interaction) = self
@@ -19074,6 +19140,15 @@ impl DocumentWorkspace {
         {
             return true;
         }
+        // Releasing a Length, Dimension or Text Box drag away from its start
+        // places the second point there, exactly as a second click would. A click keeps
+        // the two-click form.
+        if let Some(press) = self.placement_press.take() {
+            if (position - press).magnitude() < PLACEMENT_DRAG_THRESHOLD_PX {
+                return false;
+            }
+            return self.begin_annotation_pointer(position, modifiers, 1, window, cx);
+        }
         let Some(active) = self.active_annotation_pointer.take() else {
             return false;
         };
@@ -19133,6 +19208,8 @@ impl DocumentWorkspace {
         let selection_supplement =
             self.annotation_caption_selection_paths(active.document_id, active.page_index, cx);
         let recovery_store = self.document_recovery_store.clone();
+        let image_select_after_placement = tool == AnnotationTool::Image
+            && session.read(cx).annotations.image_select_after_placement();
         let outcome = session
             .update(cx, |session, cx| {
                 let outcome = commit_recovery_guarded_annotation_change(
@@ -19167,7 +19244,14 @@ impl DocumentWorkspace {
                         let created_rectangle =
                             matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
                                 && tool == AnnotationTool::Rectangle;
-                        if created_ink || created_cloud_plus || created_rectangle {
+                        let created_image =
+                            matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
+                                && tool == AnnotationTool::Image;
+                        if created_ink
+                            || created_cloud_plus
+                            || created_rectangle
+                            || (created_image && image_select_after_placement)
+                        {
                             session
                                 .annotations
                                 .set_tool(AnnotationTool::Select)
@@ -19176,6 +19260,14 @@ impl DocumentWorkspace {
                         Ok::<PointerPhaseOutcome, String>(outcome)
                     },
                 )?;
+                // A dragged-out image is placed on release, as a clicked one
+                // is on the second press.
+                if tool == AnnotationTool::Image
+                    && matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_))
+                {
+                    let removed = session.sync_image_assets()?;
+                    defer_drop_images(removed, cx);
+                }
                 cx.notify();
                 Ok::<PointerPhaseOutcome, String>(outcome)
             })
@@ -21756,6 +21848,8 @@ fn annotation_layer(
                     else {
                         return;
                     };
+                    // Handles paint last, above every markup on the page.
+                    interaction_chrome::defer_chrome();
                     if let Some(spacing_mm) = painted_construction_grid_spacing_mm {
                         paint_construction_grid(
                             spacing_mm,
@@ -23088,6 +23182,7 @@ fn annotation_layer(
                             window,
                         );
                     }
+                    interaction_chrome::paint_deferred_chrome(window);
                 },
             )
             .size_full(),
@@ -23171,39 +23266,44 @@ fn annotation_layer(
         .on_mouse_down(MouseButton::Right, move |event, _, cx| {
             if let Some(workspace) = row_target.as_ref().and_then(WeakEntity::upgrade) {
                 workspace.update(cx, |workspace, cx| {
-                    workspace.note_table_menu_target(document_id, page_index, event.position, cx)
+                    workspace.note_table_menu_target(document_id, page_index, event.position, cx);
+                    workspace.select_hovered_markup_for_menu(document_id, page_index, cx);
                 });
             }
         })
         .context_menu(move |menu, _, cx| {
             // Edit PDF as the document is now, as its switch shows it.
-            let (editing_pdf, edit_pdf_available, table_row) = context_control
+            let (editing_pdf, edit_pdf_available, table_row, edit) = context_control
                 .as_ref()
                 .and_then(WeakEntity::upgrade)
-                .map_or((false, false, None), |workspace| {
-                    let workspace = workspace.read(cx);
-                    (
-                        workspace.content_edit_mode(document_id),
-                        workspace.content_edit_available(document_id, cx),
-                        workspace.table_menu_row(document_id),
-                    )
-                });
+                .map_or(
+                    (false, false, None, DocumentEditCapabilities::default()),
+                    |workspace| {
+                        let workspace = workspace.read(cx);
+                        (
+                            workspace.content_edit_mode(document_id),
+                            workspace.content_edit_available(document_id, cx),
+                            workspace.table_menu_row(document_id),
+                            workspace.document_edit_capabilities(cx),
+                        )
+                    },
+                );
             // A table row right-clicked in Edit PDF: its row items first.
             let menu = match table_row {
                 Some(blocked) => {
                     let disabled = blocked.is_some();
                     let menu = menu
                         .menu_with_disabled(
-                            "Insert Row Above",
+                            "Insert row above",
                             Box::new(InsertTableRowAbove),
                             disabled,
                         )
                         .menu_with_disabled(
-                            "Insert Row Below",
+                            "Insert row below",
                             Box::new(InsertTableRowBelow),
                             disabled,
                         )
-                        .menu_with_disabled("Delete Row", Box::new(DeleteTableRow), disabled);
+                        .menu_with_disabled("Delete row", Box::new(DeleteTableRow), disabled);
                     match blocked {
                         Some(reason) => menu.label(reason).separator(),
                         None => menu.separator(),
@@ -23211,7 +23311,13 @@ fn annotation_layer(
                 }
                 None => menu,
             };
-            menu.menu("Select tool", Box::new(SelectTool))
+            // The selection's clipboard commands, as in the Edit menu.
+            menu.menu_with_disabled("Cut", Box::new(Cut), !edit.can_cut)
+                .menu_with_disabled("Copy", Box::new(Copy), !edit.can_copy)
+                .menu_with_disabled("Paste", Box::new(Paste), !edit.can_paste)
+                .menu_with_disabled("Delete", Box::new(Delete), !edit.can_delete)
+                .separator()
+                .menu("Select tool", Box::new(SelectTool))
                 .menu("Hand tool", Box::new(PanTool))
                 .menu_with_check_and_disabled(
                     "Edit PDF",
@@ -25525,6 +25631,7 @@ impl Render for DocumentWorkspace {
                 expected_revision: annotation_scene.revision,
                 offset_pt: *offset,
                 show_offset: *show_offset,
+                text_only: selected_vertex_path.is_some(),
                 appearance: appearance.clone(),
                 locked: *locked,
                 mutation_disabled: save_busy,
@@ -26225,7 +26332,7 @@ impl Render for DocumentWorkspace {
             Some(
                 PendingTextEditorTarget::NewDimension { .. }
                 | PendingTextEditorTarget::ExistingDimension { .. },
-            ) => "Dimension Text",
+            ) => "Dimension text",
             _ => "Text",
         };
         let supporting_actions = crate::property_controls::PropertyInspectorPanel::new(

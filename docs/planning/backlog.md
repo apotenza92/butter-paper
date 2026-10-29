@@ -18,8 +18,9 @@ alone do not establish these behaviours.
 
 ## Interface
 
-- Stock popup menus initially select a heading on the first Down press, so
-  titled mouse-wheel menus need a second Down to reach Zoom. Fix initial and
+- Stock popup menus initially select a heading or disabled item on the first
+  Down press, so titled mouse-wheel menus need a second Down to reach Zoom,
+  and the page menu's first Down lands on a disabled Cut. Fix initial and
   wraparound selection to skip non-actionable rows in gpui-kit.
 - Stock checkboxes, switches, toggles, buttons and inputs do not expose a
   disabled state to accessibility (the snapping "Show grid" switch and spacing
@@ -46,6 +47,11 @@ alone do not establish these behaviours.
 - Pdf-format follow-ups are listed in [pdf-format.md](pdf-format.md#known-differences-follow-ups).
 
 ## Edit PDF
+
+- Paste copied page content on another page or into another PDF. Content
+  copies are references to the objects on the page they came from, so this
+  needs the worker to copy content objects (with their fonts, images and
+  resources) between pages and documents. Markups already paste anywhere.
 
 Paragraph editing works and is checked against real Chrome, LibreOffice
 and Quartz output (`tests/page_text_corpus.rs`; see [interactions.md](interactions.md#editing-page-text)

@@ -5,6 +5,11 @@ The core conventions are in [AGENTS.md](../../AGENTS.md); native verification
 follows [native-review.md](native-review.md) and
 [the UX checklist](../planning/ux-review.md).
 
+Write in-window labels, menus, buttons and dialog titles in sentence case
+("Delete page", "Merge documents"), with British spelling ("colour"). Native
+menu-bar items, tool names and toolbar tooltips that name those commands keep
+title case ("Fit Width", "Zoom In").
+
 `crates/butter-paper/tests/ui_source_policy.rs` runs with `cargo test`. It checks
 stock-tab/close/menu contracts, token usage in inspector/panel/viewer-toolbar/
 system-theme modules, and embedded measurement scroll ownership.

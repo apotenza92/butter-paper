@@ -422,7 +422,7 @@ fn colour_field(
     };
 
     Field::new()
-        .label("Stroke")
+        .label("Colour")
         .child(
             div()
                 .id(HIGHLIGHT_DEFAULTS_COLOUR_ID)

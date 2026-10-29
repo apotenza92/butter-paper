@@ -19,7 +19,10 @@ use gpui_component::{
 };
 
 use crate::accessible_button::{accessible_icon_button, close_icon_button};
-use crate::template_preview::{TemplatePreview, group_by_paper_size, template_preview_card};
+use crate::template_preview::{
+    PaperOrientation, TemplatePreview, group_by_paper_size, orientation_toggle,
+    template_control_row, template_preview_card,
+};
 
 pub const DOCUMENT_TAB_BAR_ID: &str = "document-tab-bar";
 pub const DOCUMENT_TAB_SURFACE_ID: &str = "document-tab-surface";
@@ -38,6 +41,7 @@ pub const TEMPLATE_SAVE_DOCUMENT_ID: &str = "template-picker-save-document";
 pub const TEMPLATE_PICKER_LIST_ID: &str = "template-picker-list";
 pub const TEMPLATE_PICKER_PREVIEW_ID: &str = "template-picker-preview";
 pub const TEMPLATE_PICKER_PAPER_SIZE_ID: &str = "template-picker-paper-size";
+pub const TEMPLATE_PICKER_ORIENTATION_ID: &str = "template-picker-orientation";
 /// Electron's picker is 560 px wide; the native footer's extra Save Document
 /// as Template action needs a little more room.
 /// Wide enough that each half keeps the 348px the list had beside the old
@@ -247,6 +251,9 @@ pub enum TemplateCreationOrigin {
 pub struct TemplateCreationEvent {
     pub template_id: String,
     pub origin: TemplateCreationOrigin,
+    /// The paper turned this way, when the picker turned it from the
+    /// template's own orientation.
+    pub orientation: Option<PaperOrientation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -268,6 +275,9 @@ pub enum TemplateSplitEvent {
     CreateRequested {
         template_id: String,
         origin: TemplateCreationOrigin,
+        /// The paper turned this way, when the picker turned it from the
+        /// template's own orientation.
+        orientation: Option<PaperOrientation>,
     },
     ManageRequested,
     SaveDocumentAsTemplateRequested,
@@ -345,6 +355,9 @@ pub struct TemplateSplitControl {
     paper_size_select: Option<Entity<SelectState<Vec<SharedString>>>>,
     paper_size_select_synced: Option<(Vec<SharedString>, SharedString)>,
     _paper_size_subscription: Option<Subscription>,
+    /// Which way the listed paper is turned; each paper size starts the way
+    /// its templates are.
+    orientation: PaperOrientation,
     creating: bool,
     save_document_enabled: bool,
     picker_focus: FocusHandle,
@@ -354,11 +367,16 @@ impl TemplateSplitControl {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let templates = BUILT_IN_TEMPLATES.map(TemplateCatalogItem::from).to_vec();
         let paper_size = templates[0].preview.paper_size();
+        let orientation = templates[0]
+            .preview
+            .orientation()
+            .unwrap_or(PaperOrientation::Landscape);
         Self {
             picker_open: false,
             templates,
             selected_template_id: BUILT_IN_TEMPLATES[0].id.into(),
             last_template_id: BUILT_IN_TEMPLATES[0].id.into(),
+            orientation,
             paper_size,
             paper_size_select: None,
             paper_size_select_synced: None,
@@ -389,6 +407,49 @@ impl TemplateSplitControl {
             .iter()
             .filter(|template| template.preview.paper_size() == self.paper_size)
             .collect()
+    }
+
+    /// Which way the picker turns the listed paper.
+    pub fn orientation(&self) -> PaperOrientation {
+        self.orientation
+    }
+
+    pub fn set_orientation(&mut self, orientation: PaperOrientation, cx: &mut Context<Self>) {
+        if self.orientation != orientation {
+            self.orientation = orientation;
+            cx.notify();
+        }
+    }
+
+    /// Whether the selected template's paper can be turned: imported PDFs
+    /// keep their own pages.
+    pub fn orientation_available(&self) -> bool {
+        self.template(&self.selected_template_id)
+            .preview
+            .orientation()
+            .is_some()
+    }
+
+    fn template(&self, template_id: &str) -> &TemplateCatalogItem {
+        self.templates
+            .iter()
+            .find(|template| template.id == template_id)
+            .unwrap_or(&self.templates[0])
+    }
+
+    /// The template's own orientation, which a paper size starts with.
+    fn natural_orientation(&self, template_id: &str) -> PaperOrientation {
+        self.template(template_id)
+            .preview
+            .orientation()
+            .unwrap_or(self.orientation)
+    }
+
+    /// The orientation to create `template_id` with, when the picker turned
+    /// its paper.
+    fn turned_orientation(&self, template_id: &str) -> Option<PaperOrientation> {
+        let natural = self.template(template_id).preview.orientation()?;
+        (natural != self.orientation).then_some(self.orientation)
     }
 
     fn paper_size_of(&self, template_id: &str) -> String {
@@ -436,6 +497,7 @@ impl TemplateSplitControl {
             .id
             .clone();
         self.paper_size = paper_size.into();
+        self.orientation = self.natural_orientation(&successor);
         self.selected_template_id = successor.clone();
         cx.emit(TemplateSplitEvent::SelectionChanged(successor));
         cx.notify();
@@ -540,6 +602,25 @@ impl TemplateSplitControl {
         cx.notify();
     }
 
+    /// What the primary button makes: a document from the last template used.
+    pub fn last_template_label(&self) -> String {
+        let name = self
+            .templates
+            .iter()
+            .find(|template| template.id == self.last_template_id)
+            .unwrap_or(&self.templates[0])
+            .name
+            .clone();
+        format!("New {name} document")
+    }
+
+    /// Creates a document from the last template used, as the primary button
+    /// does.
+    pub fn create_from_last_template(&mut self, cx: &mut Context<Self>) {
+        let id = self.last_template_id.clone();
+        self.request_create(&id, TemplateCreationOrigin::Primary, cx);
+    }
+
     fn request_create(
         &mut self,
         template_id: &str,
@@ -556,6 +637,14 @@ impl TemplateSplitControl {
             .unwrap_or(&self.templates[0])
             .id
             .clone();
+        // The picker's own Create turns the paper as it shows it; the
+        // primary button makes the template as it is.
+        let orientation = match origin {
+            TemplateCreationOrigin::Primary => None,
+            TemplateCreationOrigin::Create | TemplateCreationOrigin::RowDoubleClick => {
+                self.turned_orientation(&template_id)
+            }
+        };
         self.paper_size = self.paper_size_of(&template_id);
         self.last_template_id = template_id.clone();
         self.selected_template_id = template_id.clone();
@@ -563,6 +652,7 @@ impl TemplateSplitControl {
         cx.emit(TemplateSplitEvent::CreateRequested {
             template_id,
             origin,
+            orientation,
         });
         cx.notify();
     }
@@ -581,7 +671,8 @@ impl Render for TemplateSplitControl {
             .unwrap_or(&self.templates[0])
             .clone();
         let primary_control = cx.entity().downgrade();
-        let primary_label = format!("New from {}", current_template.name);
+        // Says what a click makes: the last template used, ready to draw on.
+        let primary_label = format!("New {} document", current_template.name);
         let primary = accessible_icon_button(
             Button::new(TEMPLATE_PRIMARY_ID)
                 .outline()
@@ -590,7 +681,7 @@ impl Render for TemplateSplitControl {
                 .accessibility_id(TEMPLATE_PRIMARY_ID)
                 .icon(IconName::File)
                 .disabled(self.creating)
-                .tooltip(format!("{primary_label}. Click to create."))
+                .tooltip(primary_label.clone())
                 .on_click(move |_: &ClickEvent, _, cx| {
                     let _ = primary_control.update(cx, |control, cx| {
                         control.request_create(
@@ -627,6 +718,9 @@ impl Render for TemplateSplitControl {
             .cloned()
             .collect::<Vec<_>>();
         let paper_size_select = self.paper_size_select.clone();
+        let orientation = self.orientation;
+        let orientation_available = self.orientation_available();
+        let orientation_control = cx.entity().downgrade();
         let creating = self.creating;
         let save_document_enabled = self.save_document_enabled;
         let picker = Popover::new("document-tab-template-picker-popover")
@@ -640,6 +734,8 @@ impl Render for TemplateSplitControl {
                     if *open {
                         control.selected_template_id = control.last_template_id.clone();
                         control.paper_size = control.paper_size_of(&control.last_template_id);
+                        control.orientation =
+                            control.natural_orientation(&control.last_template_id);
                         cx.emit(TemplateSplitEvent::SelectionChanged(
                             control.selected_template_id.clone(),
                         ));
@@ -657,15 +753,15 @@ impl Render for TemplateSplitControl {
                     .find(|template| template.id == selected_template_id)
                     .unwrap_or(&templates[0])
                     .clone();
+                let selected_preview = selected.preview.oriented(orientation);
                 let template_rows = visible_templates.clone().into_iter().map(|template| {
                     let stable_id = template_picker_item_id(&template.id);
                     let control = picker_content_control.clone();
                     let is_selected = selected_template_id == template.id;
-                    let description = format!(
-                        "{} · {}",
-                        template.preview.summary(),
-                        template.preview.grid_summary()
-                    );
+                    // Rows describe the paper as it would be made, turned.
+                    let preview = template.preview.oriented(orientation);
+                    let description =
+                        format!("{} · {}", preview.summary(), preview.grid_summary());
                     accessible_icon_button(
                         Button::new(stable_id.clone())
                             .debug_selector({
@@ -778,27 +874,29 @@ impl Render for TemplateSplitControl {
                                     .min_w_0()
                                     .gap_2()
                                     .when_some(paper_size_select.clone(), |column, select| {
-                                        column.child(
-                                            h_flex()
-                                                .id(TEMPLATE_PICKER_PAPER_SIZE_ID)
-                                                .debug_selector(|| {
-                                                    TEMPLATE_PICKER_PAPER_SIZE_ID.into()
-                                                })
-                                                .gap_2()
-                                                .child(
-                                                    gpui::div()
-                                                        .flex_none()
-                                                        .text_sm()
-                                                        .child("Paper size"),
-                                                )
-                                                .child(
-                                                    gpui::div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .child(Select::new(&select)),
-                                                ),
-                                        )
+                                        column.child(template_control_row(
+                                            TEMPLATE_PICKER_PAPER_SIZE_ID,
+                                            "Paper size",
+                                            Select::new(&select),
+                                        ))
                                     })
+                                    .child(template_control_row(
+                                        TEMPLATE_PICKER_ORIENTATION_ID,
+                                        "Orientation",
+                                        orientation_toggle(
+                                            TEMPLATE_PICKER_ORIENTATION_ID,
+                                            orientation,
+                                            !orientation_available,
+                                            {
+                                                let control = orientation_control.clone();
+                                                move |orientation, _, cx| {
+                                                    let _ = control.update(cx, |control, cx| {
+                                                        control.set_orientation(orientation, cx)
+                                                    });
+                                                }
+                                            },
+                                        ),
+                                    ))
                                     .child(
                                         v_flex()
                                             .id(TEMPLATE_PICKER_LIST_ID)
@@ -812,7 +910,7 @@ impl Render for TemplateSplitControl {
                             )
                             // The list and preview split the picker evenly.
                             .child(template_preview_card(
-                                &selected.preview,
+                                &selected_preview,
                                 selected.name.clone(),
                                 TEMPLATE_PICKER_PREVIEW_ID,
                                 true,
@@ -848,7 +946,7 @@ impl Render for TemplateSplitControl {
                                             .debug_selector(|| TEMPLATE_SAVE_DOCUMENT_ID.into())
                                             .accessibility_id(TEMPLATE_SAVE_DOCUMENT_ID)
                                             .ghost()
-                                            .label("Save Document as Template…")
+                                            .label("Save document as template…")
                                             .disabled(creating || !save_document_enabled)
                                             .on_click(move |_: &ClickEvent, _, cx| {
                                                 let _ = save_document_control.update(cx, |control, cx| {
@@ -952,8 +1050,9 @@ impl DocumentTabBarTemplateSeam {
                     TemplateSplitEvent::CreateRequested {
                         template_id,
                         origin,
+                        orientation,
                     } => {
-                        control.create_mock_from_template(template_id, *origin, cx);
+                        control.create_mock_from_template(template_id, *origin, *orientation, cx);
                         return;
                     }
                     TemplateSplitEvent::ManageRequested => {
@@ -1495,6 +1594,7 @@ impl DocumentTabBarTemplateSeam {
         &mut self,
         template_id: &str,
         origin: TemplateCreationOrigin,
+        orientation: Option<PaperOrientation>,
         cx: &mut Context<Self>,
     ) {
         let template = self
@@ -1521,6 +1621,7 @@ impl DocumentTabBarTemplateSeam {
         self.creation_events.push(TemplateCreationEvent {
             template_id: template.id,
             origin,
+            orientation,
         });
         cx.notify();
     }

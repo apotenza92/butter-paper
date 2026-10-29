@@ -18,15 +18,20 @@ Free, open-source PDF editing and markup.
 
 Certification needs a real description (policy 10.1.4.3).
 
-Butter Paper is a free, open-source PDF editor and markup app for everyday
-document review, including architecture, engineering and construction
-drawings. It is a lightweight alternative to Bluebeam Revu.
+Butter Paper is a free, open-source PDF editor and markup app for macOS,
+Windows, and Linux, built natively in Rust with GPUI. It also acts as an
+alternative to Bluebeam Revu for architecture, engineering, and construction
+workflows.
 
 - Mark up PDFs with text boxes, callouts, clouds, arrows, highlights, ink,
-  shapes, stamps, images and redactions.
-- Measure lengths and areas and count items on scaled drawings.
+  shapes, images and redactions.
+- Set a drawing's scale, often read straight from its title block, then
+  measure lengths, perimeters and areas.
 - Edit a PDF's own text a paragraph at a time, keeping its fonts and layout.
-- Sign documents by drawing on your phone or from a saved signature.
+- Sign documents by drawing, typing, a picture, your phone or a saved
+  signature.
+- Start new documents from paper templates in A3 and A4, with dot,
+  square, ruled, isometric and triangle grids.
 - Work with several documents in tabs and windows, with continuous scrolling
   and fast page rendering.
 - Markups are saved as standard PDF annotations, so they open in Bluebeam
@@ -39,13 +44,14 @@ names are trademarks of their respective owners.
 ## Product features (20 max)
 
 1. PDF markup: text boxes, callouts, clouds, arrows, highlights and ink
-2. Shapes, stamps, images and redactions
-3. Length, area and count measurements on scaled drawings
+2. Shapes, images and redactions
+3. Length, perimeter and area measurements on scaled drawings
 4. Edit a PDF's own text
-5. Sign PDFs from your phone or a saved signature
+5. Sign PDFs by drawing, typing, a picture or your phone
 6. Tabs and multiple windows
 7. Markups saved as standard PDF annotations
-8. Free and open source
+8. Paper templates with grids, in A3 and A4
+9. Free and open source
 
 ## Search terms (7 max)
 
@@ -103,5 +109,9 @@ https://github.com/apotenza92/butter-paper/blob/main/PRIVACY.md
 
 - Package images: `assets/app/windows-store`, rendered with the other
   application icons by `assets/icon-source/render_app_icons.py`.
-- Screenshots (1366×768 or larger, at least one): take them from the Store
-  build on Windows.
+- Screenshots (1366×768 or larger, at least one): `docs/store/screenshots/`,
+  taken from a review build on a fictional floor plan: markup, measuring, and
+  new from template.
+- Store logos (listing artwork, which the Store shows instead of the package
+  icon when present): `docs/store/logos/`, rendered from the same origami
+  master as the app icon.

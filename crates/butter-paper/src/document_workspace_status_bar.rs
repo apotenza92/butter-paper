@@ -42,24 +42,20 @@ impl DocumentWorkspace {
                 | AnnotationTool::Area => {
                     "Click points · Enter or double-click to finish · Esc to cancel"
                 }
-                AnnotationTool::Cloud => {
-                    "Drag a rectangle or click polygon corners · Enter to finish"
-                }
-                AnnotationTool::CloudPlus => {
-                    "Drag a rectangle or click polygon corners · Enter to finish · Then type text"
-                }
+                AnnotationTool::CloudPlus => "Click or drag to draw · Then type text",
                 AnnotationTool::Length | AnnotationTool::Dimension => {
-                    "Click two points · Esc to cancel"
+                    "Click or drag between two points · Esc to cancel"
                 }
                 AnnotationTool::Arc => "Click start, end and bulge · Esc to cancel",
-                AnnotationTool::TextBox => "Click to place text · Click away to finish",
+                AnnotationTool::TextBox => "Click or drag to draw a box · Then type text",
                 AnnotationTool::Callout => "Click twice or drag the leader · Then type text",
-                AnnotationTool::Image => "Click to place image · Esc to cancel",
+                AnnotationTool::Image => "Click or drag to place image · Esc to cancel",
                 AnnotationTool::Rectangle
                 | AnnotationTool::Ellipse
                 | AnnotationTool::Line
                 | AnnotationTool::Arrow
                 | AnnotationTool::Redact
+                | AnnotationTool::Cloud
                 | AnnotationTool::Snapshot => "Click or drag to draw · Esc to cancel",
                 AnnotationTool::Pen | AnnotationTool::Highlight => {
                     "Drag to draw · Release to finish · Esc to cancel"
@@ -85,12 +81,26 @@ impl DocumentWorkspace {
                     | AnnotationTool::Line
                     | AnnotationTool::Arrow
                     | AnnotationTool::Redact
+                    | AnnotationTool::Cloud
+                    | AnnotationTool::Length
                     | AnnotationTool::Snapshot,
                 ) => Some(
                     "Drag between two points and release, or click the first point, move the pointer, then click the second point.",
                 ),
-                Some(AnnotationTool::Cloud | AnnotationTool::CloudPlus) => Some(
-                    "Drag and release to draw a rectangular cloud. For a polygon, click each corner, then press Enter, double-click, or click the starting point to finish. Escape finishes a valid polygon or cancels an incomplete one. Cloud+ then opens its text editor.",
+                Some(AnnotationTool::CloudPlus) => Some(
+                    "Drag and release to draw a rectangular cloud, or click one corner and then the other. Then type its text. For a cloud of any shape, turn on Cloud outline in the Polygon tool's properties.",
+                ),
+                Some(AnnotationTool::Polygon) => Some(
+                    "Click each corner, then press Enter, double-click, or click the starting point to finish. With Cloud outline on in its properties, the polygon is drawn as a cloud.",
+                ),
+                Some(AnnotationTool::Dimension) => Some(
+                    "Drag between two points and release, or click the first point and then the second. Then type the dimension text.",
+                ),
+                Some(AnnotationTool::TextBox) => Some(
+                    "Drag the box for the text and release, or click one corner and then the other. Then type; the box grows to fit the text.",
+                ),
+                Some(AnnotationTool::Image) => Some(
+                    "Drag the box for the image and release, or click one corner and then the other. The image fills the box, keeping its proportions.",
                 ),
                 Some(AnnotationTool::Callout) => Some(
                     "Drag from the arrow tip to the text position, or click those two points separately. Then type the callout text.",

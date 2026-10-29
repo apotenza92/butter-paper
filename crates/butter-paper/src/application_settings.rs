@@ -428,7 +428,9 @@ impl SettingsView {
                     .text_color(cx.theme().muted_foreground)
                     .child(format!("Installed version {}", env!("CARGO_PKG_VERSION"))),
             )
-            .child(message)
+            // The update status reads at the section's text size, in full
+            // colour as it is news rather than a description.
+            .child(div().text_sm().child(message))
             .when_some(presentation.progress, |section, progress| {
                 section.child(
                     v_flex()

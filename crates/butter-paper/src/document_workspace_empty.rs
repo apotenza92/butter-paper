@@ -406,7 +406,7 @@ impl DocumentWorkspace {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .child(self.viewer_toolbar.clone())
+                        // No view controls without a page to view.
                         .child(
                             v_flex()
                                 .id(DOCUMENT_EMPTY_ID)
@@ -454,15 +454,39 @@ impl DocumentWorkspace {
                                             NativeDocumentStatus::Opening
                                         )
                                     }),
-                                    |view| view.child("Open a PDF to start"),
+                                    |view| view.child("Open a PDF or create a document to start"),
                                 )
+                                // An empty window offers both ways to start: an
+                                // existing PDF, or fresh paper from the last
+                                // template used.
                                 .child(
-                                    Button::new(VIEWPORT_OPEN_DOCUMENT_ID)
-                                        .debug_selector(|| VIEWPORT_OPEN_DOCUMENT_ID.into())
-                                        .label("Open")
-                                        .on_click(cx.listener(|workspace, _, _, cx| {
-                                            workspace.prompt_to_open_documents(cx);
-                                        })),
+                                    h_flex()
+                                        .gap_2()
+                                        .child(
+                                            Button::new(VIEWPORT_OPEN_DOCUMENT_ID)
+                                                .debug_selector(|| VIEWPORT_OPEN_DOCUMENT_ID.into())
+                                                .label("Open…")
+                                                .on_click(cx.listener(|workspace, _, _, cx| {
+                                                    workspace.prompt_to_open_documents(cx);
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new(VIEWPORT_NEW_DOCUMENT_ID)
+                                                .debug_selector(|| VIEWPORT_NEW_DOCUMENT_ID.into())
+                                                .label(
+                                                    self.template_control
+                                                        .read(cx)
+                                                        .last_template_label(),
+                                                )
+                                                .on_click(cx.listener(|workspace, _, _, cx| {
+                                                    workspace.template_control.update(
+                                                        cx,
+                                                        |control, cx| {
+                                                            control.create_from_last_template(cx)
+                                                        },
+                                                    );
+                                                })),
+                                        ),
                                 )
                                 .when_some(recent_documents, |view, list| view.child(list))
                                 .when_some(open_failure, |view, failure| {

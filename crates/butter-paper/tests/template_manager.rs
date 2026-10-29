@@ -15,16 +15,17 @@ use butter_paper::template_manager::{
     TEMPLATE_MANAGER_CREATE_DOCUMENT_ID, TEMPLATE_MANAGER_CREATE_ID, TEMPLATE_MANAGER_DONE_ID,
     TEMPLATE_MANAGER_HEIGHT_INPUT_ID, TEMPLATE_MANAGER_ID, TEMPLATE_MANAGER_IMPORT_ID,
     TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID, TEMPLATE_MANAGER_LIST_ID, TEMPLATE_MANAGER_NAME_FIELD_ID,
-    TEMPLATE_MANAGER_NAME_INPUT_ID, TEMPLATE_MANAGER_ORIENTATION_IDS, TEMPLATE_MANAGER_PAPER_IDS,
+    TEMPLATE_MANAGER_NAME_INPUT_ID, TEMPLATE_MANAGER_ORIENTATION_ID,
+    TEMPLATE_MANAGER_ORIENTATION_IDS, TEMPLATE_MANAGER_PAPER_IDS, TEMPLATE_MANAGER_PAPER_SIZE_ID,
     TEMPLATE_MANAGER_PATTERN_IDS, TEMPLATE_MANAGER_PREVIEW_ID, TEMPLATE_MANAGER_PREVIEW_PAGE_ID,
     TEMPLATE_MANAGER_SAVE_ID, TEMPLATE_MANAGER_SCROLL_ID, TEMPLATE_MANAGER_SPACING_IDS,
     TEMPLATE_MANAGER_SPACING_INPUT_ID, TEMPLATE_MANAGER_STATUS_ID, TEMPLATE_MANAGER_WIDTH_INPUT_ID,
     TemplateManagerEvent, TemplateManagerMode, TemplateManagerModel, TemplateManagerRecord,
     TemplateManagerView, draft_preview_svg, legacy_blank_request_from_json,
     next_custom_template_id, next_imported_template_id, route_workspace_template_command,
-    template_manager_dialog_width, template_manager_section_id,
-    template_manager_uses_stacked_layout,
+    template_manager_dialog_width, template_manager_uses_stacked_layout,
 };
+use butter_paper::template_preview::PaperOrientation;
 use butter_paper::template_preview::TEMPLATE_PREVIEW_FIRST_PAGE_ID;
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
@@ -695,7 +696,7 @@ fn library_groups_templates_by_paper_size_with_a4_built_ins() {
 }
 
 #[gpui::test]
-fn template_library_renders_a_heading_above_each_paper_size(cx: &mut TestAppContext) {
+fn template_library_lists_one_paper_size_and_turns_its_paper(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);
     let preview_record = |id: &str, name: &str| TemplateManagerRecord::built_in(id, name, "");
     let model = TemplateManagerModel::new(
@@ -703,53 +704,79 @@ fn template_library_renders_a_heading_above_each_paper_size(cx: &mut TestAppCont
             preview_record("built-in-blank", "Blank Paper"),
             preview_record("built-in-dots", "Dot Grid"),
             preview_record("built-in-blank-a4", "Blank Paper"),
+            preview_record("built-in-dots-a4", "Dot Grid"),
             TemplateManagerRecord::imported(
                 "imported-00000000-0000-4000-8000-000000000000",
                 "Site Form",
                 1,
             ),
         ],
-        "built-in-blank-a4",
+        "built-in-dots-a4",
     )
     .unwrap();
-    let (_, cx) = cx.add_window_view(move |window, cx| {
-        let manager = cx.new(|cx| TemplateManagerView::new(model, window, cx));
-        Root::new(manager, window, cx)
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let manager = cx.new(|cx| TemplateManagerView::new(model, window, cx));
+            slot.replace(Some(manager.clone()));
+            Root::new(manager, window, cx)
+        }
     });
+    let manager = slot.borrow_mut().take().unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    // Debug selectors are `&'static str`; leaking a few test strings is fine.
-    let selector = |id: String| -> &'static str { Box::leak(id.into_boxed_str()) };
-    let top = |cx: &mut gpui::VisualTestContext, id: &'static str| {
-        cx.debug_bounds(id)
-            .unwrap_or_else(|| panic!("missing {id}"))
-            .top()
-    };
-    let a3 = top(cx, selector(template_manager_section_id(0)));
-    let blank = top(cx, "template-manager-item-built-in-blank");
-    let dots = top(cx, "template-manager-item-built-in-dots");
-    let a4 = top(cx, selector(template_manager_section_id(1)));
-    let blank_a4 = top(cx, "template-manager-item-built-in-blank-a4");
-    let imported = top(cx, selector(template_manager_section_id(2)));
-    let site_form = top(
-        cx,
-        "template-manager-item-imported-00000000-0000-4000-8000-000000000000",
-    );
-    assert!(a3 < blank && blank < dots && dots < a4 && a4 < blank_a4);
-    assert!(blank_a4 < imported && imported < site_form);
+    // As in New from template: one paper size at a time, chosen above.
+    assert!(cx.debug_bounds(TEMPLATE_MANAGER_PAPER_SIZE_ID).is_some());
+    assert!(cx.debug_bounds(TEMPLATE_MANAGER_ORIENTATION_ID).is_some());
     assert!(
-        cx.debug_bounds(selector(template_manager_section_id(3)))
+        cx.debug_bounds("template-manager-item-built-in-dots-a4")
+            .is_some()
+    );
+    assert!(
+        cx.debug_bounds("template-manager-item-built-in-dots")
             .is_none()
     );
+    assert_eq!(
+        manager.read_with(cx, |manager, _| manager.paper_sizes()),
+        vec!["A3", "A4", "Imported PDFs"]
+    );
+    assert_eq!(
+        manager.read_with(cx, |manager, _| manager.orientation()),
+        PaperOrientation::Portrait
+    );
 
-    // Selecting across a heading still selects the template.
-    let site_form_bounds = cx
-        .debug_bounds("template-manager-item-imported-00000000-0000-4000-8000-000000000000")
-        .unwrap();
-    cx.simulate_click(site_form_bounds.center(), Modifiers::default());
+    // Another size lists its templates and keeps the same kind selected,
+    // turned the way that paper is.
+    manager.update_in(cx, |manager, window, cx| {
+        manager.select_paper_size("A3", window, cx)
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(
-        cx.debug_bounds(TEMPLATE_MANAGER_IMPORTED_PREVIEW_ID)
+        cx.debug_bounds("template-manager-item-built-in-dots")
             .is_some()
+    );
+    assert!(
+        cx.debug_bounds("template-manager-item-built-in-dots-a4")
+            .is_none()
+    );
+    assert_eq!(
+        manager.read_with(cx, |manager, _| manager.model().selected_id().to_owned()),
+        "built-in-dots"
+    );
+    assert_eq!(
+        manager.read_with(cx, |manager, _| manager.orientation()),
+        PaperOrientation::Landscape
+    );
+
+    // Turning the paper turns what the rows describe.
+    manager.update_in(cx, |manager, window, cx| {
+        manager.set_orientation(PaperOrientation::Portrait, window, cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(TEMPLATE_MANAGER_ORIENTATION_ID).is_some());
+    assert_eq!(
+        manager.read_with(cx, |manager, _| manager.orientation()),
+        PaperOrientation::Portrait
     );
 }
 
@@ -1203,11 +1230,7 @@ fn real_list_keyboard_selection_tracks_stable_template_identity(cx: &mut TestApp
     let model = TemplateManagerModel::new(
         vec![
             TemplateManagerRecord::built_in("built-in-blank", "Blank Paper", "A3 · Landscape"),
-            TemplateManagerRecord::imported(
-                "imported-00000000-0000-4000-8000-000000000000",
-                "Site Form",
-                100,
-            ),
+            TemplateManagerRecord::built_in("built-in-dots", "Dot Grid", "A3 · Landscape"),
         ],
         "built-in-blank",
     )
@@ -1232,10 +1255,10 @@ fn real_list_keyboard_selection_tracks_stable_template_identity(cx: &mut TestApp
 
     assert_eq!(
         manager.read_with(cx, |manager, _| manager.model().selected_id().to_owned()),
-        "imported-00000000-0000-4000-8000-000000000000"
+        "built-in-dots"
     );
     assert!(
-        cx.debug_bounds("template-manager-item-imported-00000000-0000-4000-8000-000000000000")
+        cx.debug_bounds("template-manager-item-built-in-dots")
             .is_some(),
         "keyboard selection must retain the domain-derived row identity"
     );
@@ -1418,8 +1441,6 @@ fn real_component_manager_renders_dynamic_rows_validation_and_create_flow(cx: &m
         TEMPLATE_MANAGER_IMPORT_ID,
         TEMPLATE_MANAGER_DONE_ID,
         "template-manager-item-built-in-blank",
-        "template-manager-item-imported-00000000-0000-4000-8000-000000000000",
-        "template-manager-remove-imported-00000000-0000-4000-8000-000000000000",
     ] {
         assert!(
             cx.debug_bounds(stable_id).is_some(),
@@ -1427,6 +1448,15 @@ fn real_component_manager_renders_dynamic_rows_validation_and_create_flow(cx: &m
         );
     }
     assert!(cx.debug_bounds(TEMPLATE_MANAGER_BROWSE_PAGE_ID).is_some());
+    // Imported PDFs list under their own paper size.
+    manager.update_in(cx, |manager, window, cx| {
+        manager.select_paper_size("Imported PDFs", window, cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds("template-manager-remove-imported-00000000-0000-4000-8000-000000000000")
+            .is_some()
+    );
     let imported = cx
         .debug_bounds("template-manager-item-imported-00000000-0000-4000-8000-000000000000")
         .unwrap();
@@ -1654,9 +1684,10 @@ fn removing_a_template_by_keyboard_keeps_focus_in_the_manager(cx: &mut TestAppCo
         TemplateManagerView::open_dialog(&manager, window, cx);
     });
     settle(cx);
-    // Tab reaches Site Grid's Remove button; Space presses it and Enter
+    // Past Paper size and Orientation, Tab reaches Site Grid's Remove
+    // button; Space presses it and Enter
     // confirms the removal, which takes the focused button away with its row.
-    cx.simulate_keystrokes("tab tab");
+    cx.simulate_keystrokes("tab tab tab tab tab");
     settle(cx);
     press_space(cx);
     settle(cx);

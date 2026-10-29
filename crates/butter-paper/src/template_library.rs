@@ -340,13 +340,33 @@ impl TemplateLibrary {
         document_key: &str,
         store: &GeneratedDocumentStore,
     ) -> Result<OwnedGeneratedDocument, TemplateLibraryError> {
+        self.materialize_oriented(id, document_key, store, None)
+    }
+
+    /// As [`Self::materialize`], with generated paper turned to `orientation`
+    /// when one is given. Imported PDFs keep their own pages.
+    pub fn materialize_oriented(
+        &self,
+        id: &str,
+        document_key: &str,
+        store: &GeneratedDocumentStore,
+        orientation: Option<crate::template_preview::PaperOrientation>,
+    ) -> Result<OwnedGeneratedDocument, TemplateLibraryError> {
         let record = self
             .records
             .iter()
             .find(|record| record.id() == id)
             .ok_or_else(|| TemplateLibraryError("the template does not exist".into()))?;
         match record {
-            TemplateRecord::Generated { request, .. } => Ok(store.create(document_key, request)?),
+            TemplateRecord::Generated { request, .. } => {
+                let request = match orientation {
+                    Some(orientation) => {
+                        crate::template_preview::oriented_request(request.clone(), orientation)
+                    }
+                    None => request.clone(),
+                };
+                Ok(store.create(document_key, &request)?)
+            }
             TemplateRecord::ImportedPdf { .. } => {
                 let bytes = fs::read(self.managed_source_path(id)?)?;
                 Ok(store.create_from_pdf_bytes(document_key, &bytes)?)

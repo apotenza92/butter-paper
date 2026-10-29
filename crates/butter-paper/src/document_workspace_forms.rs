@@ -461,7 +461,7 @@ impl DocumentWorkspace {
                             Button::new(DOCUMENT_SIGNED_FORM_FILL_CONFIRM_ID)
                                 .debug_selector(|| DOCUMENT_SIGNED_FORM_FILL_CONFIRM_ID.into())
                                 .danger()
-                                .label("Fill In"),
+                                .label("Fill in"),
                         )),
                 )
                 .on_ok(move |_, _, cx| {
@@ -727,7 +727,7 @@ impl DocumentWorkspace {
                 menu = menu
                     .separator()
                     .item(
-                        PopupMenuItem::new("Type a Value…").on_click(move |_, window, cx| {
+                        PopupMenuItem::new("Type a value…").on_click(move |_, window, cx| {
                             let _ = owner.update(cx, |workspace, cx| {
                                 workspace.type_form_choice(target, window, cx);
                             });

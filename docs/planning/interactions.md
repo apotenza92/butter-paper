@@ -29,17 +29,29 @@ reference; entries marked *native* are deliberate departures from it.
 
 | Tool | Gesture | Finish |
 | --- | --- | --- |
-| Rectangle, Ellipse, Line, Arrow, Redact | Drag, or click then click | Release past 3px, or the second click; Escape cancels |
-| Length, Dimension | Two clicks | Second click; Dimension then edits its text |
-| Polyline, Polygon | Click per point | Double-click or Enter; click the start marker (within 10px) to close |
+| Rectangle, Ellipse, Line, Arrow, Redact, Cloud | Drag, or click then click | Release past 3px, or the second click; Escape cancels |
+| Length, Dimension | Drag, or click then click | Release past 3px, or the second click; Dimension then edits its text |
+| Polyline, Polygon | Click per point | Double-click or Enter; click the start marker (within 10px) to close. A Polygon with Cloud outline on is created as a Cloud |
 | Polylength, Area | Click per point | Double-click or Enter; Escape discards |
-| Cloud | Drag a rectangle, or click corners for a polygon | Release the rectangle; double-click, Enter or click the start marker for the polygon |
-| Cloud+ | Drag a rectangle, or click corners for a polygon | Release the rectangle; double-click, Enter or click the start marker for the polygon; then type its caption |
+| Cloud+ | Drag, or click then click | Release past 3px, or the second click; then type its caption |
 | Arc | Three clicks: start, end, bulge | Third click |
-| Text box | Click | Type in place; click away or Escape commits, empty text discards |
+| Text box | Drag its box, or click then click | Type in place; the box grows to fit its text. Click away or Escape commits, empty text discards |
 | Pen, Highlight | Drag | Release |
-| Image | Click places the chosen image | |
+| Image (and signatures) | Drag its box, or click then click | Release or second click; it fills the box at its own proportions |
 | Snapshot | Drag a box, or click then click | Release or second click |
+
+Every tool that draws a box or a line between two points takes either
+gesture: a drag, or a click on each end. A click never places a markup on its
+own. Clouds of any shape are drawn with the Polygon tool, by turning on Cloud
+outline in its properties (Revu's cloud line style).
+
+Drawn and moved markups snap to other markups' corners, midpoints and (with
+Nearest on) edges, rectangles and ellipses included. A stroked line also
+snaps beside another markup's stroke, by both widths: its outer edge touching
+the other's on either side, or sitting flush inside the wider stroke, with
+the corners and edge midpoints of those positions. Those count a few pixels
+further away than the exact edge, so the exact edge wins until the two are
+visibly apart on screen.
 
 Shift constrains while drawing (lines and points horizontal or vertical from
 the last point, ellipse to a circle) and applies mid-drag. Length, Polylength
@@ -47,8 +59,9 @@ and Area measure at 1 in = 1 in on a page without a scale.
 
 Creation previews follow every pointer move during drags and between clicks,
 without committing history. Cloud drags preview the rectangular scalloped
-outline that will be committed; polygon drafts preview their next point.
-Cloud+ shows the first segment before its polygon and caption can be formed.
+outline that will be committed; polygon drafts preview their next point
+(as a cloud when Polygon's Cloud outline is on). A Text Box being drawn shows
+its box as a dashed outline, and an Image fills the box being drawn.
 Arc shows its start-to-end chord before the second click, then its live bulge.
 The bottom contextual help explains each tool's click and drag gestures; its
 tooltip expands the instructions when the window truncates them.
@@ -64,7 +77,15 @@ tooltip expands the instructions when the window truncates them.
   while hovered or a marquee candidate, filled under the pointer, and inert
   grey on a locked markup. The rotation knob stays, on a thin solid stem. Handles and
   knobs remain visible while moving, rotating or resizing, including when
-  snapping is enabled; creation previews show no handles.
+  snapping is enabled; creation previews show no handles. Handles and knobs
+  draw above every markup on the page, so a markup drawn later never hides
+  the selection's.
+- Cut, Copy and Paste work on selected markups from the keyboard, the Edit
+  menu and the page's right-click menu (which first selects an unselected
+  markup under the pointer). The clipboard is shared by every window, so
+  markups paste into any open document: in another document they land where
+  they were, in the same one each paste steps 12 points right and down. A
+  cut pastes back where it was.
 - *Native:* the band that moves a markup is a box turned to it: along a
   line for Lines, Arrows, Lengths and Dimensions, at the rotation for boxes,
   else upright. A Length or Dimension's box holds everything it draws: the

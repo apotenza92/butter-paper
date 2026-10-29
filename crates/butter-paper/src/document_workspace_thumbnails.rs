@@ -137,8 +137,8 @@ impl DocumentWorkspace {
                                     )
                                     .dropdown_menu(move |menu, _, _| {
                                         menu.action_context(focus.clone())
-                                            .menu("After Current Page", Box::new(InsertPageAfter))
-                                            .menu("At End of Document", Box::new(InsertPageAtEnd))
+                                            .menu("After current page", Box::new(InsertPageAfter))
+                                            .menu("At end of document", Box::new(InsertPageAtEnd))
                                     })
                                 }))
                                 .child(
@@ -442,21 +442,21 @@ impl DocumentWorkspace {
                                                                     .upgrade()
                                                                     .map_or(1, |workspace| workspace.read(cx).selected_pages(document_id, cx).len());
                                                                 let delete = if selected == 1 {
-                                                                    "Delete Page".to_owned()
+                                                                    "Delete page".to_owned()
                                                                 } else {
-                                                                    format!("Delete {selected} Pages")
+                                                                    format!("Delete {selected} pages")
                                                                 };
                                                                 menu.action_context(focus.clone())
-                                                                    .menu("Insert Blank Page Before", Box::new(InsertPageBefore))
-                                                                    .menu("Insert Blank Page After", Box::new(InsertPageAfter))
+                                                                    .menu("Insert blank page before", Box::new(InsertPageBefore))
+                                                                    .menu("Insert blank page after", Box::new(InsertPageAfter))
                                                                     .menu("Duplicate", Box::new(DuplicatePages))
                                                                     .separator()
                                                                     .menu("Cut", Box::new(CutPages))
                                                                     .menu("Copy", Box::new(CopyPages))
-                                                                    .menu_with_disabled("Paste After", Box::new(PastePages), !can_paste)
+                                                                    .menu_with_disabled("Paste after", Box::new(PastePages), !can_paste)
                                                                     .separator()
-                                                                    .menu("Rotate Left", Box::new(RotatePagesLeft))
-                                                                    .menu("Rotate Right", Box::new(RotatePagesRight))
+                                                                    .menu("Rotate left", Box::new(RotatePagesLeft))
+                                                                    .menu("Rotate right", Box::new(RotatePagesRight))
                                                                     .separator()
                                                                     .menu_with_disabled(delete, Box::new(DeletePages), selected >= thumbnail_count)
                                                             }

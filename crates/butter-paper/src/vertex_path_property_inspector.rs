@@ -441,7 +441,7 @@ impl Render for VertexPathPropertyInspector {
             .gap_3()
             .child(color_control(
                 VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID,
-                "Stroke",
+                "Colour",
                 &self.stroke_color,
                 disabled,
                 disabled_reason,

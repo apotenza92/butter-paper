@@ -19,13 +19,20 @@ and stay unsuffixed because stored libraries refer to them.
 
 Templates are shown by paper size. A size that matches a named sheet of the
 page-scale paper catalogue in either orientation shows its name (`A3 ·
-Landscape`); any other size shows `W × H mm`. The Template Library lists the
-records under a heading per size: named sheets in catalogue order, then custom
-sizes in first-appearance order, then `Imported PDFs`, whose page size is not
-recorded. The New from template picker lists one size at a time, chosen from
-a paper-size Select that defaults to the last-used template's size. Changing
-the size selects the template with the same name in that size, else one with
-the same pattern, else the first.
+Landscape`); any other size shows `W × H mm`. The New from template picker and
+the Template Library both list one size at a time, chosen from a paper-size
+Select (named sheets in catalogue order, then custom sizes in
+first-appearance order, then `Imported PDFs`, whose page size is not
+recorded) that starts at the selected template's size. Changing the size
+selects the template with the same name in that size, else one with the same
+pattern, else the first. Their rows look alike: the selected one filled and
+ticked.
+
+An Orientation toggle (Portrait, Landscape) beside the size turns the listed
+paper; each size starts the way its templates are. Rows and the preview
+describe the paper turned, and Create makes the document turned (width and
+height swapped). The picker's primary button makes the last template as it
+is. Imported PDFs keep their own pages, so the toggle is disabled for them.
 
 One application-owned template library is the durable authority. It owns
 custom settings, imported metadata and managed PDF bytes, and the last-used

@@ -737,6 +737,15 @@ enum ActivePointer {
         current: PdfPoint,
         click_placement_pending: bool,
     },
+    ImageCreate {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        start: PdfPoint,
+        current: PdfPoint,
+        click_placement_pending: bool,
+    },
     CloudPlusCreate {
         document_id: u64,
         page_index: u32,
@@ -744,6 +753,7 @@ enum ActivePointer {
         id: MarkupId,
         start: PdfPoint,
         current: PdfPoint,
+        click_placement_pending: bool,
     },
     StraightLineMove {
         document_id: u64,
@@ -1176,7 +1186,6 @@ pub struct AnnotationAdapter {
     vertex_path_draft: Option<VertexPathDraft>,
     cloud_draft: Option<VertexPathDraft>,
     cloud_drag_pointer: Option<u64>,
-    cloud_plus_draft: Option<VertexPathDraft>,
     measurement_path_draft: Option<MeasurementPathDraft>,
     arc_draft: Option<ArcDraft>,
     snapshot_draft: Option<SnapshotDraft>,
@@ -1221,6 +1230,8 @@ type AnnotationSnapKey = (u64, u32, u64, Vec<MarkupId>, AnnotationSelectionSuppl
 struct AnnotationSnapCache {
     key: AnnotationSnapKey,
     index: Arc<SemanticSnapIndex>,
+    /// Targets beside the markups' strokes for a line of the given width.
+    stroke_offsets: Option<(f64, Arc<SemanticSnapIndex>)>,
     references: Option<Vec<SnapGuideRect>>,
     initial_bounds: Option<Option<PdfRect>>,
 }
@@ -1332,13 +1343,6 @@ impl AnnotationAdapter {
         {
             self.cloud_draft = None;
             self.cloud_drag_pointer = None;
-        }
-        if self
-            .cloud_plus_draft
-            .as_ref()
-            .is_some_and(|draft| draft.document_id == document_id)
-        {
-            self.cloud_plus_draft = None;
         }
         if self
             .measurement_path_draft
@@ -2269,6 +2273,7 @@ impl AnnotationAdapter {
                     supplement.clone(),
                 ),
                 index: Arc::new(index),
+                stroke_offsets: None,
                 references: None,
                 initial_bounds: None,
             });
@@ -2276,6 +2281,60 @@ impl AnnotationAdapter {
         self.annotation_snap
             .as_mut()
             .expect("the annotation snap cache was just filled")
+    }
+
+    /// The width of the stroke being drawn or moved, for snapping it beside
+    /// other markups' strokes: the moving markup's own, or the drawing
+    /// tool's.
+    fn snap_stroke_width(
+        &self,
+        document_id: u64,
+        page_index: u32,
+        excluded_owner_ids: &[MarkupId],
+    ) -> Option<f64> {
+        if let Some(id) = excluded_owner_ids.first() {
+            let scene = self
+                .documents
+                .get(&document_id)?
+                .thumbnail_scene(page_index);
+            return scene
+                .rectangles
+                .iter()
+                .chain(&scene.ellipses)
+                .find(|item| &item.id == id)
+                .map(|item| item.appearance.stroke_width_pt())
+                .or_else(|| {
+                    scene
+                        .straight_lines
+                        .iter()
+                        .find(|item| &item.id == id)
+                        .map(|item| item.appearance.stroke_width_pt())
+                })
+                .or_else(|| {
+                    scene
+                        .vertex_paths
+                        .iter()
+                        .find(|item| &item.id == id)
+                        .map(|item| item.appearance.stroke_width_pt())
+                })
+                .filter(|width| *width > 0.);
+        }
+        matches!(
+            self.tool,
+            AnnotationTool::Rectangle
+                | AnnotationTool::Ellipse
+                | AnnotationTool::Line
+                | AnnotationTool::Arrow
+                | AnnotationTool::Polyline
+                | AnnotationTool::Polygon
+                | AnnotationTool::Arc
+                | AnnotationTool::Length
+                | AnnotationTool::Polylength
+                | AnnotationTool::Area
+                | AnnotationTool::Dimension
+        )
+        .then(|| self.tool_properties(self.tool).width_pt)
+        .filter(|width| *width > 0.)
     }
 
     /// Annotation targets, then the page grid, then PDF content: the same
@@ -2287,11 +2346,23 @@ impl AnnotationAdapter {
         excluded_owner_ids: &[MarkupId],
         supplement: &AnnotationSelectionSupplement,
     ) -> SemanticSnapIndex {
-        let annotations = self
-            .annotation_snap_cache(document_id, page_index, excluded_owner_ids, supplement)
-            .index
-            .clone();
+        let stroke_width = self.snap_stroke_width(document_id, page_index, excluded_owner_ids);
+        let cache =
+            self.annotation_snap_cache(document_id, page_index, excluded_owner_ids, supplement);
+        let annotations = cache.index.clone();
+        // A stroked line also snaps beside other markups' strokes.
+        let stroke_offsets = stroke_width.map(|width| match &cache.stroke_offsets {
+            Some((cached, offsets)) if *cached == width => offsets.clone(),
+            _ => {
+                let offsets = Arc::new(annotations.stroke_offsets(width));
+                cache.stroke_offsets = Some((width, offsets.clone()));
+                offsets
+            }
+        });
         let mut index = SemanticSnapIndex::default().with_shared_index(annotations);
+        if let Some(offsets) = stroke_offsets {
+            index = index.with_shared_index(offsets);
+        }
         if let Some(grid) = self
             .semantic_snap_page_grids
             .get(&(document_id, page_index))
@@ -3273,7 +3344,9 @@ impl AnnotationAdapter {
         }
         if !matches!(
             self.tool,
-            AnnotationTool::Line
+            AnnotationTool::Rectangle
+                | AnnotationTool::Ellipse
+                | AnnotationTool::Line
                 | AnnotationTool::Arrow
                 | AnnotationTool::Length
                 | AnnotationTool::Dimension
@@ -3965,6 +4038,29 @@ impl AnnotationAdapter {
         let Some(pending) = self.image_asset.as_ref() else {
             return Ok(None);
         };
+        // While its box is drawn, the image previews filling it.
+        if let Some(ActivePointer::ImageCreate {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            start,
+            current,
+            ..
+        }) = &self.active
+        {
+            if (*active_document_id, *active_page_index) != (document_id, page_index)
+                || point_distance_css_px(*start, *current, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+            {
+                return Ok(None);
+            }
+            return Ok(Some(PendingImagePreview {
+                document_id,
+                page_index,
+                rect: image_drawn_rect(pending, *start, *current)?,
+                asset_id: pending.asset.id().as_str().to_owned(),
+                opacity: IMAGE_PLACEMENT_PREVIEW_OPACITY,
+            }));
+        }
         let Some(placement_page) = self.image_placement_page else {
             return Ok(None);
         };
@@ -4205,6 +4301,23 @@ impl AnnotationAdapter {
         let properties = self.tool_properties(tool);
         let appearance =
             rectangle_tool_appearance(&properties, draft.kind == VertexPathKind::Polygon)?;
+        // A polygon with a cloud outline is a Cloud, as Revu stores it.
+        if draft.kind == VertexPathKind::Polygon && properties.cloud_style {
+            let id = self.next_id(AnnotationTool::Cloud)?;
+            self.documents
+                .entry(document_id)
+                .or_default()
+                .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Cloud(
+                    CloudAnnotation::new(
+                        id.clone(),
+                        draft.page_index,
+                        draft.points,
+                        properties.cloud_intensity,
+                        appearance,
+                    )?,
+                )))?;
+            return Ok(PointerPhaseOutcome::AnnotationCreated(id));
+        }
         self.documents
             .entry(document_id)
             .or_default()
@@ -4256,6 +4369,7 @@ impl AnnotationAdapter {
                     rectangle_tool_appearance(&properties, true)?,
                 )?,
             )))?;
+        self.tool = AnnotationTool::Select;
         Ok(PointerPhaseOutcome::AnnotationCreated(id))
     }
 
@@ -4319,64 +4433,6 @@ impl AnnotationAdapter {
             edit: AnnotationEdit::TranslateCloud { delta_x, delta_y },
         })?;
         Ok(())
-    }
-
-    pub fn cloud_plus_pending(&self, document_id: u64) -> bool {
-        self.cloud_plus_draft
-            .as_ref()
-            .is_some_and(|draft| draft.document_id == document_id)
-    }
-
-    pub fn finish_cloud_plus(
-        &mut self,
-        document_id: u64,
-    ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        self.finish_cloud_plus_with_routing_supplement(
-            document_id,
-            &AnnotationSelectionSupplement::new(),
-        )
-    }
-
-    pub fn finish_cloud_plus_with_routing_supplement(
-        &mut self,
-        document_id: u64,
-        caption_supplement: &AnnotationSelectionSupplement,
-    ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let draft = self
-            .cloud_plus_draft
-            .take()
-            .ok_or(AnnotationError::NoActiveGesture)?;
-        if draft.document_id != document_id {
-            self.cloud_plus_draft = Some(draft);
-            return Err(AnnotationError::NoActiveGesture);
-        }
-        if draft.points.len() < 3 {
-            return Ok(PointerPhaseOutcome::Ignored);
-        }
-        self.commit_cloud_plus(
-            document_id,
-            draft.page_index,
-            draft.id,
-            draft.points,
-            caption_supplement,
-        )
-    }
-
-    pub fn update_cloud_plus_hover(
-        &mut self,
-        document_id: u64,
-        page_index: u32,
-        point: PdfPoint,
-    ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let draft = self
-            .cloud_plus_draft
-            .as_mut()
-            .ok_or(AnnotationError::NoActiveGesture)?;
-        if (draft.document_id, draft.page_index) != (document_id, page_index) {
-            return Err(AnnotationError::NoActiveGesture);
-        }
-        draft.hover = point;
-        Ok(PointerPhaseOutcome::PlacementPending)
     }
 
     pub fn set_selected_cloud_plus_cloud_point(
@@ -5146,9 +5202,6 @@ impl AnnotationAdapter {
         if let Some(draft) = &self.arc_draft {
             return Some((draft.document_id, draft.page_index));
         }
-        if let Some(draft) = &self.cloud_plus_draft {
-            return Some((draft.document_id, draft.page_index));
-        }
         if let Some(draft) = &self.snapshot_draft {
             return Some((draft.document_id, draft.page_index));
         }
@@ -5224,6 +5277,11 @@ impl AnnotationAdapter {
                 ..
             }
             | ActivePointer::CalloutCreate {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::ImageCreate {
                 document_id,
                 page_index,
                 ..
@@ -5468,6 +5526,12 @@ impl AnnotationAdapter {
                 click_placement_pending: true,
                 ..
             }) | Some(ActivePointer::CalloutCreate {
+                click_placement_pending: true,
+                ..
+            }) | Some(ActivePointer::CloudPlusCreate {
+                click_placement_pending: true,
+                ..
+            }) | Some(ActivePointer::ImageCreate {
                 click_placement_pending: true,
                 ..
             })
@@ -7065,6 +7129,18 @@ impl AnnotationAdapter {
                     pointer_id,
                     ..
                 }) => (document_id, page_index, pointer_id),
+                Some(ActivePointer::CloudPlusCreate {
+                    document_id,
+                    page_index,
+                    pointer_id,
+                    ..
+                })
+                | Some(ActivePointer::ImageCreate {
+                    document_id,
+                    page_index,
+                    pointer_id,
+                    ..
+                }) => (document_id, page_index, pointer_id),
                 _ => unreachable!("pending click placement has a supported pointer"),
             };
             if (active_document_id, active_page_index, active_pointer_id)
@@ -7074,6 +7150,27 @@ impl AnnotationAdapter {
                 return Err(AnnotationError::NoActiveGesture);
             }
             self.pointer_move_with_constraint(pointer_id, point, constrain_orthogonal)?;
+            if let Some(ActivePointer::CloudPlusCreate {
+                id, start, current, ..
+            }) = &self.active
+            {
+                // A second click too close to the first leaves the rectangle pending.
+                if point_distance_css_px(*start, *current, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::PlacementPending);
+                }
+                let (id, start, end) = (id.clone(), *start, *current);
+                self.active = None;
+                return self.commit_cloud_plus_rectangle(
+                    document_id,
+                    page_index,
+                    id,
+                    start,
+                    end,
+                    supplement,
+                );
+            }
             return self.commit_pending_click(pointer_id, point, constrain_orthogonal);
         }
         if matches!(self.tool, AnnotationTool::Polylength | AnnotationTool::Area) {
@@ -7123,28 +7220,17 @@ impl AnnotationAdapter {
                     self.cloud_drag_pointer = None;
                     return Err(AnnotationError::NoActiveGesture);
                 }
-                let closes_cloud = draft.points.len() >= 3
-                    && point_distance_css_px(
-                        draft.points[0],
-                        point,
-                        self.observed_pixels_per_point.0,
-                    ) <= 10.0;
-                if closes_cloud {
+                // The second click places the rectangle's opposite corner.
+                draft.hover = point;
+                if let Some(corners) = cloud_rectangle_corners(
+                    draft.points[0],
+                    point,
+                    self.observed_pixels_per_point.0,
+                ) {
+                    draft.points = corners;
                     draft.hover = draft.points[0];
                     return self.finish_cloud(document_id);
                 }
-                if point_distance_css_px(
-                    *draft
-                        .points
-                        .last()
-                        .expect("a cloud draft has a first point"),
-                    point,
-                    self.observed_pixels_per_point.0,
-                ) >= 0.5 * self.observed_pixels_per_point.0
-                {
-                    draft.points.push(point);
-                }
-                draft.hover = point;
             } else {
                 let id = self.next_id(self.tool)?;
                 self.documents
@@ -7161,39 +7247,6 @@ impl AnnotationAdapter {
                 });
                 self.cloud_drag_pointer = Some(pointer_id);
             }
-            return Ok(PointerPhaseOutcome::PlacementPending);
-        }
-        if self.tool == AnnotationTool::CloudPlus
-            && let Some(draft) = self.cloud_plus_draft.as_mut()
-        {
-            if (draft.document_id, draft.page_index) != (document_id, page_index) {
-                self.cloud_plus_draft = None;
-                return Err(AnnotationError::NoActiveGesture);
-            }
-            let closes_cloud = draft.points.len() >= 3
-                && point_distance_css_px(draft.points[0], point, self.observed_pixels_per_point.0)
-                    <= 10.0;
-            if closes_cloud {
-                draft.hover = draft.points[0];
-                return self.finish_cloud_plus(document_id);
-            }
-            if point_distance_css_px(
-                *draft
-                    .points
-                    .last()
-                    .expect("a Cloud+ draft has a first point"),
-                point,
-                self.observed_pixels_per_point.0,
-            ) >= 0.5 * self.observed_pixels_per_point.0
-            {
-                let point = if constrain_orthogonal {
-                    constrained_line_point(*draft.points.last().unwrap(), point, true)
-                } else {
-                    point
-                };
-                draft.points.push(point);
-            }
-            draft.hover = point;
             return Ok(PointerPhaseOutcome::PlacementPending);
         }
         if matches!(
@@ -8560,6 +8613,7 @@ impl AnnotationAdapter {
                     id,
                     start: point,
                     current: point,
+                    click_placement_pending: false,
                 });
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
@@ -8639,31 +8693,20 @@ impl AnnotationAdapter {
                 "dimension creation requires the two-click placement interface".into(),
             )),
             AnnotationTool::Image => {
+                // The image fills the box drawn for it, by a drag or by
+                // clicking one corner and then the other.
                 let id = id.expect("drawing tools allocate an annotation ID");
-                let pending = self.image_asset.clone().ok_or_else(|| {
-                    AnnotationError::InvalidFixture(
-                        "image tool requires a decoded bounded PNG or JPEG asset".into(),
-                    )
-                })?;
-                let placement_page = self.image_placement_page.ok_or_else(|| {
-                    AnnotationError::InvalidGeometry(
-                        "image tool requires the current page dimensions".into(),
-                    )
-                })?;
-                let annotation = ImageAnnotation::new_with_opacity(
-                    id.clone(),
+                document.clear_selection();
+                self.active = Some(ActivePointer::ImageCreate {
+                    document_id,
                     page_index,
-                    image_placement_rect(&pending, placement_page, point)?,
-                    pending.asset,
-                    pending.aspect_locked,
-                    tool_properties.opacity,
-                )?;
-                document.apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
-                    annotation,
-                )))?;
-                self.image_asset = None;
-                self.image_placement_page = None;
-                Ok(PointerPhaseOutcome::AnnotationCreated(id))
+                    pointer_id,
+                    id,
+                    start: point,
+                    current: point,
+                    click_placement_pending: false,
+                });
+                Ok(PointerPhaseOutcome::GestureStarted)
             }
             AnnotationTool::Snapshot => {
                 unreachable!("Snapshot placement returns before ordinary pointer dispatch")
@@ -8680,22 +8723,6 @@ impl AnnotationAdapter {
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         if self.active.is_some() {
             return Ok(PointerPhaseOutcome::Ignored);
-        }
-        if let Some(draft) = self.cloud_plus_draft.as_mut() {
-            if (draft.document_id, draft.page_index) != (document_id, page_index) {
-                return Ok(PointerPhaseOutcome::Ignored);
-            }
-            let last = *draft
-                .points
-                .last()
-                .expect("a Cloud+ draft has a first point");
-            if point_distance_css_px(last, point, self.observed_pixels_per_point.0)
-                >= 0.5 * self.observed_pixels_per_point.0
-            {
-                draft.points.push(point);
-            }
-            draft.hover = point;
-            return self.finish_cloud_plus(document_id);
         }
         if let Some(draft) = self.measurement_path_draft.as_mut() {
             if (draft.document_id, draft.page_index) != (document_id, page_index) {
@@ -8883,8 +8910,6 @@ impl AnnotationAdapter {
         if let Some(draft) = self.vertex_path_draft.as_mut() {
             draft.hover = point;
         } else if let Some(draft) = self.cloud_draft.as_mut() {
-            draft.hover = point;
-        } else if let Some(draft) = self.cloud_plus_draft.as_mut() {
             draft.hover = point;
         } else if let Some(draft) = self.measurement_path_draft.as_mut() {
             draft.hover = point;
@@ -9153,6 +9178,11 @@ impl AnnotationAdapter {
                 pointer_id: active_pointer,
                 current,
                 ..
+            }
+            | ActivePointer::ImageCreate {
+                pointer_id: active_pointer,
+                current,
+                ..
             } => {
                 require_pointer(*active_pointer, pointer_id)?;
                 *current = point;
@@ -9346,33 +9376,18 @@ impl AnnotationAdapter {
         if let Some(active_pointer) = self.cloud_drag_pointer.take() {
             require_pointer(active_pointer, pointer_id)?;
         }
-        // Dragging out the first Cloud segment draws a rectangular cloud;
-        // clicking places vertices one by one.
+        // Dragging draws a rectangular cloud; a click leaves its first corner
+        // for a second click to finish.
         if self.tool == AnnotationTool::Cloud
             && let Some(draft) = self.cloud_draft.as_mut()
             && draft.points.len() == 1
+            && let Some(corners) =
+                cloud_rectangle_corners(draft.points[0], point, self.observed_pixels_per_point.0)
         {
-            let start = draft.points[0];
-            let pixels_per_point = self.observed_pixels_per_point.0;
-            let wide = (point.x - start.x).abs() * pixels_per_point >= CLOUD_DRAG_MINIMUM_CSS_PX;
-            let tall = (point.y - start.y).abs() * pixels_per_point >= CLOUD_DRAG_MINIMUM_CSS_PX;
-            if wide && tall {
-                draft.points = vec![
-                    start,
-                    PdfPoint {
-                        x: point.x,
-                        y: start.y,
-                    },
-                    point,
-                    PdfPoint {
-                        x: start.x,
-                        y: point.y,
-                    },
-                ];
-                draft.hover = start;
-                let document_id = draft.document_id;
-                return self.finish_cloud(document_id);
-            }
+            draft.points = corners;
+            draft.hover = draft.points[0];
+            let document_id = draft.document_id;
+            return self.finish_cloud(document_id);
         }
         if self.active.is_none() {
             return self.update_pending_path_preview(point, constrain_orthogonal);
@@ -9926,42 +9941,74 @@ impl AnnotationAdapter {
                 }
                 self.commit_callout(document_id, page_index, id, start, end)
             }
+            ActivePointer::ImageCreate {
+                document_id,
+                page_index,
+                pointer_id: active_pointer,
+                id,
+                start,
+                current,
+                click_placement_pending,
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if click_placement_pending
+                    || point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                        < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    self.active = Some(ActivePointer::ImageCreate {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        start,
+                        current: if click_placement_pending {
+                            current
+                        } else {
+                            point
+                        },
+                        click_placement_pending: true,
+                    });
+                    return Ok(PointerPhaseOutcome::PlacementPending);
+                }
+                self.commit_image(document_id, page_index, id, start, point)
+            }
             ActivePointer::CloudPlusCreate {
                 document_id,
                 page_index,
                 pointer_id: active_pointer,
                 id,
                 start,
-                ..
+                current,
+                click_placement_pending,
             } => {
                 require_pointer(active_pointer, pointer_id)?;
-                let drag_css_px =
-                    point_distance_css_px(start, point, self.observed_pixels_per_point.0);
-                if drag_css_px < POINTER_DRAG_THRESHOLD_CSS_PX {
-                    self.cloud_plus_draft = Some(VertexPathDraft {
+                // A click, rather than a drag, leaves the rectangle pending
+                // until a second click places its opposite corner.
+                if click_placement_pending
+                    || point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                        < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    self.active = Some(ActivePointer::CloudPlusCreate {
                         document_id,
                         page_index,
+                        pointer_id,
                         id,
-                        kind: VertexPathKind::Polygon,
-                        points: vec![start],
-                        hover: point,
+                        start,
+                        current: if click_placement_pending {
+                            current
+                        } else {
+                            point
+                        },
+                        click_placement_pending: true,
                     });
                     return Ok(PointerPhaseOutcome::PlacementPending);
                 }
-                if (point.x - start.x).hypot(point.y - start.y) <= LENGTH_MINIMUM_PDF_DISTANCE {
-                    return Ok(PointerPhaseOutcome::Ignored);
-                }
-                let rect = PdfRect::from_corners(start, point);
-                self.commit_cloud_plus(
+                self.commit_cloud_plus_rectangle(
                     document_id,
                     page_index,
                     id,
-                    vec![
-                        PdfPoint::new(rect.x, rect.y)?,
-                        PdfPoint::new(rect.x + rect.width, rect.y)?,
-                        PdfPoint::new(rect.x + rect.width, rect.y + rect.height)?,
-                        PdfPoint::new(rect.x, rect.y + rect.height)?,
-                    ],
+                    start,
+                    point,
                     supplement,
                 )
             }
@@ -10726,7 +10773,6 @@ impl AnnotationAdapter {
         self.vertex_path_draft = None;
         self.cloud_draft = None;
         self.cloud_drag_pointer = None;
-        self.cloud_plus_draft = None;
         self.measurement_path_draft = None;
         self.arc_draft = None;
         self.snapshot_draft = None;
@@ -10828,11 +10874,138 @@ impl AnnotationAdapter {
                 let end = constrained_line_point(start, point, constrain_orthogonal);
                 self.commit_callout(document_id, page_index, id, start, end)
             }
+            ActivePointer::ImageCreate {
+                document_id,
+                page_index,
+                pointer_id: active_pointer,
+                id,
+                start,
+                click_placement_pending: true,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                // A second click on the first corner leaves the box pending.
+                if point_distance_css_px(start, point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    self.active = Some(ActivePointer::ImageCreate {
+                        document_id,
+                        page_index,
+                        pointer_id,
+                        id,
+                        start,
+                        current: point,
+                        click_placement_pending: true,
+                    });
+                    return Ok(PointerPhaseOutcome::PlacementPending);
+                }
+                self.commit_image(document_id, page_index, id, start, point)
+            }
             active => {
                 self.active = Some(active);
                 Err(AnnotationError::NoActiveGesture)
             }
         }
+    }
+
+    /// Places the pending image at its natural size, centred on `point`, as
+    /// for an image file dropped on the page. Drawing tools place it in the
+    /// box drawn for it instead.
+    pub fn place_image_at(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+    ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        let pending = self.image_asset.clone().ok_or_else(|| {
+            AnnotationError::InvalidFixture(
+                "image tool requires a decoded bounded PNG or JPEG asset".into(),
+            )
+        })?;
+        let placement_page = self.image_placement_page.ok_or_else(|| {
+            AnnotationError::InvalidGeometry(
+                "image tool requires the current page dimensions".into(),
+            )
+        })?;
+        self.cancel(PointerCancelReason::AdapterError)?;
+        let point = self.resolve_semantic_creation_point(document_id, page_index, point, false);
+        let id = self.next_id(AnnotationTool::Image)?;
+        let annotation = ImageAnnotation::new_with_opacity(
+            id.clone(),
+            page_index,
+            image_placement_rect(&pending, placement_page, point)?,
+            pending.asset,
+            pending.aspect_locked,
+            self.tool_properties(AnnotationTool::Image).opacity,
+        )?;
+        self.documents
+            .entry(document_id)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
+                annotation,
+            )))?;
+        self.image_asset = None;
+        self.image_placement_page = None;
+        Ok(PointerPhaseOutcome::AnnotationCreated(id))
+    }
+
+    fn commit_image(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        id: MarkupId,
+        start: PdfPoint,
+        end: PdfPoint,
+    ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        let pending = self.image_asset.clone().ok_or_else(|| {
+            AnnotationError::InvalidFixture(
+                "image tool requires a decoded bounded PNG or JPEG asset".into(),
+            )
+        })?;
+        let annotation = ImageAnnotation::new_with_opacity(
+            id.clone(),
+            page_index,
+            image_drawn_rect(&pending, start, end)?,
+            pending.asset,
+            pending.aspect_locked,
+            self.tool_properties(AnnotationTool::Image).opacity,
+        )?;
+        self.documents
+            .entry(document_id)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Image(
+                annotation,
+            )))?;
+        self.image_asset = None;
+        self.image_placement_page = None;
+        Ok(PointerPhaseOutcome::AnnotationCreated(id))
+    }
+
+    fn commit_cloud_plus_rectangle(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        id: MarkupId,
+        start: PdfPoint,
+        end: PdfPoint,
+        supplement: &AnnotationSelectionSupplement,
+    ) -> Result<PointerPhaseOutcome, AnnotationError> {
+        if (end.x - start.x).hypot(end.y - start.y) <= LENGTH_MINIMUM_PDF_DISTANCE {
+            return Ok(PointerPhaseOutcome::Ignored);
+        }
+        let rect = PdfRect::from_corners(start, end);
+        self.commit_cloud_plus(
+            document_id,
+            page_index,
+            id,
+            vec![
+                PdfPoint::new(rect.x, rect.y)?,
+                PdfPoint::new(rect.x + rect.width, rect.y)?,
+                PdfPoint::new(rect.x + rect.width, rect.y + rect.height)?,
+                PdfPoint::new(rect.x, rect.y + rect.height)?,
+            ],
+            supplement,
+        )
     }
 
     fn commit_straight_line(
@@ -12862,45 +13035,60 @@ impl AnnotationAdapter {
             {
                 points.push(draft.hover);
             }
-            scene.vertex_paths.push(SceneVertexPath {
-                id: draft.id.clone(),
-                points,
-                kind: draft.kind,
-                appearance: rectangle_tool_appearance(
-                    &properties,
-                    draft.kind == VertexPathKind::Polygon,
+            let appearance =
+                rectangle_tool_appearance(&properties, draft.kind == VertexPathKind::Polygon)
+                    .expect("stored vertex-path tool properties are validated");
+            if draft.kind == VertexPathKind::Polygon
+                && properties.cloud_style
+                && points.len() >= 3
+                && let Ok(cloud) = CloudAnnotation::new(
+                    draft.id.clone(),
+                    draft.page_index,
+                    points.clone(),
+                    properties.cloud_intensity,
+                    appearance.clone(),
                 )
-                .expect("stored vertex-path tool properties are validated"),
-                selected: true,
-                locked: false,
-                draft: true,
-            });
+            {
+                scene.clouds.push(SceneCloud {
+                    id: draft.id.clone(),
+                    scallop_path: cloud.scallop_path(),
+                    points,
+                    border_effect_intensity: properties.cloud_intensity,
+                    appearance,
+                    selected: true,
+                    locked: false,
+                    draft: true,
+                    feedback: SceneInteractionFeedback::Creation,
+                });
+            } else {
+                scene.vertex_paths.push(SceneVertexPath {
+                    id: draft.id.clone(),
+                    points,
+                    kind: draft.kind,
+                    appearance: rectangle_tool_appearance(
+                        &properties,
+                        draft.kind == VertexPathKind::Polygon,
+                    )
+                    .expect("stored vertex-path tool properties are validated"),
+                    selected: true,
+                    locked: false,
+                    draft: true,
+                });
+            }
         }
         if let Some(draft) = &self.cloud_draft
             && (draft.document_id, draft.page_index) == (document_id, page_index)
         {
             let properties = self.tool_properties(AnnotationTool::Cloud);
             let mut points = draft.points.clone();
-            if self.cloud_drag_pointer.is_some()
-                && points.len() == 1
-                && (draft.hover.x - points[0].x).abs() * self.observed_pixels_per_point.0
-                    >= CLOUD_DRAG_MINIMUM_CSS_PX
-                && (draft.hover.y - points[0].y).abs() * self.observed_pixels_per_point.0
-                    >= CLOUD_DRAG_MINIMUM_CSS_PX
-            {
-                let start = points[0];
-                points = vec![
-                    start,
-                    PdfPoint {
-                        x: draft.hover.x,
-                        y: start.y,
-                    },
+            if points.len() == 1
+                && let Some(corners) = cloud_rectangle_corners(
+                    points[0],
                     draft.hover,
-                    PdfPoint {
-                        x: start.x,
-                        y: draft.hover.y,
-                    },
-                ];
+                    self.observed_pixels_per_point.0,
+                )
+            {
+                points = corners;
             } else if point_distance_css_px(
                 *points
                     .last()
@@ -12937,67 +13125,6 @@ impl AnnotationAdapter {
                 draft: true,
                 feedback: SceneInteractionFeedback::Creation,
             });
-        }
-        if let Some(draft) = &self.cloud_plus_draft
-            && (draft.document_id, draft.page_index) == (document_id, page_index)
-        {
-            let properties = self.tool_properties(AnnotationTool::CloudPlus);
-            let routing_context =
-                self.cloud_plus_routing_context(document_id, page_index, None, caption_supplement);
-            let mut cloud_points = draft.points.clone();
-            if point_distance_css_px(
-                *cloud_points
-                    .last()
-                    .expect("a Cloud+ draft retains its first point"),
-                draft.hover,
-                self.observed_pixels_per_point.0,
-            ) >= 0.5 * self.observed_pixels_per_point.0
-            {
-                cloud_points.push(draft.hover);
-            }
-            if cloud_points.len() >= 3
-                && let Ok(visible_path) =
-                    cloud_visible_path(&cloud_points, properties.cloud_intensity)
-                && let Ok(appearance) = cloud_plus_tool_appearance(&properties)
-                && let Ok(placement) = place_initial_cloud_plus_text_box(
-                    &cloud_points,
-                    &visible_path,
-                    caption_box_width("Cloud+", appearance.text()),
-                    CLOUD_PLUS_TEXT_HEIGHT_PT,
-                    CLOUD_PLUS_TEXT_GAP_PT,
-                    &routing_context,
-                )
-            {
-                scene.cloud_pluses.push(SceneCloudPlus {
-                    id: draft.id.clone(),
-                    cloud_points,
-                    scallop_path: visible_path,
-                    border_effect_intensity: properties.cloud_intensity,
-                    leader_points: placement.leader.points,
-                    text_box: placement.text_box,
-                    content: "Cloud+".into(),
-                    appearance,
-                    selected: true,
-                    locked: false,
-                    draft: true,
-                    feedback: SceneInteractionFeedback::Creation,
-                });
-            } else if cloud_points.len() == 2 {
-                // Before a polygon exists, show its first live segment rather
-                // than leaving Cloud+ invisible until the third vertex.
-                scene.clouds.push(SceneCloud {
-                    id: draft.id.clone(),
-                    scallop_path: cloud_points.clone(),
-                    points: cloud_points,
-                    border_effect_intensity: properties.cloud_intensity,
-                    appearance: rectangle_tool_appearance(&properties, false)
-                        .expect("stored Cloud+ tool properties are validated"),
-                    selected: true,
-                    locked: false,
-                    draft: true,
-                    feedback: SceneInteractionFeedback::Creation,
-                });
-            }
         }
         if let Some(draft) = &self.measurement_path_draft
             && (draft.document_id, draft.page_index) == (document_id, page_index)
@@ -13982,6 +14109,7 @@ fn active_pointer_document_id(active: &ActivePointer) -> u64 {
         | ActivePointer::ArcControlPoint { document_id, .. }
         | ActivePointer::StraightLineCreate { document_id, .. }
         | ActivePointer::CalloutCreate { document_id, .. }
+        | ActivePointer::ImageCreate { document_id, .. }
         | ActivePointer::CloudPlusCreate { document_id, .. }
         | ActivePointer::StraightLineMove { document_id, .. }
         | ActivePointer::StraightLineEndpoint { document_id, .. }
@@ -14039,6 +14167,34 @@ fn image_placement_rect(
     };
     let x = (point.x - width / 2.0).clamp(0.0, (placement_page.width_pt - width).max(0.0));
     let y = (point.y - height / 2.0).clamp(0.0, (placement_page.height_pt - height).max(0.0));
+    PdfRect::new(x, y, width, height)
+}
+
+/// The image's box when drawn from `start` to `end`: the largest box with
+/// the image's proportions inside the drawn one, from `start`. As when it is
+/// placed at its natural size, a new image is never distorted.
+fn image_drawn_rect(
+    pending: &PendingImageAsset,
+    start: PdfPoint,
+    end: PdfPoint,
+) -> Result<PdfRect, AnnotationError> {
+    let aspect_ratio =
+        (f64::from(pending.asset.width_px()) / f64::from(pending.asset.height_px())).max(0.01);
+    let width = (end.x - start.x)
+        .abs()
+        .min((end.y - start.y).abs() * aspect_ratio)
+        .max(1.);
+    let height = width / aspect_ratio;
+    let x = if end.x < start.x {
+        start.x - width
+    } else {
+        start.x
+    };
+    let y = if end.y < start.y {
+        start.y - height
+    } else {
+        start.y
+    };
     PdfRect::new(x, y, width, height)
 }
 
@@ -14169,6 +14325,31 @@ fn moving_snap_context(
 
 /// The smallest drag, on each axis, that draws a rectangular cloud.
 const CLOUD_DRAG_MINIMUM_CSS_PX: f64 = 8.0;
+
+/// The corners of the rectangular cloud from `start` to `end`, once it is wide
+/// and tall enough to draw.
+fn cloud_rectangle_corners(
+    start: PdfPoint,
+    end: PdfPoint,
+    pixels_per_point: f64,
+) -> Option<Vec<PdfPoint>> {
+    let wide = (end.x - start.x).abs() * pixels_per_point >= CLOUD_DRAG_MINIMUM_CSS_PX;
+    let tall = (end.y - start.y).abs() * pixels_per_point >= CLOUD_DRAG_MINIMUM_CSS_PX;
+    (wide && tall).then(|| {
+        vec![
+            start,
+            PdfPoint {
+                x: end.x,
+                y: start.y,
+            },
+            end,
+            PdfPoint {
+                x: start.x,
+                y: end.y,
+            },
+        ]
+    })
+}
 
 fn point_distance_css_px(start: PdfPoint, end: PdfPoint, observed_pixels_per_point: f64) -> f64 {
     (end.x - start.x).hypot(end.y - start.y) * observed_pixels_per_point
@@ -18219,6 +18400,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_line_snaps_beside_another_strokes_edges_as_well_as_onto_it() {
+        // Snapping along edges (Nearest) is off by default; corners and
+        // midpoints snap either way.
+        let annotations_only = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Content, false)
+            .with_source(SemanticSnapSource::PageGrid, false)
+            .with_source(SemanticSnapSource::ConstructionGrid, false)
+            .with_target(crate::semantic_snapping::SemanticSnapTarget::Nearest, true);
+        let mut adapter = AnnotationAdapter::default();
+        adapter
+            .set_semantic_snap_settings(annotations_only)
+            .unwrap();
+        // Zoomed in, so positions a point apart are visibly apart; exact
+        // targets win while beside-the-stroke ones are within a few pixels.
+        adapter.set_observed_pixels_per_point(4.).unwrap();
+        // A rectangle with a 4 pt stroke, its right edge's centre line at
+        // x = 200.
+        let mut thick = ToolProperties::for_tool(AnnotationTool::Rectangle);
+        thick.width_pt = 4.;
+        adapter
+            .set_tool_properties(AnnotationTool::Rectangle, thick)
+            .unwrap();
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        adapter
+            .pointer_down(7, 0, 1, point(100., 100.), 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(200., 200.)).unwrap();
+        adapter.pointer_up(1, point(200., 200.)).unwrap();
+        // Drawing a 2 pt rectangle next to it.
+        let mut thin = ToolProperties::for_tool(AnnotationTool::Rectangle);
+        thin.width_pt = 2.;
+        adapter
+            .set_tool_properties(AnnotationTool::Rectangle, thin)
+            .unwrap();
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        let snapped_x = |adapter: &mut AnnotationAdapter, x: f64| {
+            adapter
+                // Clear of the edge's midpoint, which points outrank.
+                .resolve_semantic_creation_point(7, 0, point(x, 125.), false)
+                .x
+        };
+        // The strokes' outer edges touch: 3 pt off the centre line, either
+        // side.
+        assert!((snapped_x(&mut adapter, 203.6) - 203.).abs() < 1e-9);
+        assert!((snapped_x(&mut adapter, 196.6) - 197.).abs() < 1e-9);
+        // The thinner line flush inside the thicker: 1 pt off it.
+        assert!((snapped_x(&mut adapter, 198.9) - 199.).abs() < 1e-9);
+        // Exactly over it, as before.
+        assert!((snapped_x(&mut adapter, 200.3) - 200.).abs() < 1e-9);
+        // With the default targets, a corner and an edge's midpoint where
+        // both strokes touch.
+        adapter
+            .set_semantic_snap_settings(
+                annotations_only
+                    .with_target(crate::semantic_snapping::SemanticSnapTarget::Nearest, false),
+            )
+            .unwrap();
+        let corner = adapter.resolve_semantic_creation_point(7, 0, point(203.4, 203.4), false);
+        assert!((corner.x - 203.).abs() < 1e-9 && (corner.y - 203.).abs() < 1e-9);
+        let midpoint = adapter.resolve_semantic_creation_point(7, 0, point(203.4, 150.5), false);
+        assert!((midpoint.x - 203.).abs() < 1e-9 && (midpoint.y - 150.).abs() < 1e-9);
+    }
+
     fn customised_tool_properties(tool: AnnotationTool) -> ToolProperties {
         let mut properties = ToolProperties::for_tool(tool);
         properties.colour = "#336699".into();
@@ -19106,14 +19351,33 @@ mod tests {
         assert_eq!(preview.opacity, IMAGE_PLACEMENT_PREVIEW_OPACITY);
         assert_eq!(adapter.history_depths(7), history_before);
 
+        // Clicking one corner and then the other draws the image's box: the
+        // preview fills it, keeping the image's 4:3 proportions.
         adapter.queue_next_annotation_id(MarkupId::new("image:preview-commit").unwrap());
+        adapter
+            .pointer_down(7, 0, 1, point(306., 396.), 4.)
+            .unwrap();
+        adapter.pointer_up(1, point(306., 396.)).unwrap();
+        adapter.pointer_move(1, point(406., 496.)).unwrap();
+        let drawn_preview = adapter
+            .pending_image_preview_at(7, 0, point(306., 396.))
+            .unwrap()
+            .expect("an Image being drawn previews in its box");
+        assert_eq!(
+            drawn_preview.rect,
+            PdfRect::new(306., 396., 100., 75.).unwrap()
+        );
+        assert_eq!(adapter.history_depths(7), history_before);
         assert!(matches!(
             adapter
-                .pointer_down(7, 0, 1, point(306., 396.), 4.)
+                .pointer_down(7, 0, 1, point(406., 496.), 4.)
                 .unwrap(),
             PointerPhaseOutcome::AnnotationCreated(_)
         ));
-        assert_eq!(adapter.snapshot(7).unwrap().images[0].rect, preview.rect);
+        assert_eq!(
+            adapter.snapshot(7).unwrap().images[0].rect,
+            drawn_preview.rect
+        );
         assert!(
             adapter
                 .pending_image_preview_at(7, 0, point(306., 396.))
@@ -19151,21 +19415,25 @@ mod tests {
             .set_image_placement_page(612., 792., NATURAL_IMAGE_MAX_PAGE_FRACTION)
             .unwrap();
         let raw_point = point(202., 202.);
-        let raw_preview = snapped
+        snapped
             .pending_image_preview_at(7, 0, raw_point)
             .unwrap()
             .expect("Image hover stays at the raw pointer before click-time snapping");
         snapped.queue_next_annotation_id(MarkupId::new("image:snapped-commit").unwrap());
+        snapped.pointer_down(7, 0, 2, raw_point, 4.).unwrap();
+        snapped.pointer_up(2, raw_point).unwrap();
         assert!(matches!(
-            snapped.pointer_down(7, 0, 2, raw_point, 4.).unwrap(),
+            snapped
+                .pointer_down(7, 0, 2, point(140., 120.), 4.)
+                .unwrap(),
             PointerPhaseOutcome::AnnotationCreated(_)
         ));
+        // The first corner snaps to the rectangle's corner it was clicked by.
         let snapped_rect = snapped.snapshot(7).unwrap().images[0].rect;
-        assert_ne!(snapped_rect, raw_preview.rect);
         assert_eq!(
             point(
-                snapped_rect.x + snapped_rect.width / 2.,
-                snapped_rect.y + snapped_rect.height / 2.,
+                snapped_rect.x + snapped_rect.width,
+                snapped_rect.y + snapped_rect.height,
             ),
             point(200., 200.)
         );
@@ -19299,14 +19567,9 @@ mod tests {
             )
             .unwrap();
         cloud.set_tool(AnnotationTool::Cloud).unwrap();
-        for (pointer_id, vertex) in [
-            (1, point(20., 20.)),
-            (2, point(100., 20.)),
-            (3, point(100., 80.)),
-        ] {
-            cloud.pointer_down(7, 0, pointer_id, vertex, 4.).unwrap();
-        }
-        cloud.finish_cloud(7).unwrap();
+        cloud.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        cloud.pointer_up(1, point(20., 20.)).unwrap();
+        cloud.pointer_down(7, 0, 1, point(100., 80.), 4.).unwrap();
         let cloud = &cloud.snapshot(7).unwrap().clouds[0];
         assert_rectangle_properties(&cloud.appearance, Some("#abcdef"));
         assert_eq!(cloud.border_effect_intensity(), 3.0);
@@ -19367,12 +19630,8 @@ mod tests {
             .unwrap();
         cloud_plus.pointer_up(1, point(20., 20.)).unwrap();
         cloud_plus
-            .pointer_down(7, 0, 2, point(100., 20.), 4.)
+            .pointer_down(7, 0, 1, point(100., 80.), 4.)
             .unwrap();
-        cloud_plus
-            .pointer_down(7, 0, 3, point(100., 80.), 4.)
-            .unwrap();
-        cloud_plus.finish_cloud_plus(7).unwrap();
         let cloud_plus = &cloud_plus.snapshot(7).unwrap().cloud_pluses[0];
         assert_eq!(cloud_plus.appearance.cloud().stroke_color(), "#336699");
         assert_eq!(cloud_plus.appearance.cloud().stroke_width_pt(), 1.0);
@@ -19565,18 +19824,14 @@ mod tests {
             .unwrap();
         cloud.set_tool(AnnotationTool::Cloud).unwrap();
         let cloud_history_before = cloud.history_depths(7);
-        for (pointer_id, vertex) in [
-            (1, point(20., 20.)),
-            (2, point(100., 20.)),
-            (3, point(100., 80.)),
-        ] {
-            cloud.pointer_down(7, 0, pointer_id, vertex, 4.).unwrap();
-        }
+        cloud.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        cloud.pointer_up(1, point(20., 20.)).unwrap();
+        cloud.pointer_move(1, point(100., 80.)).unwrap();
         let cloud_preview = cloud.document_scene(7, 0).clouds.remove(0);
         assert!(cloud_preview.draft);
         assert_eq!(cloud_preview.border_effect_intensity, 3.0);
         assert_eq!(cloud.history_depths(7), cloud_history_before);
-        cloud.finish_cloud(7).unwrap();
+        cloud.pointer_down(7, 0, 1, point(100., 80.), 4.).unwrap();
         let cloud_committed = &cloud.snapshot(7).unwrap().clouds[0];
         assert_eq!(cloud_committed.appearance, cloud_preview.appearance);
         assert_eq!(
@@ -19597,17 +19852,14 @@ mod tests {
             .pointer_down(7, 0, 1, point(20., 20.), 4.)
             .unwrap();
         cloud_plus.pointer_up(1, point(20., 20.)).unwrap();
-        cloud_plus
-            .pointer_down(7, 0, 2, point(100., 20.), 4.)
-            .unwrap();
-        cloud_plus
-            .pointer_down(7, 0, 3, point(100., 80.), 4.)
-            .unwrap();
+        cloud_plus.pointer_move(1, point(100., 80.)).unwrap();
         let cloud_plus_preview = cloud_plus.document_scene(7, 0).cloud_pluses.remove(0);
         assert!(cloud_plus_preview.draft);
         assert_eq!(cloud_plus_preview.border_effect_intensity, 3.0);
         assert_eq!(cloud_plus.history_depths(7), cloud_plus_history_before);
-        cloud_plus.finish_cloud_plus(7).unwrap();
+        cloud_plus
+            .pointer_down(7, 0, 1, point(100., 80.), 4.)
+            .unwrap();
         let cloud_plus_committed = &cloud_plus.snapshot(7).unwrap().cloud_pluses[0];
         assert_eq!(
             cloud_plus_committed.appearance,

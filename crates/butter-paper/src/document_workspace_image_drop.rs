@@ -5,7 +5,6 @@
 use super::*;
 
 /// The pointer the placement presses with: not a real pointer's.
-const DROP_POINTER_ID: u64 = 7;
 /// How far each further image dropped at once is placed from the last, in
 /// points, so none hides another.
 const DROP_CASCADE_POINTS: f64 = 24.;
@@ -152,7 +151,7 @@ impl DocumentWorkspace {
                 .map_err(|error| error.to_string())?;
             let outcome = session
                 .annotations
-                .pointer_down(document_id.value(), page_index, DROP_POINTER_ID, point, 0.)
+                .place_image_at(document_id.value(), page_index, point)
                 .map_err(|error| error.to_string())?;
             if !matches!(outcome, PointerPhaseOutcome::AnnotationCreated(_)) {
                 return Err(format!("the image could not be placed: {outcome:?}"));

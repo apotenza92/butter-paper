@@ -47,6 +47,9 @@ pub struct DimensionPropertySnapshot {
     pub expected_revision: u64,
     pub offset_pt: f64,
     pub show_offset: bool,
+    /// Only the label's text: a measured path's own panel above it already
+    /// shows its lock, line and opacity.
+    pub text_only: bool,
     pub appearance: DimensionAppearance,
     pub locked: bool,
     pub mutation_disabled: bool,
@@ -451,6 +454,49 @@ impl Render for DimensionPropertyInspector {
                         .disabled(disabled),
                 ),
             );
+        if snapshot.text_only {
+            let text = cx.entity().downgrade();
+            let label = crate::property_controls::property_pair(
+                color_field(
+                    DIMENSION_INSPECTOR_TEXT_COLOR_ID,
+                    "Text colour",
+                    &self.text_color,
+                    disabled,
+                    text,
+                    true,
+                    cx,
+                ),
+                Field::new().label("Font size").child(
+                    PropertyNumericInput::new(
+                        DIMENSION_INSPECTOR_FONT_SIZE_ID,
+                        "Font size",
+                        &self.font_size,
+                    )
+                    .suffix("pt")
+                    .disabled(disabled),
+                ),
+            );
+            let section_control = cx.entity().downgrade();
+            return PropertyInspectorPanel::new(
+                DIMENSION_PROPERTY_INSPECTOR_ID,
+                DIMENSION_INSPECTOR_HEADER_ID,
+                DIMENSION_INSPECTOR_SCROLL_ID,
+                "Label properties",
+            )
+            .content_only(self.embedded)
+            .child(
+                Accordion::new("dimension-property-sections")
+                    .bordered(false)
+                    .item(|item| item.open(self.open_sections[1]).title("Label").child(label))
+                    .on_toggle_click(move |indexes, _, cx| {
+                        let _ = section_control.update(cx, |inspector, cx| {
+                            inspector.open_sections[1] = indexes.contains(&0);
+                            cx.notify();
+                        });
+                    }),
+            )
+            .into_any_element();
+        }
         let open_sections = self.open_sections;
         let section_control = cx.entity().downgrade();
         let accordion = Accordion::new("dimension-property-sections")

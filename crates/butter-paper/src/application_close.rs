@@ -955,14 +955,14 @@ fn action_specs(busy: bool) -> [ApplicationCloseActionSpec; 3] {
         ApplicationCloseActionSpec {
             id: APPLICATION_CLOSE_DISCARD_ALL_ID,
             action: ApplicationCloseAction::DiscardAll,
-            label: "Discard All",
+            label: "Discard all",
             role: ApplicationCloseActionRole::Destructive,
             disabled: busy,
         },
         ApplicationCloseActionSpec {
             id: APPLICATION_CLOSE_SAVE_ALL_ID,
             action: ApplicationCloseAction::SaveAll,
-            label: if busy { "Saving…" } else { "Save All" },
+            label: if busy { "Saving…" } else { "Save all" },
             role: ApplicationCloseActionRole::Primary,
             disabled: busy,
         },

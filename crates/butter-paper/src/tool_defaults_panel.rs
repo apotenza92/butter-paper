@@ -54,6 +54,8 @@ pub const TOOL_DEFAULTS_FONT_SIZE_ID: &str = "tool-defaults-panel-font-size";
 pub const TOOL_DEFAULTS_FONT_FAMILY_ID: &str = "tool-defaults-panel-font-family";
 pub const TOOL_DEFAULTS_SMOOTH_CURVES_ID: &str = "tool-defaults-panel-smooth-curves";
 pub const TOOL_DEFAULTS_SMOOTH_CURVES_SWITCH_ID: &str = "tool-defaults-panel-smooth-curves-switch";
+pub const TOOL_DEFAULTS_CLOUD_STYLE_ID: &str = "tool-defaults-panel-cloud-style";
+pub const TOOL_DEFAULTS_CLOUD_STYLE_SWITCH_ID: &str = "tool-defaults-panel-cloud-style-switch";
 pub const TOOL_DEFAULTS_CLOUD_INTENSITY_ID: &str = "tool-defaults-panel-cloud-intensity";
 pub const TOOL_DEFAULTS_CLOUD_INTENSITY_SLIDER_ID: &str =
     "tool-defaults-panel-cloud-intensity-slider";
@@ -188,7 +190,8 @@ impl ToolDefaultsPanel {
             ToolPropertyField::Colour
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontFamily
-            | ToolPropertyField::SmoothCurves => None,
+            | ToolPropertyField::SmoothCurves
+            | ToolPropertyField::CloudStyle => None,
         }
     }
 
@@ -205,7 +208,8 @@ impl ToolDefaultsPanel {
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontSizePt
             | ToolPropertyField::FontFamily
-            | ToolPropertyField::SmoothCurves => None,
+            | ToolPropertyField::SmoothCurves
+            | ToolPropertyField::CloudStyle => None,
         }
     }
 
@@ -490,7 +494,8 @@ impl ToolDefaultsPanel {
             ToolPropertyField::Colour
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontFamily
-            | ToolPropertyField::SmoothCurves => String::new(),
+            | ToolPropertyField::SmoothCurves
+            | ToolPropertyField::CloudStyle => String::new(),
         }
     }
 
@@ -536,7 +541,15 @@ impl ToolDefaultsPanel {
                 .into_any_element()
         };
 
-        Field::new().label(label).child(control).into_any_element()
+        // A full-width stroke width follows, so nothing pairs with the colour.
+        let paired = !self
+            .tool
+            .is_some_and(|tool| ToolProperties::is_applicable(tool, ToolPropertyField::WidthPt));
+        Field::new()
+            .col_span(if paired { 1 } else { 2 })
+            .label(label)
+            .child(control)
+            .into_any_element()
     }
 
     fn render_fill_field(&self, disabled: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -722,7 +735,43 @@ impl ToolDefaultsPanel {
                 ),
             );
         }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::CloudIntensity) {
+        if ToolProperties::is_applicable(tool, ToolPropertyField::CloudStyle) {
+            let panel = cx.entity().downgrade();
+            content = content.child(
+                Field::new().col_span(2).child(
+                    div()
+                        .id(TOOL_DEFAULTS_CLOUD_STYLE_ID)
+                        .debug_selector(|| TOOL_DEFAULTS_CLOUD_STYLE_ID.into())
+                        .child(
+                            Switch::new(TOOL_DEFAULTS_CLOUD_STYLE_SWITCH_ID)
+                                .label("Cloud outline")
+                                .checked(self.properties.cloud_style)
+                                .disabled(disabled)
+                                .on_click(move |cloud, _, cx| {
+                                    let _ = panel.update(cx, |panel, cx| {
+                                        let Some(tool) = panel.tool else {
+                                            return;
+                                        };
+                                        if !ToolProperties::is_applicable(
+                                            tool,
+                                            ToolPropertyField::CloudStyle,
+                                        ) {
+                                            return;
+                                        }
+                                        let mut properties = panel.properties.clone();
+                                        properties.cloud_style = *cloud;
+                                        panel.emit_change(properties, cx);
+                                    });
+                                }),
+                        ),
+                ),
+            );
+        }
+        // A polygon's cloud intensity applies only once it has a cloud outline.
+        if ToolProperties::is_applicable(tool, ToolPropertyField::CloudIntensity)
+            && (!ToolProperties::is_applicable(tool, ToolPropertyField::CloudStyle)
+                || self.properties.cloud_style)
+        {
             content = content.child(
                 Field::new().col_span(2).label("Cloud intensity").child(
                     PropertySliderInput::new(
@@ -836,9 +885,7 @@ impl Render for ToolDefaultsPanel {
                 .p_3()
                 .text_color(cx.theme().muted_foreground)
                 .child(match tool {
-                    AnnotationTool::Select => {
-                        "No editable properties are available for the current selection."
-                    }
+                    AnnotationTool::Select => "Select a markup to change its properties.",
                     AnnotationTool::Length | AnnotationTool::Image => {
                         "Properties for this tool are not available yet."
                     }
@@ -983,7 +1030,8 @@ fn displayed_range(tool: AnnotationTool, field: ToolPropertyField) -> ToolProper
         ToolPropertyField::Colour
         | ToolPropertyField::FillColour
         | ToolPropertyField::FontFamily
-        | ToolPropertyField::SmoothCurves => ToolPropertyRange {
+        | ToolPropertyField::SmoothCurves
+        | ToolPropertyField::CloudStyle => ToolPropertyRange {
             min: 0.,
             max: 1.,
             step: 1.,
@@ -1047,7 +1095,8 @@ fn properties_with_displayed_value(
         ToolPropertyField::Colour
         | ToolPropertyField::FillColour
         | ToolPropertyField::FontFamily
-        | ToolPropertyField::SmoothCurves => return None,
+        | ToolPropertyField::SmoothCurves
+        | ToolPropertyField::CloudStyle => return None,
     }
     next.validate_for_tool(tool).ok()?;
     Some(next)

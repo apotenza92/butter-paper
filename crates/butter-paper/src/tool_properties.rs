@@ -34,6 +34,14 @@ const SHAPE_FIELDS: &[ToolPropertyField] = &[
     ToolPropertyField::FillColour,
     ToolPropertyField::Opacity,
 ];
+const POLYGON_FIELDS: &[ToolPropertyField] = &[
+    ToolPropertyField::Colour,
+    ToolPropertyField::WidthPt,
+    ToolPropertyField::FillColour,
+    ToolPropertyField::Opacity,
+    ToolPropertyField::CloudStyle,
+    ToolPropertyField::CloudIntensity,
+];
 const LINE_FIELDS: &[ToolPropertyField] = &[
     ToolPropertyField::Colour,
     ToolPropertyField::WidthPt,
@@ -92,6 +100,8 @@ pub enum ToolPropertyField {
     FontSizePt,
     FontFamily,
     SmoothCurves,
+    /// Polygons drawn with a cloud outline, which are saved as Clouds.
+    CloudStyle,
     CloudIntensity,
 }
 
@@ -118,6 +128,7 @@ pub struct ToolProperties {
     pub font_size_pt: f64,
     pub font_family: String,
     pub smooth_curves: bool,
+    pub cloud_style: bool,
     pub cloud_intensity: f64,
 }
 
@@ -139,15 +150,15 @@ impl ToolProperties {
             font_size_pt: 12.0,
             font_family: "Helvetica".into(),
             smooth_curves: true,
+            cloud_style: false,
             cloud_intensity: 2.0,
         }
     }
 
     pub fn applicable_fields(tool: AnnotationTool) -> &'static [ToolPropertyField] {
         match tool {
-            AnnotationTool::Rectangle | AnnotationTool::Ellipse | AnnotationTool::Polygon => {
-                SHAPE_FIELDS
-            }
+            AnnotationTool::Rectangle | AnnotationTool::Ellipse => SHAPE_FIELDS,
+            AnnotationTool::Polygon => POLYGON_FIELDS,
             AnnotationTool::Arc
             | AnnotationTool::Line
             | AnnotationTool::Arrow
@@ -206,7 +217,8 @@ impl ToolProperties {
             ToolPropertyField::Colour
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontFamily
-            | ToolPropertyField::SmoothCurves => None,
+            | ToolPropertyField::SmoothCurves
+            | ToolPropertyField::CloudStyle => None,
         }
     }
 
@@ -255,7 +267,8 @@ impl ToolProperties {
                 ToolPropertyField::Colour
                 | ToolPropertyField::FillColour
                 | ToolPropertyField::FontFamily
-                | ToolPropertyField::SmoothCurves => None,
+                | ToolPropertyField::SmoothCurves
+                | ToolPropertyField::CloudStyle => None,
             };
             if let (Some(value), Some(range)) = (value, Self::range(tool, *field))
                 && !(range.min..=range.max).contains(&value)
@@ -294,6 +307,7 @@ impl ToolProperties {
                     canonical.font_family.clone_from(&self.font_family)
                 }
                 ToolPropertyField::SmoothCurves => canonical.smooth_curves = self.smooth_curves,
+                ToolPropertyField::CloudStyle => canonical.cloud_style = self.cloud_style,
                 ToolPropertyField::CloudIntensity => {
                     canonical.cloud_intensity = self.cloud_intensity
                 }
@@ -313,6 +327,7 @@ impl ToolPropertyField {
             Self::FontSizePt => "font size",
             Self::FontFamily => "font family",
             Self::SmoothCurves => "smooth curves",
+            Self::CloudStyle => "cloud style",
             Self::CloudIntensity => "cloud intensity",
         }
     }

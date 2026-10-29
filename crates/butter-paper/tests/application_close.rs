@@ -143,12 +143,12 @@ fn application_close_dialog_freezes_the_electron_copy_order_roles_and_busy_state
             ),
             (
                 ApplicationCloseAction::DiscardAll,
-                "Discard All",
+                "Discard all",
                 ApplicationCloseActionRole::Destructive,
             ),
             (
                 ApplicationCloseAction::SaveAll,
-                "Save All",
+                "Save all",
                 ApplicationCloseActionRole::Primary,
             ),
         ],

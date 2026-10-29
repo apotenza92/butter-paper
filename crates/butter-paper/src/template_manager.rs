@@ -11,6 +11,7 @@ use crate::generated_document::{
     GeneratedDocumentRequest, GeneratedDocumentStore, OwnedGeneratedDocument,
 };
 use crate::template_library::{TemplateLibrary, TemplateRecord, built_in_request};
+use crate::template_preview::{PaperOrientation, orientation_toggle, template_control_row};
 use gpui::{
     App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, PathPromptOptions, Render, ScrollHandle, StatefulInteractiveElement as _,
@@ -27,6 +28,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     list::{List, ListDelegate, ListItem, ListState},
     scroll::ScrollableElement as _,
+    select::{Select, SelectEvent, SelectState},
     v_flex,
 };
 use std::{
@@ -105,15 +107,16 @@ pub fn template_manager_uses_stacked_layout(viewport_width: f32) -> bool {
     viewport_width < 720.
 }
 
-/// Stable debug selector of the Template Library's heading for paper-size
-/// section `section`.
-pub fn template_manager_section_id(section: usize) -> String {
-    format!("template-manager-section-{section}")
-}
+pub const TEMPLATE_MANAGER_PAPER_SIZE_ID: &str = "template-manager-paper-size";
+pub const TEMPLATE_MANAGER_ORIENTATION_ID: &str = "template-manager-orientation";
 
 struct TemplateListDelegate {
     owner: WeakEntity<TemplateManagerView>,
     records: Vec<TemplateManagerRecord>,
+    /// The paper size listed, as in New from template.
+    paper_size: String,
+    /// Which way the listed paper is turned, which the rows describe.
+    orientation: PaperOrientation,
     /// Paper-size headings with the positions in `records` listed under each.
     sections: Vec<(String, Vec<usize>)>,
     selected_index: Option<IndexPath>,
@@ -123,8 +126,11 @@ struct TemplateListDelegate {
 
 impl TemplateListDelegate {
     fn set_records(&mut self, records: Vec<TemplateManagerRecord>) {
-        self.sections = paper_size_sections(&records);
         self.records = records;
+        self.sections = paper_size_sections(&self.records)
+            .into_iter()
+            .filter(|(size, _)| *size == self.paper_size)
+            .collect();
     }
 
     fn record_at(&self, index: IndexPath) -> Option<&TemplateManagerRecord> {
@@ -153,8 +159,34 @@ fn paper_size_sections(records: &[TemplateManagerRecord]) -> Vec<(String, Vec<us
     crate::template_preview::group_by_paper_size(&previews)
 }
 
+/// A Template Library row. The stock list marks its selected row with an
+/// outlined highlight; the row draws New from template's selection instead,
+/// so it takes the flag without the stock style.
+#[derive(gpui::IntoElement)]
+struct TemplateRow {
+    item: ListItem,
+    selected: bool,
+}
+
+impl gpui_component::Selectable for TemplateRow {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl gpui::RenderOnce for TemplateRow {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        self.item
+    }
+}
+
 impl ListDelegate for TemplateListDelegate {
-    type Item = ListItem;
+    type Item = TemplateRow;
 
     fn sections_count(&self, _: &App) -> usize {
         self.sections.len().max(1)
@@ -164,28 +196,6 @@ impl ListDelegate for TemplateListDelegate {
         self.sections
             .get(section)
             .map_or(0, |(_, members)| members.len())
-    }
-
-    fn render_section_header(
-        &mut self,
-        section: usize,
-        _: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> Option<impl IntoElement> {
-        let (label, _) = self.sections.get(section)?;
-        let stable_id = template_manager_section_id(section);
-        Some(
-            div()
-                .id(stable_id.clone())
-                .debug_selector(move || stable_id.clone())
-                .px_2()
-                .pt_2()
-                .pb_1()
-                .text_xs()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(cx.theme().muted_foreground)
-                .child(label.clone()),
-        )
     }
 
     fn set_selected_index(
@@ -221,6 +231,7 @@ impl ListDelegate for TemplateListDelegate {
     ) -> Option<Self::Item> {
         let record = self.record_at(index)?.clone();
         let selected = self.selected_index == Some(index);
+        let preview = record.preview().oriented(self.orientation);
         let stable_id = format!("template-manager-item-{}", record.id());
         let removable = record.removable();
         let remove_id = record.id().to_owned();
@@ -228,77 +239,96 @@ impl ListDelegate for TemplateListDelegate {
         let remove_owner = self.owner.clone();
         let storage_busy = self.storage_busy;
         let group_id = format!("template-manager-row-{}", record.id());
-        Some(
-            ListItem::new(stable_id.clone())
-                .debug_selector(move || stable_id.clone())
-                .selected(selected)
-                .group(group_id.clone())
-                .child(
-                    // Zero intrinsic width, filling the row: a long name
-                    // truncates beside the Remove control instead of pushing
-                    // it out of the row.
-                    v_flex()
-                        .w_0()
-                        .min_w_full()
-                        .overflow_hidden()
-                        .gap_0p5()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(record.name().to_owned()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child({
-                                    let preview = record.preview();
-                                    format!("{} · {}", preview.summary(), preview.grid_summary())
-                                }),
-                        ),
-                )
-                .when(removable, |row| {
-                    let button_id = format!("template-manager-remove-{remove_id}");
-                    let label = format!("Remove {}", record.name());
-                    row.suffix(move |_, _| {
-                        let remove_id = remove_id.clone();
-                        let remove_name = remove_name.clone();
-                        let remove_owner = remove_owner.clone();
-                        // Shown on hover or focus, as other remove controls are.
-                        accessible_icon_button(
-                            Button::new(button_id.clone())
-                                .debug_selector({
-                                    let button_id = button_id.clone();
-                                    move || button_id.clone()
-                                })
-                                .icon(IconName::Delete)
-                                .ghost()
-                                .danger()
+        // Rows look as New from template's do: the selected one filled and
+        // ticked, with no outline.
+        let item = ListItem::new(stable_id.clone())
+            .debug_selector(move || stable_id.clone())
+            .rounded(cx.theme().radius)
+            .mb_1()
+            .py_1p5()
+            .when(selected, |row| row.bg(cx.theme().tokens.secondary_active))
+            .group(group_id.clone())
+            .child(
+                gpui_component::h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .child(
+                        // Zero intrinsic width, filling the row: a long name
+                        // truncates beside the Remove control instead of pushing
+                        // it out of the row.
+                        v_flex()
+                            .w_0()
+                            .flex_1()
+                            .overflow_hidden()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(record.name().to_owned()),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .text_xs()
+                                    .child(format!(
+                                        "{} · {}",
+                                        preview.summary(),
+                                        preview.grid_summary()
+                                    )),
+                            ),
+                    )
+                    .when(selected, |row| {
+                        row.child(
+                            gpui_component::Icon::new(IconName::Check)
                                 .small()
-                                .flex_none()
-                                .tooltip(label.clone())
-                                .disabled(storage_busy)
-                                .opacity(0.)
-                                .group_hover(group_id.clone(), |style| style.opacity(1.))
-                                .focus(|style| style.opacity(1.))
-                                .on_click(move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    TemplateManagerView::confirm_remove_template(
-                                        remove_owner.clone(),
-                                        remove_id.clone(),
-                                        remove_name.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                }),
-                            label.clone(),
+                                .flex_none(),
                         )
-                    })
-                }),
-        )
+                    }),
+            )
+            .when(removable, |row| {
+                let button_id = format!("template-manager-remove-{remove_id}");
+                let label = format!("Remove {}", record.name());
+                row.suffix(move |_, _| {
+                    let remove_id = remove_id.clone();
+                    let remove_name = remove_name.clone();
+                    let remove_owner = remove_owner.clone();
+                    // Shown on hover or focus, as other remove controls are.
+                    accessible_icon_button(
+                        Button::new(button_id.clone())
+                            .debug_selector({
+                                let button_id = button_id.clone();
+                                move || button_id.clone()
+                            })
+                            .icon(IconName::Delete)
+                            .ghost()
+                            .danger()
+                            .small()
+                            .flex_none()
+                            .tooltip(label.clone())
+                            .disabled(storage_busy)
+                            .opacity(0.)
+                            .group_hover(group_id.clone(), |style| style.opacity(1.))
+                            .focus(|style| style.opacity(1.))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                TemplateManagerView::confirm_remove_template(
+                                    remove_owner.clone(),
+                                    remove_id.clone(),
+                                    remove_name.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        label.clone(),
+                    )
+                })
+            });
+        Some(TemplateRow { item, selected })
     }
 
     fn perform_search(
@@ -1117,13 +1147,31 @@ impl PersistentTemplateManager {
         document_key: &str,
         store: &GeneratedDocumentStore,
     ) -> Result<OwnedGeneratedDocument, TemplateManagerError> {
+        self.materialize_oriented(template_id, document_key, store, None)
+    }
+
+    /// As [`Self::materialize`], with generated paper turned to
+    /// `orientation` when one is given.
+    pub fn materialize_oriented(
+        &self,
+        template_id: &str,
+        document_key: &str,
+        store: &GeneratedDocumentStore,
+        orientation: Option<PaperOrientation>,
+    ) -> Result<OwnedGeneratedDocument, TemplateManagerError> {
         if let Some(request) = built_in_request(template_id) {
+            let request = match orientation {
+                Some(orientation) => {
+                    crate::template_preview::oriented_request(request, orientation)
+                }
+                None => request,
+            };
             return store
                 .create(document_key, &request)
                 .map_err(|error| TemplateManagerError(error.to_string()));
         }
         self.library
-            .materialize(template_id, document_key, store)
+            .materialize_oriented(template_id, document_key, store, orientation)
             .map_err(|error| TemplateManagerError(error.to_string()))
     }
 
@@ -1220,6 +1268,13 @@ pub struct TemplateManagerView {
     /// The list shows records older than the model's (another window changed
     /// the library); it is rebuilt on the next draw, which has the window.
     template_list_stale: bool,
+    /// Created on first draw, which owns the window a Select needs.
+    paper_size_select: Option<Entity<SelectState<Vec<gpui::SharedString>>>>,
+    paper_size_select_synced: Option<(Vec<gpui::SharedString>, gpui::SharedString)>,
+    _paper_size_subscription: Option<Subscription>,
+    /// Which way the listed paper is turned; each paper size starts the way
+    /// its templates are.
+    orientation: PaperOrientation,
 }
 
 impl TemplateManagerView {
@@ -1237,9 +1292,22 @@ impl TemplateManagerView {
         let height_input = cx.new(|cx| InputState::new(window, cx));
         let spacing_input = cx.new(|cx| InputState::new(window, cx));
         let color_input = cx.new(|cx| InputState::new(window, cx));
+        let selected_preview = model
+            .record(model.selected_id())
+            .or_else(|| model.records().first())
+            .map(TemplateManagerRecord::preview);
+        let orientation = selected_preview
+            .as_ref()
+            .and_then(|preview| preview.orientation())
+            .unwrap_or(PaperOrientation::Landscape);
         let mut delegate = TemplateListDelegate {
             owner: cx.weak_entity(),
             records: Vec::new(),
+            paper_size: selected_preview
+                .as_ref()
+                .map(|preview| preview.paper_size())
+                .unwrap_or_default(),
+            orientation,
             sections: Vec::new(),
             selected_index: None,
             syncing_snapshot: false,
@@ -1299,6 +1367,10 @@ impl TemplateManagerView {
             scroll_handle: ScrollHandle::new(),
             preview_renderer: None,
             template_list_stale: false,
+            paper_size_select: None,
+            paper_size_select_synced: None,
+            _paper_size_subscription: None,
+            orientation,
         }
     }
 
@@ -1469,6 +1541,7 @@ impl TemplateManagerView {
     pub fn request_create_template(
         &mut self,
         template_id: &str,
+        orientation: Option<crate::template_preview::PaperOrientation>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1478,7 +1551,7 @@ impl TemplateManagerView {
             return;
         }
         self.sync_template_list(window, cx);
-        self.create_selected_document(window, cx);
+        self.create_selected_document_oriented(orientation, window, cx);
     }
 
     pub fn save_authorized_document_as_template(
@@ -1507,6 +1580,9 @@ impl TemplateManagerView {
         owner.update(cx, |manager, cx| {
             manager.reload_from_shared(cx);
             manager.model.reset_for_open();
+            if let Some(orientation) = manager.selected_record().preview().orientation() {
+                manager.orientation = orientation;
+            }
             manager.sync_template_list(window, cx);
         });
         let dialog_width = px(template_manager_dialog_width(f32::from(
@@ -1675,6 +1751,16 @@ impl TemplateManagerView {
     }
 
     fn create_selected_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let orientation = self.turned_orientation();
+        self.create_selected_document_oriented(orientation, window, cx);
+    }
+
+    fn create_selected_document_oriented(
+        &mut self,
+        orientation: Option<crate::template_preview::PaperOrientation>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.storage_busy() {
             return;
         }
@@ -1711,7 +1797,12 @@ impl TemplateManagerView {
                 .map_err(|_| "template storage lock was poisoned".to_owned())
                 .and_then(|persistent| {
                     persistent
-                        .materialize(&background_template_id, &document_key, &background_store)
+                        .materialize_oriented(
+                            &background_template_id,
+                            &document_key,
+                            &background_store,
+                            orientation,
+                        )
                         .map_err(|error| error.to_string())
                 })
         });
@@ -1945,12 +2036,138 @@ impl TemplateManagerView {
         true
     }
 
+    /// Which way the manager turns the listed paper.
+    pub fn orientation(&self) -> PaperOrientation {
+        self.orientation
+    }
+
+    pub fn set_orientation(
+        &mut self,
+        orientation: PaperOrientation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.orientation != orientation {
+            self.orientation = orientation;
+            self.sync_template_list(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The paper size the list shows: the selected template's.
+    pub fn listed_paper_size(&self) -> String {
+        self.selected_record().preview().paper_size()
+    }
+
+    /// The paper sizes among the templates, in New from template's order.
+    pub fn paper_sizes(&self) -> Vec<String> {
+        paper_size_sections(self.model.records())
+            .into_iter()
+            .map(|(size, _)| size)
+            .collect()
+    }
+
+    fn selected_record(&self) -> &TemplateManagerRecord {
+        self.model
+            .record(self.model.selected_id())
+            .unwrap_or(&self.model.records[0])
+    }
+
+    /// The orientation to create the selected template with, when the
+    /// manager turned its paper.
+    fn turned_orientation(&self) -> Option<PaperOrientation> {
+        let natural = self.selected_record().preview().orientation()?;
+        (natural != self.orientation).then_some(self.orientation)
+    }
+
+    /// Lists the templates of `paper_size`, selecting the one most like the
+    /// current selection (the same name, else the same pattern, else the
+    /// first), turned the way its paper is.
+    pub fn select_paper_size(
+        &mut self,
+        paper_size: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paper_size == self.listed_paper_size() || self.storage_busy() {
+            return;
+        }
+        let current = self.selected_record().clone();
+        let candidates = self
+            .model
+            .records()
+            .iter()
+            .filter(|record| record.preview().paper_size() == paper_size)
+            .collect::<Vec<_>>();
+        let Some(first) = candidates.first() else {
+            return;
+        };
+        let successor = candidates
+            .iter()
+            .find(|record| record.name() == current.name())
+            .or_else(|| {
+                candidates.iter().find(|record| {
+                    record.preview().pattern_kind() == current.preview().pattern_kind()
+                })
+            })
+            .unwrap_or(first);
+        let id = successor.id().to_owned();
+        if let Some(orientation) = successor.preview().orientation() {
+            self.orientation = orientation;
+        }
+        if let Err(error) = self.model.select(&id) {
+            self.model.record_failure(error.to_string());
+        }
+        self.sync_template_list(window, cx);
+        cx.notify();
+    }
+
+    fn sync_paper_size_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let select = match &self.paper_size_select {
+            Some(select) => select.clone(),
+            None => {
+                let select = cx
+                    .new(|cx| SelectState::new(Vec::<gpui::SharedString>::new(), None, window, cx));
+                self._paper_size_subscription = Some(cx.subscribe_in(
+                    &select,
+                    window,
+                    |manager, _, event: &SelectEvent<Vec<gpui::SharedString>>, window, cx| {
+                        if let SelectEvent::Confirm(Some(paper_size)) = event {
+                            manager.select_paper_size(paper_size, window, cx);
+                        }
+                    },
+                ));
+                self.paper_size_select = Some(select.clone());
+                select
+            }
+        };
+        let wanted = (
+            self.paper_sizes()
+                .into_iter()
+                .map(gpui::SharedString::from)
+                .collect::<Vec<_>>(),
+            gpui::SharedString::from(self.listed_paper_size()),
+        );
+        if self.paper_size_select_synced.as_ref() == Some(&wanted) {
+            return;
+        }
+        select.update(cx, |select, cx| {
+            select.set_items(wanted.0.clone(), window, cx);
+            select.set_selected_value(&wanted.1, window, cx);
+        });
+        self.paper_size_select_synced = Some(wanted);
+    }
+
     fn sync_template_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.request_imported_previews(cx);
         let records = self.model.records().to_vec();
         let storage_busy = self.storage_busy();
         let selected_id = self.model.selected_id().to_owned();
+        let paper_size = self.listed_paper_size();
+        let orientation = self.orientation;
         self.template_list.update(cx, |list, cx| {
+            list.delegate_mut().paper_size = paper_size;
+            list.delegate_mut().orientation = orientation;
             list.delegate_mut().set_records(records);
             let selected = list.delegate().index_of(&selected_id);
             list.delegate_mut().storage_busy = storage_busy;
@@ -2037,7 +2254,12 @@ pub fn route_workspace_template_command(
     match event {
         DocumentWorkspaceTemplateCommand::Create(request) => {
             manager.update(cx, |manager, cx| {
-                manager.request_create_template(&request.template_id, window, cx);
+                manager.request_create_template(
+                    &request.template_id,
+                    request.orientation,
+                    window,
+                    cx,
+                );
             });
         }
         DocumentWorkspaceTemplateCommand::Manage => {
@@ -2065,6 +2287,7 @@ impl Render for TemplateManagerView {
         if std::mem::take(&mut self.template_list_stale) {
             self.sync_template_list(window, cx);
         }
+        self.sync_paper_size_select(window, cx);
         self.request_imported_previews(cx);
         let viewport_width = f32::from(window.viewport_size().width);
         let constrained = template_manager_uses_stacked_layout(viewport_width);
@@ -2110,7 +2333,7 @@ impl Render for TemplateManagerView {
             (template_manager_dialog_width(viewport_width) - 32. - 16.) / 2.
         };
         let browse_preview = crate::template_preview::template_preview_card(
-            &selected.preview(),
+            &selected.preview().oriented(self.orientation),
             selected.name().to_owned(),
             browse_page_id,
             false,
@@ -2120,13 +2343,40 @@ impl Render for TemplateManagerView {
 
         let body = match self.model.mode {
             TemplateManagerMode::Browse => {
-                let list = div()
-                    .id(TEMPLATE_MANAGER_LIST_ID)
-                    .debug_selector(|| TEMPLATE_MANAGER_LIST_ID.into())
+                let orientation_owner = cx.entity().downgrade();
+                let list = v_flex()
                     .min_w_0()
-                    .h(if constrained { px(260.) } else { px(430.) })
                     .flex_1()
-                    .child(List::new(&self.template_list));
+                    .gap_2()
+                    .when_some(self.paper_size_select.clone(), |column, select| {
+                        column.child(template_control_row(
+                            TEMPLATE_MANAGER_PAPER_SIZE_ID,
+                            "Paper size",
+                            Select::new(&select).disabled(storage_busy),
+                        ))
+                    })
+                    .child(template_control_row(
+                        TEMPLATE_MANAGER_ORIENTATION_ID,
+                        "Orientation",
+                        orientation_toggle(
+                            TEMPLATE_MANAGER_ORIENTATION_ID,
+                            self.orientation,
+                            storage_busy || selected.preview().orientation().is_none(),
+                            move |orientation, window, cx| {
+                                let _ = orientation_owner.update(cx, |manager, cx| {
+                                    manager.set_orientation(orientation, window, cx)
+                                });
+                            },
+                        ),
+                    ))
+                    .child(
+                        div()
+                            .id(TEMPLATE_MANAGER_LIST_ID)
+                            .debug_selector(|| TEMPLATE_MANAGER_LIST_ID.into())
+                            .min_w_0()
+                            .h(if constrained { px(180.) } else { px(350.) })
+                            .child(List::new(&self.template_list)),
+                    );
                 let preview = v_flex()
                     .id(TEMPLATE_MANAGER_PREVIEW_ID)
                     .debug_selector(|| TEMPLATE_MANAGER_PREVIEW_ID.into())

@@ -7843,7 +7843,9 @@ fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(cx: &mut
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_keystrokes("down enter");
+    // The first Down lands on the (disabled) Cut; the next skips the other
+    // disabled clipboard items to Select tool.
+    cx.simulate_keystrokes("down down enter");
     cx.run_until_parked();
 
     assert_eq!(
@@ -13703,6 +13705,16 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
             workspace.select_annotation(request.document_id, &selected.id, cx)
         }));
         cx.update(|window, cx| window.draw(cx).clear(cx));
+        // The path's own panel shows its lock and line once; the label adds
+        // only its text colour and size.
+        assert!(
+            cx.debug_bounds(DIMENSION_INSPECTOR_LOCKED_ID).is_none(),
+            "a measured path must not show a second Locked switch"
+        );
+        assert!(
+            cx.debug_bounds(DIMENSION_INSPECTOR_TEXT_COLOR_ID).is_some(),
+            "a measured path keeps its label's text colour"
+        );
         let combined_scroll = cx
             .debug_bounds("measurement-combined-properties-scroll")
             .expect("measurement appearance and caption controls must share one scroll region");
@@ -20249,7 +20261,15 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
         origin.x + px(72. * scale),
         origin.y + px((792. - 96.) * scale),
     );
-    cx.simulate_mouse_down(placement, MouseButton::Left, Modifiers::default());
+    // Draw an 8 x 16 pt box, narrower and shorter than a line of text.
+    draw_text_box(
+        cx,
+        placement,
+        point(
+            origin.x + px(80. * scale),
+            origin.y + px((792. - 80.) * scale),
+        ),
+    );
     let editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
         .expect("primary page click must retain a pending Text Box editor");
@@ -20258,12 +20278,12 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
     let initial_rect = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_rect())
         .expect("fresh Text Box creation must expose one live PDF-space rectangle");
-    // Revu's 3 pt text margin pads the caret and the 13.8 pt line on all four
-    // sides, so a click-placed box's text is vertically centred.
-    assert_eq!(initial_rect.width, 7.);
-    assert!((initial_rect.height - 19.8).abs() <= 0.000_1);
-    assert!((initial_rect.x + initial_rect.width / 2. - 72.).abs() <= 0.000_1);
-    assert!((initial_rect.y + initial_rect.height / 2. - 96.).abs() <= 0.000_1);
+    // The box hangs from the drawn box's top-left corner, at least as large
+    // as it was drawn and as tall as Revu's 3 pt margin round a 13.8 pt line.
+    assert!((initial_rect.width - 8.).abs() <= 0.001);
+    assert!((initial_rect.height - 19.8).abs() <= 0.001);
+    assert!((initial_rect.x - 72.).abs() <= 0.001);
+    assert!((initial_rect.y + initial_rect.height - 96.).abs() <= 0.001);
     assert!(
         cx.debug_bounds("document-workspace-properties-sidebar")
             .is_none(),
@@ -20272,13 +20292,10 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
     let editor_bounds = cx
         .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
         .expect("the pending Text Box editor must render over the page");
-    let initial_editor_origin = point(
-        placement.x - px(7. * scale / 2.),
-        placement.y - px(19.8 * scale / 2.),
-    );
+    let initial_editor_origin = placement;
     assert!((f32::from(editor_bounds.origin.x - initial_editor_origin.x)).abs() < 1.);
     assert!((f32::from(editor_bounds.origin.y - initial_editor_origin.y)).abs() < 1.);
-    assert!((f32::from(editor_bounds.size.width) - (7. * scale).max(24.)).abs() < 1.);
+    assert!((f32::from(editor_bounds.size.width) - (8. * scale).max(24.)).abs() < 1.);
     assert!((f32::from(editor_bounds.size.height) - (19.8 * scale).max(18.)).abs() < 1.);
     assert!(cx.update(|window, _| editor_focus.is_focused(window)));
     let pending = workspace
@@ -20442,7 +20459,11 @@ fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
     let tool = cx.debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_mouse_down(placement, MouseButton::Left, Modifiers::default());
+    draw_text_box(
+        cx,
+        placement,
+        point(placement.x + px(60.), placement.y + px(30.)),
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let escape_editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
@@ -20472,10 +20493,10 @@ fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
     let tool = cx.debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_mouse_down(
+    draw_text_box(
+        cx,
         point(placement.x + px(24.), placement.y + px(24.)),
-        MouseButton::Left,
-        Modifiers::default(),
+        point(placement.x + px(84.), placement.y + px(54.)),
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_mouse_down(
@@ -20543,7 +20564,11 @@ fn text_box_input_handler_composition_save_and_reopen_is_coherent(cx: &mut TestA
     let tool = cx.debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.simulate_mouse_down(placement, MouseButton::Left, Modifiers::default());
+    draw_text_box(
+        cx,
+        placement,
+        point(placement.x + px(60.), placement.y + px(30.)),
+    );
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
@@ -23157,13 +23182,6 @@ fn canvas_escape_discards_invalid_clouds_and_resets_tool(cx: &mut TestAppContext
     }
 }
 
-#[gpui::test]
-fn canvas_escape_finishes_valid_clouds_and_clears_selection(cx: &mut TestAppContext) {
-    for tool in [AnnotationTool::Cloud, AnnotationTool::CloudPlus] {
-        canvas_escape_draft_case(cx, tool, 3, true);
-    }
-}
-
 fn canvas_escape_draft_case(
     cx: &mut TestAppContext,
     tool: AnnotationTool,
@@ -24928,10 +24946,10 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     );
     let project =
         |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
-    for (x, y) in [(120., 420.), (300., 420.), (300., 600.)] {
-        cx.simulate_click(project(x, y), Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-    }
+    // Click one corner, then preview the rectangle up to the pointer.
+    cx.simulate_click(project(120., 420.), Modifiers::default());
+    cx.simulate_mouse_move(project(300., 600.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let draft = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
@@ -24939,9 +24957,7 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
     assert!(draft.cloud_pluses[0].draft);
     assert!(draft.cloud_pluses[0].scallop_path.len() > draft.cloud_pluses[0].cloud_points.len());
 
-    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
-    cx.update(|window, cx| workspace_focus.focus(window, cx));
-    cx.simulate_keystrokes("enter");
+    cx.simulate_click(project(300., 600.), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let created = workspace
         .read_with(cx, |workspace, cx| {
@@ -28455,10 +28471,10 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
     );
     let project =
         |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
-    for (x, y) in [(120., 420.), (300., 420.), (300., 600.)] {
-        cx.simulate_click(project(x, y), Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-    }
+    // Click one corner, then preview the rectangle up to the pointer.
+    cx.simulate_click(project(120., 420.), Modifiers::default());
+    cx.simulate_mouse_move(project(300., 600.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let draft = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
@@ -28467,8 +28483,7 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
     assert!(draft.clouds[0].scallop_path.len() > draft.clouds[0].points.len());
 
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
-    cx.update(|window, cx| workspace_focus.focus(window, cx));
-    cx.simulate_keystrokes("enter");
+    cx.simulate_click(project(300., 600.), Modifiers::default());
     let created = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -28476,7 +28491,7 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
         .unwrap();
     assert_eq!(created.clouds.len(), 1);
     assert_eq!(created.clouds[0].border_effect_intensity(), 2.);
-    assert_eq!(created.clouds[0].points().len(), 3);
+    assert_eq!(created.clouds[0].points().len(), 4);
     assert!(created.vertex_paths.is_empty());
     assert!(created.measurement_paths.is_empty());
     assert_eq!(
@@ -30726,14 +30741,11 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
             origin.y + px((792. - pdf_y as f32) * render_scale),
         )
     };
-    for vertex in [(108., 312.), (252., 312.), (252., 456.), (108., 456.)] {
-        cx.simulate_click(to_view(vertex.0, vertex.1), Modifiers::default());
+    // Click one corner of the cloud, then the opposite one.
+    for corner in [(108., 312.), (252., 456.)] {
+        cx.simulate_click(to_view(corner.0, corner.1), Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
-    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
-    cx.update(|window, cx| workspace_focus.focus(window, cx));
-    cx.simulate_keystrokes("enter");
-    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
     cx.simulate_keystrokes(
         "f i e l d shift-enter n o t e shift-enter l e v e l shift-enter f o u r enter",
@@ -35356,7 +35368,17 @@ fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editi
             .is_none()
     );
     cx.simulate_mouse_move(project(300., 400.), None, Modifiers::default());
+    // Click one corner of the image's box, then the other: between the
+    // clicks the image previews filling the box.
     cx.simulate_click(project(300., 400.), Modifiers::default());
+    cx.simulate_mouse_move(project(400., 300.), None, Modifiers::default());
+    let drawn_preview = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.pending_image_preview(request.document_id, cx)
+        })
+        .expect("an image being drawn previews in its box");
+    assert_ne!(drawn_preview.rect, preview.rect);
+    cx.simulate_click(project(400., 300.), Modifiers::default());
     let placed = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -35364,7 +35386,7 @@ fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editi
         .unwrap();
     assert_eq!((placed.images.len(), placed.undo_depth), (1, 1));
     assert_eq!(placed.selected_id.as_ref(), Some(&placed.images[0].id));
-    assert_eq!(placed.images[0].rect, preview.rect);
+    assert_eq!(placed.images[0].rect, drawn_preview.rect);
     assert!(
         workspace
             .read_with(cx, |workspace, cx| {
@@ -35502,7 +35524,7 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
     cx.simulate_click(add.center(), Modifiers::default());
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
-        Some("Click the page to place the signature".into())
+        Some("Click or drag on the page to place the signature".into())
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
@@ -35526,9 +35548,10 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
         page_origin.x + px(306. * render_scale),
         page_origin.y + px((792. - 396.) * render_scale),
     );
+    cx.simulate_click(placement, Modifiers::default());
     cx.simulate_event(MouseDownEvent {
         button: MouseButton::Left,
-        position: placement,
+        position: point(placement.x + px(120.), placement.y + px(40.)),
         modifiers: Modifiers::default(),
         click_count: 1,
         first_mouse: false,
@@ -35717,7 +35740,7 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
-        Some("Click the page to place the signature".into())
+        Some("Click or drag on the page to place the signature".into())
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.drawn_signature_point_count()),
@@ -35729,7 +35752,13 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
     let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
     let layer = cx.debug_bounds(layer_id).unwrap();
     let placement = layer.center();
-    cx.simulate_mouse_down(placement, MouseButton::Left, Modifiers::default());
+    // A signature is placed in the box drawn for it, one corner then the other.
+    cx.simulate_click(placement, Modifiers::default());
+    cx.simulate_mouse_down(
+        point(placement.x + px(120.), placement.y + px(40.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     let placed = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -35960,7 +35989,7 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
         Some(
-            "Click the page to place the signature. This signature could not be saved to Recent."
+            "Click or drag on the page to place the signature. This signature could not be saved to Recent."
                 .into()
         )
     );
@@ -35969,7 +35998,13 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
     let placement = cx.debug_bounds(layer_id).unwrap().center();
-    cx.simulate_mouse_down(placement, MouseButton::Left, Modifiers::default());
+    // A signature is placed in the box drawn for it, one corner then the other.
+    cx.simulate_click(placement, Modifiers::default());
+    cx.simulate_mouse_down(
+        point(placement.x + px(120.), placement.y + px(40.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     let placed = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -36045,6 +36080,72 @@ fn local_signature_drawn_raster_is_exact_bounded_and_deterministic() {
     );
 }
 
+/// Draws the pending image's box by clicking `from` and then `to`.
+fn draw_image(
+    adapter: &mut AnnotationAdapter,
+    document_id: u64,
+    from: PdfPoint,
+    to: PdfPoint,
+) -> PointerPhaseOutcome {
+    adapter.pointer_down(document_id, 0, 1, from, 0.).unwrap();
+    adapter.pointer_up(1, from).unwrap();
+    adapter.pointer_down(document_id, 0, 1, to, 0.).unwrap()
+}
+
+#[test]
+fn an_image_is_dragged_out_like_a_rectangle() {
+    let mut adapter = AnnotationAdapter::default();
+    adapter.set_image_asset(DecodedRgbaAsset::new(40, 20, vec![0x80; 40 * 20 * 4]).unwrap());
+    adapter.set_tool(AnnotationTool::Image).unwrap();
+    let start = PdfPoint::new(100., 100.).unwrap();
+    let end = PdfPoint::new(300., 300.).unwrap();
+    adapter.pointer_down(91, 0, 1, start, 0.).unwrap();
+    adapter.pointer_move(1, end).unwrap();
+    let preview = adapter
+        .pending_image_preview_at(91, 0, end)
+        .unwrap()
+        .expect("a dragged image previews in its box");
+    assert_eq!(adapter.history_depths(91), (0, 0));
+    assert!(matches!(
+        adapter.pointer_up(1, end).unwrap(),
+        PointerPhaseOutcome::AnnotationCreated(_)
+    ));
+    // The 2:1 image fills the box's width, from the corner the drag began.
+    let placed = adapter.snapshot(91).unwrap().images[0].rect;
+    assert_eq!(placed, PdfRect::new(100., 100., 200., 100.).unwrap());
+    assert_eq!(placed, preview.rect);
+}
+
+#[test]
+fn a_polygon_with_a_cloud_outline_is_drawn_as_a_cloud() {
+    let mut adapter = AnnotationAdapter::default();
+    let mut properties =
+        butter_paper::tool_properties::ToolProperties::for_tool(AnnotationTool::Polygon);
+    properties.cloud_style = true;
+    properties.cloud_intensity = 3.;
+    adapter
+        .set_tool_properties(AnnotationTool::Polygon, properties)
+        .unwrap();
+    adapter.set_tool(AnnotationTool::Polygon).unwrap();
+    for (pointer_id, (x, y)) in [(1, (100., 100.)), (2, (300., 100.)), (3, (200., 260.))] {
+        let corner = PdfPoint::new(x, y).unwrap();
+        adapter.pointer_down(91, 0, pointer_id, corner, 0.).unwrap();
+        adapter.pointer_up(pointer_id, corner).unwrap();
+    }
+    let preview = adapter.document_scene(91, 0);
+    assert!(preview.vertex_paths.is_empty());
+    assert!(preview.clouds[0].draft, "the polygon previews as a cloud");
+    assert!(matches!(
+        adapter.finish_vertex_path(91).unwrap(),
+        PointerPhaseOutcome::AnnotationCreated(_)
+    ));
+    let snapshot = adapter.snapshot(91).unwrap();
+    assert!(snapshot.vertex_paths.is_empty());
+    assert_eq!(snapshot.clouds.len(), 1);
+    assert_eq!(snapshot.clouds[0].points().len(), 3);
+    assert_eq!(snapshot.clouds[0].border_effect_intensity(), 3.);
+}
+
 #[test]
 fn regular_image_pending_asset_is_consumed_only_on_success() {
     let mut adapter = AnnotationAdapter::default();
@@ -36053,7 +36154,7 @@ fn regular_image_pending_asset_is_consumed_only_on_success() {
     adapter.set_tool(AnnotationTool::Image).unwrap();
     assert!(
         adapter
-            .pointer_down(91, 0, 1, PdfPoint::new(200., 300.).unwrap(), 0.)
+            .place_image_at(91, 0, PdfPoint::new(200., 300.).unwrap())
             .is_err()
     );
     assert_eq!(
@@ -36061,11 +36162,18 @@ fn regular_image_pending_asset_is_consumed_only_on_success() {
         Some(&asset),
         "missing page geometry must preserve the pending asset"
     );
-    adapter.set_image_placement_page(612., 792., 0.45).unwrap();
+    // A box drawn too small to place leaves the asset pending.
+    let corner = PdfPoint::new(200., 300.).unwrap();
+    assert_eq!(
+        draw_image(&mut adapter, 91, corner, corner),
+        PointerPhaseOutcome::PlacementPending
+    );
+    assert_eq!(adapter.image_asset(), Some(&asset));
+    adapter
+        .cancel(butter_paper::annotation_model::PointerCancelReason::ToolChanged)
+        .unwrap();
     assert!(matches!(
-        adapter
-            .pointer_down(91, 0, 2, PdfPoint::new(200., 300.).unwrap(), 0.)
-            .unwrap(),
+        draw_image(&mut adapter, 91, corner, PdfPoint::new(280., 340.).unwrap()),
         PointerPhaseOutcome::AnnotationCreated(_)
     ));
     assert!(adapter.image_asset().is_none());
@@ -36091,19 +36199,23 @@ fn local_signature_adapter_places_once_selected_and_aspect_locked_with_one_histo
     let id = MarkupId::new("signature:local-file-1").unwrap();
     adapter.queue_next_annotation_id(id.clone());
 
+    // A 4:1 signature drawn into a 280 x 80 box fills its width.
     assert_eq!(
-        adapter
-            .pointer_down(91, 0, 1, PdfPoint::new(590., 780.).unwrap(), 0.)
-            .unwrap(),
+        draw_image(
+            &mut adapter,
+            91,
+            PdfPoint::new(300., 700.).unwrap(),
+            PdfPoint::new(580., 780.).unwrap()
+        ),
         PointerPhaseOutcome::AnnotationCreated(id.clone())
     );
     let snapshot = adapter.snapshot(91).unwrap();
     assert_eq!(snapshot.selected_id.as_ref(), Some(&id));
     assert!(snapshot.images[0].aspect_locked);
-    assert_eq!(snapshot.images[0].rect.width, 275.4);
-    assert_eq!(snapshot.images[0].rect.height, 68.85);
-    assert_eq!(snapshot.images[0].rect.x, 336.6);
-    assert_eq!(snapshot.images[0].rect.y, 723.15);
+    assert_eq!(
+        snapshot.images[0].rect,
+        PdfRect::new(300., 700., 280., 70.).unwrap()
+    );
     assert_eq!(adapter.history_depths(91), (1, 0));
     assert!(adapter.is_dirty(91));
 
@@ -36135,7 +36247,7 @@ fn local_signature_locked_extreme_aspect_uses_one_scale_while_regular_keeps_lega
     signature.queue_next_annotation_id(id.clone());
     assert_eq!(
         signature
-            .pointer_down(92, 0, 1, PdfPoint::new(306., 396.).unwrap(), 0.)
+            .place_image_at(92, 0, PdfPoint::new(306., 396.).unwrap())
             .unwrap(),
         PointerPhaseOutcome::AnnotationCreated(id.clone())
     );
@@ -36157,7 +36269,7 @@ fn local_signature_locked_extreme_aspect_uses_one_scale_while_regular_keeps_lega
         .unwrap();
     regular.set_tool(AnnotationTool::Image).unwrap();
     regular
-        .pointer_down(93, 0, 1, PdfPoint::new(306., 396.).unwrap(), 0.)
+        .place_image_at(93, 0, PdfPoint::new(306., 396.).unwrap())
         .unwrap();
     let placed = &regular.snapshot(93).unwrap().images[0];
     assert!(!placed.aspect_locked);
@@ -36340,9 +36452,10 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         page_origin.x + px(306. * render_scale),
         page_origin.y + px((792. - 396.) * render_scale),
     );
+    cx.simulate_click(placement, Modifiers::default());
     cx.simulate_event(MouseDownEvent {
         button: MouseButton::Left,
-        position: placement,
+        position: point(placement.x + px(120.), placement.y + px(40.)),
         modifiers: Modifiers::default(),
         click_count: 1,
         first_mouse: false,
@@ -36365,9 +36478,14 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     let expected_image = placed.images[0].clone();
     assert_eq!(expected_image.id, expected_id);
     assert_eq!(expected_image.page_index, 0);
-    assert!((expected_image.rect.x + expected_image.rect.width / 2. - 306.).abs() <= 0.000_1);
-    assert!((expected_image.rect.y + expected_image.rect.height / 2. - 396.).abs() <= 0.000_1);
-    assert!((expected_image.rect.width - 275.4).abs() <= 0.000_1);
+    // The signature hangs from the first corner clicked, filling the drawn
+    // box's width or height.
+    assert!((expected_image.rect.x - 306.).abs() <= 0.01);
+    assert!((expected_image.rect.y + expected_image.rect.height - 396.).abs() <= 0.01);
+    assert!(
+        (expected_image.rect.width - 120. / f64::from(render_scale)).abs() <= 0.01
+            || (expected_image.rect.height - 40. / f64::from(render_scale)).abs() <= 0.01
+    );
     assert!(expected_image.aspect_locked && !expected_image.locked);
     assert_eq!(expected_image.asset().id(), expected_asset.id());
     assert_eq!(expected_image.asset().width_px(), expected_asset.width_px());
@@ -36779,8 +36897,13 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
             origin.y + px((792. - pdf.y as f32) * scale),
         )
     };
+    // Draw the image's 4:3 box from its top-left corner to its bottom-right.
+    cx.simulate_click(
+        to_view(PdfPoint::new(294.3, 547.275).unwrap()),
+        Modifiers::default(),
+    );
     cx.simulate_mouse_down(
-        to_view(PdfPoint::new(432., 444.).unwrap()),
+        to_view(PdfPoint::new(569.7, 340.725).unwrap()),
         MouseButton::Left,
         Modifiers::default(),
     );
@@ -44022,7 +44145,13 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
     let layer_id: &'static str =
         Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
     let centre = cx.debug_bounds(layer_id).unwrap().center();
-    cx.simulate_mouse_down(centre, MouseButton::Left, Modifiers::default());
+    // A signature is placed in the box drawn for it, one corner then the other.
+    cx.simulate_click(centre, Modifiers::default());
+    cx.simulate_mouse_down(
+        point(centre.x + px(120.), centre.y + px(40.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     let snapshot = workspace.read_with(cx, |workspace, cx| {
         workspace
             .annotation_snapshot(request.document_id, cx)
@@ -45547,6 +45676,17 @@ enum Gesture {
     ClickTypeThenClickAway,
 }
 
+/// Draws a Text Box by clicking one corner, then pressing the other: the
+/// second press opens its editor.
+fn draw_text_box(
+    cx: &mut gpui::VisualTestContext,
+    from: gpui::Point<Pixels>,
+    to: gpui::Point<Pixels>,
+) {
+    cx.simulate_click(from, Modifiers::default());
+    cx.simulate_mouse_down(to, MouseButton::Left, Modifiers::default());
+}
+
 fn tool_creates_with(
     cx: &mut TestAppContext,
     tool: AnnotationTool,
@@ -45607,6 +45747,13 @@ fn tool_creates_with(
                 previous_scene = scene;
             }
             cx.simulate_mouse_up(at(200., 140.), MouseButton::Left, Modifiers::default());
+            if tool == AnnotationTool::TextBox {
+                // The drawn box opens the editor; typing makes the markup.
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.simulate_input("Hello");
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                cx.simulate_click(at(400., 400.), Modifiers::default());
+            }
             if tool == AnnotationTool::Cloud {
                 let committed = workspace.read_with(cx, |workspace, cx| {
                     workspace.annotation_scene(document_id, 0, cx)
@@ -45620,6 +45767,7 @@ fn tool_creates_with(
         }
         Gesture::ClickTypeThenClickAway => {
             cx.simulate_click(at(120., 120.), Modifiers::default());
+            cx.simulate_click(at(200., 160.), Modifiers::default());
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.simulate_input("Hello");
             cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -45735,9 +45883,9 @@ fn every_tool_creates_a_markup_with_its_real_gesture(cx: &mut TestAppContext) {
         (AnnotationTool::Pen, Drag),
         (AnnotationTool::Highlight, Drag),
         (AnnotationTool::Cloud, Drag),
-        (AnnotationTool::Cloud, Clicks),
+        (AnnotationTool::Cloud, ClickTwice),
         (AnnotationTool::CloudPlus, Drag),
-        (AnnotationTool::CloudPlus, Clicks),
+        (AnnotationTool::CloudPlus, ClickTwice),
         (AnnotationTool::Callout, Drag),
         (AnnotationTool::Callout, ClickTwice),
         (AnnotationTool::Snapshot, Drag),
@@ -45747,8 +45895,11 @@ fn every_tool_creates_a_markup_with_its_real_gesture(cx: &mut TestAppContext) {
         (AnnotationTool::Polygon, Clicks),
         (AnnotationTool::Polylength, Clicks),
         (AnnotationTool::Area, Clicks),
+        (AnnotationTool::Dimension, Drag),
         (AnnotationTool::Dimension, ClickTwice),
+        (AnnotationTool::Length, Drag),
         (AnnotationTool::Length, ClickTwice),
+        (AnnotationTool::TextBox, Drag),
         (AnnotationTool::TextBox, Type),
     ];
     let failures: Vec<String> = cases
@@ -46640,8 +46791,9 @@ fn the_canvas_context_menu_switches_edit_pdf(cx: &mut TestAppContext) {
         cx.simulate_mouse_down(menu_at, MouseButton::Right, Modifiers::default());
         cx.simulate_mouse_up(menu_at, MouseButton::Right, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        // Select tool, Hand tool, then Edit PDF.
-        cx.simulate_keystrokes("down down down enter");
+        // The disabled Cut, then Select tool, Hand tool and Edit PDF: the
+        // other clipboard items are disabled with nothing selected.
+        cx.simulate_keystrokes("down down down down enter");
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
         assert_eq!(editing(cx), expected);
@@ -46852,5 +47004,183 @@ fn closing_a_dirty_tab_from_its_prompt_leaves_no_overlay_open(cx: &mut TestAppCo
     assert!(
         !cx.update(|_, cx| butter_paper::overlay_state::any_overlay_open(cx)),
         "a closed tab's prompt must not stay recorded as open, or every canvas press is ignored"
+    );
+}
+
+#[gpui::test]
+fn markups_copied_in_one_window_paste_into_another_document(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (first, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
+    // A second workspace, as another window has: the clipboard is shared.
+    let second = cx.update(|_, cx| cx.new(DocumentWorkspace::new));
+    let open = |workspace: &gpui::Entity<DocumentWorkspace>,
+                name: &str,
+                cx: &mut gpui::VisualTestContext| {
+        let request = workspace.update(cx, |workspace, cx| {
+            workspace.begin_open(PathBuf::from(name), cx)
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(
+                &request,
+                Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+                cx,
+            )
+        });
+        request.document_id
+    };
+    let source_document = open(&first, "source.pdf", cx);
+    let target_document = open(&second, "target.pdf", cx);
+    let id = MarkupId::new("source:text:1").unwrap();
+    let rect = PdfRect::new(72., 180., 240., 72.).unwrap();
+    first
+        .update(cx, |workspace, cx| {
+            workspace.create_text_box(
+                source_document,
+                TextBoxAnnotation::new(
+                    id.clone(),
+                    0,
+                    rect,
+                    "Shared note",
+                    TextBoxStyle::new("Helvetica", 12., "#111827", 1.).unwrap(),
+                )
+                .unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    assert!(
+        first.update(cx, |workspace, cx| workspace.select_annotation(
+            source_document,
+            &id,
+            cx
+        ))
+    );
+    assert_eq!(
+        first.update(cx, |workspace, cx| workspace
+            .copy_selected_annotations(source_document, cx)),
+        1
+    );
+    let text_boxes = |workspace: &gpui::Entity<DocumentWorkspace>,
+                      document: DocumentId,
+                      cx: &mut gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document, cx)
+            })
+            .unwrap()
+            .text_boxes
+    };
+    assert!(second.read_with(cx, |workspace, cx| {
+        workspace.document_edit_capabilities(cx).can_paste
+    }));
+
+    // In another document the copy lands where the original is.
+    second
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(target_document, 0, cx)
+        })
+        .unwrap();
+    let pasted = text_boxes(&second, target_document, cx);
+    assert_eq!(pasted.len(), 1);
+    assert_eq!(pasted[0].content(), "Shared note");
+    assert_eq!(pasted[0].layout_rect, rect);
+    // Pasting again there steps away from the first copy.
+    second
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(target_document, 0, cx)
+        })
+        .unwrap();
+    let pasted = text_boxes(&second, target_document, cx);
+    assert_eq!(pasted.len(), 2);
+    assert_ne!(pasted[1].layout_rect, rect);
+
+    // A cut pastes back where it was.
+    assert!(
+        first.update(cx, |workspace, cx| workspace.select_annotation(
+            source_document,
+            &id,
+            cx
+        ))
+    );
+    first
+        .update(cx, |workspace, cx| {
+            workspace.cut_selected_annotations(source_document, cx)
+        })
+        .unwrap();
+    assert!(text_boxes(&first, source_document, cx).is_empty());
+    first
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(source_document, 0, cx)
+        })
+        .unwrap();
+    assert_eq!(text_boxes(&first, source_document, cx)[0].layout_rect, rect);
+}
+
+#[gpui::test]
+fn selection_handles_paint_above_markups_drawn_after_the_selection(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (workspace, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("handles.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let document = request.document_id;
+    let below = MarkupId::new("rect:below").unwrap();
+    let above = MarkupId::new("rect:above").unwrap();
+    for (id, (x0, y0), (x1, y1)) in [
+        (&below, (100., 400.), (300., 600.)),
+        (&above, (200., 300.), (400., 500.)),
+    ] {
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.create_rectangle(
+                    document,
+                    0,
+                    id.clone(),
+                    PdfPoint::new(x0, y0).unwrap(),
+                    PdfPoint::new(x1, y1).unwrap(),
+                    cx,
+                )
+            })
+            .unwrap();
+    }
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(document, &below, cx)
+    }));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let quads = cx.update(|window, _| window.painted_quads());
+    // The rectangles' outlines: square bordered quads the size of their
+    // 200 pt sides, the later one last.
+    let outlines = quads
+        .iter()
+        .enumerate()
+        .filter(|(_, quad)| {
+            let (width, height) = (quad.bounds.size.width.0, quad.bounds.size.height.0);
+            quad.border_widths.top.0 > 0.
+                && (400. ..600.).contains(&width)
+                && (width - height).abs() < 1.
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let above_outline = *outlines.last().expect("the rectangles paint outlines");
+    let handles = quads
+        .iter()
+        .enumerate()
+        .filter(|(_, quad)| {
+            quad.border_widths.top.0 > 0.
+                && quad.bounds.size.width.0.max(quad.bounds.size.height.0) < 30.
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert!(!handles.is_empty(), "the selection shows its handles");
+    assert!(
+        handles.iter().all(|index| *index > above_outline),
+        "handles {handles:?} must paint after the markup above, {above_outline}"
     );
 }

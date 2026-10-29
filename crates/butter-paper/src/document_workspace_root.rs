@@ -265,20 +265,13 @@ impl DocumentWorkspace {
                     cx.propagate();
                     return;
                 };
-                // Electron's capture-phase Escape finishes only cloud polygons,
-                // then resets the canvas tool and selection. Other drafts cancel.
-                if workspace.session(document_id, cx).is_some_and(|session| {
-                    let session = session.read(cx);
-                    session.annotations.cloud_pending(document_id.value())
-                        || session.annotations.cloud_plus_pending(document_id.value())
-                }) {
-                    workspace.finish_vertex_path_from_action(&FinishVertexPath, window, cx);
-                }
                 workspace.pan_tool_active = false;
                 workspace.pan_drag = None;
                 workspace.text_selection = None;
                 workspace.space_pan_hold.clear_stash();
                 workspace.active_annotation_pointer = None;
+                workspace.text_box_placement = None;
+                workspace.placement_press = None;
                 if let Some(session) = workspace.session(document_id, cx).cloned() {
                     session.update(cx, |session, cx| {
                         let _ = session.annotations.cancel(PointerCancelReason::ToolChanged);

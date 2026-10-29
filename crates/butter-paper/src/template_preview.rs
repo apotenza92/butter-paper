@@ -14,6 +14,95 @@ use std::{collections::HashMap, sync::Arc};
 use crate::generated_document::{GeneratedDocumentRequest, GeneratedPattern};
 use crate::page_scale_catalog::paper_size_mm;
 
+/// The label column shared by the paper-size and orientation rows, so their
+/// controls line up.
+pub const TEMPLATE_CONTROL_LABEL_WIDTH: f32 = 84.;
+
+/// A labelled row of the template controls: "Paper size" and its Select, or
+/// "Orientation" and its toggle.
+pub fn template_control_row(
+    id: &'static str,
+    label: &'static str,
+    control: impl IntoElement,
+) -> impl IntoElement {
+    h_flex()
+        .id(id)
+        .debug_selector(move || id.into())
+        .gap_2()
+        .child(
+            div()
+                .flex_none()
+                .w(px(TEMPLATE_CONTROL_LABEL_WIDTH))
+                .text_sm()
+                .child(label),
+        )
+        .child(div().flex_1().min_w_0().child(control))
+}
+
+/// Portrait and Landscape side by side, the current one selected. Imported
+/// PDFs keep their own pages, so it is disabled for them.
+pub fn orientation_toggle(
+    id_prefix: &'static str,
+    orientation: PaperOrientation,
+    disabled: bool,
+    on_change: impl Fn(PaperOrientation, &mut gpui::Window, &mut App) + Clone + 'static,
+) -> impl IntoElement {
+    use gpui_component::button::{Button, ButtonGroup};
+    use gpui_component::{Disableable as _, Selectable as _};
+    let button = |which: PaperOrientation| {
+        let on_change = on_change.clone();
+        let id = format!("{id_prefix}-{}", which.label().to_lowercase());
+        Button::new(SharedString::from(id.clone()))
+            .debug_selector(move || id.clone())
+            .label(which.label())
+            .selected(orientation == which)
+            .toggled(orientation == which)
+            .on_click(move |_, window, cx| on_change(which, window, cx))
+    };
+    ButtonGroup::new(SharedString::from(format!("{id_prefix}-group")))
+        .outline()
+        .disabled(disabled)
+        .child(button(PaperOrientation::Portrait))
+        .child(button(PaperOrientation::Landscape))
+}
+
+/// Which way a sheet of paper is turned.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaperOrientation {
+    Portrait,
+    Landscape,
+}
+
+impl PaperOrientation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Portrait => "Portrait",
+            Self::Landscape => "Landscape",
+        }
+    }
+
+    /// How a `width_mm` × `height_mm` sheet is turned; a square counts as
+    /// landscape.
+    pub fn of(width_mm: f64, height_mm: f64) -> Self {
+        if width_mm >= height_mm {
+            Self::Landscape
+        } else {
+            Self::Portrait
+        }
+    }
+}
+
+/// `request` with its paper turned to `orientation`.
+pub fn oriented_request(
+    mut request: GeneratedDocumentRequest,
+    orientation: PaperOrientation,
+) -> GeneratedDocumentRequest {
+    if PaperOrientation::of(request.width_mm, request.height_mm) != orientation {
+        std::mem::swap(&mut request.width_mm, &mut request.height_mm);
+    }
+    request
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TemplatePreview {
     Generated(GeneratedDocumentRequest),
@@ -32,6 +121,26 @@ impl TemplatePreview {
             crate::template_library::built_in_request(id)
                 .unwrap_or_else(GeneratedDocumentRequest::a3_landscape_blank),
         )
+    }
+
+    /// How the template's paper is turned; imported PDFs keep their own pages.
+    pub fn orientation(&self) -> Option<PaperOrientation> {
+        match self {
+            Self::Generated(request) => {
+                Some(PaperOrientation::of(request.width_mm, request.height_mm))
+            }
+            Self::ImportedPdf { .. } => None,
+        }
+    }
+
+    /// The template with its paper turned to `orientation`.
+    pub fn oriented(&self, orientation: PaperOrientation) -> Self {
+        match self {
+            Self::Generated(request) => {
+                Self::Generated(oriented_request(request.clone(), orientation))
+            }
+            Self::ImportedPdf { .. } => self.clone(),
+        }
     }
 
     /// "A3 · Landscape", "500 × 300 mm · Landscape" or "3 pages · Imported PDF".
@@ -574,5 +683,21 @@ mod tests {
                 (IMPORTED_PDF_PAPER_SIZE.to_owned(), vec![1]),
             ]
         );
+    }
+
+    #[test]
+    fn turning_a_template_swaps_its_paper_and_says_so() {
+        let a3 = TemplatePreview::for_built_in("built-in-dots");
+        assert_eq!(a3.orientation(), Some(PaperOrientation::Landscape));
+        let turned = a3.oriented(PaperOrientation::Portrait);
+        assert_eq!(turned.summary(), "A3 · Portrait");
+        assert_eq!(turned.paper_size(), "A3");
+        assert_eq!(turned.oriented(PaperOrientation::Landscape), a3);
+        let imported = TemplatePreview::ImportedPdf {
+            page_count: 1,
+            first_page_key: None,
+        };
+        assert_eq!(imported.orientation(), None);
+        assert_eq!(imported.oriented(PaperOrientation::Portrait), imported);
     }
 }

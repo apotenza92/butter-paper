@@ -1116,6 +1116,9 @@ struct Candidate {
     owner_id: Option<MarkupId>,
     role: SemanticSnapRole,
     source: SemanticSnapSource,
+    /// The width of the markup's stroke, for the positions a line of
+    /// another width can take beside it.
+    stroke_width: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1127,6 +1130,9 @@ pub struct SemanticSnapIndex {
     excluded_content: Vec<[f64; 4]>,
     /// Built on first query and dropped whenever candidates change.
     grid: std::sync::OnceLock<Option<CandidateGrid>>,
+    /// Screen pixels its targets count as further away, so another index's
+    /// exact targets win until the two are visibly apart.
+    penalty_px: f64,
 }
 
 /// Indexes with fewer candidates are scanned directly.
@@ -1353,6 +1359,108 @@ impl SemanticSnapIndex {
     }
 
     /// Skips page-content targets lying wholly inside any of `areas`.
+    /// Targets for a line `width` wide beside each stroked markup: its edges
+    /// moved off the markup's centre line so the two strokes' outer edges
+    /// touch, either side, or so the narrower sits flush inside the wider,
+    /// and the corners where those moved edges meet.
+    pub fn stroke_offsets(&self, width: f64) -> Self {
+        if !width.is_finite() || width <= 0. {
+            return Self::default();
+        }
+        let mut candidates = Vec::new();
+        // Each stroked markup's edges, in drawing order.
+        let mut owners: Vec<(MarkupId, f64, Vec<(PdfPoint, PdfPoint)>)> = Vec::new();
+        for candidate in &self.candidates {
+            let (Some(owner), Some(stroke), CandidateGeometry::Segment { start, end }) = (
+                candidate.owner_id.as_ref(),
+                candidate.stroke_width,
+                &candidate.geometry,
+            ) else {
+                continue;
+            };
+            match owners.last_mut() {
+                Some((id, _, edges)) if id == owner => edges.push((*start, *end)),
+                _ => owners.push((owner.clone(), stroke, vec![(*start, *end)])),
+            }
+        }
+        for (owner, stroke, edges) in owners {
+            let mut distances = vec![(stroke + width) / 2.];
+            let flush = (stroke - width).abs() / 2.;
+            if flush > 1e-6 {
+                distances.push(flush);
+            }
+            let offsets = distances
+                .iter()
+                .flat_map(|distance| [*distance, -*distance])
+                .collect::<Vec<_>>();
+            let target = |geometry, role| Candidate {
+                geometry,
+                owner_id: Some(owner.clone()),
+                role,
+                source: SemanticSnapSource::Annotation,
+                stroke_width: None,
+            };
+            for edge in &edges {
+                for offset in &offsets {
+                    if let Some((start, end)) = shifted_segment(*edge, *offset) {
+                        candidates.push(target(
+                            CandidateGeometry::Point(PdfPoint {
+                                x: (start.x + end.x) * 0.5,
+                                y: (start.y + end.y) * 0.5,
+                            }),
+                            SemanticSnapRole::Midpoint,
+                        ));
+                        candidates.push(target(
+                            CandidateGeometry::Segment { start, end },
+                            SemanticSnapRole::Nearest,
+                        ));
+                    }
+                }
+            }
+            let closed = edges.len() > 2
+                && edges.windows(2).all(|pair| pair[0].1 == pair[1].0)
+                && edges.last().map(|edge| edge.1) == edges.first().map(|edge| edge.0);
+            if closed {
+                // Where adjacent moved edges meet: the moved shape's corners.
+                for index in 0..edges.len() {
+                    let (a, b) = (edges[index], edges[(index + 1) % edges.len()]);
+                    for first in &offsets {
+                        for second in &offsets {
+                            if let (Some(a), Some(b)) =
+                                (shifted_segment(a, *first), shifted_segment(b, *second))
+                                && let Some(corner) = line_intersection(a, b)
+                            {
+                                candidates.push(target(
+                                    CandidateGeometry::Point(corner),
+                                    SemanticSnapRole::Endpoint,
+                                ));
+                            }
+                        }
+                    }
+                }
+            } else {
+                for edge in &edges {
+                    for offset in &offsets {
+                        if let Some((start, end)) = shifted_segment(*edge, *offset) {
+                            for point in [start, end] {
+                                candidates.push(target(
+                                    CandidateGeometry::Point(point),
+                                    SemanticSnapRole::Endpoint,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Self {
+            candidates,
+            // Beside a stroke loses to on it until they are this far apart.
+            penalty_px: 3.,
+            ..Self::default()
+        }
+    }
+
     pub fn with_excluded_content(mut self, areas: &[[f64; 4]]) -> Self {
         self.excluded_content.extend_from_slice(areas);
         self
@@ -1380,6 +1488,7 @@ impl SemanticSnapIndex {
                             owner_id: None,
                             role: SemanticSnapRole::GridPoint,
                             source: SemanticSnapSource::PageGrid,
+                            stroke_width: None,
                         });
                     }
                 }
@@ -1400,6 +1509,7 @@ impl SemanticSnapIndex {
                                 owner_id: None,
                                 role: SemanticSnapRole::GridPoint,
                                 source: SemanticSnapSource::PageGrid,
+                                stroke_width: None,
                             });
                         }
                     }
@@ -1421,6 +1531,7 @@ impl SemanticSnapIndex {
                                 owner_id: None,
                                 role: SemanticSnapRole::GridPoint,
                                 source: SemanticSnapSource::PageGrid,
+                                stroke_width: None,
                             });
                         }
                     }
@@ -1444,33 +1555,49 @@ impl SemanticSnapIndex {
         supplement: &AnnotationSelectionSupplement,
     ) -> Self {
         let mut candidates = Vec::new();
+        // Stroked markups note their stroke's width on their targets.
+        let stroked = |candidates: &mut Vec<Candidate>, from: usize, width: f64| {
+            for candidate in &mut candidates[from..] {
+                candidate.stroke_width = Some(width);
+            }
+        };
         for line in &scene.straight_lines {
             if line.draft || excluded_owner_ids.contains(&line.id) {
                 continue;
             }
+            let from = candidates.len();
             add_open_segment_candidates(&mut candidates, line.start, line.end, &line.id);
+            stroked(&mut candidates, from, line.appearance.stroke_width_pt());
         }
         for rectangle in &scene.rectangles {
             if rectangle.preview || excluded_owner_ids.contains(&rectangle.id) {
                 continue;
             }
+            let from = candidates.len();
             add_rectangle_candidates(
                 &mut candidates,
                 rectangle.rect,
                 rectangle.rotation_degrees,
                 &rectangle.id,
             );
+            stroked(
+                &mut candidates,
+                from,
+                rectangle.appearance.stroke_width_pt(),
+            );
         }
         for ellipse in &scene.ellipses {
             if ellipse.preview || excluded_owner_ids.contains(&ellipse.id) {
                 continue;
             }
+            let from = candidates.len();
             add_rectangle_candidates(
                 &mut candidates,
                 ellipse.rect,
                 ellipse.rotation_degrees,
                 &ellipse.id,
             );
+            stroked(&mut candidates, from, ellipse.appearance.stroke_width_pt());
         }
         for redact in &scene.redacts {
             if redact.draft || excluded_owner_ids.contains(&redact.id) {
@@ -1488,21 +1615,29 @@ impl SemanticSnapIndex {
             if path.draft || excluded_owner_ids.contains(&path.id) {
                 continue;
             }
+            let from = candidates.len();
             if path.kind == crate::annotation_model::VertexPathKind::Polygon {
                 add_closed_path_candidates(&mut candidates, &path.points, &path.id);
             } else {
                 add_open_path_candidates(&mut candidates, &path.points, &path.id);
             }
+            stroked(&mut candidates, from, path.appearance.stroke_width_pt());
         }
         for measurement in &scene.measurement_paths {
             if measurement.draft || excluded_owner_ids.contains(&measurement.id) {
                 continue;
             }
+            let from = candidates.len();
             if measurement.kind == crate::annotation_model::MeasurementPathKind::Area {
                 add_closed_path_candidates(&mut candidates, &measurement.points, &measurement.id);
             } else {
                 add_open_path_candidates(&mut candidates, &measurement.points, &measurement.id);
             }
+            stroked(
+                &mut candidates,
+                from,
+                measurement.appearance.stroke_width_pt(),
+            );
         }
         for text_box in &scene.text_boxes {
             if excluded_owner_ids.contains(&text_box.id) {
@@ -1587,6 +1722,7 @@ impl SemanticSnapIndex {
             shared_indexes: Vec::new(),
             excluded_content: Vec::new(),
             grid: std::sync::OnceLock::new(),
+            penalty_px: 0.,
         }
     }
 
@@ -1604,6 +1740,7 @@ impl SemanticSnapIndex {
                     owner_id: None,
                     role: SemanticSnapRole::Intersection,
                     source: SemanticSnapSource::ConstructionGrid,
+                    stroke_width: None,
                 }),
         );
         self.grid = std::sync::OnceLock::new();
@@ -1647,7 +1784,7 @@ impl SemanticSnapIndex {
                 point.x >= area[0] && point.x <= area[2] && point.y >= area[1] && point.y <= area[3]
             })
         };
-        let mut consider = |candidate: &Candidate| {
+        let mut consider = |candidate: &Candidate, penalty_px: f64| {
             if !settings.is_source_enabled(candidate.source) {
                 return;
             }
@@ -1679,7 +1816,8 @@ impl SemanticSnapIndex {
             if distance_pdf_squared > tolerance_pdf_squared {
                 return;
             }
-            let score = distance_pdf_squared
+            let penalised = distance_pdf_squared.sqrt() + penalty_px / window_pixels_per_pdf_point;
+            let score = penalised * penalised
                 + role_priority(candidate.role) * tolerance_pdf_squared * 0.015;
             let decision = SemanticSnapDecision {
                 point: resolved,
@@ -1698,9 +1836,13 @@ impl SemanticSnapIndex {
         };
         // Same visiting order as scanning `candidates` then each shared
         // index's own candidates, restricted to those within tolerance.
-        self.for_each_candidate_near(point, tolerance_pdf, &mut consider);
+        self.for_each_candidate_near(point, tolerance_pdf, &mut |candidate| {
+            consider(candidate, self.penalty_px)
+        });
         for index in &self.shared_indexes {
-            index.for_each_candidate_near(point, tolerance_pdf, &mut consider);
+            index.for_each_candidate_near(point, tolerance_pdf, &mut |candidate| {
+                consider(candidate, index.penalty_px)
+            });
         }
 
         best.map(|(_, decision)| decision)
@@ -1984,11 +2126,47 @@ fn add_intersection_candidates_for_source(
                     owner_id: None,
                     role: SemanticSnapRole::Intersection,
                     source,
+                    stroke_width: None,
                 });
             }
         }
     }
     candidates.extend(intersections);
+}
+
+/// `edge` moved `offset` along its left-hand normal.
+fn shifted_segment(edge: (PdfPoint, PdfPoint), offset: f64) -> Option<(PdfPoint, PdfPoint)> {
+    let (start, end) = edge;
+    let (dx, dy) = (end.x - start.x, end.y - start.y);
+    let length = dx.hypot(dy);
+    (length > 1e-9).then(|| {
+        let (nx, ny) = (-dy / length * offset, dx / length * offset);
+        (
+            PdfPoint {
+                x: start.x + nx,
+                y: start.y + ny,
+            },
+            PdfPoint {
+                x: end.x + nx,
+                y: end.y + ny,
+            },
+        )
+    })
+}
+
+/// Where the infinite lines through `a` and `b` cross, unless parallel.
+fn line_intersection(a: (PdfPoint, PdfPoint), b: (PdfPoint, PdfPoint)) -> Option<PdfPoint> {
+    let (p, r) = (a.0, (a.1.x - a.0.x, a.1.y - a.0.y));
+    let (q, s) = (b.0, (b.1.x - b.0.x, b.1.y - b.0.y));
+    let cross = r.0 * s.1 - r.1 * s.0;
+    if cross.abs() < 1e-9 {
+        return None;
+    }
+    let t = ((q.x - p.x) * s.1 - (q.y - p.y) * s.0) / cross;
+    Some(PdfPoint {
+        x: p.x + t * r.0,
+        y: p.y + t * r.1,
+    })
 }
 
 fn content_point(point: crate::pdf_content_geometry::PdfPoint) -> PdfPoint {
@@ -2086,6 +2264,7 @@ fn add_content_segments(candidates: &mut Vec<Candidate>, points: &[PdfPoint], cl
             owner_id: None,
             role: SemanticSnapRole::Nearest,
             source: SemanticSnapSource::Content,
+            stroke_width: None,
         });
     }
 }
@@ -2096,6 +2275,7 @@ fn content_candidate(point: PdfPoint, role: SemanticSnapRole) -> Candidate {
         owner_id: None,
         role,
         source: SemanticSnapSource::Content,
+        stroke_width: None,
     }
 }
 
@@ -2153,6 +2333,7 @@ fn add_quadrilateral_candidates(
         owner_id: Some(owner_id.clone()),
         role: SemanticSnapRole::Center,
         source: SemanticSnapSource::Annotation,
+        stroke_width: None,
     });
     for corner in corners.iter().copied() {
         candidates.push(Candidate {
@@ -2160,6 +2341,7 @@ fn add_quadrilateral_candidates(
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Endpoint,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
     }
     for index in 0..corners.len() {
@@ -2173,12 +2355,14 @@ fn add_quadrilateral_candidates(
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Midpoint,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
         candidates.push(Candidate {
             geometry: CandidateGeometry::Segment { start, end },
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Nearest,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
     }
 }
@@ -2195,6 +2379,7 @@ fn add_open_segment_candidates(
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Endpoint,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
     }
     candidates.push(Candidate {
@@ -2205,12 +2390,14 @@ fn add_open_segment_candidates(
         owner_id: Some(owner_id.clone()),
         role: SemanticSnapRole::Midpoint,
         source: SemanticSnapSource::Annotation,
+        stroke_width: None,
     });
     candidates.push(Candidate {
         geometry: CandidateGeometry::Segment { start, end },
         owner_id: Some(owner_id.clone()),
         role: SemanticSnapRole::Nearest,
         source: SemanticSnapSource::Annotation,
+        stroke_width: None,
     });
 }
 
@@ -2228,6 +2415,7 @@ fn add_open_path_candidates(
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Endpoint,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
     }
     for segment in points.windows(2) {
@@ -2241,12 +2429,14 @@ fn add_open_path_candidates(
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Midpoint,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
         candidates.push(Candidate {
             geometry: CandidateGeometry::Segment { start, end },
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Nearest,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
     }
 }
@@ -2266,6 +2456,7 @@ fn add_closed_path_candidates(
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Endpoint,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
         candidates.push(Candidate {
             geometry: CandidateGeometry::Point(PdfPoint {
@@ -2275,12 +2466,14 @@ fn add_closed_path_candidates(
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Midpoint,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
         candidates.push(Candidate {
             geometry: CandidateGeometry::Segment { start, end },
             owner_id: Some(owner_id.clone()),
             role: SemanticSnapRole::Nearest,
             source: SemanticSnapSource::Annotation,
+            stroke_width: None,
         });
     }
 }
@@ -2409,6 +2602,7 @@ mod tests {
                 owner_id: None,
                 role: SemanticSnapRole::Endpoint,
                 source: SemanticSnapSource::Content,
+                stroke_width: None,
             })
             .collect::<Vec<_>>();
         let grid = CandidateGrid::build(&candidates).expect("finite candidates build a grid");

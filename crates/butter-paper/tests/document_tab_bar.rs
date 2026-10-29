@@ -1,5 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
+use butter_paper::template_preview::PaperOrientation;
 use butter_paper::{
     cad_view_control::{CadViewControl, CadViewOrganisation},
     continuous_view_control::{ContinuousViewControl, WheelBehavior},
@@ -359,6 +360,38 @@ fn template_split_starts_at_the_frozen_contract_and_rendered_ids(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn the_start_page_creates_from_the_last_template_as_the_primary_button_does(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    let entities = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let entities = entities.clone();
+        move |window, cx| {
+            let control = cx.new(TemplateSplitControl::new);
+            let harness = cx.new(|cx| TemplateSplitHarness::new(control.clone(), cx));
+            entities.replace(Some((harness.clone(), control)));
+            Root::new(harness, window, cx)
+        }
+    });
+    let (harness, control) = entities.borrow_mut().take().unwrap();
+    assert_eq!(
+        control.read_with(cx, |control, _| control.last_template_label()),
+        "New Blank Paper document"
+    );
+    control.update(cx, |control, cx| control.create_from_last_template(cx));
+    draw(cx);
+    assert_eq!(
+        harness.read_with(cx, |harness, _| harness.events.clone()),
+        vec![TemplateSplitEvent::CreateRequested {
+            template_id: "built-in-blank".into(),
+            origin: TemplateCreationOrigin::Primary,
+            orientation: None,
+        }]
+    );
+}
+
+#[gpui::test]
 fn reusable_template_split_emits_semantic_creation_without_owning_document_tabs(
     cx: &mut TestAppContext,
 ) {
@@ -399,6 +432,7 @@ fn reusable_template_split_emits_semantic_creation_without_owning_document_tabs(
         vec![TemplateSplitEvent::CreateRequested {
             template_id: "built-in-blank".into(),
             origin: TemplateCreationOrigin::Primary,
+            orientation: None,
         }]
     );
     control.read_with(cx, |control, _| {
@@ -549,6 +583,30 @@ fn template_picker_filters_by_paper_size_and_carries_the_pattern_across_sizes(
     draw(cx);
     entities.document_tabs.read_with(cx, |tabs, _| {
         assert_eq!(tabs.selected_template_id(), "built-in-dots");
+    });
+
+    // A3 starts landscape, as its templates are; turned portrait, the
+    // picker's Create makes it so.
+    control.read_with(cx, |control, _| {
+        assert_eq!(control.orientation(), PaperOrientation::Landscape)
+    });
+    click_target(cx, "template-picker-orientation-portrait");
+    draw(cx);
+    control.read_with(cx, |control, _| {
+        assert_eq!(control.orientation(), PaperOrientation::Portrait)
+    });
+    click_target(cx, TEMPLATE_CREATE_ID);
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        let created = tabs.creation_events().last().unwrap();
+        assert_eq!(created.template_id, "built-in-dots");
+        assert_eq!(created.orientation, Some(PaperOrientation::Portrait));
+    });
+    // The primary button makes the template as it is.
+    click_target(cx, TEMPLATE_PRIMARY_ID);
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert_eq!(tabs.creation_events().last().unwrap().orientation, None);
     });
 }
 
@@ -2481,7 +2539,10 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         .read_with(cx, |tabs, _| tabs.picker_focus_handle());
     cx.update(|window, cx| {
         picker_focus.focus(window, cx);
-        // The header's X, the paper-size Select, then the first two rows.
+        // The header's X, the paper-size Select, Portrait and Landscape,
+        // then the first two rows.
+        window.focus_next(cx);
+        window.focus_next(cx);
         window.focus_next(cx);
         window.focus_next(cx);
         window.focus_next(cx);

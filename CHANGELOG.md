@@ -4,6 +4,60 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Clipboard
+
+- Cut, Copy and Paste work between documents and windows: markups copied in
+  one PDF paste into any other open PDF, where they were. The page's
+  right-click menu has Cut, Copy, Paste and Delete, and right-clicking a
+  markup selects it first. The Edit menu now also enables for selected Edit
+  PDF content and page text.
+
+### Templates
+
+- New from template and the Template Library have an Orientation toggle:
+  turn any paper size portrait or landscape before creating.
+- The Template Library picks one paper size at a time from a dropdown, as
+  New from template does, and its rows look the same: the selected one
+  filled and ticked instead of outlined in blue.
+
+### Snapping
+
+- Rectangles and ellipses snap to other markups while being drawn.
+- Lines snap beside other strokes, not only onto them: edges just touching
+  on either side, or flush inside a thicker stroke.
+
+### Selection
+
+- Selection handles and the rotation knob always draw above every markup,
+  so a markup drawn later no longer hides them.
+
+### Markup
+
+- Every tool that draws a box or a line takes the same two gestures as
+  Rectangle: drag it out, or click one end and then the other.
+- Cloud and Cloud+ draw rectangles both ways, instead of clicks making a
+  polygon. For a cloud of any shape, turn on Cloud outline in the Polygon
+  tool's properties: the polygon is drawn as a cloud.
+- Length and Dimension can also be dragged out.
+- Text boxes are drawn: drag the box, or click two corners, then type. The
+  box grows to fit the text.
+- Images and signatures fill the box you drag or click out, keeping their
+  proportions. Images dropped from the desktop are still placed where you
+  drop them.
+
+### Interface
+
+- The start page offers a new document from your last template beside Open,
+  and no longer shows view controls with no page to view.
+- Menus, buttons and dialog titles use sentence case throughout, such as
+  "Delete page" and "Merge documents"; "Apply colour" is spelt the same in
+  every panel.
+- A selected area or polylength shows its lock, line and fill once, with a
+  separate Label section for its text, instead of two overlapping panels.
+- Tool properties name colours plainly ("Colour" for highlights and
+  polygons), the Dimension colour label no longer wraps, and the new-document
+  button's tooltip says what it makes.
+
 ## [0.3.5]
 
 ### Tabs

@@ -1190,7 +1190,7 @@ fn dialog_content(
                 .gap_4()
                 .child(
                     DialogHeader::new()
-                        .child(DialogTitle::new().child("Page Scale"))
+                        .child(DialogTitle::new().child("Page scale"))
                         .child(DialogDescription::new().child(description))
                         .child(
                             // Inside the content: the stock body clips anything
@@ -1413,7 +1413,7 @@ fn scale_section(
                                     )
                                     .child(
                                         Button::new("page-scale-measure-again")
-                                            .label("Measure Again")
+                                            .label("Measure again")
                                             .ghost()
                                             .on_click(move |_, window, cx| {
                                                 let _ = again.update(cx, |control, cx| {
@@ -1541,7 +1541,7 @@ fn pages_section(
                             ))
                             .child(page_button(
                                 PAGE_SCALE_PAGES_RANGE_ID,
-                                "Some Pages".into(),
+                                "Some pages".into(),
                                 PageScalePages::Range,
                             )),
                     )

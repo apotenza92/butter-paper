@@ -423,14 +423,14 @@ impl DocumentWorkspace {
             let state = dialog.read(cx);
             let count = state.chosen().len();
             let label = if state.chosen_unsaved() {
-                "Save and Merge"
+                "Save and merge"
             } else {
                 "Merge"
             };
             let merge_dialog = dialog.clone();
             let merge_workspace = workspace.clone();
             surface
-                .title("Merge Documents")
+                .title("Merge documents")
                 .w(px(560.))
                 .max_w_full()
                 .close_button(false)

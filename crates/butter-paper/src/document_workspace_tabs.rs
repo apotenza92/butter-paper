@@ -132,7 +132,7 @@ impl DocumentWorkspace {
                         .inset_0()
                         .context_menu(move |menu, _, _| {
                             let merge_control = menu_control.clone();
-                            menu.item(PopupMenuItem::new("Merge Documents…").on_click(
+                            menu.item(PopupMenuItem::new("Merge documents…").on_click(
                                 move |_, window, cx| {
                                     let _ = merge_control.update(cx, |workspace, cx| {
                                         workspace.open_merge_dialog(window, cx);
