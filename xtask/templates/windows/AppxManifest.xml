@@ -25,7 +25,7 @@
     <Application Id="ButterPaper" Executable="butter-paper.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Butter Paper"
-        Description="Edit and mark up PDFs."
+        Description="Free, open-source PDF editing and markup."
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">

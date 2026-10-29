@@ -24,6 +24,27 @@ Use plain, direct language. Explain the task and outcome before the machinery be
 - Be capable without sounding institutional.
 - Be friendly without becoming whimsical.
 
+## Product copy
+
+Use the same words wherever Butter Paper is described: the README, the
+download page (`docs/index.html`), the GitHub repository description, the
+Microsoft Store listing ([docs/store/listing.md](store/listing.md)) and package
+metadata. Change them together.
+
+- **Label:** PDF editing and markup. Used for the download page kicker, the
+  Homebrew casks, the Linux desktop entry and the default-app description.
+- **Short description:** Free, open-source PDF editing and markup. Used for
+  the Store short description and the Windows package description.
+- **Description:** the opening paragraph of the README, which is also the
+  GitHub repository description, the download page subtitle and meta
+  description, and the start of the Store description.
+- **Features:** the bullet list in the README, repeated on the download page
+  and in the Store description. The Store says "your PC" where the others say
+  "your computer".
+- **Screenshots:** [`assets/screenshots/`](../assets/screenshots/), used by the
+  README, the download page and the Store listing. Retake all three together
+  from a review build on the fictional floor plan.
+
 ## Master palette
 
 The machine-readable source is [`assets/brand/palette.json`](../assets/brand/palette.json).

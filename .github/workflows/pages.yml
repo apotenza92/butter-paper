@@ -13,6 +13,7 @@ on:
       - .github/workflows/pages.yml
       - assets/icon-source/butter-paper-origami-beta.svg
       - assets/icon-source/butter-paper-origami.svg
+      - assets/screenshots/**
       - docs/index.html
   workflow_dispatch:
 
@@ -37,10 +38,11 @@ jobs:
 
       - name: Prepare public site artefact
         run: |
-          mkdir -p _site/assets/brand
+          mkdir -p _site/assets/brand _site/assets/screenshots
           cp docs/index.html _site/index.html
           cp assets/icon-source/butter-paper-origami.svg _site/assets/brand/icon.svg
           cp assets/icon-source/butter-paper-origami-beta.svg _site/assets/brand/icon-beta.svg
+          cp assets/screenshots/*.png _site/assets/screenshots/
           touch _site/.nojekyll
 
       - name: Upload GitHub Pages artifact

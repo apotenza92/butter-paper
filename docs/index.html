@@ -503,6 +503,73 @@
         }
       }
 
+      .showcase {
+        display: flex;
+        flex-direction: column;
+        gap: 2rem;
+        margin-top: 1.5rem;
+        text-align: left;
+        width: min(980px, calc(100vw - 2rem));
+      }
+
+      .showcase figure {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+      }
+
+      .showcase img {
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: 0 18px 40px -24px rgba(31, 28, 23, 0.45);
+        display: block;
+        height: auto;
+        width: 100%;
+      }
+
+      .showcase figcaption {
+        color: var(--text-muted);
+        font-size: 0.85rem;
+      }
+
+      .showcase-pair {
+        display: grid;
+        gap: 1.5rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .features {
+        color: var(--text);
+        columns: 2 22rem;
+        column-gap: 2.5rem;
+        font-size: 0.92rem;
+        line-height: 1.55;
+        list-style: none;
+        margin: 0 auto;
+        max-width: 860px;
+      }
+
+      .features li {
+        break-inside: avoid;
+        border-left: 2px solid var(--accent);
+        margin-bottom: 0.9rem;
+        padding-left: 0.8rem;
+      }
+
+      .disclaimer {
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        line-height: 1.5;
+        text-align: center;
+      }
+
+      @media (max-width: 560px) {
+        .showcase-pair {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+
       @media (prefers-reduced-motion: reduce) {
         *,
         *::before,
@@ -610,6 +677,34 @@
           </section>
         </div>
       </details>
+
+      <section class="showcase" aria-label="What Butter Paper does">
+        <figure>
+          <img class="screenshot" src="./assets/screenshots/1-markup.png" width="1440" height="900" alt="Markups on a floor plan: clouds, a dimension, a highlight and a note" loading="lazy" />
+          <figcaption>Mark up drawings with clouds, dimensions, highlights and notes.</figcaption>
+        </figure>
+        <ul class="features">
+          <li>Mark up PDFs with text boxes, callouts, clouds, arrows, highlights, ink, shapes, images and redactions.</li>
+          <li>Set a drawing's scale, often read straight from its title block, then measure lengths, perimeters and areas.</li>
+          <li>Edit a PDF's own text a paragraph at a time, keeping its fonts and layout.</li>
+          <li>Sign documents by drawing, typing, a picture, your phone or a saved signature.</li>
+          <li>Start new documents from paper templates in A3 and A4, with dot, square, ruled, isometric and triangle grids.</li>
+          <li>Work with several documents in tabs and windows, with continuous scrolling and fast page rendering.</li>
+          <li>Markups are saved as standard PDF annotations, so they open in Bluebeam Revu, Adobe Acrobat and other PDF apps.</li>
+          <li>No account and no tracking. Your documents stay on your computer.</li>
+        </ul>
+        <div class="showcase-pair">
+          <figure>
+            <img class="screenshot" src="./assets/screenshots/2-measure.png" width="1440" height="900" alt="Length and area measurements on a scaled floor plan, with the area's properties open" loading="lazy" />
+            <figcaption>Measure lengths and areas at the drawing's scale.</figcaption>
+          </figure>
+          <figure>
+            <img class="screenshot" src="./assets/screenshots/3-templates.png" width="1440" height="900" alt="The New from template picker with grid paper templates" loading="lazy" />
+            <figcaption>Start new documents from paper templates.</figcaption>
+          </figure>
+        </div>
+        <p class="disclaimer">Butter Paper isn't affiliated with or endorsed by Bluebeam or Adobe; their names are trademarks of their respective owners.</p>
+      </section>
     </main>
 
     <script>
@@ -623,6 +718,11 @@
             beta: "./assets/brand/icon-beta.svg",
             stable: "./assets/brand/icon.svg"
           };
+      if (location.pathname.includes("/docs/")) {
+        for (const image of document.querySelectorAll("img.screenshot")) {
+          image.src = image.getAttribute("src").replace("./assets/", "../assets/");
+        }
+      }
       const assetSizes = {};
       const releaseVersions = { stable: "", beta: "" };
       const releaseTags = { stable: "latest", beta: "latest" };

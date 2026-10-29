@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Butter Paper
-Comment=Edit and mark up PDF documents
+Comment=PDF editing and markup
 Exec=butter-paper %F
 Icon=butter-paper
 Terminal=false
