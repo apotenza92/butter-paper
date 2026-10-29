@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.6]
+
 ### Clipboard
 
 - Cut, Copy and Paste work between documents and windows: markups copied in
