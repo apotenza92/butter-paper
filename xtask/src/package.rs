@@ -964,10 +964,20 @@ mod tests {
         assert!(
             manifest.contains(r#"<Application Id="ButterPaper" Executable="butter-paper.exe""#)
         );
-        let images = std::fs::read_dir(root().join("assets/app/windows-store"))
+        let images: Vec<String> = std::fs::read_dir(root().join("assets/app/windows-store"))
             .unwrap()
-            .count();
-        assert!(images > 0);
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(!images.is_empty());
+        // Without both unplated forms, Windows draws the taskbar and Start icons
+        // on an accent-coloured plate (lightunplated is the light theme's).
+        for image in images
+            .iter()
+            .filter(|name| name.ends_with("_altform-unplated.png"))
+        {
+            let light = image.replace("_altform-unplated", "_altform-lightunplated");
+            assert!(images.contains(&light), "{light} is missing");
+        }
         let identity = read_text(&store_identity_path()).unwrap();
         store_manifest(target, Version::parse("0.1.9").unwrap(), &identity).unwrap();
     }

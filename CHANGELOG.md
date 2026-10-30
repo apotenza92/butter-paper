@@ -4,6 +4,13 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.7]
+
+### Windows
+
+- The Microsoft Store app's icon in the taskbar, Start menu and search no
+  longer sits on a blue accent-coloured square under Windows' light theme.
+
 ## [0.3.6]
 
 ### Clipboard

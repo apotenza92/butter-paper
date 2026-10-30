@@ -26,8 +26,10 @@ TILES = {
     "StoreLogo": ((50, 50), 1.0),
 }
 SCALES = (100, 125, 150, 200, 400)
-# Taskbar, Start and File Explorer icons, which Windows draws unplated, at
-# every display scale it asks for.
+# Taskbar, Start and File Explorer icons at every display scale Windows asks
+# for. Windows draws the unplated forms as they are, choosing lightunplated
+# under the light theme; without that form it falls back to the plated image on
+# an accent-coloured square.
 TARGET_SIZES = (16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 256)
 
@@ -70,7 +72,8 @@ def main():
     for target in TARGET_SIZES:
         image = render(icon, (target, target))
         image.save(OUTPUT / f"Square44x44Logo.targetsize-{target}.png")
-        image.save(OUTPUT / f"Square44x44Logo.targetsize-{target}_altform-unplated.png")
+        for form in ("unplated", "lightunplated"):
+            image.save(OUTPUT / f"Square44x44Logo.targetsize-{target}_altform-{form}.png")
     frames = [render(icon, (size, size)) for size in ICO_SIZES]
     frames[-1].save(ICO, sizes=[(size, size) for size in ICO_SIZES], append_images=frames[:-1])
 
