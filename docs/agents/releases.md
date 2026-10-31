@@ -105,9 +105,12 @@ tenant account) and needs View > Developer > Allow JavaScript from Apple
 Events. Partner Center can take minutes to render a fresh window.
 
 The Entra tenant for the credentials (`AlexanderPotenza.onmicrosoft.com`) is
-active, with its admin's MFA key in 1Password, but it is linked only to the
-account's commercial side: Partner Center has no Microsoft Entra applications
-tab for the developer account yet, so no application holds the Manager role.
+active, with its admin's MFA key in 1Password, but the Store developer
+account is an individual one, and Partner Center offers user management and
+Microsoft Entra applications to company accounts only (an individual account
+cannot become a company one). So no application can hold the Manager role,
+the credential item's values are empty and `store-submit` cannot run: submit
+with `store-chrome` or by hand.
 
 Without either (or if both fail), submit by hand: download both artifacts with
 `gh run download <run> -p 'microsoft-store-*'`, start an update submission,

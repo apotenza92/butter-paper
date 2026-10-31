@@ -316,6 +316,12 @@ pub struct PageTextLayer {
     /// mode can move.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<crate::pdf_content_moves::PageObject>,
+    /// The file's permissions forbid changing its content (an owner
+    /// restriction, which opens without a password, as banks set on
+    /// statements). Its content is editable once the user agrees to edit it
+    /// anyway.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub content_restricted: bool,
 }
 
 impl PageTextLayer {
@@ -1438,60 +1444,87 @@ fn parse_operations(
     streams: &[Vec<u8>],
     limits: &TextEditLimits,
 ) -> Result<Vec<ContentOp>, TextEditError> {
+    // A page's content streams are one sequence (as if joined with white
+    // space), and a producer may split them between any two tokens, even
+    // inside a dictionary or an array (Adobe PDF Library splits content into
+    // pieces of about 3.6 KB). They are lexed as one, with each position
+    // mapped back to its own stream.
+    let mut joined = Vec::with_capacity(streams.iter().map(|bytes| bytes.len() + 1).sum());
+    let mut starts = Vec::with_capacity(streams.len());
+    for bytes in streams {
+        starts.push(joined.len());
+        joined.extend_from_slice(bytes);
+        joined.push(b'\n');
+    }
+    // The stream holding joined offset `offset`, and the offset within it.
+    let locate = |offset: usize| {
+        let stream = starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        (stream, offset - starts.get(stream).copied().unwrap_or(0))
+    };
     let mut operations = Vec::new();
     let mut operands = Vec::new();
     let mut operand_start: Option<(usize, usize)> = None;
-    for (stream_index, bytes) in streams.iter().enumerate() {
-        let mut lexer = Lexer { bytes, position: 0 };
-        while let Some((token, start)) = lexer.next(0)? {
-            match token {
-                Token::Operand(operand) => {
+    let mut lexer = Lexer {
+        bytes: &joined,
+        position: 0,
+    };
+    while let Some((token, start)) = lexer.next(0)? {
+        let (stream_index, start) = locate(start);
+        match token {
+            Token::Operand(operand) => {
+                operand_start.get_or_insert((stream_index, start));
+                operands.push(operand);
+            }
+            Token::ArrayEnd | Token::DictEnd => {}
+            Token::Operator(operator) => {
+                if matches!(operator.as_slice(), b"true" | b"false" | b"null") {
                     operand_start.get_or_insert((stream_index, start));
-                    operands.push(operand);
+                    operands.push(Operand::Other);
+                    continue;
                 }
-                Token::ArrayEnd | Token::DictEnd => {}
-                Token::Operator(operator) => {
-                    if matches!(operator.as_slice(), b"true" | b"false" | b"null") {
-                        operand_start.get_or_insert((stream_index, start));
-                        operands.push(Operand::Other);
-                        continue;
-                    }
-                    let mut end = lexer.position;
-                    if operator == b"BI" {
-                        // Key/value pairs up to ID, then binary data up to EI.
-                        loop {
-                            match lexer.next(0)? {
-                                Some((Token::Operator(word), _)) if word == b"ID" => break,
-                                Some(_) => {}
-                                None => {
-                                    return Err(TextEditError::Malformed(
-                                        "unterminated inline image".into(),
-                                    ));
-                                }
+                let mut end = lexer.position;
+                if operator == b"BI" {
+                    // Key/value pairs up to ID, then binary data up to EI.
+                    loop {
+                        match lexer.next(0)? {
+                            Some((Token::Operator(word), _)) if word == b"ID" => break,
+                            Some(_) => {}
+                            None => {
+                                return Err(TextEditError::Malformed(
+                                    "unterminated inline image".into(),
+                                ));
                             }
                         }
-                        end = lexer.skip_inline_image()?;
                     }
-                    let (first_stream, first_start) =
-                        operand_start.take().unwrap_or((stream_index, start));
-                    operations.push(ContentOp {
-                        operator,
-                        operands: std::mem::take(&mut operands),
-                        stream: stream_index,
-                        start: if first_stream == stream_index {
-                            first_start
-                        } else {
-                            start
-                        },
-                        end,
-                        spans_streams: first_stream != stream_index,
-                    });
-                    if operations.len() > limits.max_operations_per_page {
-                        return Err(TextEditError::LimitExceeded(format!(
-                            "page content has more than {} operations",
-                            limits.max_operations_per_page
-                        )));
-                    }
+                    end = lexer.skip_inline_image()?;
+                }
+                let (end_stream, end) = locate(end.saturating_sub(1));
+                let end = end + 1;
+                let (first_stream, first_start) =
+                    operand_start.take().unwrap_or((stream_index, start));
+                operations.push(ContentOp {
+                    operator,
+                    operands: std::mem::take(&mut operands),
+                    stream: stream_index,
+                    start: if first_stream == stream_index {
+                        first_start
+                    } else {
+                        start
+                    },
+                    end: if end_stream == stream_index {
+                        end
+                    } else {
+                        streams[stream_index].len()
+                    },
+                    spans_streams: first_stream != stream_index || end_stream != stream_index,
+                });
+                if operations.len() > limits.max_operations_per_page {
+                    return Err(TextEditError::LimitExceeded(format!(
+                        "page content has more than {} operations",
+                        limits.max_operations_per_page
+                    )));
                 }
             }
         }
@@ -3504,6 +3537,8 @@ struct DrawOp {
     op: usize,
     ctm: Matrix,
     bounds: [f64; 4],
+    /// The image XObject it draws; `None` for a form.
+    image: Option<lopdf::ObjectId>,
     /// The clips it is drawn inside.
     clip_chain: Option<std::sync::Arc<ClipLink>>,
 }
@@ -3678,6 +3713,18 @@ impl Walk<'_> {
     /// graphics state at its `Do`.
     /// The page-space bounds of XObject `name` drawn under `ctm`: an
     /// image's unit square, or a form's bounding box.
+    /// The image XObject `name` names in `scope`'s resources.
+    fn xobject_image(&self, scope: &Scope, name: &[u8]) -> Option<lopdf::ObjectId> {
+        let object = get_dict(self.document, &scope.resources, b"XObject")?
+            .get(name)
+            .ok()?
+            .as_reference()
+            .ok()?;
+        let stream = self.document.get_object(object).ok()?.as_stream().ok()?;
+        (get_name(self.document, &stream.dict, b"Subtype").as_deref() == Some(b"Image"))
+            .then_some(object)
+    }
+
     fn xobject_bounds(&self, scope: &Scope, name: &[u8], ctm: Matrix) -> Option<[f64; 4]> {
         let object = get_dict(self.document, &scope.resources, b"XObject")?
             .get(name)
@@ -3822,10 +3869,12 @@ impl Walk<'_> {
                         if matches!(self.owners[operation.stream], StreamOwner::Page)
                             && let Some(bounds) = self.xobject_bounds(scope, name, state.ctm)
                         {
+                            let image = self.xobject_image(scope, name);
                             self.draws.push(DrawOp {
                                 op: op_index,
                                 ctm: state.ctm,
                                 bounds,
+                                image,
                                 clip_chain: state.clips.clone(),
                             });
                         }
@@ -4274,18 +4323,6 @@ fn extract_page(
     }
     let mut lines = group_lines(&operations, &fonts, &shows, limits)?;
     adopt_line_fallback_families(&mut fonts, &lines);
-    // An encrypted file can forbid changing its content (owner restrictions,
-    // which open without a password).
-    if document
-        .encryption_state
-        .as_ref()
-        .is_some_and(|state| !state.permissions().contains(lopdf::Permissions::MODIFIABLE))
-    {
-        for line in &mut lines {
-            line.public.read_only =
-                Some("the document's permissions do not allow changing its content".into());
-        }
-    }
     // A form drawn more than once on the page (directly or through an
     // enclosing form) draws its text in each place: editing one would
     // change all.
@@ -4892,17 +4929,45 @@ fn extend_previous_cluster(
     true
 }
 
+/// An image the page's own content draws: its XObject and its bounds in
+/// page space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PageImage {
+    pub object: lopdf::ObjectId,
+    pub rect: [f64; 4],
+}
+
 /// Reads the editable text of a page.
 pub fn extract_page_text(
     document: &Document,
     page_index: u32,
     limits: &TextEditLimits,
 ) -> Result<PageTextLayer, TextEditError> {
+    extract_page_text_and_images(document, page_index, limits).map(|(layer, _)| layer)
+}
+
+/// [`extract_page_text`], with the images the page's own content draws, in
+/// drawing order.
+pub fn extract_page_text_and_images(
+    document: &Document,
+    page_index: u32,
+    limits: &TextEditLimits,
+) -> Result<(PageTextLayer, Vec<PageImage>), TextEditError> {
     let page = extract_page(document, page_index, limits)?;
+    let images = page
+        .draws
+        .iter()
+        .filter_map(|draw| {
+            Some(PageImage {
+                object: draw.image?,
+                rect: draw.bounds,
+            })
+        })
+        .collect::<Vec<_>>();
     let (rules, fills) = page.rules();
     let objects = page.objects(visible_page_box(document, page_index));
     let paragraphs = crate::pdf_structure::page_paragraph_elements(document, page.page_id);
-    Ok(PageTextLayer {
+    let layer = PageTextLayer {
         page_index,
         fonts: page
             .fonts
@@ -4934,7 +4999,14 @@ pub fn extract_page_text(
         rules,
         fills,
         objects,
-    })
+        // An encrypted file can forbid changing its content (owner
+        // restrictions, which open without a password).
+        content_restricted: document
+            .encryption_state
+            .as_ref()
+            .is_some_and(|state| !state.permissions().contains(lopdf::Permissions::MODIFIABLE)),
+    };
+    Ok((layer, images))
 }
 
 /// A page's crop box as left, bottom, right, top.

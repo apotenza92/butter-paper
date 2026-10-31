@@ -2,8 +2,54 @@
 use super::*;
 
 pub const DOCUMENT_STATUS_SCALE_ID: &str = "document-status-scale";
+pub const DOCUMENT_STATUS_MESSAGE_ID: &str = "document-status-message";
+
+/// How long a status message replaces the status bar's guidance.
+const STATUS_MESSAGE_SHOWN: std::time::Duration = std::time::Duration::from_secs(6);
 
 impl DocumentWorkspace {
+    /// Notes a new status message for the active document (why text cannot
+    /// be edited, a conversion's progress or failure) so the status bar
+    /// shows it, then clears it once it has been shown long enough, so the
+    /// same message shows again the next time it is set.
+    pub(super) fn refresh_status_message(&mut self, cx: &mut Context<Self>) {
+        let current = self.active_document_id.and_then(|document_id| {
+            Some((
+                document_id,
+                self.annotation_statuses.get(&document_id)?.clone(),
+            ))
+        });
+        let Some((document_id, text)) = current else {
+            self.status_message = None;
+            return;
+        };
+        if self
+            .status_message
+            .as_ref()
+            .is_some_and(|(shown, shown_text, _)| *shown == document_id && *shown_text == text)
+        {
+            return;
+        }
+        self.status_message = Some((document_id, text.clone(), std::time::Instant::now()));
+        cx.spawn(async move |workspace, cx| {
+            cx.background_executor().timer(STATUS_MESSAGE_SHOWN).await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                if workspace.annotation_statuses.get(&document_id) == Some(&text) {
+                    workspace.annotation_statuses.remove(&document_id);
+                }
+                if workspace
+                    .status_message
+                    .as_ref()
+                    .is_some_and(|(_, shown_text, _)| *shown_text == text)
+                {
+                    workspace.status_message = None;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn render_status_bar(
         &self,
         window: &Window,
@@ -137,6 +183,19 @@ impl DocumentWorkspace {
         });
         let navigation_tooltip = "Hold Space and drag to pan. Two-finger trackpad scrolling always scrolls. Pinch or Ctrl + trackpad scroll zooms. Mouse-wheel behaviour follows the view dropdown; Ctrl + wheel does the opposite.";
         let accessible_help = format!("{context_tooltip}. {navigation_tooltip}");
+        let message = self
+            .status_message
+            .as_ref()
+            .filter(|(document_id, _, shown)| {
+                Some(*document_id) == self.active_document_id
+                    && shown.elapsed() < STATUS_MESSAGE_SHOWN
+            })
+            .map(|(_, text, _)| text.clone());
+        let showing_message = message.is_some();
+        let accessible_help = match &message {
+            Some(message) => format!("{message}. {accessible_help}"),
+            None => accessible_help,
+        };
         h_flex()
             .id("document-status-bar")
             .debug_selector(|| "document-status-bar".into())
@@ -153,27 +212,48 @@ impl DocumentWorkspace {
             .bg(cx.theme().background)
             .text_color(cx.theme().muted_foreground)
             .text_xs()
-            .child(
-                gpui::div()
-                    .id("document-context-help")
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::element({
-                            let text = context_tooltip.clone();
-                            move |window, _| {
-                                gpui::div()
-                                    .w((window.viewport_size().width - window.rem_size() * 4.)
-                                        .min(window.rem_size() * 24.))
-                                    .whitespace_normal()
-                                    .child(text.clone())
+            .when_some(message, |bar, message| {
+                bar.child(
+                    gpui::div()
+                        .id(DOCUMENT_STATUS_MESSAGE_ID)
+                        .debug_selector(|| DOCUMENT_STATUS_MESSAGE_ID.into())
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(cx.theme().foreground)
+                        .tooltip({
+                            let message = message.clone();
+                            move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(message.clone())
+                                    .build(window, cx)
                             }
                         })
-                        .build(window, cx)
-                    })
-                    .child(context),
-            )
+                        .child(message),
+                )
+            })
+            .when(!showing_message, |bar| {
+                bar.child(
+                    gpui::div()
+                        .id("document-context-help")
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .tooltip(move |window, cx| {
+                            gpui_component::tooltip::Tooltip::element({
+                                let text = context_tooltip.clone();
+                                move |window, _| {
+                                    gpui::div()
+                                        .w((window.viewport_size().width - window.rem_size() * 4.)
+                                            .min(window.rem_size() * 24.))
+                                        .whitespace_normal()
+                                        .child(text.clone())
+                                }
+                            })
+                            .build(window, cx)
+                        })
+                        .child(context),
+                )
+            })
             .when_some(scale, |bar, (document_id, page_index, label)| {
                 bar.child(
                     Button::new(DOCUMENT_STATUS_SCALE_ID)

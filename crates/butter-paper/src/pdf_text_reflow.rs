@@ -67,6 +67,8 @@ pub struct Paragraph {
     format: ParagraphFormat,
     /// The table cell the paragraph is in.
     cell: Option<crate::pdf_text_blocks::BlockCell>,
+    /// Untagged text's ruled box: where its lines may run.
+    ruled: Option<(f64, f64)>,
     /// Every line is laid out afresh, though the text is unchanged: its
     /// cell's width changed.
     reflow: bool,
@@ -250,7 +252,13 @@ impl Paragraph {
         // A single line (a heading, a label) grows rather than wraps, as in
         // Revu; only a hard break starts a new line. A table cell's text
         // wraps at the cell's width, as in a word processor.
-        let grows = lines.len() == 1 && block.cell.is_none();
+        // Untagged text ruled round on all sides wraps within its box, as
+        // a cell's does.
+        let cell = block
+            .cell
+            .map(|cell| (cell.left, cell.right))
+            .or(block.ruled);
+        let grows = lines.len() == 1 && cell.is_none();
         let last = lines.last()?;
         let em = last
             .chars
@@ -327,7 +335,7 @@ impl Paragraph {
                 .filter(|start| *start > end)
                 .fold(f64::MAX, f64::min)
         };
-        if let Some(cell) = block.cell {
+        if let Some((cell_left, cell_right)) = cell {
             // A cell's text runs within the cell: left-aligned and justified
             // text from where it starts to the cell's right, right-aligned
             // text from the cell's left to where it ends, centred text
@@ -335,10 +343,10 @@ impl Paragraph {
             for edges in &mut page_edges {
                 *edges = match block.alignment {
                     TextBlockAlignment::Left | TextBlockAlignment::Justified => {
-                        (edges.0, cell.right.max(edges.0 + 1.))
+                        (edges.0, cell_right.max(edges.0 + 1.))
                     }
                     TextBlockAlignment::Right | TextBlockAlignment::Center => {
-                        (cell.left, cell.right.max(cell.left + 1.))
+                        (cell_left, cell_right.max(cell_left + 1.))
                     }
                 };
             }
@@ -402,6 +410,7 @@ impl Paragraph {
             breaks,
             format: ParagraphFormat::default(),
             cell: block.cell,
+            ruled: block.ruled,
             reflow: false,
         })
     }
@@ -416,6 +425,11 @@ impl Paragraph {
     /// The table cell the paragraph is in.
     pub fn cell(&self) -> Option<crate::pdf_text_blocks::BlockCell> {
         self.cell
+    }
+
+    /// Where untagged text ruled round on all sides may run.
+    pub fn ruled(&self) -> Option<(f64, f64)> {
+        self.ruled
     }
 
     /// The paragraph with settings chosen in place of the page's.
@@ -449,6 +463,11 @@ impl Paragraph {
 
     pub fn lines(&self) -> &[PageTextLine] {
         &self.lines
+    }
+
+    /// For each line, whether a hard break (not a wrap) follows it.
+    pub fn hard_breaks(&self) -> &[bool] {
+        &self.breaks
     }
 
     pub fn layer(&self) -> &Arc<PageTextLayer> {

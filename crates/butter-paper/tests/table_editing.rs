@@ -638,6 +638,81 @@ fn text_drawn_inside_a_table_is_not_overlapped_by_its_edits(cx: &mut TestAppCont
     assert!(cx.debug_bounds("content-warning-Overlaps").is_none());
 }
 
+/// An untagged report's ruled table (`word-table.pdf`, as in a user's Word
+/// report): its cells edit as a table's, each wrapped paragraph whole, and
+/// text that outgrows a cell grows its row, moving the rows below rather
+/// than running over them; only what lies below the table is labelled.
+#[gpui::test]
+fn an_untagged_ruled_table_grows_its_row_as_its_cell_text_grows(cx: &mut TestAppContext) {
+    let path = format!(
+        "{}/tests/fixtures/text-edit/word-table.pdf",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let layer = extract_page_text(
+        &lopdf::Document::load(&path).unwrap(),
+        0,
+        &TextEditLimits::default(),
+    )
+    .unwrap();
+    let tables = page_tables(&layer);
+    assert_eq!(tables.len(), 1, "the ruled grid is a table");
+    assert!(tables[0].tags.is_none());
+    let [_, _, width, height] = layer.page_box.unwrap();
+    let last = line_end(&layer, "at the back door for access.");
+    let closing = layer
+        .lines
+        .iter()
+        .find(|line| line.text.starts_with("Please contact the clinic"))
+        .unwrap()
+        .origin();
+    let (workspace, document_id, shown, cx) = table_workspace(cx, layer);
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .refresh_viewport_async(document_id, 900., 1000., 1., cx)
+            .unwrap();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let label = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.debug_bounds("content-warning-Overlaps")
+    };
+    // A click at the cell's end places the caret there.
+    let at = page_window_point(cx, document_id, 0, (width, height), last);
+    click_at(cx, at);
+    type_text(cx, " daily");
+    let edits = shown.lock().unwrap().last().cloned().unwrap();
+    let edited = edits
+        .text
+        .iter()
+        .filter(|edit| !edit.is_unchanged())
+        .map(|edit| edit.text())
+        .collect::<Vec<_>>();
+    assert_eq!(edited, ["at the back door for access. daily"]);
+    assert!(edits.tables.iter().all(|table| table.growth() <= 0.));
+    // Grown past the cell, the row grows and the rows below move with it.
+    type_text(
+        cx,
+        " and many more words that the cell cannot hold on its last line",
+    );
+    let edits = shown.lock().unwrap().last().cloned().unwrap();
+    assert!(
+        edits.tables.iter().any(|table| table.growth() > 5.),
+        "{:#?}",
+        edits.tables
+    );
+    // Only the paragraph below the table is run into, as with a declared
+    // table (content outside a table never moves): the label is under it,
+    // not over the next row.
+    let (left, baseline) = closing;
+    let under = page_window_point(cx, document_id, 0, (width, height), (left, baseline));
+    let bounds = label(cx).expect("the paragraph below the table is labelled");
+    assert!(
+        bounds.top() >= under.y && bounds.top() <= under.y + px(30.),
+        "the label {bounds:?} is under the paragraph below the table {under:?}"
+    );
+}
+
 #[path = "support/table_pages.rs"]
 mod table_pages;
 

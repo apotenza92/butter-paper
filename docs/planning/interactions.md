@@ -165,14 +165,27 @@ document, off when a document opens. While it is on, the Select tool works
 on the page's content wherever no markup or fillable field takes a press;
 the other tools draw markups as usual, and turning it on arms Select.
 
-For more than Edit PDF does, File > Convert and Open in Word saves any
-unsaved changes, has Microsoft Word convert the PDF into `Name.docx` beside
-it and opens it in Word. When `Name.docx` exists, a dialog asks first:
-Replace (Word closes its open copy first, unless that has unsaved
-changes), Keep Both (the new one as `Name 2.docx` and on) or Cancel. The
-status bar says while it converts, and what went wrong if it could not:
-no Word, no permission to control it, or unsaved changes in the copy open
-in Word.
+For more than Edit PDF does, File > Convert to Word Document saves any
+unsaved changes, then converts the PDF in the background into `Name.docx`
+beside it, on macOS, Windows and Linux alike, with no other app needed.
+When `Name.docx` exists, a dialog asks first: Replace, Keep Both (the new
+one as `Name 2.docx` and on) or Cancel. The status bar says while it
+converts, and what went wrong if it could not (an unreadable or
+password-protected PDF, or a `Name.docx` another app holds open). Once it
+is saved, a dialog offers Show in Finder (File Explorer, or the Linux file
+manager's name) and Open in the system's app for Word documents, named
+when the system says which (plain Open otherwise); Open is the default
+button, and the top-right X or Escape closes it.
+
+The converter writes what Edit PDF reads (see
+[decisions.md](decisions.md#interface)): paragraphs in reading order, top to
+bottom, with their font family, size, bold, italic, underline and colour,
+alignment, line spacing (at least the page's pitch) and the space above
+each from the gap above it on the page; tables as Word tables on their
+column grid with merged cells kept, bordered when the page rules them;
+images inline where they are drawn; and a section per page with its size
+and margins. Wrapped text runs on to the text area's edge, as the fonts in
+the word processor decide.
 
 - Markups and fillable fields come first, for hover and press alike. Then
   a press in text edits it, as in a word processor: a click places the
@@ -237,12 +250,21 @@ in Word.
 
 Edit PDF edits text a paragraph at a time, as Acrobat does.
 
-- Lines group into paragraphs only as the PDF's structure tree groups
-  them: the lines of one paragraph element (`P`, a heading, a caption, a
-  list's items, a cell's text) are one paragraph, in reading order even
-  across columns. A line in none, and every line of an untagged PDF, is a
-  paragraph of its own (it grows as typed rather than wrapping onto the
-  next line): nothing in the PDF says it continues another.
+- Lines group into paragraphs as the PDF's structure tree groups them:
+  the lines of one paragraph element (`P`, a heading, a caption, a list's
+  items, a cell's text) are one paragraph, in reading order even across
+  columns.
+- Lines in no paragraph element (every line of an untagged PDF) join only
+  where one wraps onto the next: upright, the same font and size, the same
+  left edge, an even line pitch of 0.9–1.75 em, no rule drawn between
+  them, and the line above full: the next line's first word, after a
+  space, would not have fitted before the column's edge. That edge is a
+  table cell's text edge, a box the page rules on all four sides (inset as
+  far from its right rule as the text starts from its left), or where at
+  least two lines starting at that edge end, within an em. Otherwise a line
+  is a paragraph of its own (it grows as typed rather than wrapping onto
+  the next line, unless ruled round, when it wraps within its box), as are
+  list items and centred or right-aligned lines.
 - Within a paragraph, its layout reads it: its alignment (a shared left,
   right or centre edge, or both edges, justified), its line spacing, a
   list's markers (the same bullet, or `1.` / `1)`, with wrapped lines at
@@ -291,8 +313,9 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   starts there too. A paragraph over two columns wraps through the first
   column's lines into the next column's.
 - Other text never moves. A paragraph that grows adds lines below its last
-  at its line spacing; when they overlap other text the frame turns to the
-  warning colour. Text made larger than the paragraph's own, or a chosen
+  at its line spacing; when any of its lines, moved by a chosen line
+  spacing or larger text too, covers other text it did not already cover,
+  a warning label says so. Text made larger than the paragraph's own, or a chosen
   line spacing, places every line afresh: the first keeps its baseline, each
   next is the line spacing times its largest text below, and at the foot of
   a column the next line starts at the top of the next column.
@@ -322,21 +345,27 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   like page text.
 - Text that cannot be edited (Type3 fonts, vertical text, CMaps other than
   Identity-H and Adobe's horizontal Unicode CMaps, invisible OCR text,
-  glyphs without Unicode, right-to-left text, a form drawn more than once on
-  the page, or a file whose permissions forbid changing content) is shown
-  with a not-allowed
-  cursor; a click explains why.
+  glyphs without Unicode, right-to-left text, or a form drawn more than once
+  on the page) is shown with a not-allowed cursor; a click explains why.
+- In a file whose permissions forbid changing its content (an owner
+  restriction, which opens without a password, as banks set on
+  statements), the first press on its content, or selecting it, asks "Edit
+  a protected PDF?": Cancel leaves it alone and asks again next time, Edit
+  anyway allows editing for that document. Markups and form fields never
+  ask. The saved file keeps its encryption and permissions.
 - In a digitally signed PDF the first press asks "Edit content in a signed
   PDF?" (saving invalidates the signatures); Cancel leaves the text alone
   and asks again next time, Edit PDF allows editing for that document.
 
 ### Tables
 
-A table is what the document's structure tree declares (Tagged PDF), and
-nothing else: its cells hold the text drawn in their marked content, so
-text running past a border is still its cell's. A ruled grid with no
-declared table is drawing, and its text edits as ordinary paragraphs, as in
-Acrobat and Revu. A row or column reaches as far as its cells' text; its
+A table is what the document's structure tree declares (Tagged PDF): its
+cells hold the text drawn in their marked content, so text running past a
+border is still its cell's. Where no declared table covers it, a grid the
+page's rules close on every side, with at least one inner rule and some
+text, is a table too (an untagged report's): a cell spans the grid units no
+rule divides, and holds the lines whose middle is inside it. A row or
+column reaches as far as its cells' text; its
 edges sit on the borders the page draws between rows and columns (else
 midway), so a border stays its row's as the row grows. Rows at a page's
 top or bottom whose text is drawn on another page are that page's.
@@ -583,7 +612,10 @@ with it.
   pause for 400 ms, so typing never waits behind it.
 - A full-width bottom status bar explains the active tool and navigation
   shortcuts while a document is open. Empty windows omit it. Narrow windows
-  show shorter guidance; full help remains in tooltips.
+  show shorter guidance; full help remains in tooltips. A status message
+  (why text cannot be edited, a save or conversion's progress or result)
+  replaces the tool's guidance, in the stronger text colour, for six
+  seconds.
 - *Native:* a pan (Pan tool, Space or middle button) goes past the pages into
   blank space until 48px of a page stays in view; zooming over blank space
   keeps the page where it is. Scrolling stops at the pages' margins, as a

@@ -248,6 +248,9 @@ impl DocumentWorkspace {
         let Some((key, edge)) = self.table_column_edge_at(interaction, point, cx) else {
             return false;
         };
+        if self.hold_restricted_content(interaction.document_id, interaction.page_index, cx) {
+            return true;
+        }
         self.commit_page_text_editing(cx);
         let (document_id, page_index) = (interaction.document_id, interaction.page_index);
         let Some((_, _, tables)) = self.loaded_page_text(document_id, page_index) else {

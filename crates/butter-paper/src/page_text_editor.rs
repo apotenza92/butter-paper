@@ -1604,6 +1604,7 @@ mod tests {
             rules: Vec::new(),
             fills: Vec::new(),
             objects: Vec::new(),
+            content_restricted: false,
         })
     }
 
@@ -1618,6 +1619,7 @@ mod tests {
             edges: Vec::new(),
             list: None,
             cell: None,
+            ruled: None,
         };
         let layer = layer(lines);
         let paragraph = Paragraph::new(layer, &block).unwrap();

@@ -848,7 +848,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "butter-paper"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "aes-gcm",
  "async-channel",
@@ -857,8 +857,10 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
  "cosmic-text",
+ "crc32fast",
  "dunce",
  "embed-resource",
+ "flate2",
  "getrandom 0.3.4",
  "gpui",
  "gpui-component",

@@ -708,7 +708,9 @@ impl DocumentWorkspace {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
-        if group.is_empty() {
+        if group.is_empty()
+            || self.hold_restricted_content(interaction.document_id, interaction.page_index, cx)
+        {
             return;
         }
         let document_id = interaction.document_id;
@@ -901,7 +903,7 @@ impl DocumentWorkspace {
             .zip(selected)
             .filter_map(|(group, selected)| selected.then_some(group))
             .collect::<Vec<_>>();
-        if !groups.is_empty() {
+        if !groups.is_empty() && !self.hold_restricted_content(document_id, page_index, cx) {
             self.content_selection = Some(ContentSelection {
                 document_id,
                 page_index,
@@ -936,7 +938,7 @@ impl DocumentWorkspace {
             return;
         };
         let group = self.paragraph_content(document_id, page_index, &block, cx);
-        if group.is_empty() {
+        if group.is_empty() || self.hold_restricted_content(document_id, page_index, cx) {
             return;
         }
         self.content_selection = Some(ContentSelection {

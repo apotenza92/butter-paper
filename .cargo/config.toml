@@ -4,5 +4,10 @@
 [env]
 RUST_MIN_STACK = "8388608"
 
+# Windows builds carry the C runtime, so the app starts on a PC without the
+# Visual C++ redistributable (the zip installs nothing else).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [alias]
 xtask = "run --quiet --package xtask --"

@@ -15,7 +15,8 @@ use butter_paper::document_resource::{
     NativeDocumentResource, OpenedNativeDocument, RasterSurface, ThumbnailSurface,
 };
 use butter_paper::document_workspace::{
-    DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID, DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID, DeferredStartupOpen,
+    DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID, DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID,
+    DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID, DOCUMENT_STATUS_MESSAGE_ID, DeferredStartupOpen,
     DocumentWorkspace, NativeDocumentOpener, OpenDocumentRequest, StartupRecoveryAvailability,
     StartupRecoveryItem, document_annotation_layer_id, init_document_workspace_actions,
 };
@@ -1277,6 +1278,100 @@ fn recovered_text_edits_are_shown_and_stay_undoable(cx: &mut TestAppContext) {
             .rfind(|event| event.starts_with("edits"))
             .map(String::as_str),
         Some("edits []")
+    );
+}
+
+/// A click on text that cannot be edited says why in the status bar, for a
+/// few seconds, in place of its guidance.
+#[gpui::test]
+fn a_click_on_read_only_text_says_why_in_the_status_bar(cx: &mut TestAppContext) {
+    let mut layer = page_text_layer();
+    for line in &mut layer.lines {
+        line.read_only = Some("the text has characters without a Unicode mapping".into());
+    }
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let (workspace, document_id, _shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_STATUS_MESSAGE_ID).is_none());
+    let hello_width = 0.556 * 3. + 0.222 * 2.;
+    click_page_point(
+        cx,
+        document_id,
+        space,
+        Rotation::Degrees0,
+        (50. + 40. * hello_width + 1., 410.),
+    );
+    for _ in 0..2 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert!(
+        cx.debug_bounds(DOCUMENT_STATUS_MESSAGE_ID).is_some(),
+        "the reason shows in the status bar"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some(
+            "This text cannot be edited: the text has characters without a Unicode mapping".into()
+        )
+    );
+}
+
+/// A file whose permissions protect its content (an owner restriction, as
+/// banks set on statements): the first press on its text asks whether to
+/// edit it anyway and edits nothing; once agreed, a click edits the text.
+#[gpui::test]
+fn editing_a_protected_pdf_asks_first(cx: &mut TestAppContext) {
+    let mut layer = page_text_layer();
+    layer.content_restricted = true;
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let (_workspace, document_id, shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let hello_width = 0.556 * 3. + 0.222 * 2.;
+    let at = (50. + 40. * hello_width + 1., 410.);
+    click_page_point(cx, document_id, space, Rotation::Degrees0, at);
+    for _ in 0..2 {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    let confirm = cx
+        .debug_bounds(DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID)
+        .expect("a protected PDF asks before its text is edited");
+    cx.simulate_keystrokes("X");
+    cx.run_until_parked();
+    assert!(shown.lock().unwrap().is_empty(), "nothing is edited");
+
+    cx.simulate_click(confirm.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID)
+            .is_none()
+    );
+    click_page_point(cx, document_id, space, Rotation::Degrees0, at);
+    cx.simulate_keystrokes("X");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    assert!(
+        shown
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|edits| edits[0].text().contains('X')),
+        "{:?}",
+        shown.lock().unwrap().last()
     );
 }
 

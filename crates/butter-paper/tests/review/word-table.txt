@@ -1,0 +1,36 @@
+# Untagged report review: a copy of tests/fixtures/text-edit/word-table.pdf,
+# laid out as a Word report saved without tags. Coordinates are window
+# content points below the title bar for a 1300 x 900 window.
+wait 1500
+place 0 120 120 1300 900
+wait 1500
+shot opened
+# Edit PDF outlines each wrapped cell paragraph as one.
+key 0 shift-t
+wait 1000
+move 0 545 510
+wait 600
+shot hover
+# A user's edit: "There" on the cell's third line becomes "These". The
+# paragraph rewraps in its cell; nothing is drawn over its neighbours.
+click 0 545 510 2
+wait 1200
+shot selected
+type 0 These
+wait 1500
+shot edited
+# Grown past its cell, it covers the next row: a warning says so.
+type 0  The family plans to add a second rail beside the steps to the shower next month.
+wait 1500
+shot outgrown
+key 0 escape
+wait 1500
+shot committed
+# Convert to Word Document saves first, then offers to show or open it.
+convert-to-word
+wait 8000
+shot converted
+key 0 escape
+wait 800
+shot closed
+quit

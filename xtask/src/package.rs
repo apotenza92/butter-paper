@@ -661,8 +661,6 @@ pub fn info_plist(channel: Channel, version: Version) -> String {
   <string>Butter Paper uses the camera only when you choose to take a signature photo.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Butter Paper uses your local network only when you choose to transfer a signature from your phone.</string>
-  <key>NSAppleEventsUsageDescription</key>
-  <string>Butter Paper asks Microsoft Word to convert a PDF only when you choose Convert and Open in Word.</string>
 </dict>
 </plist>
 "#
@@ -681,13 +679,12 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
     }
     let profile = std::env::var("BP_NOTARY_PROFILE").map_err(|_| "BP_NOTARY_PROFILE is not set")?;
     let identifier = channel.bundle_identifier();
-    // `camera` for the signature camera; `app` for the app itself, which
-    // asks Word to convert a PDF (Convert and Open in Word).
+    // `camera` for the signature camera; the app itself and everything else
+    // need no entitlements beyond the hardened runtime.
     let entitlements = |name: &str| -> Result<PathBuf> {
         let path = work.join(format!("{name}.entitlements"));
         let body = match name {
             "camera" => "\n\t<key>com.apple.security.device.camera</key>\n\t<true/>\n",
-            "app" => "\n\t<key>com.apple.security.automation.apple-events</key>\n\t<true/>\n",
             _ => "",
         };
         write(
@@ -737,7 +734,7 @@ fn sign_and_notarise(channel: Channel, app: &Path, contents: &Path, work: &Path)
         format!("{identifier}.signature-camera"),
         &entitlements("camera")?,
     )?;
-    codesign(app, identifier.to_string(), &entitlements("app")?)?;
+    codesign(app, identifier.to_string(), &plain)?;
 
     let submission = work.join("notarisation.zip");
     exec(

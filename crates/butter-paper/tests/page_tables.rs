@@ -187,6 +187,48 @@ fn a_grown_row_moves_the_rows_below_and_their_borders() {
     }
 }
 
+/// An untagged page's ruled table (`word-table.pdf`, a Word report saved
+/// without tags) grows a row as a declared table does: the rows below and
+/// their borders move down, and the written page's table has the grown row.
+#[test]
+fn an_untagged_ruled_table_grows_a_row() {
+    let mut document = producer("word-table");
+    let before = layer(&document);
+    let table = page_tables(&before).remove(0);
+    assert!(table.tags.is_none(), "untagged: found from its rules");
+    assert_eq!((table.row_count(), table.column_count()), (3, 2));
+    let mut edit = PageTableEdit::unchanged(0, &table);
+    edit.rows[0].size += 20.;
+    apply_content_edits(
+        &mut document,
+        &[],
+        &[edit.clone()],
+        &moved_below(&before, &table, 20.),
+        &TextEditLimits::default(),
+    )
+    .unwrap();
+    let after = layer(&reload(&mut document));
+    let (old, new) = (origins(&before), origins(&after));
+    for text in ["Home assessment", "Home Visit Assessment:"] {
+        assert_eq!(origin_of(&old, text), origin_of(&new, text), "{text}");
+    }
+    for text in [
+        "Steps",
+        "Mobility and transfers",
+        "Sam reports no falls in the past year.",
+    ] {
+        let (x0, y0) = origin_of(&old, text);
+        let (x1, y1) = origin_of(&new, text);
+        assert!((x1 - x0).abs() < 0.01, "{text} {x0} {x1}");
+        assert!((y0 - y1 - 20.).abs() < 0.01, "{text} {y0} {y1}");
+    }
+    let tables = page_tables(&after);
+    assert_eq!(tables.len(), 1);
+    for (row, (found, wanted)) in tables[0].rows.iter().zip(edit.output_rows()).enumerate() {
+        assert!((found - wanted).abs() < 0.6, "row {row} {found} {wanted}");
+    }
+}
+
 #[test]
 fn deleted_and_new_rows_and_columns_read_back() {
     for name in PRODUCERS {

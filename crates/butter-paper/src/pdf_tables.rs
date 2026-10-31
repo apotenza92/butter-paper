@@ -334,11 +334,230 @@ pub fn page_tables(layer: &PageTextLayer) -> Vec<PageTable> {
         .iter()
         .filter_map(|tagged| declared_table(layer, tagged))
         .collect::<Vec<_>>();
+    // Grids the page rules that no declared table covers: an untagged
+    // page's tables.
+    for ruled in ruled_tables(layer) {
+        let [left, bottom, right, top] = ruled.bounds();
+        let overlaps = tables.iter().any(|table| {
+            let [l, b, r, t] = table.bounds();
+            left < r && l < right && bottom < t && b < top
+        });
+        if !overlaps {
+            tables.push(ruled);
+        }
+    }
     tables.sort_by(|a, b| {
         b.rows[0]
             .total_cmp(&a.rows[0])
             .then(a.columns[0].total_cmp(&b.columns[0]))
     });
+    tables
+}
+
+// Ruled grids
+
+/// How close rules count as one edge, in points (a border drawn by each of
+/// two cells, a double border).
+const EDGE_TOLERANCE: f64 = 2.;
+/// A row or column narrower than this, in points, is a double border's gap.
+const MIN_BAND: f64 = 3.;
+
+/// The share of `from`..`to` along line `at` that rules of the given
+/// direction cover.
+fn ruled_share(rules: &[PageRule], horizontal: bool, at: f64, from: f64, to: f64) -> f64 {
+    if to - from <= 0. {
+        return 0.;
+    }
+    let mut spans = rules
+        .iter()
+        .filter(|rule| rule.horizontal == horizontal && (rule.at - at).abs() <= EDGE_TOLERANCE)
+        .map(|rule| (rule.from.max(from), rule.to.min(to)))
+        .filter(|(start, end)| end > start)
+        .collect::<Vec<_>>();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (mut covered, mut reach) = (0., from);
+    for (start, end) in spans {
+        let start = start.max(reach);
+        if end > start {
+            covered += end - start;
+            reach = end;
+        }
+    }
+    covered / (to - from)
+}
+
+/// Whether the page rules round `bounds` (left, bottom, right, top).
+pub fn ruled_outline(rules: &[PageRule], [left, bottom, right, top]: [f64; 4]) -> bool {
+    [
+        ruled_share(rules, true, top, left, right),
+        ruled_share(rules, true, bottom, left, right),
+        ruled_share(rules, false, left, bottom, top),
+        ruled_share(rules, false, right, bottom, top),
+    ]
+    .iter()
+    .all(|share| *share >= 0.9)
+}
+
+/// Positions within [`EDGE_TOLERANCE`] of each other as one, ascending.
+fn edges(mut positions: Vec<f64>) -> Vec<f64> {
+    positions.sort_by(f64::total_cmp);
+    let mut edges: Vec<f64> = Vec::new();
+    for position in positions {
+        match edges.last() {
+            Some(last) if position - last <= MIN_BAND.max(EDGE_TOLERANCE) => {}
+            _ => edges.push(position),
+        }
+    }
+    edges
+}
+
+/// Grids the page rules round on all sides, with at least one rule inside
+/// and some text: the tables of an untagged page (a Word report saved
+/// without tags), which Edit PDF edits and the Word document converter
+/// writes as tables. A cell spans the grid units no rule divides.
+pub fn ruled_tables(layer: &PageTextLayer) -> Vec<PageTable> {
+    let rules = &layer.rules;
+    // Rules that touch, in connected groups.
+    let mut group = (0..rules.len()).collect::<Vec<_>>();
+    fn root(group: &mut [usize], mut index: usize) -> usize {
+        while group[index] != index {
+            group[index] = group[group[index]];
+            index = group[index];
+        }
+        index
+    }
+    let touches = |a: &PageRule, b: &PageRule| {
+        if a.horizontal == b.horizontal {
+            (a.at - b.at).abs() <= EDGE_TOLERANCE
+                && a.from <= b.to + EDGE_TOLERANCE
+                && b.from <= a.to + EDGE_TOLERANCE
+        } else {
+            let (h, v) = if a.horizontal { (a, b) } else { (b, a) };
+            v.at >= h.from - EDGE_TOLERANCE
+                && v.at <= h.to + EDGE_TOLERANCE
+                && h.at >= v.from - EDGE_TOLERANCE
+                && h.at <= v.to + EDGE_TOLERANCE
+        }
+    };
+    if rules.len() > 4_000 {
+        return Vec::new();
+    }
+    for a in 0..rules.len() {
+        for b in a + 1..rules.len() {
+            if touches(&rules[a], &rules[b]) {
+                let (ra, rb) = (root(&mut group, a), root(&mut group, b));
+                group[ra] = rb;
+            }
+        }
+    }
+    let mut components = std::collections::BTreeMap::<usize, Vec<&PageRule>>::new();
+    for (index, rule) in rules.iter().enumerate() {
+        let key = root(&mut group, index);
+        components.entry(key).or_default().push(rule);
+    }
+    let mut tables = Vec::new();
+    for component in components.values() {
+        let columns = edges(
+            component
+                .iter()
+                .filter(|rule| !rule.horizontal)
+                .map(|rule| rule.at)
+                .collect(),
+        );
+        let mut rows = edges(
+            component
+                .iter()
+                .filter(|rule| rule.horizontal)
+                .map(|rule| rule.at)
+                .collect(),
+        );
+        rows.reverse();
+        if columns.len() < 2 || rows.len() < 2 || columns.len() + rows.len() < 5 {
+            continue;
+        }
+        let bounds = [
+            columns[0],
+            rows[rows.len() - 1],
+            columns[columns.len() - 1],
+            rows[0],
+        ];
+        if !ruled_outline(rules, bounds) {
+            continue;
+        }
+        let (row_count, column_count) = (rows.len() - 1, columns.len() - 1);
+        let mut taken = vec![vec![false; column_count]; row_count];
+        let mut cells = Vec::new();
+        for row in 0..row_count {
+            for column in 0..column_count {
+                if taken[row][column] {
+                    continue;
+                }
+                let mut column_span = 1;
+                while column + column_span < column_count
+                    && !taken[row][column + column_span]
+                    && ruled_share(
+                        rules,
+                        false,
+                        columns[column + column_span],
+                        rows[row + 1],
+                        rows[row],
+                    ) < 0.5
+                {
+                    column_span += 1;
+                }
+                let mut row_span = 1;
+                while row + row_span < row_count
+                    && (column..column + column_span).all(|unit| !taken[row + row_span][unit])
+                    && ruled_share(
+                        rules,
+                        true,
+                        rows[row + row_span],
+                        columns[column],
+                        columns[column + column_span],
+                    ) < 0.5
+                {
+                    row_span += 1;
+                }
+                for taken_row in &mut taken[row..row + row_span] {
+                    for unit in &mut taken_row[column..column + column_span] {
+                        *unit = true;
+                    }
+                }
+                cells.push(TableCell {
+                    row,
+                    column,
+                    row_span,
+                    column_span,
+                    lines: Vec::new(),
+                });
+            }
+        }
+        let mut table = PageTable {
+            columns,
+            rows,
+            cells,
+            read_only: None,
+            tags: None,
+        };
+        let mut lines = layer
+            .lines
+            .iter()
+            .filter(|line| !line.text.trim().is_empty())
+            .filter_map(|line| {
+                let [left, bottom, right, top] = line_core_box(line)?;
+                let cell = table.cell_at((left + right) / 2., (bottom + top) / 2.)?;
+                Some((cell, line.origin().1, line.anchor))
+            })
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            continue;
+        }
+        lines.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (cell, _, anchor) in lines {
+            table.cells[cell].lines.push(anchor);
+        }
+        tables.push(table);
+    }
     tables
 }
 
@@ -1262,6 +1481,24 @@ impl BandMap {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rules_cover_a_share_of_an_edge() {
+        let rule = |at: f64, from: f64, to: f64| PageRule {
+            horizontal: true,
+            at,
+            from,
+            to,
+            width: 0.5,
+        };
+        let rules = [
+            rule(100., 0., 40.),
+            rule(100.5, 30., 60.),
+            rule(200., 0., 100.),
+        ];
+        assert!((ruled_share(&rules, true, 100., 0., 100.) - 0.6).abs() < 1e-9);
+        assert_eq!(ruled_share(&rules, false, 100., 0., 100.), 0.);
+    }
+
     use super::*;
     use crate::pdf_text_edit::{TextLineChar, TextRunStyle};
 
@@ -1445,15 +1682,30 @@ mod tests {
     }
 
     #[test]
-    fn a_ruled_grid_the_document_does_not_declare_is_drawing() {
+    fn a_ruled_grid_the_document_does_not_declare_is_found_from_its_rules() {
+        let declared = page_tables(&grid_layer()).remove(0);
         let mut layer = grid_layer();
         layer.tagged_tables.clear();
-        assert!(page_tables(&layer).is_empty());
-        // Nor does a declared table with none of its text on the page.
+        let tables = page_tables(&layer);
+        assert_eq!(tables.len(), 1);
+        assert!(tables[0].tags.is_none());
+        assert_eq!(
+            (tables[0].row_count(), tables[0].column_count()),
+            (declared.row_count(), declared.column_count())
+        );
+        assert!(tables[0].cells.iter().all(|cell| cell.lines.len() == 1));
+        // So is a declared table with none of its text on the page.
         let mut layer = grid_layer();
         for line in &mut layer.lines {
             line.marked_content_ids.clear();
         }
+        let tables = page_tables(&layer);
+        assert_eq!(tables.len(), 1);
+        assert!(tables[0].tags.is_none());
+        // A grid without rules is nothing.
+        let mut layer = grid_layer();
+        layer.tagged_tables.clear();
+        layer.rules.clear();
         assert!(page_tables(&layer).is_empty());
     }
 

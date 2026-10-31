@@ -217,14 +217,12 @@ impl TableView {
     }
 }
 
-/// Why `table`'s rows cannot be added or deleted, if they cannot: only a
-/// table the document declares, wholly on its page, without merged cells,
-/// keeps its structure true to its rows.
+/// Why `table`'s rows cannot be added or deleted, if they cannot: a table
+/// wholly on its page, without merged cells (a declared one keeps its
+/// structure true to its rows; an untagged page's ruled one has none).
 pub fn row_change_blocked(table: &PageTable) -> Option<String> {
-    let Some(tags) = &table.tags else {
-        return Some("The document does not declare this table".into());
-    };
-    if tags.continues {
+    // An untagged page's ruled table has no structure to keep in step.
+    if table.tags.as_ref().is_some_and(|tags| tags.continues) {
         return Some("The table continues on another page".into());
     }
     if table
@@ -243,10 +241,7 @@ pub fn row_change_blocked(table: &PageTable) -> Option<String> {
 /// Why `table`'s columns cannot be resized, if they cannot: a table that
 /// continues on another page keeps its columns as they are there.
 pub fn column_change_blocked(table: &PageTable) -> Option<String> {
-    let Some(tags) = &table.tags else {
-        return Some("The document does not declare this table".into());
-    };
-    if tags.continues {
+    if table.tags.as_ref().is_some_and(|tags| tags.continues) {
         return Some("The table continues on another page".into());
     }
     table

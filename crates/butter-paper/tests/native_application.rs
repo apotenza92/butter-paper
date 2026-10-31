@@ -98,10 +98,10 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert!(!item(file, "Save").is_disabled());
     assert!(!item(file, "Save As…").is_disabled());
     assert!(!item(file, "Save Document as Template…").is_disabled());
-    assert_action(item(file, "Convert and Open in Word"), |action| {
+    assert_action(item(file, "Convert to Word Document"), |action| {
         action.as_any().is::<ConvertToWord>()
     });
-    assert!(!item(file, "Convert and Open in Word").is_disabled());
+    assert!(!item(file, "Convert to Word Document").is_disabled());
 
     let edit = menu(&menus, "Edit");
     assert_eq!(
@@ -350,7 +350,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             "Save Document as Template…",
             "<separator>",
             "Merge Documents…",
-            "Convert and Open in Word",
+            "Convert to Word Document",
         ]
     );
     assert_eq!(

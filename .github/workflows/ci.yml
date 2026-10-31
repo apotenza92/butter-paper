@@ -58,13 +58,13 @@ jobs:
           set -euo pipefail
           cargo xtask pdfium
           export BP_PDFIUM_LIBRARY="$PWD/target/pdfium/aarch64-apple-darwin/libpdfium.dylib"
-          # Skipped: tests that need a local fixture, harness, network relay
-          # or Metal device, and timing benchmarks.
+          # Skipped: tests that need a local fixture, harness, network relay,
+          # Metal device or LibreOffice, and timing benchmarks.
           cargo test --workspace --locked -- --ignored \
             --skip relay --skip bench_ --skip metal --skip highlight_cost \
             --skip specimen --skip real_enospc \
             --skip for_manual_review --skip external_revu_font \
-            --skip renders_public_pdf --skip pdf_corpus
+            --skip renders_public_pdf --skip pdf_corpus --skip libreoffice_opens
 
   windows:
     runs-on: windows-2025

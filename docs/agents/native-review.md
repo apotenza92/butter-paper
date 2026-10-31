@@ -49,6 +49,53 @@ not prove that LaunchServices delivered it.
   finding with a synthetic fixture before fixing it; never add the user's
   documents to the repository.
 
+## Linux (GNOME on Wayland)
+
+Xvfb draws only black windows (see [backlog.md](../planning/backlog.md)). On a
+GNOME desktop, `scripts/gnome-headless/run.sh` instead runs a command as a
+Wayland client of a private headless GNOME Shell with a virtual monitor,
+independent of the logged-in desktop, the real screen and a closed lid; the
+session ends with the command. Inside it, `shot.py OUT.png` captures the
+monitor through Mutter's ScreenCast API, `key.py [KEYSYM_HEX]` presses a key
+and `pointer.py move X Y` or `pointer.py drag X1 Y1 X2 Y2` moves the pointer
+in monitor pixels, for operating-system input the review driver cannot send,
+such as resizing a window from its edge (the hit zone reaches 4px outside
+the border). They need `gnome-shell`, `python3-gi`, `gstreamer1.0-tools`,
+`gstreamer1.0-pipewire`, `gstreamer1.0-plugins-base`,
+`gstreamer1.0-plugins-good` and the user's PipeWire. The Edit PDF review:
+
+```sh
+cargo build --locked -p butter-paper --bins --features review-driver
+review=$PWD/target/review; mkdir -p "$review"
+cp crates/butter-paper/tests/fixtures/text-edit/libreoffice.pdf "$review/fixture.pdf"
+BP_NATIVE_DEVELOPMENT=1 BP_GPUI_DATA_DIR="$review/profile" BP_PDFIUM_LIBRARY="$(cargo xtask pdfium)" \
+BP_REVIEW_SCRIPT="$PWD/crates/butter-paper/tests/review/edit-pdf-content.txt" \
+BP_REVIEW_OUT="$review/captures" BP_REVIEW_CAPTURE_CMD="$PWD/scripts/gnome-headless/shot.py {path}" \
+timeout 300 scripts/gnome-headless/run.sh target/debug/butter-paper "$review/fixture.pdf"
+```
+
+`tests/review/word-table.txt`, run the same way against a copy of
+`tests/fixtures/text-edit/word-table.pdf`, reviews an untagged report's cell
+editing and Convert to Word Document.
+
+To run `cargo xtask dev` on the logged-in desktop from an SSH shell, set
+`WAYLAND_DISPLAY=wayland-0` (and `XDG_RUNTIME_DIR=/run/user/$(id -u)` if the
+shell lacks it). GPUI uses the GPU the compositor draws on, through Vulkan;
+`ZED_DEVICE_ID=0x<PCI device id>` picks another GPU, and pointing
+`VK_DRIVER_FILES` at a missing file hides Vulkan to check OpenGL.
+
+## Windows builds from Linux
+
+`cargo xwin clippy|build --target x86_64-pc-windows-msvc` (cargo-xwin, with
+`llvm-lib`, `lld-link` and `llvm-rc` on the path) checks and builds the
+Windows app without Windows; `cargo xtask pdfium --target
+x86_64-pc-windows-msvc` fetches its PDFium. A debug build run on another
+Windows machine needs the VC++ runtime there and reads GPUI's shaders
+(`gpui_windows/src/*.hlsl`) from the build machine's path, so copy them to
+the same path on the Windows machine's `C:` drive; release builds embed
+them but need the Windows SDK's `fxc.exe` to build. Start it on the
+logged-in desktop (a scheduled task with `/it`), not from an SSH session.
+
 ## Review and handoff
 
 Inspect the actual final screenshots in a separate contradiction-seeking pass,

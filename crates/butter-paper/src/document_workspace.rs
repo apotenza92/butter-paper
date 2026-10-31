@@ -60,6 +60,7 @@ mod empty;
 mod settings_popovers;
 #[path = "document_workspace_status_bar.rs"]
 mod status_bar;
+pub use status_bar::{DOCUMENT_STATUS_MESSAGE_ID, DOCUMENT_STATUS_SCALE_ID};
 #[path = "document_workspace_tabs.rs"]
 mod tabs;
 #[path = "document_workspace_root.rs"]
@@ -599,6 +600,8 @@ pub const DOCUMENT_SIGNED_TEXT_EDIT_DIALOG_ID: &str = "document-workspace-signed
 pub const DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID: &str =
     "document-workspace-signed-text-edit-confirm";
 pub const DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID: &str = "document-workspace-signed-text-edit-cancel";
+pub const DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID: &str = "document-workspace-restricted-edit-confirm";
+pub const DOCUMENT_RESTRICTED_EDIT_CANCEL_ID: &str = "document-workspace-restricted-edit-cancel";
 /// The Open and New actions above the tool rail.
 pub const DOCUMENT_WORKSPACE_TAB_ACTIONS_ID: &str = "document-workspace-tab-actions";
 pub const DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID: &str =
@@ -2759,13 +2762,16 @@ pub struct DocumentWorkspace {
     pending_close_document_id: Option<DocumentId>,
     pending_publication_warning_generation: Option<u64>,
     close_after_save_document_id: Option<DocumentId>,
-    /// The document to convert to Word once its save finishes.
+    /// The document to convert to a Word document once its save finishes.
     word_after_save: Option<DocumentId>,
-    /// Documents Word is converting now.
+    /// Documents being converted now.
     word_conversions: HashSet<DocumentId>,
     /// A conversion that would replace an existing Word document, waiting
     /// for the next render to ask about it: the document and its PDF.
     word_replace_prompt: Option<(DocumentId, PathBuf)>,
+    /// A finished conversion, waiting for the next render to offer showing
+    /// or opening it, or to say why it failed.
+    word_converted: Option<Result<word::ConvertedWordDocument, String>>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
     session_tab_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
     /// A New Tab is open and showing the start page (Open, recent files),
@@ -2878,6 +2884,16 @@ pub struct DocumentWorkspace {
     /// Signed documents whose content the user chose to edit (or whose
     /// fields to fill) anyway.
     page_text_signed_confirmed: HashSet<DocumentId>,
+    /// Documents whose content their permissions protect, where the user
+    /// agreed to edit it anyway.
+    content_restriction_confirmed: HashSet<DocumentId>,
+    /// A protected document whose content the user started to edit, waiting
+    /// for the next render to ask whether to edit it anyway.
+    restricted_edit_prompt: Option<DocumentId>,
+    /// The active document's latest status message and when it was first
+    /// shown: the status bar shows it for a few seconds in place of its
+    /// guidance.
+    status_message: Option<(DocumentId, String, std::time::Instant)>,
     /// Documents with a page render for navigation in flight. Navigation
     /// requested meanwhile only moves `requested_page`; the next render
     /// starts from there when this one is shown.
@@ -4431,6 +4447,7 @@ impl DocumentWorkspace {
             word_after_save: None,
             word_conversions: HashSet::new(),
             word_replace_prompt: None,
+            word_converted: None,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
             new_tab_open: false,
@@ -4501,6 +4518,9 @@ impl DocumentWorkspace {
             page_text_editing: None,
             page_text_hover: None,
             page_text_signed_confirmed: HashSet::new(),
+            content_restriction_confirmed: HashSet::new(),
+            restricted_edit_prompt: None,
+            status_message: None,
             navigation_in_flight: HashSet::new(),
             text_selection: None,
             text_selection_hover: None,
@@ -24976,6 +24996,13 @@ impl Render for DocumentWorkspace {
             // take the keyboard focus.
             cx.defer_in(window, Self::open_word_replace_prompt);
         }
+        if self.word_converted.is_some() {
+            cx.defer_in(window, Self::open_word_converted_dialog);
+        }
+        if self.restricted_edit_prompt.is_some() {
+            cx.defer_in(window, Self::open_restricted_edit_prompt);
+        }
+        self.refresh_status_message(cx);
         if let Some(document_id) = self.active_document_id {
             self.sync_document_edits(document_id, cx);
             self.prefetch_page_text(document_id, cx);

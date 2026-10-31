@@ -5316,7 +5316,13 @@ mod review_driver {
                         cx.update(|cx| {
                             if let Some(entry) = document_window_entries(cx).get(window).cloned() {
                                 let _ = entry.handle.update(cx, |_, window, _| {
-                                    window.resize(size);
+                                    // A client-decorated window's size includes the
+                                    // shadow margin around its content.
+                                    let margin = gpui_component::window_paddings(window);
+                                    window.resize(gpui::size(
+                                        size.width + margin.left + margin.right,
+                                        size.height + margin.top + margin.bottom,
+                                    ));
                                     window.set_origin(origin);
                                 });
                             }
@@ -5729,25 +5735,30 @@ mod review_driver {
         mut position: Point<Pixels>,
         cx: &mut App,
     ) -> Point<Pixels> {
-        let drawn = entry
+        let (drawn, margin) = entry
             .handle
             .update(cx, |_, window, _| {
-                butter_paper::window_title_bar::uses_window_title_bar(window)
+                (
+                    butter_paper::window_title_bar::uses_window_title_bar(window),
+                    gpui_component::window_paddings(window),
+                )
             })
-            .unwrap_or(false);
+            .unwrap_or((false, Default::default()));
         if drawn {
             position.y -= gpui_component::TITLE_BAR_HEIGHT;
         }
+        position.x -= margin.left;
+        position.y -= margin.top;
         position
     }
 
     /// Script points are measured from below the title bar, so one script
     /// serves macOS (AppKit's title bar) and platforms where the app draws
-    /// its own title bar inside the window.
+    /// its own title bar inside the window. A client-decorated window (Linux
+    /// on Wayland) also has a shadow margin around its content.
     fn below_title_bar(window: &gpui::Window, mut event: PlatformInput) -> PlatformInput {
-        if !butter_paper::window_title_bar::uses_window_title_bar(window) {
-            return event;
-        }
+        let drawn = butter_paper::window_title_bar::uses_window_title_bar(window);
+        let margin = gpui_component::window_paddings(window);
         let position = match &mut event {
             PlatformInput::MouseDown(event) => &mut event.position,
             PlatformInput::MouseUp(event) => &mut event.position,
@@ -5756,7 +5767,11 @@ mod review_driver {
             PlatformInput::Pinch(event) => &mut event.position,
             _ => return event,
         };
-        position.y += gpui_component::TITLE_BAR_HEIGHT;
+        if drawn {
+            position.y += gpui_component::TITLE_BAR_HEIGHT;
+        }
+        position.x += margin.left;
+        position.y += margin.top;
         event
     }
 

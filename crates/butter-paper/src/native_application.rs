@@ -187,7 +187,7 @@ fn build_file_menu(
             .disabled(save_disabled),
         MenuItem::separator(),
         MenuItem::action("Merge Documents…", MergeDocuments),
-        MenuItem::action("Convert and Open in Word", ConvertToWord).disabled(save_disabled),
+        MenuItem::action("Convert to Word Document", ConvertToWord).disabled(save_disabled),
     ];
     if include_close_document {
         items.extend([
