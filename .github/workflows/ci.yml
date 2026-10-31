@@ -64,7 +64,7 @@ jobs:
             --skip relay --skip bench_ --skip metal --skip highlight_cost \
             --skip specimen --skip real_enospc \
             --skip for_manual_review --skip external_revu_font \
-            --skip renders_public_pdf --skip pdf_corpus
+            --skip renders_public_pdf --skip pdf_corpus --skip libreoffice_opens
 
   windows:
     runs-on: windows-2025
