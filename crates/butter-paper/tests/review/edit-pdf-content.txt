@@ -11,9 +11,12 @@ wait 600
 move 0 291 352
 wait 400
 shot hover
-# Double-click "contractor" and set it bold, 16 pt, red.
+# Double-click "contractor", open the Edit PDF properties (they never open by
+# themselves) and set it bold, 16 pt, red.
 click 0 291 352 2
 wait 1200
+click 0 1237 105
+wait 800
 shot selected
 click 0 1081 270
 wait 1500
@@ -32,13 +35,13 @@ wait 800
 click 0 1077 349
 wait 1500
 shot coloured
-# Right-aligned paragraph at 1.5 line spacing.
+# Right-aligned paragraph at double line spacing (the fixture's reads 1.57).
 click 0 1079 490
 wait 1500
 click 0 1066 560
 wait 300
 key 0 secondary-a
-type 0 1.5
+type 0 2
 key 0 enter
 wait 1500
 shot spacing

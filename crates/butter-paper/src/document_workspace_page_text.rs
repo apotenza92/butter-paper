@@ -1540,6 +1540,80 @@ impl DocumentWorkspace {
         });
     }
 
+    /// Whether editing `page_index`'s content waits for the user to agree:
+    /// the file's permissions protect its content and they have not agreed
+    /// to edit it anyway. Then the question is asked, and any edit ends.
+    pub(super) fn hold_restricted_content(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let restricted = self
+            .loaded_page_text(document_id, page_index)
+            .is_some_and(|(layer, ..)| layer.content_restricted);
+        if !restricted || self.content_restriction_confirmed.contains(&document_id) {
+            return false;
+        }
+        self.commit_page_text_editing(cx);
+        self.restricted_edit_prompt = Some(document_id);
+        cx.notify();
+        true
+    }
+
+    /// Asks before the first change to the content of a file whose
+    /// permissions protect it (owner restrictions, as banks set on
+    /// statements, which Acrobat honours). Agreeing allows it for the rest
+    /// of the session; the saved file keeps its protection settings.
+    pub(super) fn open_restricted_edit_prompt(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let Some(document_id) = self.restricted_edit_prompt.take() else {
+            return;
+        };
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let owner = owner.clone();
+            alert
+                .close_button(false)
+                .title("Edit a protected PDF?")
+                .description(
+                    "This PDF's creator protected its content from changes, as banks do for \
+                     statements. Only change what you have the right to change; saving keeps \
+                     the protection. To add text on top instead, use the Text Box tool.",
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new(DOCUMENT_RESTRICTED_EDIT_CANCEL_ID)
+                                .debug_selector(|| DOCUMENT_RESTRICTED_EDIT_CANCEL_ID.into())
+                                .outline()
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(dialog_action_button(
+                            Button::new(DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID)
+                                .debug_selector(|| DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID.into())
+                                .danger()
+                                .label("Edit anyway"),
+                        )),
+                )
+                .on_ok(move |_, _, cx| {
+                    owner
+                        .update(cx, |workspace, cx| {
+                            workspace.content_restriction_confirmed.insert(document_id);
+                            cx.notify();
+                        })
+                        .is_ok()
+                })
+        });
+    }
+
     pub(super) fn begin_page_text_press(
         &mut self,
         interaction: PageInteraction,
@@ -1550,6 +1624,11 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let hit = self.page_text_and_table_hit(interaction, point, cx);
+        if hit.as_ref().is_some_and(|hit| hit.block.is_some())
+            && self.hold_restricted_content(interaction.document_id, interaction.page_index, cx)
+        {
+            return true;
+        }
         let Some(hit) = hit else {
             self.commit_page_text_editing(cx);
             if let Some(PageTextLayerState::Failed(error)) = self
@@ -2225,36 +2304,9 @@ impl DocumentWorkspace {
                 .as_ref()
                 .and_then(|layer| layer.page_box)
                 .is_some_and(|page| frame.iter().flatten().any(|point| point.1 < page[1] - 0.5));
-            // The other text its changed lines now cover.
             let overlapped = editing_layer
                 .as_ref()
-                .map(|layer| {
-                    // Text the paragraph already overlapped does not count.
-                    let original = layer
-                        .lines
-                        .iter()
-                        .filter(|line| anchors.contains(&line.anchor))
-                        .map(|line| line.quad(0., line.end_x))
-                        .collect::<Vec<_>>();
-                    let changed = state
-                        .wrapped()
-                        .iter()
-                        .zip(&base_frame)
-                        .filter(|(line, _)| !line.unchanged)
-                        .map(|(_, quad)| *quad)
-                        .collect::<Vec<_>>();
-                    layer
-                        .lines
-                        .iter()
-                        .filter(|line| {
-                            !anchors.contains(&line.anchor) && !line.text.trim().is_empty()
-                        })
-                        .map(|line| line.quad(0., line.end_x))
-                        .filter(|other| !original.iter().any(|quad| quads_overlap(quad, other)))
-                        .filter(|other| changed.iter().any(|quad| quads_overlap(quad, other)))
-                        .filter_map(|other| super::content::quads_bounds(&[other]))
-                        .collect::<Vec<_>>()
-                })
+                .map(|layer| overlapped_text(layer, &anchors, &base_frame))
                 .unwrap_or_default();
             use super::tables::{ContentWarning, ContentWarningKind};
             let kind = if past_page {
@@ -2427,10 +2479,38 @@ pub(super) fn new_cell_paragraph(
             left: left + pad_left,
             right: right - pad_right,
         }),
+        ruled: None,
     };
     let mut augmented = (**layer).clone();
     augmented.lines.push(line.clone());
     Some((Arc::new(augmented), block, line))
+}
+
+/// The bounds of the other text on `layer` that a paragraph of lines
+/// `anchors`, drawn as `drawn` (each line's quad), covers. Text the
+/// paragraph already covered does not count; every drawn line counts,
+/// including lines whose text is unchanged but which a chosen line spacing
+/// or larger text moved.
+fn overlapped_text(
+    layer: &PageTextLayer,
+    anchors: &[TextLineAnchor],
+    drawn: &[[(f64, f64); 4]],
+) -> Vec<[f64; 4]> {
+    let original = layer
+        .lines
+        .iter()
+        .filter(|line| anchors.contains(&line.anchor))
+        .map(|line| line.quad(0., line.end_x))
+        .collect::<Vec<_>>();
+    layer
+        .lines
+        .iter()
+        .filter(|line| !anchors.contains(&line.anchor) && !line.text.trim().is_empty())
+        .map(|line| line.quad(0., line.end_x))
+        .filter(|other| !original.iter().any(|quad| quads_overlap(quad, other)))
+        .filter(|other| drawn.iter().any(|quad| quads_overlap(quad, other)))
+        .filter_map(|other| super::content::quads_bounds(&[other]))
+        .collect()
 }
 
 /// The block an editor's paragraph was opened from (a new cell's).
@@ -2445,6 +2525,7 @@ fn state_block(state: &PageTextEditState) -> PageTextBlock {
         edges: Vec::new(),
         list: paragraph.list(),
         cell: paragraph.cell(),
+        ruled: paragraph.ruled(),
     }
 }
 
@@ -2784,4 +2865,59 @@ pub(super) fn page_text_input_element(
         ]
     )
     .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(y: f64, text: &str) -> PageTextLine {
+        PageTextLine {
+            anchor: TextLineAnchor {
+                x_centipoints: 7200,
+                y_centipoints: (y * 100.) as i64,
+                ordinal: 0,
+            },
+            text: text.into(),
+            chars: Vec::new(),
+            end_x: 200.,
+            styles: Vec::new(),
+            matrix: [1., 0., 0., 1., 72., y],
+            horizontal_scale: 1.,
+            rise: 0.,
+            ascent: 9.,
+            descent: -3.,
+            fill: None,
+            read_only: None,
+            in_form: false,
+            clip_bounds: None,
+            marked_content_ids: Vec::new(),
+            paragraph: None,
+        }
+    }
+
+    /// A paragraph whose lines a chosen line spacing moves, its text
+    /// unchanged, warns when they reach the next paragraph.
+    #[test]
+    fn moved_lines_count_as_overlapping_other_text() {
+        let layer = PageTextLayer {
+            lines: vec![
+                line(700., "First"),
+                line(686., "Second"),
+                line(660., "Next"),
+            ],
+            ..Default::default()
+        };
+        let anchors = [layer.lines[0].anchor, layer.lines[1].anchor];
+        let at = |y: f64| {
+            layer.lines[0]
+                .quad(0., 200.)
+                .map(|(x, py)| (x, py - 700. + y))
+        };
+        assert!(overlapped_text(&layer, &anchors, &[at(700.), at(686.)]).is_empty());
+        // Double spacing: the second line drops onto "Next".
+        let overlapped = overlapped_text(&layer, &anchors, &[at(700.), at(662.)]);
+        assert_eq!(overlapped.len(), 1, "{overlapped:?}");
+        assert!((overlapped[0][1] - 657.).abs() < 0.01, "{overlapped:?}");
+    }
 }

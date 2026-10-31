@@ -39,6 +39,7 @@
 | Rust code, Rust dependencies or build/packaging logic | `cargo test --workspace` and `cargo xtask check` (repository checks, rustfmt and clippy with warnings denied). |
 | PDF rendering, editing, storage or worker behaviour | Also run the relevant real-PDFium tests: `BP_PDFIUM_LIBRARY=<approved-library> cargo test <test-filter> -- --ignored`. Report any unavailable platform or runtime verification. |
 | Native UI | Also perform native interaction and visual review using [native-review.md](docs/agents/native-review.md) and the UX checklist. Inspect the actual final screenshots. |
+| Platform-specific code, packaging or installers (`cargo xtask platform-checks` lists them) | Also check each named platform by hand: Windows in a Windows VM or on a PC (`cargo xwin` builds it from Linux, see native-review.md), macOS on a Mac. Report any platform left unchecked. |
 | Signature relay | In `services/signature-relay`, run `pnpm test` and `pnpm typecheck`; install with `pnpm install --frozen-lockfile` if needed. |
 | Documentation only | Check factual references, relative links and `git diff --check`; compilation and GUI review are unnecessary. |
 

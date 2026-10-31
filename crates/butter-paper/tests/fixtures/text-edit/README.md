@@ -1,6 +1,7 @@
 # Edit PDF Content corpus
 
-Real producer output for `tests/page_text_corpus.rs` and the worker's
+Real producer output for `tests/page_text_corpus.rs`,
+`tests/page_text_fallback_fonts.rs` and the worker's
 real-PDFium Edit PDF Content test. All three are made from files in this folder:
 
 - `chrome.pdf`: `source.html` printed by headless Google Chrome
@@ -21,5 +22,12 @@ real-PDFium Edit PDF Content test. All three are made from files in this folder:
   borders are thin filled rectangles per cell edge, under a y-down matrix.
 - `libreoffice-table.pdf`: `table.fodt` converted by LibreOffice. Borders
   are stroked full-length lines; the header row has a filled background.
+- `word-table.pdf`: `word-table.fodt`, a made-up home-visit report laid out
+  like a Word report (a heading block, then a ruled two-column table with
+  wrapped paragraphs in its right-hand cells, two in its last), converted
+  by LibreOffice 26.2 untagged:
+  `soffice --headless --convert-to 'pdf:writer_pdf_Export:{"UseTaggedPDF":{"type":"boolean","value":"false"}}' word-table.fodt`.
+  For `tests/page_text_untagged.rs`, `tests/table_editing.rs` and the Word
+  document converter.
 
 Regenerate a file only to add coverage; the tests assert on its text.

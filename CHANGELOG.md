@@ -4,6 +4,46 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.3.8]
+
+### Edit PDF
+
+- Untagged PDFs, such as Word reports saved without accessibility tags,
+  edit a wrapped paragraph as one paragraph again. Lines join only where
+  one clearly wraps onto the next.
+- Ruled tables in untagged PDFs edit as tables: a cell's text rewraps
+  inside its cell, and text that outgrows it grows the row, moving the
+  rows below, instead of running over them.
+- A paragraph moved onto other text by a new line spacing or larger text
+  now shows the "Overlaps other text" warning.
+- PDFs whose creator protected their content from changes, such as bank
+  statements, can be edited after you agree to a warning; the saved file
+  keeps its protection settings. Markups never needed it.
+- Clicking text that cannot be edited says why in the status bar, as do
+  other status messages, such as conversion progress; before, they were
+  never shown.
+- Pages whose content Adobe software split into pieces mid-instruction
+  (common in bank and government forms) can be edited; before, none of
+  their text could be.
+
+### Word documents
+
+- File > Convert to Word Document (was Convert and Open in Word) converts
+  the PDF itself, on macOS, Windows and Linux, without Microsoft Word:
+  paragraphs flow as paragraphs with their fonts, sizes, bold, italic,
+  colour, alignment and spacing; ruled and tagged tables become Word tables;
+  images are kept in place; and each page keeps its size and margins. Once
+  saved beside the PDF, a dialog offers to show it in Finder, File Explorer
+  or the file manager, or open it in your app for Word documents.
+- The macOS app no longer asks for permission to control other apps.
+
+### Windows
+
+- Butter Paper installed from the zip starts on a PC without the Microsoft
+  Visual C++ runtime: it now carries its own.
+- Show in File Explorer, for a recent file or a converted Word document,
+  opens File Explorer with the file selected.
+
 ## [0.3.7]
 
 ### Windows

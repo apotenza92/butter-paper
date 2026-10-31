@@ -10,6 +10,7 @@ mod notices;
 mod package;
 mod pdfium;
 mod phone;
+mod platforms;
 mod release;
 mod store;
 mod store_chrome;
@@ -32,6 +33,8 @@ pub type Result<T = ()> = std::result::Result<T, String>;
 const USAGE: &str = "usage: cargo xtask <command>
 
   check                       repository, version and workflow checks
+  platform-checks [--base REF]
+                              list the platforms a change needs checking on by hand
   pdf-corpus [--pages N] [--edits N] [--jobs N] [--limit N] [--out DIR] DIR...
                               check Edit PDF Content against local PDFs (reads them only)
   render-bench [--sample N] [--backlog N] [--out DIR] PDF
@@ -65,6 +68,7 @@ fn main() -> ExitCode {
     }
     let result = match command.as_str() {
         "check" => args.finish().and_then(|()| check::run()),
+        "platform-checks" => platforms::run(&mut args),
         "dev" => dev::run(&mut args),
         "pdf-corpus" => corpus::run(&mut args),
         "render-bench" => bench::run(&mut args),

@@ -109,15 +109,31 @@ changes it; history is in git.
     paragraphs that flow between columns (OnlyOffice).
   - Signed PDFs: warn that saving invalidates the signatures, then allow
     editing (Revu refuses).
-  - Structure comes from the PDF's own data, never from layout guesses:
-    paragraphs are the structure tree's paragraph elements, and an
-    untagged PDF's lines edit one at a time, as nothing in it says which
-    lines continue each other.
+  - PDFs whose permissions forbid changing content (owner restrictions,
+    which open without a password and which Acrobat honours): ask the user
+    to agree before editing their content, then allow it, keeping the
+    file's permissions on save. The restriction is advisory (any app can
+    print or decrypt such a file), so refusing outright only pushed users to
+    print a copy; the question keeps editing a statement's figures
+    deliberate.
+  - Structure comes from the PDF's own data first: paragraphs are the
+    structure tree's paragraph elements. Lines it puts in no paragraph (all
+    of an untagged PDF's, such as Word reports saved without tags) join
+    only on firm layout evidence, as a word processor wraps: same font,
+    size and left edge at an even pitch, nothing ruled between them, and
+    the line above full (the next line's first word would not have fitted
+    in its column or ruled cell). A wrong join is worse than a missed one,
+    so lists and centred or right-aligned text still edit a line at a time.
+    Editing every line of a wrapped cell paragraph alone drew edits over
+    their neighbours.
   - Tables edit as tables (beyond Acrobat and Revu, which edit a cell's
-    text as loose text), on hard evidence only: a table is what the PDF's
-    structure tree declares (a Tagged PDF's `Table`, as Word, Google Docs,
-    LibreOffice and Acrobat write), never a guess from ruled lines. An
-    untagged table's text edits as paragraphs, as in Acrobat and Revu.
+    text as loose text): a table is what the PDF's structure tree declares
+    (a Tagged PDF's `Table`, as Word, Google Docs, LibreOffice and Acrobat
+    write), and on a page without one, a grid its rules close on every side
+    with an inner rule and text in it (a Word report saved without tags),
+    with no question asked. Editing such a report's cells as loose text ran
+    a growing cell over the next row; a closed ruled grid is firm enough
+    evidence, and its rows growing is what the user expects.
     Cells wrap and rows grow to fit their text, Tab moves between cells,
     rows are inserted and deleted from the page menu, and a column border
     drags to resize its two columns (their text rewraps). The structure
@@ -133,12 +149,20 @@ changes it; history is in git.
     across pages were tried and removed: they rested on layout guesses
     (what is a footer, how much room a page has) that held on the sample
     reports and failed on others.
-- Heavier rework of a PDF goes to Word: Convert and Open in Word has
-  Microsoft Word convert it (macOS and Windows), saves the .docx beside the
-  PDF (asking before replacing an existing one) and opens it. Butter Paper ships
-  no converter: Word keeps paragraphs and tables, LibreOffice's import
-  makes floating text boxes, and pdf2docx (AGPL) fixes row heights and
-  clips text. Unsaved changes are saved first.
+- Heavier rework of a PDF goes to a word processor: Convert to Word
+  Document converts it with Butter Paper's own converter, on every
+  platform, saves the .docx beside the PDF (asking before replacing an
+  existing one) and offers to show or open it. Unsaved changes are saved
+  first. It depends on no installed app: driving Microsoft Word (AppleScript,
+  COM) failed silently for users and needed Word, which Linux lacks. Other
+  converters were rejected: LibreOffice's import and ONLYOFFICE's
+  `DocxRenderer` (AGPL; its table builder is a stub) make floating text
+  boxes, and pdf2docx (AGPL) breaks row heights and clips text. The
+  converter reads pages as Edit PDF does, so paragraphs, tables and runs
+  come out as flowing paragraphs and real Word tables, never text boxes.
+  It writes the OOXML and its zip itself over `flate2` and `crc32fast`,
+  already in the dependency tree, rather than `docx-rs` (MIT), which would
+  add `zip`, `xml-rs` and their dependencies for little of the work.
 - Form fields are filled with the Select tool, as in Acrobat and Revu; Edit
   PDF edits only the page's own content. Fillable fields are
   outlined in the selection blue whenever Select is active (a choice made

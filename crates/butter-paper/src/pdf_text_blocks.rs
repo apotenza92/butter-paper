@@ -5,6 +5,11 @@
 //! items, with their wrapped lines at the items' text indent, form one
 //! block; a paragraph that runs off the foot of a column and continues at
 //! the top of the next is one block over both.
+//!
+//! A tagged page's paragraphs are its structure tree's. Lines the tree puts
+//! in no paragraph (all of an untagged page's) join only on firm layout
+//! evidence: a line that wraps onto the next, as a word processor wraps
+//! (see [`untagged_blocks`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +81,11 @@ pub struct PageTextBlock {
     /// The table cell the block is in: its text wraps within the cell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell: Option<BlockCell>,
+    /// Untagged text in a box the page rules on all four sides (a table
+    /// the PDF does not declare): where its lines may run along them, as a
+    /// cell's text runs within its cell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ruled: Option<(f64, f64)>,
 }
 
 /// A table cell holding a block: the table, the cell's index in it, and
@@ -421,6 +431,7 @@ fn finish<'a>(block: Building<'a>) -> Finished<'a> {
             edges,
             list,
             cell: None,
+            ruled: None,
         },
         first: block.lines[0],
         last: block.lines[count - 1],
@@ -509,6 +520,8 @@ pub fn paragraph_blocks_in(
             .filter(|line| !in_cell.contains_key(&line.anchor))
             .collect(),
         true,
+        layer,
+        None,
     );
     for (table_index, table) in tables.iter().enumerate() {
         for (cell_index, cell) in table.cells.iter().enumerate() {
@@ -522,7 +535,7 @@ pub fn paragraph_blocks_in(
                 continue;
             }
             let inset = crate::pdf_tables::cell_inset(layer, table, cell_index);
-            for mut block in grouped_blocks(lines, false) {
+            for mut block in grouped_blocks(lines, false, layer, Some(inset.right)) {
                 block.cell = Some(BlockCell {
                     table: tables[table_index].key(),
                     cell: cell_index,
@@ -546,10 +559,18 @@ pub fn paragraph_blocks_in(
     blocks
 }
 
-/// `lines` grouped into blocks: only lines the structure tree puts in one
-/// paragraph group. A line in none (all of an untagged page's) is a
-/// paragraph of its own: nothing in the PDF says it continues another.
-fn grouped_blocks(lines: Vec<&PageTextLine>, link_columns: bool) -> Vec<PageTextBlock> {
+/// `lines` grouped into blocks: lines the structure tree puts in one
+/// paragraph group. Lines in none (all of an untagged page's) group as
+/// [`untagged_blocks`] finds; `cell_right` is where a table cell's text may
+/// run to.
+fn grouped_blocks(
+    lines: Vec<&PageTextLine>,
+    link_columns: bool,
+    layer: &PageTextLayer,
+    cell_right: Option<f64>,
+) -> Vec<PageTextBlock> {
+    let (untagged, lines): (Vec<_>, Vec<_>) =
+        lines.into_iter().partition(|line| line.paragraph.is_none());
     let mut groups: Vec<(Option<(u32, u16)>, Vec<&PageTextLine>)> = Vec::new();
     for line in lines {
         match line.paragraph.and_then(|paragraph| {
@@ -566,7 +587,7 @@ fn grouped_blocks(lines: Vec<&PageTextLine>, link_columns: bool) -> Vec<PageText
         .flat_map(|(_, group)| group.iter())
         .map(|line| (line.anchor, line.origin()))
         .collect::<std::collections::HashMap<_, _>>();
-    let mut blocks = Vec::new();
+    let mut blocks = untagged_blocks(untagged, layer, cell_right);
     for (paragraph, group) in groups {
         let mut pieces = blocks_of(group, link_columns);
         if paragraph.is_none() || pieces.len() < 2 {
@@ -599,6 +620,237 @@ fn grouped_blocks(lines: Vec<&PageTextLine>, link_columns: bool) -> Vec<PageText
         blocks.push(joined);
     }
     blocks
+}
+
+/// Lines ending within this many ems of a text column's widest line reach
+/// its edge: a column's edge is where at least two of its lines end.
+const COLUMN_EDGE_EM: f64 = 1.;
+/// A space between words, in ems, when a line draws none (Arial's and
+/// Times's are 0.25–0.28).
+const SPACE_EM: f64 = 0.25;
+/// How far a line may seem to fit short of its column's edge and still
+/// count as overflowing it, in points: widths and rules measure to within
+/// rounding.
+const FIT_SLACK: f64 = 0.5;
+
+/// The lines the structure tree puts in no paragraph, grouped on firm
+/// layout evidence only, as a wrong join is worse than a missed one. A
+/// line joins the one above it when both are upright, start at one left
+/// edge in the same font and size, at the block's even line pitch with no
+/// rule between them, and the line above is full: the next line's first
+/// word would not have fitted after it in the text column. The text column
+/// ends at its table cell's text edge, at a box the page rules on all four
+/// sides (inset as far as the text starts from its left rule), or where at
+/// least two lines starting at the same edge end. Lists, centred and
+/// right-aligned text stay a line at a time.
+fn untagged_blocks(
+    lines: Vec<&PageTextLine>,
+    layer: &PageTextLayer,
+    cell_right: Option<f64>,
+) -> Vec<PageTextBlock> {
+    let mut placed = lines.into_iter().filter_map(place).collect::<Vec<_>>();
+    placed.sort_by(|a, b| {
+        b.baseline
+            .total_cmp(&a.baseline)
+            .then(a.left.total_cmp(&b.left))
+    });
+    let page = layer
+        .lines
+        .iter()
+        .filter(|line| line.read_only.is_none())
+        .filter_map(place)
+        .filter(upright)
+        .collect::<Vec<_>>();
+    let mut blocks: Vec<Building<'_>> = Vec::new();
+    for line in &placed {
+        let best = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| wraps_onto(block, line, &page, &layer.rules, cell_right))
+            .map(|(index, block)| (index, block.last().baseline - line.baseline))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        match best {
+            Some((index, pitch)) => {
+                let block = &mut blocks[index];
+                block.pitch.get_or_insert(pitch);
+                block.alignment = Some(TextBlockAlignment::Left);
+                block.lines.push(line);
+            }
+            None => blocks.push(Building {
+                lines: vec![line],
+                pitch: None,
+                wrapped_pitch: false,
+                alignment: None,
+                list: line.marker.map(|(marker, text_left)| ListBuilding {
+                    marker,
+                    marker_left: line.left,
+                    text_left,
+                    wrapped_left: None,
+                }),
+            }),
+        }
+    }
+    blocks
+        .into_iter()
+        .map(|block| {
+            let (top, bottom) = (block.lines[0].baseline, block.last().baseline);
+            let ruled = block
+                .lines
+                .iter()
+                .all(|line| upright(line))
+                .then(|| {
+                    let left = block
+                        .lines
+                        .iter()
+                        .map(|line| line.left)
+                        .fold(f64::MAX, f64::min);
+                    let right = block
+                        .lines
+                        .iter()
+                        .map(|line| line.right)
+                        .fold(f64::MIN, f64::max);
+                    ruled_box(&layer.rules, left, right, bottom, top)
+                })
+                .flatten();
+            let mut finished = finish(block).block;
+            finished.ruled = ruled;
+            finished
+        })
+        .collect()
+}
+
+fn upright(line: &Placed<'_>) -> bool {
+    line.direction.0 > 0.999
+}
+
+/// Whether `line` is the next line of `block`, wrapped from its last: see
+/// [`untagged_blocks`].
+fn wraps_onto(
+    block: &Building<'_>,
+    line: &Placed<'_>,
+    page: &[Placed<'_>],
+    rules: &[crate::pdf_tables::PageRule],
+    cell_right: Option<f64>,
+) -> bool {
+    let previous = block.last();
+    if block.list.is_some()
+        || line.marker.is_some()
+        || !upright(previous)
+        || !upright(line)
+        || previous.font != line.font
+        || (line.em - previous.em).abs() > 0.05 * previous.em
+    {
+        return false;
+    }
+    let em = previous.em;
+    let tolerance = (EDGE_TOLERANCE_EM * em).max(1.);
+    let pitch = previous.baseline - line.baseline;
+    let even = block
+        .pitch
+        .is_none_or(|expected| (pitch - expected).abs() <= PITCH_TOLERANCE * expected + 0.5);
+    if (line.left - previous.left).abs() > tolerance
+        || !(MIN_PITCH_EM * em..=MAX_PITCH_EM * em).contains(&pitch)
+        || !even
+    {
+        return false;
+    }
+    let (left, right) = (previous.left.min(line.left), previous.right.max(line.right));
+    // A rule between them, such as a table row's border, ends the block.
+    if rules.iter().any(|rule| {
+        rule.horizontal
+            && rule.at < previous.baseline
+            && rule.at > line.baseline
+            && rule.from < right
+            && rule.to > left
+    }) {
+        return false;
+    }
+    let column = cell_right
+        .or_else(|| {
+            ruled_box(rules, left, right, line.baseline, previous.baseline).map(|edges| edges.1)
+        })
+        .or_else(|| {
+            let ends = page
+                .iter()
+                .filter(|other| {
+                    other.font == previous.font
+                        && (other.em - em).abs() <= 0.05 * em
+                        && (other.left - previous.left).abs() <= tolerance
+                })
+                .map(|other| other.right)
+                .collect::<Vec<_>>();
+            let widest = ends.iter().copied().fold(f64::MIN, f64::max);
+            (ends
+                .iter()
+                .filter(|end| **end >= widest - COLUMN_EDGE_EM * em)
+                .count()
+                >= 2)
+                .then_some(widest)
+        });
+    let space = previous
+        .line
+        .chars
+        .iter()
+        .find(|character| character.character == ' ' && character.advance > 0.)
+        .map_or(SPACE_EM * em, |character| {
+            character.advance * previous.line.matrix[0].hypot(previous.line.matrix[1])
+        });
+    column.is_some_and(|column| previous.right + space + first_word(line) > column - FIT_SLACK)
+}
+
+/// The width of `line`'s first word, in page units.
+fn first_word(line: &Placed<'_>) -> f64 {
+    let m = line.line.matrix;
+    let chars = &line.line.chars;
+    let Some(start) = chars
+        .iter()
+        .position(|character| !character.character.is_whitespace())
+    else {
+        return 0.;
+    };
+    let end = chars[start..]
+        .iter()
+        .take_while(|character| !character.character.is_whitespace())
+        .last()
+        .map_or(chars[start].x, |character| character.x + character.advance);
+    (end - chars[start].x) * m[0].hypot(m[1])
+}
+
+/// Where text from `left` to `right` between baselines `bottom` and `top`
+/// may run along its lines when the page rules a box round it on all four
+/// sides: from `left` to as far from the right rule as `left` is from the
+/// left rule (a word processor pads a cell evenly).
+pub fn ruled_box(
+    rules: &[crate::pdf_tables::PageRule],
+    left: f64,
+    right: f64,
+    bottom: f64,
+    top: f64,
+) -> Option<(f64, f64)> {
+    let spans = |rule: &crate::pdf_tables::PageRule, from: f64, to: f64| {
+        rule.from <= from + 0.5 && rule.to >= to - 0.5
+    };
+    let vertical = rules
+        .iter()
+        .filter(|rule| !rule.horizontal && spans(rule, bottom, top));
+    let rule_left = vertical
+        .clone()
+        .map(|rule| rule.at)
+        .filter(|at| *at < left)
+        .fold(f64::MIN, f64::max);
+    let rule_right = vertical
+        .map(|rule| rule.at)
+        .filter(|at| *at > right)
+        .fold(f64::MAX, f64::min);
+    if rule_left == f64::MIN || rule_right == f64::MAX {
+        return None;
+    }
+    let mut horizontal = rules
+        .iter()
+        .filter(|rule| rule.horizontal && spans(rule, rule_left, rule_right));
+    let above = horizontal.clone().any(|rule| rule.at > top);
+    let below = horizontal.any(|rule| rule.at < bottom);
+    (above && below).then_some((left, rule_right - (left - rule_left)))
 }
 
 /// `lines` grouped into blocks; with `link_columns`, a paragraph running on

@@ -425,75 +425,33 @@ fn saved(document: &mut Document) -> Vec<u8> {
     bytes
 }
 
-/// The embedded Type0 fonts Edit PDF Content added, by base font name.
-fn fallback_fonts(document: &Document) -> Vec<String> {
-    document
-        .objects
-        .values()
-        .filter_map(|object| object.as_dict().ok())
-        .filter(|dictionary| {
-            dictionary.get(b"Subtype").and_then(Object::as_name).ok() == Some(b"Type0".as_slice())
-        })
-        .filter_map(|dictionary| dictionary.get(b"BaseFont").and_then(Object::as_name).ok())
-        .map(|name| String::from_utf8_lossy(name).into_owned())
-        .filter(|name| name.contains("Arimo") || name.contains("Tinos"))
-        .collect()
-}
-
+/// Adobe PDF Library splits a page's content into streams between any two
+/// tokens, even inside a dictionary or an array: the page still reads, an
+/// operation split across streams stays read-only, and the rest edits.
 #[test]
-fn fallback_letters_embed_a_small_subset_that_later_edits_extend() {
-    let mut document = producer("libreoffice");
-    let before = saved(&mut document).len();
-    let first = layer(&document);
-    let line = first.lines.iter().find(|line| editable(line)).unwrap();
-    let edit = |line: &PageTextLine, text: String| PageTextEdit {
-        page_index: 0,
-        anchor: line.anchor,
-        original: line.original_runs(),
-        runs: vec![TextEditRun {
-            style: line.styles[0].clone(),
-            text,
-        }],
-        layout: Default::default(),
-    };
-    apply_text_edits(
-        &mut document,
-        &[edit(line, format!("{} ЖΩł", line.text.trim_end()))],
-        &TextEditLimits::default(),
-    )
-    .unwrap();
-    let mut document = Document::load_mem(&saved(&mut document)).unwrap();
-    let after = saved(&mut document).len();
-    assert!(after - before < 30_000, "grew by {} bytes", after - before);
-    let fonts = fallback_fonts(&document);
-    assert_eq!(fonts.len(), 1, "{fonts:?}");
-    let (tag, name) = fonts[0].split_once('+').expect("a subset is tagged");
-    assert!(tag.len() == 6 && tag.chars().all(|letter| letter.is_ascii_uppercase()));
-    // The heading is bold Helvetica-like text.
-    assert_eq!(name, "Arimo-Bold");
-
-    // Editing the saved line again extends the same font.
-    let second = layer(&document);
-    let next = second.line(&line.anchor).unwrap();
-    apply_text_edits(
-        &mut document,
-        &[edit(next, format!("{} ДЯ", next.text.trim_end()))],
-        &TextEditLimits::default(),
-    )
-    .unwrap();
-    let mut document = Document::load_mem(&saved(&mut document)).unwrap();
-    let fonts = fallback_fonts(&document);
-    assert_eq!(fonts.len(), 1, "{fonts:?}");
-    let texts = layer(&document)
-        .lines
-        .iter()
-        .map(|line| line.text.clone())
-        .collect::<Vec<_>>();
-    assert!(
-        texts.iter().any(|text| text.ends_with(" ЖΩł ДЯ")),
-        "{texts:?}"
+fn content_split_inside_a_dictionary_or_array_still_reads() {
+    let document = built(
+        &[
+            b"/Span <<",
+            b"/ActualText (Hi)>> BDC BT /F1 12 Tf 72 700 Td [(Hel) -20",
+            b"(lo)] TJ ET EMC BT /F1 12 Tf 72 680 Td (Second line) Tj ET",
+        ],
+        Dictionary::new(),
     );
-    assert!(saved(&mut document).len() - before < 40_000);
+    let layer = layer(&document);
+    let line = |text: &str| {
+        layer
+            .lines
+            .iter()
+            .find(|line| line.text.trim() == text)
+            .unwrap_or_else(|| panic!("no line {text:?}: {:?}", layer.lines))
+    };
+    // The marked content's ActualText is what the line says.
+    assert_eq!(
+        line("Hi").read_only.as_deref(),
+        Some("the text operator spans content streams")
+    );
+    assert!(editable(line("Second line")));
 }
 
 /// Word embeds TrueType subsets with WinAnsi and no ToUnicode map: their
@@ -749,19 +707,20 @@ fn producer_lines_group_into_their_paragraphs() {
 }
 
 #[test]
-fn owner_restrictions_decide_whether_text_can_change() {
-    // Both open without a password; one forbids changing content.
-    let locked = producer("quartz-no-modify");
+fn owner_restrictions_are_reported_and_edits_keep_them() {
+    // Both open without a password; one forbids changing content. Its text
+    // reads as editable, the layer says it is restricted (the app asks
+    // before editing it), and an edit applies. (The app's save keeps the
+    // file's encryption and permissions: `pdf_engine`'s
+    // `an_owner_password_pdf_saves_encrypted_with_its_permissions`.)
+    let mut locked = producer("quartz-no-modify");
     let locked_text = layer(&locked);
+    assert!(locked_text.content_restricted);
     let line = locked_text
         .lines
         .iter()
-        .find(|line| !line.text.trim().is_empty())
+        .find(|line| editable(line))
         .unwrap();
-    assert_eq!(
-        line.read_only.as_deref(),
-        Some("the document's permissions do not allow changing its content")
-    );
     let edit = PageTextEdit {
         page_index: 0,
         anchor: line.anchor,
@@ -772,13 +731,13 @@ fn owner_restrictions_decide_whether_text_can_change() {
         }],
         layout: Default::default(),
     };
-    assert!(matches!(
-        apply_text_edits(&mut locked.clone(), &[edit], &TextEditLimits::default()),
-        Err(butter_paper::pdf_text_edit::TextEditError::ReadOnly(_))
-    ));
+    apply_text_edits(&mut locked, &[edit], &TextEditLimits::default()).unwrap();
+    let reopened = Document::load_mem(&saved(&mut locked)).unwrap();
+    assert_eq!(layer(&reopened).line(&line.anchor).unwrap().text, "Changed");
 
     let mut open = producer("quartz-owner-password");
     let open_text = layer(&open);
+    assert!(!open_text.content_restricted);
     let line = open_text.lines.iter().find(|line| editable(line)).unwrap();
     let edit = PageTextEdit {
         page_index: 0,

@@ -452,6 +452,7 @@ mod tests {
             rules: Vec::new(),
             fills: Vec::new(),
             objects: Vec::new(),
+            content_restricted: false,
         };
         let blocks = vec![PageTextBlock {
             lines: vec![layer.lines[0].anchor, layer.lines[1].anchor],
@@ -462,6 +463,7 @@ mod tests {
             edges: Vec::new(),
             list: None,
             cell: None,
+            ruled: None,
         }];
         selectable_lines(&layer, &blocks, &[])
     }

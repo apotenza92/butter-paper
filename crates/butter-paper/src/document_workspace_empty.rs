@@ -99,7 +99,11 @@ impl DocumentWorkspace {
                             .ghost()
                             .icon(IconName::FolderOpen)
                             .tooltip("Show in folder")
-                            .on_click(move |_, _, cx| cx.reveal_path(&reveal_path)),
+                            .on_click(move |_, _, cx| {
+                                if !crate::system_apps::reveal_in_file_explorer(&reveal_path) {
+                                    cx.reveal_path(&reveal_path);
+                                }
+                            }),
                         format!("Show {full_path} in folder"),
                     ))
             })
