@@ -1,6 +1,7 @@
 //! `cargo xtask store-submit`: replaces the Microsoft Store packages with the
-//! given MSIX files and submits the update for certification, through the
-//! Microsoft Store submission API.
+//! given MSIX files, sets the listing's "What's new" from the version's
+//! CHANGELOG.md section and submits the update for certification, through
+//! the Microsoft Store submission API.
 //!
 //! It authenticates as the Microsoft Entra application that Partner Center
 //! associates with the developer account (User management > Microsoft Entra
@@ -17,12 +18,15 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::{Args, Result, command, create_dir, fresh_dir, output, target_dir};
+use crate::{Args, Result, command, create_dir, fresh_dir, output, target_dir, version};
 
 const API: &str = "https://manage.devcenter.microsoft.com/v1.0/my/applications";
 /// Pre-processing usually finishes in minutes; give up well before the
 /// workflow's own timeout.
 const COMMIT_LIMIT: Duration = Duration::from_secs(45 * 60);
+/// The Store's limit on a listing's "What's new" text.
+const RELEASE_NOTES_LIMIT: usize = 1500;
+const RELEASES: &str = "https://github.com/apotenza92/butter-paper/releases/tag";
 
 pub fn run(args: &mut Args) -> Result {
     let app = args.required("--app")?;
@@ -39,11 +43,17 @@ pub fn run(args: &mut Args) -> Result {
             return Err(format!("{} is not a file", package.display()));
         }
     }
+    let version = version::current()?;
+    let notes = release_notes(
+        &version::changelog_notes(version)?,
+        &format!("{RELEASES}/{}", version.tag()),
+    );
     let token = access_token()?;
     let base = format!("{API}/{app}");
 
-    // An earlier draft would block a new submission; one already in
-    // certification is left alone and reported.
+    // An earlier draft (never submitted, or with its certification
+    // cancelled) would block a new submission; one already in certification
+    // is left alone and reported.
     let application = api(&token, "GET", &base, None)?;
     if let Some(pending) = application["pendingApplicationSubmission"]["id"].as_str() {
         let status = api(
@@ -52,7 +62,10 @@ pub fn run(args: &mut Args) -> Result {
             &format!("{base}/submissions/{pending}/status"),
             None,
         )?;
-        if status["status"] != "PendingCommit" {
+        if !matches!(
+            status["status"].as_str(),
+            Some("PendingCommit" | "Canceled")
+        ) {
             return Err(format!(
                 "submission {pending} is already {}; wait for it or cancel it in Partner Center",
                 status["status"]
@@ -67,12 +80,9 @@ pub fn run(args: &mut Args) -> Result {
         )?;
     }
 
-    let created = api(
-        &token,
-        "POST",
-        &format!("{base}/submissions"),
-        Some(&json!({})),
-    )?;
+    // No body: the API copies the live submission, while a JSON body (even
+    // `{}`) is read as a submission without listings and rejected.
+    let created = api(&token, "POST", &format!("{base}/submissions"), None)?;
     let id = created["id"]
         .as_str()
         .ok_or("the new submission has no id")?
@@ -87,7 +97,7 @@ pub fn run(args: &mut Args) -> Result {
         .iter()
         .map(|package| file_name(package))
         .collect::<Result<Vec<_>>>()?;
-    let updated = replace_packages(created, &names)?;
+    let updated = with_release_notes(replace_packages(created, &names)?, &notes)?;
     upload(&upload_url, &packages)?;
     api(
         &token,
@@ -151,6 +161,66 @@ fn replace_packages(mut submission: Value, files: &[String]) -> Result<Value> {
         }));
     }
     Ok(submission)
+}
+
+/// The submission with every listing's "What's new" set to `notes`.
+fn with_release_notes(mut submission: Value, notes: &str) -> Result<Value> {
+    let listings = submission["listings"]
+        .as_object_mut()
+        .ok_or("the submission has no listings")?;
+    for listing in listings.values_mut() {
+        listing["baseListing"]["releaseNotes"] = json!(notes);
+    }
+    Ok(submission)
+}
+
+/// A CHANGELOG.md section as the Store's plain "What's new" text: headings
+/// as lines of their own, each bullet on one line. From the first bullet
+/// that would pass the Store's limit on, a link to the full notes stands in.
+fn release_notes(changelog: &str, full_notes: &str) -> String {
+    let mut blocks: Vec<String> = Vec::new();
+    for line in changelog.lines().map(str::trim) {
+        if let Some(heading) = line.strip_prefix("### ") {
+            blocks.push(format!("\n{heading}"));
+        } else if let Some(bullet) = line.strip_prefix("- ") {
+            blocks.push(format!("• {bullet}"));
+        } else if !line.is_empty() {
+            match blocks.last_mut() {
+                Some(block) if block.starts_with('•') => {
+                    block.push(' ');
+                    block.push_str(line);
+                }
+                _ => blocks.push(line.to_owned()),
+            }
+        }
+    }
+    let join = |blocks: &[String]| blocks.join("\n").trim().to_owned();
+    let all = join(&blocks);
+    if all.chars().count() <= RELEASE_NOTES_LIMIT {
+        return all;
+    }
+    let more = format!("\n\nMore in the full release notes: {full_notes}");
+    let mut kept: Vec<String> = Vec::new();
+    for block in blocks {
+        kept.push(block);
+        if join(&kept).chars().count() + more.chars().count() > RELEASE_NOTES_LIMIT {
+            kept.pop();
+            break;
+        }
+    }
+    // A heading whose bullets were all left out goes too.
+    let kept = kept
+        .iter()
+        .enumerate()
+        .filter(|(index, block)| {
+            !block.starts_with('\n')
+                || kept
+                    .get(index + 1)
+                    .is_some_and(|next| next.starts_with('•'))
+        })
+        .map(|(_, block)| block.clone())
+        .collect::<Vec<_>>();
+    format!("{}{more}", join(&kept))
 }
 
 fn file_name(path: &Path) -> Result<String> {
@@ -309,6 +379,51 @@ mod tests {
         );
         // Everything else is the live submission's.
         assert_eq!(updated["listings"], json!({"en-us": {}}));
+    }
+
+    #[test]
+    fn release_notes_flatten_the_changelog_section() {
+        let changelog = "### Edit PDF\n\n- Untagged PDFs edit a wrapped\n  paragraph as one.\n- Tables grow.\n\n### Windows\n\n- Starts without the runtime.";
+        assert_eq!(
+            release_notes(changelog, "https://example.com/v1"),
+            "Edit PDF\n• Untagged PDFs edit a wrapped paragraph as one.\n• Tables grow.\n\nWindows\n• Starts without the runtime."
+        );
+    }
+
+    #[test]
+    fn long_release_notes_keep_whole_bullets_and_link_the_rest() {
+        let long = "word ".repeat(100);
+        let changelog =
+            format!("### First\n\n- {long}\n- {long}\n- {long}\n\n### Second\n\n- {long}");
+        let notes = release_notes(&changelog, "https://example.com/v1");
+        assert!(notes.chars().count() <= RELEASE_NOTES_LIMIT);
+        assert_eq!(notes.matches('•').count(), 2);
+        assert!(
+            !notes.contains("Second"),
+            "a heading without bullets is dropped"
+        );
+        assert!(notes.ends_with("More in the full release notes: https://example.com/v1"));
+    }
+
+    #[test]
+    fn release_notes_are_set_on_every_listing() {
+        let submission = json!({"listings": {
+            "en-us": {"baseListing": {"releaseNotes": "", "description": "kept"}},
+            "en-au": {"baseListing": {}},
+        }});
+        let updated = with_release_notes(submission, "New").unwrap();
+        assert_eq!(
+            updated["listings"]["en-us"]["baseListing"]["releaseNotes"],
+            "New"
+        );
+        assert_eq!(
+            updated["listings"]["en-us"]["baseListing"]["description"],
+            "kept"
+        );
+        assert_eq!(
+            updated["listings"]["en-au"]["baseListing"]["releaseNotes"],
+            "New"
+        );
     }
 
     #[test]

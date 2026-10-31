@@ -48,9 +48,11 @@ and the listing text is [docs/store/listing.md](../store/listing.md).
 
 After a stable release is published, the release workflow's `microsoft-store`
 job runs `cargo xtask store-submit`. It creates a Store submission from the
-live one, replaces its packages with both MSIX files and commits it; Microsoft
-then certifies and publishes the update. Watch it in Partner Center (Apps and
-games > Butter Paper). A draft left unsubmitted is replaced; a submission
+live one, replaces its packages with both MSIX files, sets the listing's
+"What's new" from the version's CHANGELOG.md section (whole bullets, in
+order, within the Store's 1,500 characters, then a link to the release) and
+commits it; Microsoft then certifies and publishes the update. Watch it in
+Partner Center (Apps and games > Butter Paper). A draft left unsubmitted is replaced; a submission
 already in certification stops the job, so wait for it or cancel it first.
 
 The job authenticates as a Microsoft Entra application associated with the
@@ -59,9 +61,8 @@ applications, Manager role). Its credentials are the `microsoft-store`
 environment secrets `STORE_TENANT_ID`, `STORE_CLIENT_ID` and
 `STORE_CLIENT_SECRET`, with the Store ID in the repository variable
 `STORE_PRODUCT_ID`. The 1Password vault "Butter Paper Release" holds them and
-the Entra tenant's admin sign-in. The client secret expires: when Partner
-Center shows it near expiry, add a new key there, update the 1Password item
-and the environment secret, then remove the old key.
+the Entra tenant's admin sign-in. The client secret expires (the item's
+"client secret expires" field): before then, rotate it as below.
 
 ### Setting up or rotating the Store credentials
 
@@ -77,24 +78,30 @@ Paper Release". Do these steps in a browser with 1Password autofill:
    Microsoft Entra ID, signing in as that admin. If Microsoft asks for MFA,
    choose a different authenticator app and save its QR code to the admin
    item as a one-time password.
-2. Once only: Account settings > User management > Microsoft Entra
-   applications > Create, named "Butter Paper Store publishing", with the
-   Manager role. Copy its tenant ID and client ID into the credentials item.
-3. To create or rotate the secret: open the application, Add new key, and
-   paste the key (shown once) and its expiry into the credentials item.
+2. Once only: register the application "Butter Paper Store publishing" in
+   the Microsoft Entra admin center (App registrations > New registration,
+   single tenant), signed in as that admin. Then, in Partner Center as that
+   admin, Account settings > User management > Microsoft Entra applications
+   > Add Microsoft Entra application > Add (not Create, which fails for this
+   account), select it and give it the Manager role. Copy its tenant ID and
+   client ID into the credentials item.
+3. To create or rotate the secret: in the Entra admin center, the
+   application's Certificates & secrets > New client secret; paste the value
+   (shown once) and its expiry into the credentials item.
 4. Copy the three values to the environment, reading them from 1Password
-   without printing them:
+   without printing them (the item's ID, because `op://` references reject
+   the parentheses in its name):
 
    ```sh
-   item="op://Butter Paper Release/Microsoft Store submission API (Partner Center app)"
+   item="op://Butter Paper Release/e6tvo27t5xd4l5tctkohireo7m"
    for name in STORE_TENANT_ID STORE_CLIENT_ID STORE_CLIENT_SECRET; do
      op read "$item/$name" | gh secret set "$name" --env microsoft-store
    done
    ```
 
-5. After rotating, remove the old key in Partner Center.
+5. After rotating, remove the old secret in the Entra admin center.
 
-Until the credentials are set, the job notes that and skips. Then submit from
+Without the credentials, the job notes that and skips. Then submit from
 a Mac with `cargo xtask store-chrome`: it downloads both packages from the
 latest successful release run (`--run ID` for another), drives Partner Center
 in Google Chrome in a window of its own, replaces the packages and submits
@@ -103,14 +110,6 @@ certification or the Store already has the version. Chrome must be signed in
 to Partner Center as the developer account that owns the app (not a work or
 tenant account) and needs View > Developer > Allow JavaScript from Apple
 Events. Partner Center can take minutes to render a fresh window.
-
-The Entra tenant for the credentials (`AlexanderPotenza.onmicrosoft.com`) is
-active, with its admin's MFA key in 1Password, but the Store developer
-account is an individual one, and Partner Center offers user management and
-Microsoft Entra applications to company accounts only (an individual account
-cannot become a company one). So no application can hold the Manager role,
-the credential item's values are empty and `store-submit` cannot run: submit
-with `store-chrome` or by hand.
 
 Without either (or if both fail), submit by hand: download both artifacts with
 `gh run download <run> -p 'microsoft-store-*'`, start an update submission,
