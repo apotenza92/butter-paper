@@ -666,7 +666,7 @@
               <div id="homebrew-box" class="command-box" role="button" tabindex="0" aria-label="Copy Homebrew install command">
                 <div id="homebrew-label" class="command-label">Or install via Homebrew:</div>
                 <div class="format-command">
-                  <code id="homebrew-code">brew trust apotenza92/tap &amp;&amp; brew install --cask apotenza92/tap/butter-paper</code>
+                  <code id="homebrew-code">brew trust apotenza92/tap 2&gt;/dev/null; brew install --cask apotenza92/tap/butter-paper</code>
                   <button id="homebrew-copy" class="copy-button" type="button" title="Copy command">
                     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z" /></svg>
                     <span>Copy</span>
@@ -917,8 +917,8 @@
           ? "Or install via Homebrew (Beta):"
           : "Or install via Homebrew:";
         document.getElementById("homebrew-code").textContent = state.channel === "beta"
-          ? "brew trust apotenza92/tap && brew install --cask apotenza92/tap/butter-paper@beta"
-          : "brew trust apotenza92/tap && brew install --cask apotenza92/tap/butter-paper";
+          ? "brew trust apotenza92/tap 2>/dev/null; brew install --cask apotenza92/tap/butter-paper@beta"
+          : "brew trust apotenza92/tap 2>/dev/null; brew install --cask apotenza92/tap/butter-paper";
         document.querySelector("#homebrew-copy span").textContent = "Copy";
       }
 
