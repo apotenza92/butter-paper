@@ -43,7 +43,7 @@
 | Signature relay | In `services/signature-relay`, run `pnpm test` and `pnpm typecheck`; install with `pnpm install --frozen-lockfile` if needed. |
 | Documentation only | Check factual references, relative links and `git diff --check`; compilation and GUI review are unnecessary. |
 
-- Build with `cargo build`. CI is defined in `.github/workflows/ci.yml`; formatting-only commits are listed in `.git-blame-ignore-revs`.
+- Build with `cargo build`. Reuse the default `target/` build directory (or a worktree's own `target/`); do not pass `--target-dir` or set `CARGO_TARGET_DIR` to a new location. Each new build directory is a full rebuild of tens of gigabytes. An isolated profile or unique review bundle means a separate `BP_GPUI_DATA_DIR` and bundle under `target/`, not a separate build directory. CI is defined in `.github/workflows/ci.yml`; formatting-only commits are listed in `.git-blame-ignore-revs`.
 - Treat lost PDF content, corrupt saves, annotation round-trip failures, renderer/worker crashes, privilege expansion and platform packaging failures as high priority. Preserve import/export compatibility and verify affected platform assumptions.
 - Before launching any development or review build, read [native-review.md](docs/agents/native-review.md). Use an isolated profile and unique review bundle; preserve unsaved work and verify only the intended testing version is running.
 - Before packaging or releasing, read [releases.md](docs/agents/releases.md). Releases are immutable; never expose signing keys or certificates.
