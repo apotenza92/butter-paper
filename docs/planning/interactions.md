@@ -630,6 +630,56 @@ with it.
   (as in Revu, where a wider page runs past the view's sides).
 - The current page is the one level with the view centre.
 - Each tab keeps its own page, zoom, fit and scroll.
+- The Signature panel's Image tab takes a signature from wherever it is:
+  From the page (the panel steps aside and the Snapshot tool draws a box
+  round a signature on any open page; the status bar says so until it is
+  drawn or Esc or another tool cancels; the box leaves no markup and the
+  panel comes back with it as a preview), Paste (a copied picture, such as
+  a screenshot), Choose file (PNG, JPEG, or a PDF whose first page is the
+  signature), and the camera or phone where available, two to a row. Each
+  is cleaned up alike: the paper made transparent and cropped to the ink.
+- A digitally signed PDF shows a signatures button at the toolbar's right
+  edge, opposite Edit PDF (it stays there when a narrow toolbar scrolls,
+  the controls fading out beneath it): "Checking signatures…" while its signatures are
+  checked in the background, then "Signed" (green shield), "Signer not
+  verified" (amber: a signer's certificate is not trusted, out of date or
+  cannot be checked) or "Signature invalid" (red: signed bytes altered or
+  pages changed after signing). The worst signature decides. It is checked
+  again after each save, which rewrites the file and so breaks its
+  signatures. The button opens the Signatures dialog (top-right X or
+  Escape closes it): one entry per signature with the signer, whether the
+  PDF changed since, the certificate's issuer and trust, when it was signed
+  (by its timestamp, else "by the signer's clock"), whether its
+  certificate was revoked (asked of its issuer after the first result
+  shows; a revocation before it signed makes it "Signature invalid"), its
+  reason and location, and Show on page for a visible signature. Notes are muted,
+  doubts about the signer in the body colour, broken signatures in red.
+- File ▸ Sign with Certificate…, as in Acrobat and Revu: with a placed
+  signature (an image) selected, the signature goes in its place (the
+  signed copy draws it in the signature's box with "Digitally signed by",
+  the name and date beside it, and leaves that markup out; the open PDF
+  keeps it); otherwise the status bar asks
+  for a box where it goes (the Snapshot tool, leaving no markup; Esc or
+  another tool cancels). The dialog lists the system's signing
+  certificates (looked up in the background; expired ones shown but not
+  choosable), the first valid one chosen, then "A certificate file (.p12
+  or .pfx)", which asks for the file (the last one chosen is offered
+  again) and its password. A system certificate needs no password here;
+  the system may ask for a PIN or permission as it signs. Then an optional
+  reason; for a drawn box, Appearance: Name and details (Acrobat's
+  standard text, chosen), Details only, or Invisible (no mark on the page);
+  and "Add a timestamp from <server>" (on) when Settings ▸
+  Signatures names a timestamp server, else a note that there is none.
+  Sign stays disabled until a certificate is chosen; a wrong password or
+  unusable file is said in the dialog, which stays open. Unsaved changes
+  are saved first; then Save As suggests "<name> (signed).pdf" beside it.
+  The signed copy opens in a new tab; choosing the PDF itself signs it in
+  place (the tab closes while the signature is appended and reopens where
+  it was). The status bar says "Signed by …"; cancelling Save As says "Not
+  signed."; a failure leaves the PDF unchanged and says why.
+- Settings ▸ Signatures ▸ Timestamp server: empty (none) at first; an
+  `http` or `https` address is kept when the field is left or Enter is
+  pressed, and anything else is called out below it.
 - Dropping PDFs opens each in a new tab. Dropping PNG or JPEG images on a
   document places each at once as an Image, centred where it is dropped on
   the page under the pointer (or the nearest shown page, kept on it), at

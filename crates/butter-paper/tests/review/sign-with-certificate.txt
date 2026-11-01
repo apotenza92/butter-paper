@@ -1,0 +1,30 @@
+# Sign with Certificate review: a copy of
+# tests/fixtures/text-edit/word-table.pdf. Coordinates are window content
+# points below the title bar for a 1300 x 900 window. Set
+# BP_REVIEW_IDENTITY_P12 to test .p12 files to list them as the system's.
+wait 2500
+place 0 40 40 1300 900
+wait 2500
+# As in Acrobat and Revu: a box where the signature goes, then the dialog.
+sign-with-certificate
+wait 800
+shot box
+click 0 650 640 1
+wait 300
+move 0 950 700
+wait 400
+shot box-drawing
+click 0 950 700 1
+wait 1500
+shot dialog
+key 0 tab
+wait 400
+shot dialog-focus
+key 0 escape
+wait 1000
+shot closed
+# Settings ▸ Signatures holds the timestamp server.
+signature-settings
+wait 1500
+shot settings
+quit

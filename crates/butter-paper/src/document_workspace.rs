@@ -24,6 +24,8 @@ pub use pages::{
     InsertPageBefore, PastePages, RotatePagesLeft, RotatePagesRight,
 };
 pub use tables::{DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow};
+#[path = "document_workspace_sign.rs"]
+mod certificate_signing;
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
 #[path = "document_workspace_page_scale.rs"]
@@ -32,6 +34,16 @@ mod page_scale;
 mod page_text;
 #[path = "document_workspace_recovery_notifications.rs"]
 mod recovery_notifications;
+#[path = "document_workspace_signature_capture.rs"]
+mod signature_capture;
+#[path = "document_workspace_signatures.rs"]
+mod signature_checks;
+pub use certificate_signing::{
+    DOCUMENT_SIGN_APPEARANCE_ID, DOCUMENT_SIGN_CANCEL_ID, DOCUMENT_SIGN_CHOOSE_ID,
+    DOCUMENT_SIGN_CONFIRM_ID, DOCUMENT_SIGN_DIALOG_ID, DOCUMENT_SIGN_INVISIBLE_ID,
+    DOCUMENT_SIGN_PASSWORD_ID, DOCUMENT_SIGN_PLACE_ID, DOCUMENT_SIGN_REASON_ID,
+    DOCUMENT_SIGN_TIMESTAMP_ID, DOCUMENT_SIGN_TIMESTAMP_SETTINGS_ID,
+};
 #[path = "space_pan.rs"]
 mod space_pan;
 #[path = "document_workspace_tables.rs"]
@@ -50,6 +62,7 @@ pub use forms::{
 };
 use forms::{FormChoiceMenu, FormFieldEditor, FormOverlay, FormWidgetRef};
 use page_text::{PageTextDocumentState, PageTextEditing, PageTextHover, PageTextOverlay};
+pub use signature_checks::{DOCUMENT_SIGNATURES_DIALOG_ID, DOCUMENT_SIGNATURES_LIST_ID};
 use thumbnail_sidebar::{ThumbnailRowsShown, ThumbnailSidebarInputs};
 pub use word::{
     DOCUMENT_WORD_KEEP_BOTH_ID, DOCUMENT_WORD_REPLACE_CANCEL_ID, DOCUMENT_WORD_REPLACE_ID,
@@ -194,6 +207,7 @@ use crate::{
     },
     image_asset_decode::{
         DecodedImageFile, SanitizedSignatureFile, decode_image_path, sanitize_signature_path,
+        sanitize_signature_raster,
     },
     page_geometry::PageCoordinateSpace,
     pdf_engine::{InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome},
@@ -251,6 +265,7 @@ gpui::actions!(
         Save,
         SaveAs,
         ConvertToWord,
+        SignWithCertificate,
         NavigateHome,
         NavigateEnd,
         NavigatePreviousPage,
@@ -541,6 +556,14 @@ pub fn register_document_workspace_actions_for(
             workspace.update(cx, |workspace, cx| workspace.request_merge_dialog(cx));
         }
     });
+    let sign_with_certificate = resolve.clone();
+    cx.on_action(move |_: &SignWithCertificate, cx| {
+        if let Some(workspace) = sign_with_certificate(false, cx) {
+            workspace.update(cx, |workspace, cx| {
+                workspace.sign_active_document_with_certificate(cx)
+            });
+        }
+    });
     let convert_to_word = resolve.clone();
     cx.on_action(move |_: &ConvertToWord, cx| {
         if let Some(workspace) = convert_to_word(false, cx) {
@@ -635,6 +658,8 @@ pub const DOCUMENT_SIGNATURE_LOADING_ID: &str = "document-workspace-signature-lo
 pub const DOCUMENT_SIGNATURE_MODE_DRAW_ID: &str = "document-workspace-signature-mode-draw";
 pub const DOCUMENT_SIGNATURE_MODE_TYPE_ID: &str = "document-workspace-signature-mode-type";
 pub const DOCUMENT_SIGNATURE_MODE_IMAGE_ID: &str = "document-workspace-signature-mode-image";
+pub const DOCUMENT_SIGNATURE_FROM_PAGE_ID: &str = "document-workspace-signature-from-page";
+pub const DOCUMENT_SIGNATURE_PASTE_ID: &str = "document-workspace-signature-paste";
 pub const DOCUMENT_SIGNATURE_NAME_INPUT_ID: &str = "document-workspace-signature-name-input";
 pub const DOCUMENT_SIGNATURE_RECENT_ID: &str = "document-workspace-signature-recent";
 pub const DOCUMENT_SIGNATURE_RECENT_STATUS_ID: &str = "document-workspace-signature-recent-status";
@@ -2772,6 +2797,27 @@ pub struct DocumentWorkspace {
     /// A finished conversion, waiting for the next render to offer showing
     /// or opening it, or to say why it failed.
     word_converted: Option<Result<word::ConvertedWordDocument, String>>,
+    /// Each signed document's digital signatures.
+    signature_checks: HashMap<DocumentId, signature_checks::SignatureCheck>,
+    signature_trust: signature_checks::SignatureTrust,
+    /// The document whose Signatures dialog opens on the next render.
+    signatures_dialog_requested: Option<DocumentId>,
+    /// The document whose Sign with Certificate dialog opens on the next
+    /// render.
+    sign_dialog_requested: Option<(DocumentId, certificate_signing::Placement)>,
+    /// The certificate file last chosen for signing.
+    last_certificate_path: Option<PathBuf>,
+    /// A signature waiting for its document's save.
+    sign_after_save: Option<certificate_signing::PendingSignature>,
+    /// Documents being signed now (closed until their file is signed).
+    signing_documents: HashSet<DocumentId>,
+    /// Why the last signing failed, for the next render to say.
+    signing_failed: Option<String>,
+    /// A Snapshot box being drawn for a signature (From the page, or where
+    /// a digital signature goes).
+    signature_box: Option<signature_capture::BoxCapture>,
+    /// Finds the system's signing identities.
+    system_identity_source: fn() -> Vec<crate::system_certificates::SystemIdentity>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
     session_tab_bounds: HashMap<DocumentId, Rc<Cell<Bounds<Pixels>>>>,
     /// A New Tab is open and showing the start page (Open, recent files),
@@ -4448,6 +4494,16 @@ impl DocumentWorkspace {
             word_conversions: HashSet::new(),
             word_replace_prompt: None,
             word_converted: None,
+            signature_checks: HashMap::new(),
+            signature_trust: Default::default(),
+            signatures_dialog_requested: None,
+            sign_dialog_requested: None,
+            last_certificate_path: None,
+            sign_after_save: None,
+            signing_documents: HashSet::new(),
+            signing_failed: None,
+            system_identity_source: crate::system_certificates::system_identities,
+            signature_box: None,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
             new_tab_open: false,
@@ -10160,6 +10216,7 @@ impl DocumentWorkspace {
             let Some(path) = selected else {
                 let _ = entity.update(cx, |workspace, cx| {
                     workspace.cancel_word_after_save(authority.document_id);
+                    workspace.cancel_sign_after_save(authority.document_id);
                     if workspace.finish_save_prompt(authority) {
                         cx.notify();
                     }
@@ -10638,6 +10695,7 @@ impl DocumentWorkspace {
                 self.new_tab_open = false;
                 self.new_tab_return = None;
                 self.remember_recent_document(request.document_id, cx);
+                self.check_document_signatures(request.document_id, cx);
                 if let Some(recovered) = startup_recovery {
                     session.update(cx, |session, cx| {
                         session.recovery_preparation_generation =
@@ -11391,6 +11449,10 @@ impl DocumentWorkspace {
                 self.toggle_content_edit_mode(document_id, cx);
                 return;
             }
+            ViewerToolbarStripEvent::SignaturesRequested => {
+                self.request_signatures_dialog(document_id, cx);
+                return;
+            }
         };
         self.set_fit_preset(
             document_id,
@@ -11409,10 +11471,14 @@ impl DocumentWorkspace {
         let edit_pdf = self
             .active_ready_document_id(cx)
             .map(|document_id| self.content_edit_mode(document_id));
+        let signatures = self
+            .active_ready_document_id(cx)
+            .and_then(|document_id| self.signature_status(document_id));
         self.viewer_toolbar.update(cx, |toolbar, cx| {
             // The switch shows while a document is open, disabled until
             // one is ready.
             toolbar.set_edit_pdf(Some(edit_pdf.unwrap_or(false)), cx);
+            toolbar.set_signatures(signatures, cx);
             let Some(state) = state else {
                 toolbar.set_disabled(true, cx);
                 return;
@@ -13947,6 +14013,7 @@ impl DocumentWorkspace {
                 });
                 self.remember_recent_document(request.document_id, cx);
                 self.cancel_word_after_save(request.document_id);
+                self.cancel_sign_after_save(request.document_id);
                 if self.close_after_save_document_id == Some(request.document_id) {
                     self.close_after_save_document_id = None;
                     self.pending_close_document_id = Some(request.document_id);
@@ -14174,7 +14241,10 @@ impl DocumentWorkspace {
                 self.pending_close_document_id = Some(request.document_id);
             }
         }
+        // A save rewrites the file, which breaks its signatures: show that.
+        self.check_document_signatures(request.document_id, cx);
         self.convert_saved_document_to_word(request.document_id, cx);
+        self.sign_after_document_saved(request.document_id, cx);
         cx.notify();
         ApplyDisposition::Applied
     }
@@ -16746,9 +16816,15 @@ impl DocumentWorkspace {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Select a PNG or JPEG image".into()),
-            allowed_extensions: Some(vec!["png".into(), "jpg".into(), "jpeg".into()]),
+            prompt: Some("Select a signature image or PDF".into()),
+            allowed_extensions: Some(vec![
+                "png".into(),
+                "jpg".into(),
+                "jpeg".into(),
+                "pdf".into(),
+            ]),
         });
+        let opener = self.opener.clone();
         let background = cx.background_executor().clone();
         cx.spawn(async move |entity, cx| {
             let selected = match picker.await {
@@ -16786,9 +16862,7 @@ impl DocumentWorkspace {
                 return;
             };
             let result = background
-                .spawn(
-                    async move { sanitize_signature_path(path).map_err(|error| error.to_string()) },
-                )
+                .spawn(async move { sanitize_signature_file(&path, opener.as_deref()) })
                 .await;
             let _ = entity.update(cx, |workspace, cx| {
                 workspace.apply_signature_prepare_result(authority, Some(result), cx);
@@ -19743,6 +19817,7 @@ impl DocumentWorkspace {
         self.recovery_confirmation_pending.remove(&document_id);
         self.viewer_session_subscriptions.remove(&document_id);
         self.viewer_quality_tasks.remove(&document_id);
+        self.forget_document_signatures(document_id);
         self.session_tab_focus_handles.remove(&document_id);
         self.session_tab_bounds.remove(&document_id);
         self.session_tab_close_bounds.remove(&document_id);
@@ -21662,6 +21737,77 @@ fn retain_existing_path_paint_state(
             SceneAnnotation::CloudPlus(path) => path.draft = false,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod signature_file_tests {
+    use super::*;
+    use lopdf::{Document, Object, Stream, dictionary};
+
+    #[test]
+    #[ignore = "requires BP_PDFIUM_LIBRARY and the worker binary"]
+    fn a_signature_pdf_becomes_its_ink() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let scratch = manifest_dir.join(format!(
+            "target/test-scratch/signature-pdf-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        // A stamp-sized page with one signature stroke, as Bluebeam saves.
+        let mut document = Document::with_version("1.7");
+        let content = document.add_object(Stream::new(
+            dictionary! {},
+            b"0 0 0.6 RG 3 w 20 30 m 60 90 100 0 180 60 c S".to_vec(),
+        ));
+        let pages = document.new_object_id();
+        let page = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages,
+            "MediaBox" => vec![0.into(), 0.into(), 200.into(), 100.into()],
+            "Contents" => content,
+        });
+        document.objects.insert(
+            pages,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        document.trailer.set("Root", catalog);
+        let pdf = scratch.join("Signature.PDF");
+        document.save(&pdf).unwrap();
+
+        let worker = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(|deps| deps.parent())
+            .unwrap()
+            .join(if cfg!(windows) {
+                "butter-paper-pdf-worker.exe"
+            } else {
+                "butter-paper-pdf-worker"
+            });
+        let library = PathBuf::from(
+            std::env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY names libpdfium"),
+        );
+        let backend = PdfiumWorkerBackend::new(worker, library, scratch.join("surfaces"));
+        let signature = sanitize_signature_file(&pdf, Some(&backend)).unwrap();
+        let asset = signature.asset();
+        let aspect = f64::from(asset.width_px()) / f64::from(asset.height_px());
+        // The page is 2:1; the stroke alone is flatter.
+        assert!(aspect > 2.5, "cropped to the stroke: {aspect}");
+        assert!(asset.rgba().chunks_exact(4).any(|pixel| pixel[3] == 255));
+
+        assert!(sanitize_signature_file(&pdf, None).is_err());
+        std::fs::write(scratch.join("broken.pdf"), b"not a pdf").unwrap();
+        assert_eq!(
+            sanitize_signature_file(&scratch.join("broken.pdf"), Some(&backend)).unwrap_err(),
+            "This PDF could not be opened. Choose another file."
+        );
+        let _ = std::fs::remove_dir_all(scratch);
     }
 }
 
@@ -23881,9 +24027,33 @@ fn signature_input_surface(
         SignatureInputMode::Image => gpui::div()
             .text_sm()
             .text_color(muted_foreground)
-            .child("Choose a PNG or JPEG signature image.")
+            .child("Take your signature from a page, a screenshot, a file or your phone.")
             .into_any_element(),
     }
+}
+
+/// Wide enough for a signature's strokes, small enough that a letter page
+/// stays under the signature size limit.
+const SIGNATURE_PDF_PAGE_WIDTH: u32 = 1_536;
+
+/// A signature from an image file, or from the first page of a PDF (drawn
+/// by the PDF worker, so the PDF is never parsed in the app process).
+fn sanitize_signature_file(
+    path: &Path,
+    opener: Option<&dyn NativeDocumentOpener>,
+) -> Result<SanitizedSignatureFile, String> {
+    let pdf = path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+    if !pdf {
+        return sanitize_signature_path(path).map_err(|error| error.to_string());
+    }
+    let opener = opener.ok_or("PDF signatures cannot be read here.")?;
+    let page = opener
+        .render_first_page(path, SIGNATURE_PDF_PAGE_WIDTH)
+        .map_err(|_| "This PDF could not be opened. Choose another file.".to_owned())?;
+    sanitize_signature_raster(page.width(), page.height(), page.pixels_bgra())
+        .map_err(|error| error.to_string())
 }
 
 fn recent_signature_preview(signature: RecentSignature) -> Option<RecentSignaturePreview> {
@@ -24320,74 +24490,104 @@ fn annotation_tool_group(
                 && signature_input_mode != SignatureInputMode::Type
                 && crate::phone_signature::configured_origin().is_ok();
             let show_choose = !phone_pairing && signature_input_mode == SignatureInputMode::Image;
-            let sources = h_flex()
-                .w_full()
-                .gap_2()
-                .when(
-                    !phone_pairing
-                        && signature_input_mode == SignatureInputMode::Image
-                        && camera_available,
-                    |sources| {
-                        sources.child(
-                            Button::new("signature-camera")
-                                .outline()
-                                .flex_1()
-                                .label("Use camera")
-                                .disabled(loading)
-                                .on_click(move |_, _, cx| {
-                                    let _ = camera_control.update(cx, |workspace, cx| {
-                                        workspace.begin_platform_signature(document_id, None, cx)
-                                    });
-                                }),
-                        )
-                    },
-                )
-                .when(
-                    !phone_pairing
-                        && signature_input_mode != SignatureInputMode::Type
-                        && crate::phone_signature::configured_origin().is_ok(),
-                    |sources| {
-                        sources.child(
-                            Button::new("signature-phone")
-                                .outline()
-                                .flex_1()
-                                .label("Use phone")
-                                .disabled(loading)
-                                .on_click(move |_, _, cx| {
-                                    let mode = if signature_input_mode == SignatureInputMode::Draw {
-                                        crate::phone_signature::PhoneMode::Draw
-                                    } else {
-                                        crate::phone_signature::PhoneMode::Image
-                                    };
-                                    let _ = phone_control.update(cx, |workspace, cx| {
-                                        workspace.begin_platform_signature(
-                                            document_id,
-                                            Some(mode),
-                                            cx,
-                                        )
-                                    });
-                                }),
-                        )
-                    },
-                )
-                .when(
-                    !phone_pairing && signature_input_mode == SignatureInputMode::Image,
-                    |sources| {
-                        sources.child(
-                            Button::new(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID)
-                                .outline()
-                                .flex_1()
-                                .debug_selector(|| DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID.into())
-                                .label("Choose file")
-                                .disabled(loading)
-                                .on_click(move |_, _, cx| {
-                                    let _ = choose_control.update(cx, |workspace, cx| {
-                                        workspace.begin_signature_selection(document_id, cx);
-                                    });
-                                }),
-                        )
-                    },
+            // Where a signature can come from, two to a row: from the page
+            // or a screenshot first, as most signatures are already on
+            // screen somewhere.
+            let mut source_buttons: Vec<gpui::AnyElement> = Vec::new();
+            if show_choose {
+                let page_control = choose_control.clone();
+                source_buttons.push(
+                    Button::new(DOCUMENT_SIGNATURE_FROM_PAGE_ID)
+                        .debug_selector(|| DOCUMENT_SIGNATURE_FROM_PAGE_ID.into())
+                        .outline()
+                        .flex_1()
+                        .label("From the page")
+                        .tooltip("Drag a box around a signature on a page")
+                        .disabled(loading)
+                        .on_click(move |_, window, cx| {
+                            let _ = page_control.update(cx, |workspace, cx| {
+                                workspace.begin_signature_capture(document_id, Some(window), cx);
+                            });
+                        })
+                        .into_any_element(),
                 );
+                let paste_control = choose_control.clone();
+                source_buttons.push(
+                    Button::new(DOCUMENT_SIGNATURE_PASTE_ID)
+                        .debug_selector(|| DOCUMENT_SIGNATURE_PASTE_ID.into())
+                        .outline()
+                        .flex_1()
+                        .label("Paste")
+                        .tooltip("Use a copied picture, such as a screenshot")
+                        .disabled(loading)
+                        .on_click(move |_, _, cx| {
+                            let _ = paste_control.update(cx, |workspace, cx| {
+                                workspace.paste_signature(cx);
+                            });
+                        })
+                        .into_any_element(),
+                );
+                source_buttons.push(
+                    Button::new(DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID)
+                        .outline()
+                        .flex_1()
+                        .debug_selector(|| DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID.into())
+                        .label("Choose file")
+                        .tooltip("A PNG, JPEG or PDF of your signature")
+                        .disabled(loading)
+                        .on_click(move |_, _, cx| {
+                            let _ = choose_control.update(cx, |workspace, cx| {
+                                workspace.begin_signature_selection(document_id, cx);
+                            });
+                        })
+                        .into_any_element(),
+                );
+            }
+            if show_camera {
+                source_buttons.push(
+                    Button::new("signature-camera")
+                        .outline()
+                        .flex_1()
+                        .label("Use camera")
+                        .disabled(loading)
+                        .on_click(move |_, _, cx| {
+                            let _ = camera_control.update(cx, |workspace, cx| {
+                                workspace.begin_platform_signature(document_id, None, cx)
+                            });
+                        })
+                        .into_any_element(),
+                );
+            }
+            if show_phone {
+                source_buttons.push(
+                    Button::new("signature-phone")
+                        .outline()
+                        .flex_1()
+                        .label("Use phone")
+                        .disabled(loading)
+                        .on_click(move |_, _, cx| {
+                            let mode = if signature_input_mode == SignatureInputMode::Draw {
+                                crate::phone_signature::PhoneMode::Draw
+                            } else {
+                                crate::phone_signature::PhoneMode::Image
+                            };
+                            let _ = phone_control.update(cx, |workspace, cx| {
+                                workspace.begin_platform_signature(document_id, Some(mode), cx)
+                            });
+                        })
+                        .into_any_element(),
+                );
+            }
+            let mut source_rows = Vec::new();
+            let mut buttons = source_buttons.into_iter();
+            while let Some(first) = buttons.next() {
+                let mut row = h_flex().w_full().gap_2().child(first);
+                if let Some(second) = buttons.next() {
+                    row = row.child(second);
+                }
+                source_rows.push(row);
+            }
+            let sources = v_flex().w_full().gap_2().children(source_rows);
             let content = content
                 .when(show_camera || show_phone || show_choose, |content| {
                     content.child(sources)
@@ -24996,8 +25196,18 @@ impl Render for DocumentWorkspace {
             // take the keyboard focus.
             cx.defer_in(window, Self::open_word_replace_prompt);
         }
+        if self.signatures_dialog_requested.is_some() {
+            cx.defer_in(window, Self::open_signatures_dialog);
+        }
+        if self.sign_dialog_requested.is_some() {
+            cx.defer_in(window, Self::open_sign_dialog);
+        }
         if self.word_converted.is_some() {
             cx.defer_in(window, Self::open_word_converted_dialog);
+        }
+        self.poll_signature_capture(cx);
+        if self.signing_failed.is_some() {
+            cx.defer_in(window, Self::open_signing_failed_dialog);
         }
         if self.restricted_edit_prompt.is_some() {
             cx.defer_in(window, Self::open_restricted_edit_prompt);

@@ -228,6 +228,11 @@ pub fn open_update_settings(window: &mut Window, cx: &mut App) {
     open_settings_category(SettingsCategory::Updates, window, cx);
 }
 
+/// Settings ▸ Signatures, where the timestamp server is set.
+pub fn open_signature_settings(window: &mut Window, cx: &mut App) {
+    open_settings_category(SettingsCategory::Signatures, window, cx);
+}
+
 fn open_settings_category(category: SettingsCategory, window: &mut Window, cx: &mut App) {
     if let Some(existing) = cx.try_global::<SettingsWindow>().cloned()
         && existing
@@ -245,12 +250,16 @@ fn open_settings_category(category: SettingsCategory, window: &mut Window, cx: &
         return;
     }
     let bounds = crate::window_title_bar::centered_window_bounds(
-        gpui::size(px(960.), px(640.)).min(&window.viewport_size()),
+        crate::window_title_bar::at_least(
+            gpui::size(px(960.), px(640.)).min(&window.viewport_size()),
+            crate::window_title_bar::SETTINGS_WINDOW_MIN_SIZE,
+        ),
         cx,
     );
     let opened = cx.open_window(
         gpui::WindowOptions {
             window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+            window_min_size: Some(crate::window_title_bar::SETTINGS_WINDOW_MIN_SIZE),
             ..crate::window_title_bar::title_bar_window_options()
         },
         |window, cx| {
@@ -286,6 +295,8 @@ pub fn review_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
         .map(|state| state.handle.into())
 }
 
+/// The Settings field for the timestamp server signatures ask.
+pub const SETTINGS_TIMESTAMP_SERVER_ID: &str = "settings-timestamp-server";
 /// The Settings switch for new images' proportions.
 pub const SETTINGS_LOCK_IMAGE_PROPORTIONS_ID: &str = "settings-lock-image-proportions";
 
@@ -293,6 +304,7 @@ pub const SETTINGS_LOCK_IMAGE_PROPORTIONS_ID: &str = "settings-lock-image-propor
 enum SettingsCategory {
     Updates,
     Markups,
+    Signatures,
 }
 
 struct SettingsView {
@@ -301,6 +313,10 @@ struct SettingsView {
     _updates: Subscription,
     _markups: Subscription,
     focus: gpui::FocusHandle,
+    /// Signatures: the timestamp server field, made on first render.
+    timestamp_server: Option<gpui::Entity<gpui_component::input::InputState>>,
+    timestamp_server_error: Option<&'static str>,
+    _timestamp_server: Option<Subscription>,
 }
 impl SettingsView {
     fn new(category: SettingsCategory, cx: &mut Context<Self>) -> Self {
@@ -312,7 +328,90 @@ impl SettingsView {
                 |_, cx| cx.notify(),
             ),
             focus: cx.focus_handle(),
+            timestamp_server: None,
+            timestamp_server_error: None,
+            _timestamp_server: None,
         }
+    }
+
+    /// Signatures: the timestamp server digital signatures ask for a
+    /// trusted time, none at first as in Acrobat and Revu.
+    fn render_signature_sections(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<(&'static str, AnyElement)> {
+        use crate::signature_settings::{SignatureSettings, timestamp_server_from_text};
+        use gpui_component::input::{Input, InputEvent, InputState};
+        let input = match &self.timestamp_server {
+            Some(input) => input.clone(),
+            None => {
+                let current = SignatureSettings::timestamp_server(cx).unwrap_or_default();
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder("None")
+                        .default_value(current)
+                });
+                // Kept when the field is left or Enter is pressed, so a
+                // half-typed address is not called wrong.
+                self._timestamp_server = Some(cx.subscribe_in(
+                    &input,
+                    window,
+                    |view, input, event: &InputEvent, _, cx| match event {
+                        InputEvent::Blur | InputEvent::PressEnter { .. } => {
+                            match timestamp_server_from_text(input.read(cx).value().as_ref()) {
+                                Ok(server) => {
+                                    view.timestamp_server_error = None;
+                                    SignatureSettings::set_timestamp_server(server, cx);
+                                }
+                                Err(error) => view.timestamp_server_error = Some(error),
+                            }
+                            cx.notify();
+                        }
+                        InputEvent::Change if view.timestamp_server_error.take().is_some() => {
+                            cx.notify();
+                        }
+                        _ => {}
+                    },
+                ));
+                self.timestamp_server = Some(input.clone());
+                input
+            }
+        };
+        let timestamps = v_flex()
+            .id("settings-timestamps-section")
+            .debug_selector(|| "settings-timestamps-section".into())
+            .gap_3()
+            .pb_6()
+            .child(div().font_semibold().child("Timestamps"))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(div().text_sm().font_medium().child("Timestamp server"))
+                    .child(
+                        div()
+                            .id(SETTINGS_TIMESTAMP_SERVER_ID)
+                            .debug_selector(|| SETTINGS_TIMESTAMP_SERVER_ID.into())
+                            .child(Input::new(&input)),
+                    ),
+            )
+            .when_some(self.timestamp_server_error, |section, error| {
+                section.child(div().text_sm().text_color(cx.theme().danger).child(error))
+            })
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "Digital signatures ask this server for a trusted time, which keeps them \
+                         verifiable after the signer's certificate expires. Only a fingerprint of \
+                         the signature is sent. Leave it empty for none, or use your \
+                         organisation's server or a public one such as \
+                         http://timestamp.digicert.com.",
+                    ),
+            )
+            .into_any_element();
+        vec![("Timestamps", timestamps)]
     }
 
     /// Markups: how new images are placed and resized.
@@ -505,6 +604,12 @@ impl Render for SettingsView {
                 "Markups",
                 "settings-category-markups",
             ),
+            (
+                SettingsCategory::Signatures,
+                Icon::default().path("icons/rail/signature.svg"),
+                "Signatures",
+                "settings-category-signatures",
+            ),
         ];
         let category_buttons = categories.map(|(category, icon, label, id)| {
             let button = Button::new(id)
@@ -532,6 +637,9 @@ impl Render for SettingsView {
         let (title, sections) = match self.category {
             SettingsCategory::Updates => ("Updates", self.render_update_sections(cx)),
             SettingsCategory::Markups => ("Markups", self.render_markup_sections(cx)),
+            SettingsCategory::Signatures => {
+                ("Signatures", self.render_signature_sections(window, cx))
+            }
         };
         let (headings, sections): (Vec<&str>, Vec<AnyElement>) = sections.into_iter().unzip();
         let headings = headings.as_slice();

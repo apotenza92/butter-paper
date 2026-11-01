@@ -4,6 +4,47 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Opening
+
+- PDFs whose pages take their size from the document rather than each page,
+  such as files printed to PDF on a Mac and some Acrobat output, open
+  again; they failed with "PdfiumLibraryInternalError".
+
+### Signatures
+
+- Digitally signed PDFs show whether their signatures are valid: a button
+  at the right of the toolbar says Signed, Signer not verified or Signature
+  invalid, and opens the details of each signature (who signed, whether
+  the PDF changed since, whether their certificate is trusted, and when).
+  Certificates are checked against the computer's trusted authorities and
+  Adobe's trust lists, and whether they were revoked, as Acrobat does.
+- File ▸ Sign with Certificate… signs a PDF digitally, as Acrobat and Revu
+  do: draw a box where the signature goes (or select a handwritten
+  signature you placed), choose a certificate from the macOS Keychain or
+  the Windows certificate store (smart cards included) or a .p12/.pfx
+  file, and save the signed copy. Earlier signatures stay valid. The
+  signature shows your name and the details, only the details, or nothing
+  on the page (invisible). Signing in place of a handwritten signature
+  leaves it in the original. PDFs protected with only an owner password
+  are signed too, and stay protected. Set a timestamp server in Settings ▸
+  Signatures to add a trusted timestamp and the revocation data that keeps
+  signatures checkable for years.
+- Imported signatures keep their ink colour.
+- The Signature panel takes your signature from what is already on screen:
+  From the page draws a box round a signature on any open PDF, and Paste
+  uses a copied picture such as a screenshot. Choose file also takes a PDF,
+  such as a Bluebeam stamp.
+
+### Windows and dialogs
+
+- Windows can no longer be made too small to use: document windows stop at
+  640 × 480 and Settings at 600 × 420.
+- Dialogs fit inside the window: one taller than the window scrolls between
+  its title and buttons, which were cut off before. On Linux they are
+  centred again and no longer cover the title bar.
+- On Windows, checkbox labels, such as Snap settings', show the bottoms of
+  letters like g, p and y; they were cut off.
+
 ## [0.3.8]
 
 ### Edit PDF

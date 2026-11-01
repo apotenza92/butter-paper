@@ -312,6 +312,7 @@ fn native_application_menu_disables_save_commands_until_the_active_document_is_r
     assert!(item(file, "Save").is_disabled());
     assert!(item(file, "Save As…").is_disabled());
     assert!(item(file, "Save Document as Template…").is_disabled());
+    assert!(item(file, "Sign with Certificate…").is_disabled());
     assert!(
         !item(file, "Close Document").is_disabled(),
         "a loading or failed document must remain independently closable"
@@ -351,6 +352,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             "<separator>",
             "Merge Documents…",
             "Convert to Word Document",
+            "Sign with Certificate…",
         ]
     );
     assert_eq!(

@@ -1,0 +1,21 @@
+# Digital signatures review: a copy of a signed PDF, such as
+# tests/fixtures/signatures/gpo-public-law-118-1.pdf (valid once Adobe's
+# trust lists are fetched) or signed-then-changed.pdf (invalid).
+# Coordinates are window content points below the title bar for a
+# 1300 x 900 window.
+wait 2500
+place 0 40 40 1300 900
+# The check and Adobe's trust lists finish in the background.
+wait 8000
+shot opened
+# The toolbar's signatures button opens the Signatures dialog.
+click 0 1140 104 1
+wait 1200
+shot dialog
+key 0 tab
+wait 600
+shot dialog-focus
+key 0 escape
+wait 1000
+shot closed
+quit

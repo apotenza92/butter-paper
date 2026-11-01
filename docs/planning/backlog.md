@@ -15,19 +15,9 @@ alone do not establish these behaviours.
 - Phone signing with a physical phone (the relay is verified with synthetic
   transfers only), and camera signature capture: permission, capture,
   cancellation and camera release.
-- Convert to Word Document on macOS and Windows: the default app's name in
-  Open (Pages or Word; `LSCopyDefaultApplicationURLForContentType`,
-  `AssocQueryStringW`), Show in Finder or File Explorer, and the converted
-  report opened in Microsoft Word itself (verified only in LibreOffice).
-
-## Opening
-
-- The macOS-printed fixtures `tests/fixtures/text-edit/quartz*.pdf`
-  (Quartz PDFContext, macOS 27) do not open in the app: "PDF worker
-  PageError: PdfiumLibraryInternalError(Unknown)", already on 0.3.7. The
-  worker's real-PDFium test opens and renders `quartz.pdf`, so a later step
-  of opening fails. Find which worker request fails, then check other
-  Quartz output (Preview, Print to PDF).
+- Convert to Word Document: the converted report opened in Microsoft Word
+  itself (verified only in LibreOffice; the dialog's app names were checked
+  on macOS and Windows).
 
 ## Interface
 
@@ -113,6 +103,29 @@ inspected captures. Steps are in priority order.
     - Selected content has markups' handles but no rotation knob: drawings
       and images could turn by their matrix; text would need its text
       matrix rewritten.
+
+## Signatures
+
+Do these in order; each step ships on its own.
+
+1. **Start the signature file picker in Bluebeam's stamps folder** on
+   Windows when it exists (PDF signatures are imported already). GPUI's
+   `PathPromptOptions` has no starting folder, so this needs a fork change.
+2. **Signature checks, remaining:** the trust lists' policy restrictions,
+   judging later changes by a certification's (DocMDP) permissions (today
+   any permitted change is shown alike; signing a PDF certified to allow no
+   changes is refused), the revocation of timestamp authorities'
+   certificates, and a setting to stop online revocation checks. Checked
+   today: integrity, later changes, chains (CAs, path lengths, document
+   purposes) to system and Adobe roots, dates, trusted timestamps and the
+   signer chain's revocation.
+3. **Signing follow-ups:** certifying signatures (Acrobat's Certify, with
+   DocMDP permissions), PDFs that need a password to open (refused today),
+   and appearance details beyond Acrobat's defaults (reason, location or a
+   logo in the standard text).
+4. **System certificates, remaining:** PKCS#11 smart cards on Linux, and
+   on-screen checks of a real smart card's PIN prompt on macOS and Windows
+   (the Keychain and the personal store are verified with test identities).
 
 ## Word documents
 

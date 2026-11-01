@@ -67,6 +67,31 @@ pub fn format_window_title_for_application(
 /// Window bounds of `size`, centred in the primary display's usable area:
 /// the screen less the menu bar and Dock on macOS (and the taskbar where
 /// the platform reports it), shrunk to fit it.
+/// The least content size of a document window: the tool rail folds into
+/// its overflow menu and the view toolbar scrolls, but the page, dialogs
+/// (the signing dialog is 460 points wide) and panels such as Snap settings
+/// still fit.
+pub const DOCUMENT_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
+    width: gpui::px(640.),
+    height: gpui::px(480.),
+};
+
+/// The least content size of the Settings window: its category rail, list
+/// and a readable column of settings.
+pub const SETTINGS_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
+    width: gpui::px(600.),
+    height: gpui::px(420.),
+};
+
+/// `size`, grown where needed to `minimum`, as a restored or cascaded
+/// window opens.
+pub fn at_least(
+    size: gpui::Size<gpui::Pixels>,
+    minimum: gpui::Size<gpui::Pixels>,
+) -> gpui::Size<gpui::Pixels> {
+    size.max(&minimum)
+}
+
 pub fn centered_window_bounds(
     size: gpui::Size<gpui::Pixels>,
     cx: &gpui::App,
@@ -156,4 +181,20 @@ fn window_title_content(
             .whitespace_nowrap()
             .child(title.into()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_windows_open_at_the_least_size() {
+        let small = gpui::size(gpui::px(300.), gpui::px(900.));
+        assert_eq!(
+            at_least(small, DOCUMENT_WINDOW_MIN_SIZE),
+            gpui::size(gpui::px(640.), gpui::px(900.))
+        );
+        let large = gpui::size(gpui::px(1200.), gpui::px(800.));
+        assert_eq!(at_least(large, DOCUMENT_WINDOW_MIN_SIZE), large);
+    }
 }

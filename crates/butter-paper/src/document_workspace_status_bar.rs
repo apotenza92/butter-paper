@@ -70,6 +70,8 @@ impl DocumentWorkspace {
                 .to_owned()
         } else if self.pending_text_box_editor.is_some() {
             "Text Box · Click away to finish".to_owned()
+        } else if let Some(guidance) = self.signature_box_guidance() {
+            guidance.to_owned()
         } else if editing_content && editing_text {
             "Edit PDF · Type to edit · Esc or click away to finish".to_owned()
         } else if editing_content {

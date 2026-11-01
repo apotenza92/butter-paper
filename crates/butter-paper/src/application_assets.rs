@@ -3,6 +3,9 @@ use std::borrow::Cow;
 
 pub const PAGE_THUMBNAILS_ICON: &str = "icons/page-thumbnails.svg";
 pub const DOWNLOAD_ICON: &str = "icons/download.svg";
+pub const SIGNATURE_VALID_ICON: &str = "icons/shield-check.svg";
+pub const SIGNATURE_UNVERIFIED_ICON: &str = "icons/shield-alert.svg";
+pub const SIGNATURE_INVALID_ICON: &str = "icons/rail/shield-x.svg";
 
 /// Product icons supplement, rather than modify, the stock component assets.
 pub struct ApplicationAssets;
@@ -11,6 +14,8 @@ impl AssetSource for ApplicationAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let thumbnail: Option<&'static [u8]> = match path {
             DOWNLOAD_ICON => Some(include_bytes!("../assets/icons/download.svg")),
+            SIGNATURE_VALID_ICON => Some(include_bytes!("../assets/icons/shield-check.svg")),
+            SIGNATURE_UNVERIFIED_ICON => Some(include_bytes!("../assets/icons/shield-alert.svg")),
             "icons/grip-vertical.svg" => Some(include_bytes!("../assets/icons/grip-vertical.svg")),
             "icons/thumbnail-rotate-left.svg" => {
                 Some(include_bytes!("../assets/icons/thumbnail-rotate-left.svg"))
