@@ -368,7 +368,10 @@ fn sign_with_certificate_draws_a_box_then_saves_a_signed_copy(cx: &mut TestAppCo
     let expected_directory = scratch.clone();
     let chosen = copy.clone();
     cx.simulate_new_path_selection(move |directory| {
-        assert_eq!(directory, expected_directory);
+        assert_eq!(
+            std::fs::canonicalize(directory).unwrap(),
+            std::fs::canonicalize(&expected_directory).unwrap()
+        );
         Some(chosen)
     });
     cx.run_until_parked();

@@ -633,9 +633,10 @@ impl DocumentWorkspace {
             return;
         };
         let source = session.read(cx).path.clone();
+        // Without Windows' `\\?\` prefix, which file dialogs read poorly.
         let directory = source
             .parent()
-            .map(Path::to_path_buf)
+            .map(|directory| dunce::simplified(directory).to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
         let stem = source
             .file_stem()
