@@ -9921,7 +9921,7 @@ fn markup_author() -> String {
 
 /// A PDF date in local time with its UTC offset, e.g.
 /// `D:20261002005432+10'00'`, matching Revu.
-fn pdf_date_now() -> String {
+pub(crate) fn pdf_date_now() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64);
@@ -9929,8 +9929,9 @@ fn pdf_date_now() -> String {
     format_pdf_date(seconds, offset_seconds)
 }
 
+/// The local time zone's offset from UTC at `seconds` since 1970.
 #[cfg(unix)]
-fn local_utc_offset_seconds(seconds: i64) -> i64 {
+pub(crate) fn local_utc_offset_seconds(seconds: i64) -> i64 {
     let time = seconds as libc::time_t;
     let mut local = std::mem::MaybeUninit::<libc::tm>::zeroed();
     // SAFETY: `localtime_r` writes only into the provided `tm`.
@@ -9942,12 +9943,50 @@ fn local_utc_offset_seconds(seconds: i64) -> i64 {
     unsafe { local.assume_init() }.tm_gmtoff
 }
 
-#[cfg(not(unix))]
-fn local_utc_offset_seconds(_seconds: i64) -> i64 {
+#[cfg(windows)]
+pub(crate) fn local_utc_offset_seconds(seconds: i64) -> i64 {
+    use windows_sys::Win32::{
+        Foundation::{FILETIME, SYSTEMTIME},
+        System::Time::{
+            FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime,
+        },
+    };
+    // FILETIME counts 100 ns intervals from 1601.
+    let Some(ticks) = seconds
+        .checked_add(11_644_473_600)
+        .and_then(|since_1601| since_1601.checked_mul(10_000_000))
+        .filter(|ticks| *ticks >= 0)
+    else {
+        return 0;
+    };
+    let utc_file = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    // SAFETY: each call reads and writes only the structures passed to it,
+    // and a null time zone means the current one.
+    unsafe {
+        let mut utc: SYSTEMTIME = std::mem::zeroed();
+        let mut local: SYSTEMTIME = std::mem::zeroed();
+        let mut local_file: FILETIME = std::mem::zeroed();
+        if FileTimeToSystemTime(&utc_file, &mut utc) == 0
+            || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0
+            || SystemTimeToFileTime(&local, &mut local_file) == 0
+        {
+            return 0;
+        }
+        let local_ticks =
+            (i64::from(local_file.dwHighDateTime) << 32) | i64::from(local_file.dwLowDateTime);
+        (local_ticks - ticks) / 10_000_000
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn local_utc_offset_seconds(_seconds: i64) -> i64 {
     0
 }
 
-fn format_pdf_date(seconds: i64, offset_seconds: i64) -> String {
+pub(crate) fn format_pdf_date(seconds: i64, offset_seconds: i64) -> String {
     let local = seconds + offset_seconds;
     let days = local.div_euclid(86_400);
     let time_of_day = local.rem_euclid(86_400);

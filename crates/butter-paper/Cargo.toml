@@ -26,8 +26,8 @@ dunce = "1.0.5"
 flate2 = "1.1.10"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "c2aae81d1e63ba17bf2095c9208170f23badacdd" }
-gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "c2aae81d1e63ba17bf2095c9208170f23badacdd" }
+gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "1ac8e906a9290135ddf0dc2be399732c1e8a2b80" }
+gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "1ac8e906a9290135ddf0dc2be399732c1e8a2b80" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "crypto-rust", "sync-secret-service", "windows-native"] }
 libc = "0.2"
@@ -37,6 +37,24 @@ pdfium-render = { git = "https://github.com/ajrcarey/pdfium-render", rev = "6cee
 regex = "1.13.1"
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
+# Digital signatures (PDF signing and validation). The `cms` and `rsa`
+# releases are pinned pre-releases of the current RustCrypto line (`cms`
+# matches the one `p12-keystore` reads PKCS#12 files with),
+# which uses `sha2` 0.11 (`signature_sha2` here).
+cms = { version = "=0.3.0-pre.1", default-features = false, features = ["std"] }
+const-oid = { version = "0.10", features = ["db"] }
+der = { version = "0.8", features = ["alloc", "derive", "oid"] }
+ecdsa = { version = "0.17", features = ["der", "digest"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
+p384 = { version = "0.14", features = ["ecdsa"] }
+rsa = { version = "=0.10.0-rc.19", features = ["sha2"] }
+sha1 = { version = "0.11", features = ["oid"] }
+signature_sha2 = { package = "sha2", version = "0.11", features = ["oid"] }
+spki = "0.8"
+x509-cert = { version = "0.3", features = ["builder"] }
+p12-keystore = "0.4.1"
+rustls-native-certs = "0.8"
+roxmltree = "0.21"
 serde_json = "1.0"
 smallvec = "1.15.1"
 rustybuzz = "=0.20.1"
@@ -50,10 +68,14 @@ rustix = { version = "1.1.4", features = ["fs"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
 core-foundation-sys = "0.8.7"
-security-framework = "3.7.0"
+security-framework = { version = "3.7.0", features = ["macos-12"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_IO", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# GPUI Component's icons embedded in debug builds too: otherwise they are read
+# at run time from the build machine's path, so a debug build cross-built for
+# a Windows test machine draws no checkmarks or chevrons.
+rust-embed = { version = "8.12.0", features = ["debug-embed"] }
+windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_IO", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 embed-resource = "3.0.11"

@@ -14,7 +14,7 @@ use crate::{
         ActualSize, CloseDocument, ContinuousView, ConvertToWord, DocumentOpenBatchRequest,
         DocumentOpenOrigin, FitPage, FitWidth, MergeDocuments, NavigateNextPage,
         NavigatePreviousPage, NewFromTemplate, OpenPdf, RotatePageLeft, RotatePageRight, Save,
-        SaveAs, SaveDocumentAsTemplate, SinglePageView, ZoomIn, ZoomOut,
+        SaveAs, SaveDocumentAsTemplate, SignWithCertificate, SinglePageView, ZoomIn, ZoomOut,
     },
 };
 
@@ -188,6 +188,7 @@ fn build_file_menu(
         MenuItem::separator(),
         MenuItem::action("Merge Documents…", MergeDocuments),
         MenuItem::action("Convert to Word Document", ConvertToWord).disabled(save_disabled),
+        MenuItem::action("Sign with Certificate…", SignWithCertificate).disabled(save_disabled),
     ];
     if include_close_document {
         items.extend([

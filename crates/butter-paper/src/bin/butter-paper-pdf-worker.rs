@@ -352,20 +352,28 @@ impl PdfBackend for PdfiumBackend {
             .pages()
             .get(page_index)
             .map_err(map_pdfium_error)?;
-        let media = page.boundaries().media().map_err(map_pdfium_error)?.bounds;
+        // PDFium reports only boxes in the page's own dictionary; a page
+        // that inherits its boxes from the page tree (as Quartz and some
+        // Acrobat output do) takes them from the inherited dictionary,
+        // which PDFium also draws with.
+        let media = page
+            .boundaries()
+            .media()
+            .ok()
+            .map(|boundary| rect_array(boundary.bounds));
         let crop = page
             .boundaries()
             .crop()
-            .map(|boundary| boundary.bounds)
-            .unwrap_or(media);
+            .ok()
+            .map(|boundary| rect_array(boundary.bounds));
         let rotation = match page.rotation().map_err(map_pdfium_error)? {
             PdfPageRenderRotation::None => Rotation::Degrees0,
             PdfPageRenderRotation::Degrees90 => Rotation::Degrees90,
             PdfPageRenderRotation::Degrees180 => Rotation::Degrees180,
             PdfPageRenderRotation::Degrees270 => Rotation::Degrees270,
         };
-        let pdfium_media = rect_array(media);
-        let pdfium_crop = rect_array(crop);
+        let pdfium_media = media.unwrap_or_else(|| pdf_rect_array(canonical.media_box()));
+        let pdfium_crop = crop.unwrap_or_else(|| pdf_rect_array(canonical.view_box()));
         if !rectangles_match(pdfium_media, canonical.media_box())
             || !rectangles_match(pdfium_crop, canonical.view_box())
             || rotation != map_rotation(canonical.rotation())
@@ -632,6 +640,15 @@ fn rectangles_match(pdfium: [f32; 4], canonical: butter_paper::page_geometry::Pd
         .into_iter()
         .zip(expected)
         .all(|(actual, expected)| (actual - expected).abs() <= 0.01)
+}
+
+fn pdf_rect_array(rect: butter_paper::page_geometry::PdfRect) -> [f32; 4] {
+    [
+        rect.x as f32,
+        rect.y as f32,
+        rect.right() as f32,
+        rect.top() as f32,
+    ]
 }
 
 fn rect_array(rect: PdfRect) -> [f32; 4] {
@@ -1164,6 +1181,58 @@ mod tests {
             }
             backend.close(document);
         }
+    }
+
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn pages_that_inherit_their_boxes_from_the_page_tree_open() {
+        // Quartz and some Acrobat output put the MediaBox (and CropBox) on
+        // the page tree only; PDFium reports only a page's own boxes.
+        use lopdf::dictionary;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let mut pdf = PdfMetadataDocument::with_version("1.4");
+        let pages = pdf.new_object_id();
+        let content = pdf.add_object(lopdf::Stream::new(
+            dictionary! {},
+            b"0 0 1 rg 100 100 200 200 re f".to_vec(),
+        ));
+        let page = pdf.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages,
+            "Contents" => content,
+        });
+        pdf.objects.insert(
+            pages,
+            lopdf::Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page.into()],
+                "Count" => 1,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "CropBox" => vec![10.into(), 20.into(), 600.into(), 780.into()],
+            }),
+        );
+        let catalog = pdf.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        pdf.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        pdf.save_to(&mut bytes).unwrap();
+        let path = env::temp_dir().join(format!("bp-inherited-boxes-{}.pdf", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, info) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(info.page_count, 1);
+        let geometry = backend.page_geometry(&mut document, 0).unwrap();
+        assert_eq!(geometry.media_box, [0., 0., 612., 792.]);
+        assert_eq!(geometry.crop_box, [10., 20., 600., 780.]);
+        assert_eq!(
+            (
+                geometry.display_width_points,
+                geometry.display_height_points
+            ),
+            (590., 760.)
+        );
+        backend.close(document);
     }
 
     #[test]

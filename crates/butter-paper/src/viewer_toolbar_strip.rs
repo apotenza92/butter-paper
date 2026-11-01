@@ -4,8 +4,8 @@ use gpui::{
     Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Selectable as _,
-    button::{Button, ButtonGroup},
+    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _,
+    button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
     switch::Switch,
 };
@@ -16,6 +16,7 @@ use crate::continuous_view_control::ContinuousViewControl;
 use crate::page_view_control::{
     PageViewControl, PageViewControlEvent, PageViewMode, WheelBehavior,
 };
+use crate::pdf_signatures::Verdict;
 use crate::viewer_icons::{fit_page_icon, fit_width_icon};
 use crate::zoom_control::ZoomControl;
 
@@ -27,6 +28,7 @@ pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
 pub const EDIT_PDF_ID: &str = "viewer-edit-pdf";
+pub const VIEWER_SIGNATURES_ID: &str = "viewer-signatures";
 /// The least width of the Edit PDF switch's slot, in rems.
 pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 9.;
 
@@ -41,6 +43,15 @@ pub enum ViewerToolbarStripEvent {
     FitPresetChanged(FitPreset),
     /// The Edit PDF switch was pressed.
     EditPdfToggled,
+    /// The signatures button was pressed.
+    SignaturesRequested,
+}
+
+/// What the signatures button shows for a digitally signed document.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignatureStatus {
+    Checking,
+    Checked(Verdict),
 }
 
 /// Owns the representative viewer-toolbar feature state while GPUI Component
@@ -60,6 +71,7 @@ pub struct ViewerToolbarStrip {
     /// The Edit PDF switch, at the strip's leading edge, and whether it is
     /// on; `None` hides it.
     edit_pdf: Option<bool>,
+    signatures: Option<SignatureStatus>,
 }
 
 impl ViewerToolbarStrip {
@@ -77,6 +89,7 @@ impl ViewerToolbarStrip {
             page_view_mode: PageViewMode::Continuous,
             disabled: false,
             edit_pdf: None,
+            signatures: None,
         }
     }
 
@@ -151,6 +164,7 @@ impl ViewerToolbarStrip {
             page_view_mode: PageViewMode::Continuous,
             disabled: false,
             edit_pdf: None,
+            signatures: None,
         }
     }
 
@@ -267,6 +281,18 @@ impl ViewerToolbarStrip {
 
     pub fn edit_pdf(&self) -> Option<bool> {
         self.edit_pdf
+    }
+
+    /// Shows the signatures button for a signed document, or hides it.
+    pub fn set_signatures(&mut self, signatures: Option<SignatureStatus>, cx: &mut Context<Self>) {
+        if self.signatures != signatures {
+            self.signatures = signatures;
+            cx.notify();
+        }
+    }
+
+    pub fn signatures(&self) -> Option<SignatureStatus> {
+        self.signatures
     }
 
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
@@ -491,6 +517,67 @@ impl Render for ViewerToolbarStrip {
                 )
         });
         let has_edit_pdf = edit_pdf.is_some();
+        // At the trailing edge, opposite the Edit PDF slot. It stays on
+        // screen when a narrow toolbar scrolls: the button floats over the
+        // strip's end, while a hidden copy keeps its room in the layout, so
+        // the centred controls do not move.
+        let signature_button = |pinned: bool, cx: &mut Context<Self>| {
+            let status = self.signatures?;
+            let theme = cx.theme();
+            let (icon, color, label, tooltip) = match status {
+                SignatureStatus::Checking => (
+                    crate::application_assets::SIGNATURE_UNVERIFIED_ICON,
+                    theme.muted_foreground,
+                    "Checking signatures…",
+                    "Checking this PDF's digital signatures",
+                ),
+                SignatureStatus::Checked(Verdict::Valid) => (
+                    crate::application_assets::SIGNATURE_VALID_ICON,
+                    theme.success,
+                    "Signed",
+                    "Digitally signed, and the signatures are valid",
+                ),
+                SignatureStatus::Checked(Verdict::Unverified) => (
+                    crate::application_assets::SIGNATURE_UNVERIFIED_ICON,
+                    theme.warning,
+                    "Signer not verified",
+                    "Digitally signed, but a signer's identity can't be verified",
+                ),
+                SignatureStatus::Checked(Verdict::Invalid) => (
+                    crate::application_assets::SIGNATURE_INVALID_ICON,
+                    theme.danger,
+                    "Signature invalid",
+                    "Digitally signed, but the PDF changed after signing",
+                ),
+            };
+            let button = Button::new(if pinned {
+                VIEWER_SIGNATURES_ID
+            } else {
+                "viewer-signatures-room"
+            })
+            .ghost()
+            .small()
+            .icon(Icon::default().path(icon).text_color(color))
+            .label(label);
+            Some(h_flex().px_2().flex_shrink_0().child(if pinned {
+                button
+                    .debug_selector(|| VIEWER_SIGNATURES_ID.into())
+                    .tooltip(tooltip)
+                    .disabled(disabled)
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                        cx.emit(ViewerToolbarStripEvent::SignaturesRequested);
+                    }))
+                    .into_any_element()
+            } else {
+                div()
+                    .invisible()
+                    .child(button.tab_stop(false))
+                    .into_any_element()
+            }))
+        };
+        let signatures_room = signature_button(false, cx).filter(|_| has_edit_pdf);
+        let signatures = signature_button(true, cx).filter(|_| has_edit_pdf);
+        let background = cx.theme().background;
 
         h_flex()
             .id(VIEWER_TOOLBAR_ID)
@@ -503,6 +590,7 @@ impl Render for ViewerToolbarStrip {
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
+            .relative()
             .track_focus(&self.focus_handle)
             .child(
                 h_flex()
@@ -555,8 +643,37 @@ impl Render for ViewerToolbarStrip {
                                         },
                                     ),
                             )
-                            .when(has_edit_pdf, |content| content.child(h_flex().flex_1())),
+                            .when(has_edit_pdf, |content| {
+                                content.child(
+                                    h_flex().flex_1().justify_end().children(signatures_room),
+                                )
+                            }),
                     ),
             )
+            .children(signatures.map(|signatures| {
+                h_flex()
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .items_center()
+                    // Controls scrolled beneath it fade out rather than
+                    // being cut off.
+                    .child(div().w_4().h_full().bg(gpui::linear_gradient(
+                        90.,
+                        gpui::linear_color_stop(background.opacity(0.), 0.),
+                        gpui::linear_color_stop(background, 1.),
+                    )))
+                    // Presses on it never reach controls scrolled beneath.
+                    .child(
+                        h_flex()
+                            .id("viewer-signatures-pinned")
+                            .occlude()
+                            .h_full()
+                            .items_center()
+                            .bg(background)
+                            .child(signatures),
+                    )
+            }))
     }
 }

@@ -92,7 +92,8 @@ Windows app without Windows; `cargo xtask pdfium --target
 x86_64-pc-windows-msvc` fetches its PDFium. A debug build run on another
 Windows machine needs the VC++ runtime there and reads GPUI's shaders
 (`gpui_windows/src/*.hlsl`) from the build machine's path, so copy them to
-the same path on the Windows machine's `C:` drive; release builds embed
+the same path on the Windows machine's `C:` drive (GPUI Component's icons
+are embedded even in debug builds there); release builds embed
 them but need the Windows SDK's `fxc.exe` to build. Start it on the
 logged-in desktop (a scheduled task with `/it`), not from an SSH session.
 

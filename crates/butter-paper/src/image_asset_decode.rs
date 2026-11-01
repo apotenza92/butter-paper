@@ -219,6 +219,36 @@ pub fn sanitize_signature_bytes(
     sanitize_signature_rgba(rgba)
 }
 
+/// A signature in a picture of part of a page (RGBA), such as the box the
+/// user drew round one with From the page.
+pub fn sanitize_signature_rgba_pixels(
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+) -> Result<SanitizedSignatureFile, SignatureImageError> {
+    validate_signature_geometry((width, height))?;
+    let rgba = image::RgbaImage::from_raw(width, height, rgba)
+        .ok_or(SignatureImageError::UnsafeDimensions)?;
+    sanitize_signature_rgba(rgba)
+}
+
+/// A signature drawn on a PDF page (a Bluebeam stamp, or a page signed in
+/// another app): the page's BGRA pixels as the worker drew them on white.
+pub fn sanitize_signature_raster(
+    width: u32,
+    height: u32,
+    pixels_bgra: &[u8],
+) -> Result<SanitizedSignatureFile, SignatureImageError> {
+    validate_signature_geometry((width, height))?;
+    let mut rgba = Vec::with_capacity(pixels_bgra.len());
+    for pixel in pixels_bgra.chunks_exact(4) {
+        rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+    }
+    let rgba = image::RgbaImage::from_raw(width, height, rgba)
+        .ok_or(SignatureImageError::UnsafeDimensions)?;
+    sanitize_signature_rgba(rgba)
+}
+
 fn validate_signature_geometry((width, height): (u32, u32)) -> Result<(), SignatureImageError> {
     let pixels = u64::from(width).checked_mul(u64::from(height));
     if width == 0
@@ -311,10 +341,30 @@ fn sanitize_signature_rgba(
     bottom = bottom.saturating_add(padding).min(height - 1);
     let output_width = right - left + 1;
     let output_height = bottom - top + 1;
+    // The ink keeps its colour, as Acrobat and Revu keep an imported
+    // signature's: the average of its solid strokes, so edges blended with
+    // the paper do not wash it out.
+    let ink = {
+        let mut sums = [0_u64; 3];
+        let mut solid = 0_u64;
+        for (ix, pixel) in rgba.pixels().enumerate() {
+            if alpha[ix] >= 200 && strength[ix] >= 0.5 {
+                for (sum, channel) in sums.iter_mut().zip(pixel.0) {
+                    *sum += u64::from(channel);
+                }
+                solid += 1;
+            }
+        }
+        if solid == 0 {
+            [17, 24, 39]
+        } else {
+            sums.map(|sum| (sum / solid) as u8)
+        }
+    };
     let mut output = Vec::with_capacity((output_width * output_height * 4) as usize);
     for y in top..=bottom {
         for x in left..=right {
-            output.extend_from_slice(&[17, 24, 39, alpha[(y * width + x) as usize]]);
+            output.extend_from_slice(&[ink[0], ink[1], ink[2], alpha[(y * width + x) as usize]]);
         }
     }
     let asset = DecodedRgbaAsset::new(output_width, output_height, output)
@@ -421,5 +471,51 @@ mod signature_quality_tests {
             .filter_map(|pixel| (pixel[3] > 0).then_some(pixel[3]))
             .collect();
         assert_eq!(coverage, vec![64, 128, 255]);
+    }
+
+    #[test]
+    fn imported_ink_keeps_its_colour() {
+        // A blue stroke on white, as a scan or screenshot holds it.
+        let mut image = image::RgbaImage::from_pixel(120, 40, image::Rgba([255, 255, 255, 255]));
+        for x in 20..100 {
+            for y in 18..23 {
+                image.put_pixel(x, y, image::Rgba([20, 40, 160, 255]));
+            }
+        }
+        let signature = sanitize_signature_rgba(image).unwrap();
+        let solid: Vec<_> = signature
+            .asset()
+            .rgba()
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] == 255)
+            .collect();
+        assert!(!solid.is_empty());
+        assert!(solid.iter().all(|pixel| pixel[..3] == [20, 40, 160]));
+    }
+
+    #[test]
+    fn a_page_drawn_on_white_keeps_only_its_ink() {
+        // A 200 x 100 white page (BGRA) with a dark blue stroke.
+        let (width, height) = (200_u32, 100_u32);
+        let mut page = vec![255_u8; (width * height * 4) as usize];
+        for x in 60..140 {
+            for y in 48..52 {
+                let ix = ((y * width + x) * 4) as usize;
+                page[ix..ix + 4].copy_from_slice(&[120, 20, 10, 255]);
+            }
+        }
+        let signature = sanitize_signature_raster(width, height, &page).unwrap();
+        let asset = signature.asset();
+        assert!(
+            asset.width_px() < 100 && asset.height_px() < 20,
+            "cropped to the ink"
+        );
+        let pixels: Vec<_> = asset.rgba().chunks_exact(4).collect();
+        assert_eq!(pixels.first().unwrap()[3], 0, "the paper is transparent");
+        assert!(pixels.iter().any(|pixel| pixel[3] == 255));
+        assert!(matches!(
+            sanitize_signature_raster(width, height, &vec![255; page.len()]),
+            Err(SignatureImageError::NoInk)
+        ));
     }
 }

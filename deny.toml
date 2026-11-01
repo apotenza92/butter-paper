@@ -9,7 +9,12 @@ targets = [
 ]
 
 [advisories]
-ignore = []
+ignore = [
+    # The rsa crate's Marvin timing side channel needs an attacker who can
+    # time private-key operations. Signature checks use only public keys,
+    # and signing runs on the user's own computer (see decisions.md).
+    { id = "RUSTSEC-2023-0071", reason = "local signing and public-key verification only" },
+]
 
 [licenses]
 allow = [

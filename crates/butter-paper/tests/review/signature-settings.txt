@@ -1,0 +1,40 @@
+# Settings ▸ Signatures: typing a timestamp server, a wrong one first, then
+# the signing dialog offering it. A copy of
+# tests/fixtures/text-edit/word-table.pdf; Settings coordinates are its
+# window's content points.
+wait 2500
+place 0 40 40 1300 900
+wait 2000
+settings
+wait 1500
+# The rail's third category, Signatures.
+settings-click 31 100
+wait 1000
+shot signatures
+settings-click 420 110
+wait 500
+settings-type timestamp.digicert.com
+settings-key enter
+wait 800
+shot invalid
+settings-key cmd-a
+settings-key ctrl-a
+settings-key backspace
+settings-type http://timestamp.digicert.com
+settings-key enter
+wait 800
+shot valid
+settings-key escape
+wait 800
+sign-with-certificate
+wait 800
+click 0 650 640 1
+wait 300
+move 0 950 700
+wait 300
+click 0 950 700 1
+wait 1500
+shot dialog
+key 0 escape
+wait 800
+quit

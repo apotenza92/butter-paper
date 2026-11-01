@@ -72,17 +72,17 @@ use butter_paper::document_workspace::{
     DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
     DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
     DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
-    DOCUMENT_SIGNATURE_ERROR_ALERT_ID, DOCUMENT_SIGNATURE_LOADING_ID,
-    DOCUMENT_SIGNATURE_MODE_IMAGE_ID, DOCUMENT_SIGNATURE_MODE_TYPE_ID,
-    DOCUMENT_SIGNATURE_NAME_INPUT_ID, DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID,
-    DOCUMENT_SNAP_CLOSE_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
-    DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID, DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
-    DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID, DOCUMENT_SNAP_POPOVER_ID,
-    DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID, DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID,
-    DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_THUMBNAIL_STRIP_ID,
-    DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID, DOCUMENT_VIEWPORT_ID,
-    DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution, DocumentId,
-    DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
+    DOCUMENT_SIGNATURE_ERROR_ALERT_ID, DOCUMENT_SIGNATURE_FROM_PAGE_ID,
+    DOCUMENT_SIGNATURE_LOADING_ID, DOCUMENT_SIGNATURE_MODE_IMAGE_ID,
+    DOCUMENT_SIGNATURE_MODE_TYPE_ID, DOCUMENT_SIGNATURE_NAME_INPUT_ID, DOCUMENT_SIGNATURE_PASTE_ID,
+    DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID, DOCUMENT_SNAP_CLOSE_ID,
+    DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
+    DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
+    DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
+    DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID, DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID,
+    DOCUMENT_THUMBNAIL_STRIP_ID, DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID,
+    DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution,
+    DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
     DocumentOpenOrigin, DocumentSaveFailureKind, DocumentSaveFailureOperation, DocumentSaveRoute,
     DocumentTabTransferEvent, DocumentWorkspace, FitPage, FitWidth,
     GeneratedTemplateRequestDisposition, NativeDocumentOpener, NativeDocumentResource,
@@ -35506,7 +35506,14 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
     cx.simulate_path_prompt_response(move |options| {
         assert_eq!(
             options.prompt.as_deref(),
-            Some("Select a PNG or JPEG image")
+            Some("Select a signature image or PDF")
+        );
+        assert!(
+            options
+                .allowed_extensions
+                .as_ref()
+                .is_some_and(|extensions| extensions.iter().any(|extension| extension == "pdf")),
+            "a PDF signature can be chosen"
         );
         Some(vec![blank_path])
     });
@@ -47183,4 +47190,132 @@ fn selection_handles_paint_above_markups_drawn_after_the_selection(cx: &mut Test
         handles.iter().all(|index| *index > above_outline),
         "handles {handles:?} must paint after the markup above, {above_outline}"
     );
+}
+
+/// Opens the one-page test document with the Signature panel's Image tab
+/// showing.
+fn signature_image_tab(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    OpenDocumentRequest,
+    &mut gpui::VisualTestContext,
+) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("signature-capture.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.run_until_parked();
+    scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
+    cx.simulate_click(trigger.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let image_mode = cx.debug_bounds(DOCUMENT_SIGNATURE_MODE_IMAGE_ID).unwrap();
+    cx.simulate_click(image_mode.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    (workspace, request, cx)
+}
+
+#[gpui::test]
+fn a_pasted_screenshot_becomes_a_signature_preview(cx: &mut TestAppContext) {
+    let (_workspace, _request, cx) = signature_image_tab(cx);
+    // Nothing on the clipboard: it says what to copy.
+    let paste = cx.debug_bounds(DOCUMENT_SIGNATURE_PASTE_ID).unwrap();
+    cx.simulate_click(paste.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_ERROR_ALERT_ID).is_some());
+
+    // A screenshot of a stroke on white.
+    let mut png = Vec::new();
+    ImageBuffer::from_fn(240, 80, |x, y| {
+        if (60..180).contains(&x) && (34..46).contains(&y) {
+            Rgba([0_u8, 0, 0, 255])
+        } else {
+            Rgba([255_u8, 255, 255, 255])
+        }
+    })
+    .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+    .unwrap();
+    cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        png,
+    )));
+    let paste = cx.debug_bounds(DOCUMENT_SIGNATURE_PASTE_ID).unwrap();
+    cx.simulate_click(paste.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_PREVIEW_ID).is_some());
+    assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_ERROR_ALERT_ID).is_none());
+}
+
+#[gpui::test]
+fn from_the_page_turns_a_box_on_the_page_into_a_signature_not_a_snapshot(cx: &mut TestAppContext) {
+    let (workspace, request, cx) = signature_image_tab(cx);
+    let from_page = cx.debug_bounds(DOCUMENT_SIGNATURE_FROM_PAGE_ID).unwrap();
+    cx.simulate_click(from_page.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Snapshot),
+        "the box is drawn with the Snapshot tool"
+    );
+    assert!(
+        cx.debug_bounds(DOCUMENT_SIGNATURE_MODE_IMAGE_ID).is_none(),
+        "the panel steps aside for the page"
+    );
+
+    let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    cx.simulate_click(project(144., 216.), Modifiers::default());
+    cx.simulate_mouse_move(project(324., 288.), None, Modifiers::default());
+    cx.simulate_click(project(324., 288.), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(snapshot.snapshots.is_empty(), "no snapshot markup is left");
+    assert!(!snapshot.dirty, "the document is unchanged");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select)
+    );
+    // The panel is back with what the box held: the test page is blank, so
+    // it says no signature was found there.
+    assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_MODE_IMAGE_ID).is_some());
+    assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_ERROR_ALERT_ID).is_some());
 }

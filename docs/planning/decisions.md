@@ -18,6 +18,79 @@ changes it; history is in git.
   (`services/signature-relay`), as Electron did, so the phone needs no route
   to the computer's network. The local-network (qrcp) helper is retired.
   Opening Signature starts a phone QR session straight away.
+- Digital signatures are checked natively (`pdf_signatures`, RustCrypto),
+  never by a bundled signer or validator (the Electron work used a pyHanko
+  sidecar). A signature is valid when its signed bytes and signature match,
+  later revisions only added signatures, notes, markups or form entries,
+  and its certificate chains to a trusted root and is in date: at a
+  trusted timestamp's time, else now (a signer's clock proves nothing), as
+  Acrobat and pyHanko judge. Every issuer in a chain must be a CA allowed
+  to sign certificates, within its path length, and the signer's
+  certificate must allow signing documents (else "trusted, but not for
+  signing documents"). A timestamp dates a signature only when its
+  authority is for timestamping, chains to a trusted root and was in date
+  then. Later changes are found by comparing every object of the file
+  with the signed revision (not by where an update wrote it), with pages
+  and the page tree recognised by structure: anything the pages draw, the
+  page tree (inherited boxes and resources included), the catalog beyond
+  validation data, the form and bookkeeping, or an earlier signature's own
+  objects changing makes the signature invalid. Trusted roots are the system's and those of
+  Adobe's two published trust lists (AATL and the EU Trusted List), which
+  hold the document-signing roots system stores omit. Each list is a PDF
+  signed through Adobe Root CA G2, which is pinned; it is fetched from
+  `trustlist.adobe.com` when a signed PDF first opens in a run, refreshed
+  weekly and used only when its signature checks out. Its policy
+  restrictions are not applied yet. Revocation comes from what the PDF
+  holds (its document security store, Adobe's revocation archive, the
+  signature's CRLs), else from the certificates' OCSP responders and CRLs,
+  asked in the background once the PDF's own answer is shown, as Acrobat
+  does by default. A "not revoked" answer counts only while current for
+  the time checked (issued then or later, or before its next update), an
+  answer saying revoked wins over others, and an OCSP responder other
+  than the issuer must be certified for OCSP signing; OCSP and CRLs are read as raw DER because `x509-ocsp`
+  exists only for the previous RustCrypto line. A certificate revoked
+  before the signature's trusted time (now without a timestamp) makes it
+  invalid; one revoked after a timestamped signature does not. Checks run
+  in the app, so every stream they decompress is bounded (64 MB) against
+  decompression bombs. RSA keys
+  use the `rsa` crate, whose
+  timing advisory (RUSTSEC-2023-0071) concerns attackers who can time the
+  private-key operations: signature checks use only public keys, and
+  signing happens on the user's own computer.
+- Digital signing (File ▸ Sign with Certificate…) follows Acrobat's and
+  Revu's defaults: a box drawn where the signature goes, the certificate,
+  then Save As for the signed copy, and a timestamp only when a timestamp
+  server is set (Settings ▸ Signatures; none at first, so nothing is sent
+  anywhere unless the user sets one). It appends a PAdES signature
+  (ETSI.CAdES.detached, SHA-256, RSA or ECDSA) as an incremental update,
+  so earlier signatures stay valid. With a timestamp (B-T; only the
+  signature's hash is sent), the chain's OCSP answers (or CRLs) are kept in
+  a document security store appended after it (B-LT), so it can be checked
+  after the certificates expire. A drawn box shows Acrobat's standard text
+  (the name large, then "Digitally signed by", name and date), only the
+  details, or nothing (an invisible signature, listed but not drawn); a
+  selected handwritten signature can be signed in place of instead, and
+  only the signed copy leaves that markup out (matched by its `/NM`), so
+  the PDF it came from keeps it. A PDF with only an owner password is
+  signed under its own encryption: the update's objects are encrypted with
+  the file's key, except the signature's `/Contents`, as the standard
+  says; PDFs that need a password to open are refused. Imported
+  signatures keep their ink colour, as both apps keep an imported image's.
+  The CMS is written by hand in DER: `cms`'s builder does not build with
+  the current RustCrypto crates. Every signed file is read back with the
+  signature checker before it is written, through a temporary file;
+  signing over the PDF itself closes it first so no process holds the
+  file.
+- Certificates the system holds sign without leaving it: macOS Keychain
+  identities through `SecKeyCreateSignature` (smart cards it exposes
+  included), and the Windows personal store through CNG
+  (`NCryptSignHash`; smart card drivers put their certificates there).
+  Only certificates whose key and extended key usages allow signing
+  documents are offered, so developers' code-signing certificates are not.
+  Linux has no such store; PKCS#11 smart cards there are not supported yet.
+- Signatures can be imported from PNG, JPEG or PDF files (a Bluebeam stamp,
+  or a page signed in Acrobat and saved): Acrobat's own signature store is
+  private and cannot be read.
 
 ## Interface
 
@@ -28,6 +101,14 @@ changes it; history is in git.
   precision and pages. Saved scale presets were dropped: they lived only in
   the open document and were lost on closing it, and applying to several
   pages covers reuse.
+
+- Windows have a least size, set where the layout stops working rather than
+  where everything shows: document windows 640 × 480 (the tool rail folds
+  into its overflow menu and the view toolbar scrolls sideways below about
+  940 wide), Settings 600 × 420. A restored or cascaded window smaller than
+  that opens at it. Dialogs stay within the window: a taller one scrolls
+  its body between its title and buttons; panels such as Snap settings do
+  the same.
 
 - Use the stock gpui-component theme and standard control appearances as the
   UI baseline. Preserve the current application layout and control locations;

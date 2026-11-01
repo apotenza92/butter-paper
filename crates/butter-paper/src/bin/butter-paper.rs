@@ -2262,6 +2262,16 @@ fn main() {
         let saver = std::sync::Arc::new(PdfDocumentSaver::new(opener.clone()));
         // Construction performs no credential or filesystem IO on the UI thread.
         // Production binds this service to the authenticated stable/beta channel.
+        // Settings ▸ Signatures; kept only for this run in performance runs.
+        cx.set_global(if perf.is_none() {
+            butter_paper::signature_settings::SignatureSettings::load(
+                storage_layout
+                    .preferences_root()
+                    .join(butter_paper::signature_settings::SIGNATURE_SETTINGS_FILE_NAME),
+            )
+        } else {
+            Default::default()
+        });
         let recent_signature_store = perf.is_none().then(|| {
             std::sync::Arc::new(RecentSignatureStore::new(
                 storage_layout
@@ -2303,6 +2313,11 @@ fn main() {
                 checkpoint_enabled: launch_resolution.checkpoint_enabled,
                 document_recovery_store,
                 recent_signature_store,
+                signature_trust_store: perf.is_none().then(|| {
+                    Arc::new(butter_paper::signature_trust::TrustStore::new(
+                        storage_layout.preferences_root().join("trust-lists"),
+                    ))
+                }),
                 recent_documents,
                 template_manager_root: storage_layout.template_library_root(),
                 template_authority: std::cell::RefCell::new(None),
@@ -2425,6 +2440,8 @@ struct SharedApplication {
     checkpoint_enabled: bool,
     document_recovery_store: Option<Result<Arc<DocumentRecoveryStore>, String>>,
     recent_signature_store: Option<Arc<RecentSignatureStore>>,
+    /// Adobe's trust lists kept for checking digital signatures.
+    signature_trust_store: Option<Arc<butter_paper::signature_trust::TrustStore>>,
     recent_documents: Entity<butter_paper::recent_documents::RecentDocuments>,
     template_manager_root: std::path::PathBuf,
     /// One template library authority for every window, created with the first.
@@ -2610,7 +2627,10 @@ fn restored_window_placement(
     Some((
         WindowBounds::Windowed(gpui::Bounds {
             origin: gpui::point(px(bounds.x), px(bounds.y)),
-            size: size(px(bounds.width), px(bounds.height)),
+            size: butter_paper::window_title_bar::at_least(
+                size(px(bounds.width), px(bounds.height)),
+                butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE,
+            ),
         }),
         display.map(|display| display.id()),
     ))
@@ -2630,7 +2650,10 @@ fn next_window_bounds(cx: &mut App) -> WindowBounds {
         // Window sizes are content sizes; the frame adds the title bar.
         Some((origin, content)) => WindowBounds::Windowed(gpui::Bounds {
             origin: origin + gpui::point(px(28.), px(28.)),
-            size: content,
+            size: butter_paper::window_title_bar::at_least(
+                content,
+                butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE,
+            ),
         }),
         None => WindowBounds::Windowed(butter_paper::window_title_bar::centered_window_bounds(
             size(px(1200.), px(800.)),
@@ -2696,6 +2719,7 @@ fn open_document_window_placed(
             tabbing_identifier.clone()
         },
         display_id,
+        window_min_size: Some(butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE),
         ..title_bar_window_options()
     };
     let handle = cx
@@ -2753,6 +2777,13 @@ fn build_document_window(
             .set_thumbnail_scroll_settle(butter_paper::document_workspace::THUMBNAIL_SCROLL_SETTLE);
         if let Some(store) = &shared.recent_signature_store {
             workspace.bind_recent_signature_store(store.clone());
+        }
+        if let Some(store) = &shared.signature_trust_store {
+            workspace.set_signature_trust_store(store.clone());
+        }
+        #[cfg(feature = "review-driver")]
+        if std::env::var_os("BP_REVIEW_IDENTITY_P12").is_some() {
+            workspace.set_system_identity_source(review_identities);
         }
         if shared.multi_window {
             workspace.set_other_window_document_focus(focus_document_in_other_window);
@@ -4000,6 +4031,15 @@ mod review_driver {
                         });
                         pause(cx, 800).await;
                     }
+                    "sign-with-certificate" => {
+                        // As File ▸ Sign with Certificate… sends it.
+                        cx.update(|cx| {
+                            cx.dispatch_action(
+                                &butter_paper::document_workspace::SignWithCertificate,
+                            )
+                        });
+                        pause(cx, 800).await;
+                    }
                     "appearance" => {
                         // appearance light|dark: every window's theme, as the
                         // system's would set it.
@@ -4022,6 +4062,19 @@ mod review_driver {
                     "settings" => {
                         cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenSettings));
                         pause(cx, 500).await;
+                    }
+                    "signature-settings" => {
+                        // Settings ▸ Signatures, as the signing dialog opens it.
+                        cx.update(|cx| {
+                            if let Some(window) = cx.windows().first().copied() {
+                                let _ = window.update(cx, |_, window, cx| {
+                                    butter_paper::application_settings::open_signature_settings(
+                                        window, cx,
+                                    )
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
                     }
                     "update-ready" => {
                         // update-ready STAGED: an update staged at the bundle
@@ -5030,14 +5083,19 @@ mod review_driver {
                     }
                     "settings-click" => {
                         // settings-click X Y: a left click at a point of the
-                        // Settings window.
+                        // Settings window, below its title bar.
                         let position = point(px(number(1)), px(number(2)));
                         cx.update(|cx| {
                             if let Some(handle) = butter_paper::application_settings::review_window(cx) {
                                 let _ = handle.update(cx, |_, window, cx| {
-                                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }), cx);
-                                    window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }), cx);
-                                    window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position, modifiers: Modifiers::default(), click_count: 1 }), cx);
+                                    for event in [
+                                        PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }),
+                                        PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }),
+                                        PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position, modifiers: Modifiers::default(), click_count: 1 }),
+                                    ] {
+                                        let event = below_title_bar(window, event);
+                                        window.dispatch_event(event, cx);
+                                    }
                                 });
                             }
                         });
@@ -5053,6 +5111,32 @@ mod review_driver {
                         }
                         pause(cx, 800).await;
                     }
+                    "settings-type" => {
+                        // settings-type TEXT: characters into the Settings
+                        // window's focused text input, as typing.
+                        let text = text_argument_all.clone();
+                        cx.update(|cx| {
+                            if let Some(handle) = butter_paper::application_settings::review_window(cx) {
+                                let _ = handle.update(cx, |_, window, cx| {
+                                    for character in text.chars() {
+                                        window.dispatch_keystroke(
+                                            gpui::Keystroke {
+                                                modifiers: gpui::Modifiers::default(),
+                                                key: if character == ' ' {
+                                                    "space".into()
+                                                } else {
+                                                    character.to_lowercase().to_string()
+                                                },
+                                                key_char: Some(character.to_string()),
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
+                    }
                     "settings-place" => {
                         cx.update(|cx| {
                             if let Some(handle) = butter_paper::application_settings::review_window(cx) {
@@ -5066,9 +5150,12 @@ mod review_driver {
                     "settings-move" => {
                         cx.update(|cx| {
                             if let Some(handle) = butter_paper::application_settings::review_window(cx) {
-                                let _ = handle.update(cx, |_, window, cx| window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent {
-                                    position: point(px(number(1)), px(number(2))), pressed_button: None, modifiers: Modifiers::default(),
-                                }), cx));
+                                let _ = handle.update(cx, |_, window, cx| {
+                                    let event = below_title_bar(window, PlatformInput::MouseMove(MouseMoveEvent {
+                                        position: point(px(number(1)), px(number(2))), pressed_button: None, modifiers: Modifiers::default(),
+                                    }));
+                                    window.dispatch_event(event, cx)
+                                });
                             }
                         });
                         pause(cx, 1000).await;
@@ -5958,4 +6045,33 @@ mod review_driver {
             }
         });
     }
+}
+
+/// Review builds: test identities standing in for the system's, from the
+/// `.p12` files in `BP_REVIEW_IDENTITY_P12` (separated as `PATH` is), with
+/// the test password, signing as the system's would. Never the reviewer's
+/// own certificates.
+#[cfg(feature = "review-driver")]
+fn review_identities() -> Vec<butter_paper::system_certificates::SystemIdentity> {
+    use butter_paper::system_certificates::SystemIdentity;
+    let Some(paths) = std::env::var_os("BP_REVIEW_IDENTITY_P12") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&paths)
+        .filter_map(|path| {
+            let bytes = std::fs::read(&path).ok()?;
+            let identity = butter_paper::pdf_signing::SigningIdentity::from_pkcs12(
+                &bytes,
+                "butter-paper-test",
+            )
+            .ok()?;
+            Some(SystemIdentity {
+                name: identity.signer_name(),
+                issuer: "Butter Paper Test Root".into(),
+                expires: i64::MAX,
+                chain: identity.chain().to_vec(),
+                key: Box::new(identity),
+            })
+        })
+        .collect()
 }
