@@ -165,17 +165,23 @@ document, off when a document opens. While it is on, the Select tool works
 on the page's content wherever no markup or fillable field takes a press;
 the other tools draw markups as usual, and turning it on arms Select.
 
-For more than Edit PDF does, File > Convert to Word Document saves any
-unsaved changes, then converts the PDF in the background into `Name.docx`
-beside it, on macOS, Windows and Linux alike, with no other app needed.
-When `Name.docx` exists, a dialog asks first: Replace, Keep Both (the new
-one as `Name 2.docx` and on) or Cancel. The status bar says while it
-converts, and what went wrong if it could not (an unreadable or
-password-protected PDF, or a `Name.docx` another app holds open). Once it
-is saved, a dialog offers Show in Finder (File Explorer, or the Linux file
-manager's name) and Open in the system's app for Word documents, named
+For more than Edit PDF does, File > Convert to Word Document… opens a
+dialog that converts the PDF into `Name.docx` beside it, on macOS, Windows
+and Linux alike, with no other app needed. The dialog names the Word
+document and offers Convert (Save and Convert when there are unsaved
+changes, which are saved first, by Save As for a document that needs a
+file) beside Cancel. When `Name.docx` exists, it says so and offers Replace
+or Keep Both (the new one as `Name 2.docx` and on) instead. The dialog then
+stays up while it works: a progress bar in the Word document's row counts
+the pages converted. Closing it (top-right X or Escape) stops the
+conversion and saves nothing; a save already under way finishes, but the
+conversion after it does not happen. Once it is saved, the row says how many pages
+it has and the dialog offers Show in Finder (File Explorer, or the Linux
+file manager's name) and Open in the system's app for Word documents, named
 when the system says which (plain Open otherwise); Open is the default
-button, and the top-right X or Escape closes it.
+button. If it could not convert (an unreadable or password-protected PDF,
+or a `Name.docx` another app holds open), or the save before it failed,
+the dialog says why and the unsaved changes stay.
 
 The converter writes what Edit PDF reads (see
 [decisions.md](decisions.md#interface)): paragraphs in reading order, top to

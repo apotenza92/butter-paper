@@ -26,8 +26,12 @@ shot outgrown
 key 0 escape
 wait 1500
 shot committed
-# Convert to Word Document saves first, then offers to show or open it.
+# Convert to Word Document… asks first (Save and convert), then shows its
+# progress and offers to show or open the Word document.
 convert-to-word
+wait 1200
+shot convert-asked
+key 0 enter
 wait 8000
 shot converted
 key 0 escape

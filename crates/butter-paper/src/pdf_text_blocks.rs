@@ -654,13 +654,21 @@ fn untagged_blocks(
             .total_cmp(&a.baseline)
             .then(a.left.total_cmp(&b.left))
     });
-    let page = layer
-        .lines
-        .iter()
-        .filter(|line| line.read_only.is_none())
-        .filter_map(place)
-        .filter(upright)
-        .collect::<Vec<_>>();
+    // The page's lines, placed only if a column edge must be found from
+    // them: a table cell's text edge is known.
+    let page = std::cell::OnceCell::new();
+    let page = || {
+        page.get_or_init(|| {
+            layer
+                .lines
+                .iter()
+                .filter(|line| line.read_only.is_none())
+                .filter_map(place)
+                .filter(upright)
+                .collect::<Vec<_>>()
+        })
+        .as_slice()
+    };
     let mut blocks: Vec<Building<'_>> = Vec::new();
     for line in &placed {
         let best = blocks
@@ -725,10 +733,10 @@ fn upright(line: &Placed<'_>) -> bool {
 
 /// Whether `line` is the next line of `block`, wrapped from its last: see
 /// [`untagged_blocks`].
-fn wraps_onto(
+fn wraps_onto<'a>(
     block: &Building<'_>,
     line: &Placed<'_>,
-    page: &[Placed<'_>],
+    page: &dyn Fn() -> &'a [Placed<'a>],
     rules: &[crate::pdf_tables::PageRule],
     cell_right: Option<f64>,
 ) -> bool {
@@ -770,7 +778,7 @@ fn wraps_onto(
             ruled_box(rules, left, right, line.baseline, previous.baseline).map(|edges| edges.1)
         })
         .or_else(|| {
-            let ends = page
+            let ends = page()
                 .iter()
                 .filter(|other| {
                     other.font == previous.font

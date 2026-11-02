@@ -45,6 +45,20 @@ All notable Butter Paper changes are recorded here.
 - On Windows, checkbox labels, such as Snap settings', show the bottoms of
   letters like g, p and y; they were cut off.
 
+### Word documents
+
+- File ▸ Convert to Word Document… opens a dialog that stays up while the
+  PDF converts, with a progress bar counting the pages, then offers Show in
+  Finder (File Explorer, Files) and Open in Word. Before, only the status
+  bar said it had started. Asking to replace an existing Word document
+  happens in the same dialog, and closing it stops the conversion without
+  saving anything.
+- Converting to Word is ten to twenty times faster on long documents: a
+  1,400-page report takes about a third of a second on an M1 Pro and under
+  a second on a six-core laptop, rather than eight. Pages convert on every
+  core, and an image repeated on each page (a letterhead's logo) is saved
+  in the Word document once.
+
 ## [0.3.8]
 
 ### Edit PDF

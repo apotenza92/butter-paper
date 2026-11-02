@@ -660,3 +660,86 @@ fn libreoffice_opens_the_conversions() {
         assert!(text.contains(expected), "{name}: {text}");
     }
 }
+
+/// Pages read on several cores still come out in order, and an image every
+/// page draws (a letterhead's logo) is embedded once.
+#[test]
+fn many_pages_keep_their_order_and_a_shared_image_embeds_once() {
+    let (_, jpeg) = illustrated();
+    let mut document = Document::with_version("1.7");
+    let pages_id = document.new_object_id();
+    let font = document.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let logo = document.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 4, "Height" => 4,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "Filter" => "DCTDecode",
+        },
+        jpeg.clone(),
+    ));
+    let count = 40;
+    let kids = (1..=count)
+        .map(|number| {
+            let content = document.add_object(Stream::new(
+                Dictionary::new(),
+                format!(
+                    "q 60 0 0 60 72 700 cm /Logo Do Q BT /F1 12 Tf 72 600 Td (Page {number}) Tj ET"
+                )
+                .into_bytes(),
+            ));
+            Object::Reference(document.add_object(dictionary! {
+                "Type" => "Page", "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "Contents" => content,
+                "Resources" => dictionary! {
+                    "Font" => dictionary! { "F1" => font },
+                    "XObject" => dictionary! { "Logo" => logo },
+                },
+            }))
+        })
+        .collect::<Vec<_>>();
+    document.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => count }),
+    );
+    let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    document.trailer.set("Root", catalog);
+    let mut pdf = Vec::new();
+    document.save_to(&mut pdf).unwrap();
+
+    let converted = convert(&pdf);
+    let texts = converted
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Para(para) if !para.text().trim().is_empty() => Some(normalise(&para.text())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        texts,
+        (1..=count)
+            .map(|number| format!("Page {number}"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(converted.sections, count as usize);
+    let media = converted
+        .files
+        .keys()
+        .filter(|name| name.starts_with("word/media/"))
+        .collect::<Vec<_>>();
+    assert_eq!(media, ["word/media/image1.jpeg"]);
+    assert_eq!(converted.files["word/media/image1.jpeg"], jpeg);
+    let drawn = converted
+        .blocks
+        .iter()
+        .flat_map(|block| match block {
+            Block::Para(para) => para.images.clone(),
+            Block::Table(..) => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(drawn.len(), count as usize);
+    assert!(drawn.iter().all(|image| *image == drawn[0]));
+}

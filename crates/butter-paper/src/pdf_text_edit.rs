@@ -1535,6 +1535,12 @@ fn parse_operations(
 // ---------------------------------------------------------------------------
 // Fonts
 
+/// The fonts read from one document, shared by the pages read from it:
+/// most pages draw the same few fonts, and reading one is slow (its
+/// program, its character map, which glyphs it kept).
+#[derive(Default)]
+pub struct FontCache(std::sync::Mutex<HashMap<(ObjectId, Vec<u8>), std::sync::Arc<LoadedFont>>>);
+
 #[derive(Clone, Debug)]
 struct LoadedFont {
     /// The font's name in the resources of the stream that uses it; its key
@@ -1542,7 +1548,8 @@ struct LoadedFont {
     resource_name: Vec<u8>,
     /// Bytes per character code.
     code_length: usize,
-    decode: HashMap<u32, String>,
+    /// Shared, so each glyph drawn takes its text without a copy.
+    decode: HashMap<u32, std::sync::Arc<str>>,
     widths: HashMap<u32, f64>,
     default_width: f64,
     encode: BTreeMap<char, u32>,
@@ -1605,14 +1612,14 @@ impl LoadedFont {
 
     /// The text a code stands for: its ToUnicode entry, or in a Unicode
     /// CMap the code itself.
-    fn decode_code(&self, code: u32) -> Option<String> {
+    fn decode_code(&self, code: u32) -> Option<std::sync::Arc<str>> {
         self.decode.get(&code).cloned().or_else(|| {
             self.cmap?;
-            crate::pdf_cmaps::utf16_character(code).map(String::from)
+            crate::pdf_cmaps::utf16_character(code).map(|character| character.to_string().into())
         })
     }
 
-    fn codes(&self, bytes: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    fn codes(&self, bytes: &[u8]) -> Vec<(u32, GlyphCode)> {
         let mut codes = Vec::new();
         let mut index = 0;
         while index + self.code_length <= bytes.len() {
@@ -1633,7 +1640,7 @@ impl LoadedFont {
                 chunk
                     .iter()
                     .fold(0u32, |code, byte| (code << 8) | u32::from(*byte)),
-                chunk.to_vec(),
+                GlyphCode::new(chunk),
             ));
             index += length;
         }
@@ -2233,6 +2240,14 @@ fn font_program(document: &Document, descriptor: &Dictionary) -> Option<std::syn
 /// The codes of `decode` whose glyph a TrueType program draws, looked up as
 /// a viewer does: a symbolic font's by code, another's by character.
 /// Whitespace needs no outline.
+/// A font's text for each code, shared by the glyphs that draw it.
+fn shared_text(decode: HashMap<u32, String>) -> HashMap<u32, std::sync::Arc<str>> {
+    decode
+        .into_iter()
+        .map(|(code, text)| (code, text.into()))
+        .collect()
+}
+
 fn program_codes(program: &[u8], decode: &HashMap<u32, String>, symbolic: bool) -> BTreeSet<u32> {
     struct Any(bool);
     impl ttf_parser::OutlineBuilder for Any {
@@ -2823,7 +2838,7 @@ fn load_simple_font(
     Ok(LoadedFont {
         resource_name: name.to_vec(),
         code_length: 1,
-        decode,
+        decode: shared_text(decode),
         widths,
         default_width: missing_width,
         encode,
@@ -2958,7 +2973,7 @@ fn load_type0_font(
     Ok(LoadedFont {
         resource_name: name.to_vec(),
         code_length: 2,
-        decode,
+        decode: shared_text(decode),
         widths,
         default_width,
         encode,
@@ -3100,10 +3115,37 @@ impl Default for GraphicsState {
     }
 }
 
+/// A character code's bytes: one or two, or four for a UTF-16 surrogate
+/// pair. Kept inline, as every glyph drawn has one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GlyphCode {
+    bytes: [u8; 4],
+    length: u8,
+}
+
+impl GlyphCode {
+    fn new(bytes: &[u8]) -> Self {
+        let mut code = Self {
+            bytes: [0; 4],
+            length: bytes.len().min(4) as u8,
+        };
+        code.bytes[..code.length as usize].copy_from_slice(&bytes[..code.length as usize]);
+        code
+    }
+}
+
+impl std::ops::Deref for GlyphCode {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes[..self.length as usize]
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ShownGlyph {
-    code: Vec<u8>,
-    unicode: Option<String>,
+    code: GlyphCode,
+    unicode: Option<std::sync::Arc<str>>,
     /// Its text comes from an `/ActualText` span.
     actual_text: bool,
     /// Start in the operator's text space.
@@ -3496,6 +3538,8 @@ struct Scope {
 struct Walk<'a> {
     document: &'a Document,
     limits: &'a TextEditLimits,
+    /// Fonts read for other pages of the document.
+    font_cache: Option<&'a FontCache>,
     fonts: BTreeMap<Vec<u8>, LoadedFont>,
     shows: Vec<ShowOp>,
     operations: Vec<ContentOp>,
@@ -3696,12 +3740,32 @@ impl Walk<'_> {
     fn font(&mut self, scope: &Scope, name: &[u8]) -> Vec<u8> {
         let key = [scope.prefix.as_slice(), name].concat();
         if !self.fonts.contains_key(&key) {
-            let mut font = match get_dict(self.document, &scope.resources, b"Font")
-                .and_then(|fonts| fonts.get(name).ok())
-                .and_then(|value| resolve_dict(self.document, value))
-            {
-                Some(font) => load_font(self.document, &key, font, self.limits),
-                None => LoadedFont::unsupported(&key, "the text's font is missing"),
+            let value = get_dict(self.document, &scope.resources, b"Font")
+                .and_then(|fonts| fonts.get(name).ok());
+            // A font object other pages share is read once, under the same
+            // key: what is read depends on nothing else.
+            let shared = value
+                .and_then(|value| value.as_reference().ok())
+                .zip(self.font_cache)
+                .map(|(id, cache)| ((id, key.clone()), cache));
+            // Copied outside the lock: the page changes its copy.
+            let cached = shared.as_ref().and_then(|(id, cache)| {
+                cache.0.lock().ok().and_then(|fonts| fonts.get(id).cloned())
+            });
+            let mut font = match cached {
+                Some(font) => LoadedFont::clone(&font),
+                None => {
+                    let font = match value.and_then(|value| resolve_dict(self.document, value)) {
+                        Some(font) => load_font(self.document, &key, font, self.limits),
+                        None => LoadedFont::unsupported(&key, "the text's font is missing"),
+                    };
+                    if let Some((id, cache)) = shared
+                        && let Ok(mut fonts) = cache.0.lock()
+                    {
+                        fonts.insert(id, std::sync::Arc::new(font.clone()));
+                    }
+                    font
+                }
             };
             font.resource_name = name.to_vec();
             self.fonts.insert(key.clone(), font);
@@ -4212,7 +4276,18 @@ fn extract_page(
     page_index: u32,
     limits: &TextEditLimits,
 ) -> Result<ExtractedPage, TextEditError> {
-    let page_id = page_id(document, page_index)?;
+    extract_page_at(document, page_id(document, page_index)?, limits, None)
+}
+
+/// [`extract_page`] of the page object `page_id`. Finding a page by its
+/// index walks the whole page tree, so a caller reading many pages finds
+/// them all once ([`Document::get_pages`]) and reads each here.
+fn extract_page_at(
+    document: &Document,
+    page_id: ObjectId,
+    limits: &TextEditLimits,
+    font_cache: Option<&FontCache>,
+) -> Result<ExtractedPage, TextEditError> {
     let content_ids = page_content_ids(document, page_id)?;
     let mut decoded_bytes = 0;
     let streams = decode_streams(document, &content_ids, &mut decoded_bytes, limits)?;
@@ -4221,6 +4296,7 @@ fn extract_page(
     let mut walk = Walk {
         document,
         limits,
+        font_cache,
         fonts: BTreeMap::new(),
         shows: Vec::new(),
         owners: vec![StreamOwner::Page; streams.len()],
@@ -4399,8 +4475,8 @@ fn apply_actual_text(glyphs: &mut [ShownGlyph], text: &str) {
     }
     let middle = &mut glyphs[start..end];
     let assign = |glyph: &mut ShownGlyph, text: String| {
-        if glyph.unicode.as_ref() != Some(&text) {
-            glyph.unicode = Some(text);
+        if glyph.unicode.as_deref() != Some(text.as_str()) {
+            glyph.unicode = Some(text.into());
             glyph.actual_text = true;
         }
     };
@@ -4953,7 +5029,22 @@ pub fn extract_page_text_and_images(
     page_index: u32,
     limits: &TextEditLimits,
 ) -> Result<(PageTextLayer, Vec<PageImage>), TextEditError> {
-    let page = extract_page(document, page_index, limits)?;
+    let page_id = page_id(document, page_index)?;
+    extract_page_text_and_images_at(document, page_index, page_id, limits, &FontCache::default())
+}
+
+/// [`extract_page_text_and_images`] of page `page_index` whose page object
+/// is `page_id`, for a caller reading many pages: it finds every page's
+/// object once, and shares `fonts` between them.
+pub fn extract_page_text_and_images_at(
+    document: &Document,
+    page_index: u32,
+    page_id: ObjectId,
+    limits: &TextEditLimits,
+    fonts: &FontCache,
+) -> Result<(PageTextLayer, Vec<PageImage>), TextEditError> {
+    let page = extract_page_at(document, page_id, limits, Some(fonts))?;
+    let page_box = visible_box_of_page(document, page_id);
     let images = page
         .draws
         .iter()
@@ -4965,7 +5056,7 @@ pub fn extract_page_text_and_images(
         })
         .collect::<Vec<_>>();
     let (rules, fills) = page.rules();
-    let objects = page.objects(visible_page_box(document, page_index));
+    let objects = page.objects(page_box);
     let paragraphs = crate::pdf_structure::page_paragraph_elements(document, page.page_id);
     let layer = PageTextLayer {
         page_index,
@@ -4992,10 +5083,8 @@ pub fn extract_page_text_and_images(
                 line
             })
             .collect(),
-        page_box: visible_page_box(document, page_index),
-        tagged_tables: page_id(document, page_index)
-            .map(|page| crate::pdf_structure::page_tagged_tables(document, page))
-            .unwrap_or_default(),
+        page_box,
+        tagged_tables: crate::pdf_structure::page_tagged_tables(document, page_id),
         rules,
         fills,
         objects,
@@ -5009,9 +5098,8 @@ pub fn extract_page_text_and_images(
     Ok((layer, images))
 }
 
-/// A page's crop box as left, bottom, right, top.
-pub(crate) fn visible_page_box(document: &Document, page_index: u32) -> Option<[f64; 4]> {
-    let page_id = page_id(document, page_index).ok()?;
+/// The crop box of the page object `page_id` as left, bottom, right, top.
+fn visible_box_of_page(document: &Document, page_id: ObjectId) -> Option<[f64; 4]> {
     let view = crate::page_geometry::PageCoordinateSpace::from_lopdf_page(document, page_id)
         .ok()?
         .view_box();
@@ -5260,7 +5348,7 @@ pub(crate) fn apply_page_edits(
             .map(|font| font.metrics.clone())
             .collect(),
         lines: page.lines.iter().map(|line| line.public.clone()).collect(),
-        page_box: visible_page_box(document, page_index),
+        page_box: visible_box_of_page(document, page.page_id),
         ..Default::default()
     };
     // Where table edits and moves put each line, and which they remove.
@@ -5389,7 +5477,7 @@ pub(crate) fn apply_page_edits(
             offset,
         });
     }
-    let page_box = visible_page_box(document, page_index);
+    let page_box = visible_box_of_page(document, page.page_id);
     let mut table_splices = table_content_splices(&page, tables, moves, page_box)?;
     grow_clips_for_added_lines(&page, &planned, page_box, &mut table_splices);
     let mut cell_lines = table_cell_lines(&page, &layer, tables)?;
@@ -5945,7 +6033,7 @@ fn first_operator_replacement(
                                 font: GlyphFont::Page(style.font.clone()),
                                 style: style.clone(),
                                 actual_text: actual_text.clone(),
-                                code: glyph.code.clone(),
+                                code: glyph.code.to_vec(),
                                 x: character.x + glyph.x - cluster[0].x,
                                 advance: glyph.advance,
                             });
