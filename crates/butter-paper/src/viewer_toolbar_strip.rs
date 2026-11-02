@@ -1,10 +1,12 @@
+use std::{cell::Cell, rc::Rc};
+
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
+    IntoElement, ParentElement as _, Pixels, Render, ScrollHandle, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, ElementExt as _, Icon, Selectable as _, Sizable as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
     switch::Switch,
@@ -23,14 +25,25 @@ use crate::zoom_control::ZoomControl;
 pub const VIEWER_TOOLBAR_ID: &str = "viewer-toolbar";
 pub const VIEWER_TOOLBAR_SCROLL_ID: &str = "viewer-toolbar-scroll";
 pub const VIEWER_TOOLBAR_CONTENT_ID: &str = "viewer-toolbar-content";
-pub const VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH: f32 = 667.;
 pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
 pub const EDIT_PDF_ID: &str = "viewer-edit-pdf";
 pub const VIEWER_SIGNATURES_ID: &str = "viewer-signatures";
-/// The least width of the Edit PDF switch's slot, in rems.
+/// The zoom, fit and page-view controls, centred in the toolbar.
+pub const VIEWER_TOOLBAR_CONTROLS_ID: &str = "viewer-toolbar-controls";
+/// The least width of the Edit PDF switch's slot, and of the matching slot
+/// opposite it that holds the signatures button, in rems.
 pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 9.;
+/// The least toolbar width, in rems, that shows the Edit PDF switch, the
+/// centred view controls and a matching slot opposite: below it the strip
+/// scrolls sideways. Thumbnails yield to it, and the document window's least
+/// size holds it beside both rails.
+pub const VIEWER_TOOLBAR_MIN_REMS: f32 = 43.5;
+/// The least toolbar width, in rems, at which the signatures button shows
+/// its label; narrower, it shows only its icon, so the view controls stay
+/// centred and in view.
+pub const SIGNATURES_LABEL_MIN_REMS: f32 = 53.;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FitPreset {
@@ -72,6 +85,8 @@ pub struct ViewerToolbarStrip {
     /// on; `None` hides it.
     edit_pdf: Option<bool>,
     signatures: Option<SignatureStatus>,
+    /// The toolbar's width as last laid out.
+    width: Rc<Cell<Pixels>>,
 }
 
 impl ViewerToolbarStrip {
@@ -90,6 +105,7 @@ impl ViewerToolbarStrip {
             disabled: false,
             edit_pdf: None,
             signatures: None,
+            width: Rc::new(Cell::new(Pixels::MAX)),
         }
     }
 
@@ -165,6 +181,7 @@ impl ViewerToolbarStrip {
             disabled: false,
             edit_pdf: None,
             signatures: None,
+            width: Rc::new(Cell::new(Pixels::MAX)),
         }
     }
 
@@ -433,7 +450,7 @@ impl ViewerToolbarStrip {
 impl EventEmitter<ViewerToolbarStripEvent> for ViewerToolbarStrip {}
 
 impl Render for ViewerToolbarStrip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.fit_preset;
         let disabled = self.disabled;
         let cad_active = self
@@ -521,6 +538,7 @@ impl Render for ViewerToolbarStrip {
         // screen when a narrow toolbar scrolls: the button floats over the
         // strip's end, while a hidden copy keeps its room in the layout, so
         // the centred controls do not move.
+        let labelled = self.width.get() >= window.rem_size() * SIGNATURES_LABEL_MIN_REMS;
         let signature_button = |pinned: bool, cx: &mut Context<Self>| {
             let status = self.signatures?;
             let theme = cx.theme();
@@ -557,8 +575,12 @@ impl Render for ViewerToolbarStrip {
             })
             .ghost()
             .small()
-            .icon(Icon::default().path(icon).text_color(color))
-            .label(label);
+            .icon(Icon::default().path(icon).text_color(color));
+            let button = if labelled {
+                button.label(label)
+            } else {
+                accessible_icon_button(button, label)
+            };
             Some(h_flex().px_2().flex_shrink_0().child(if pinned {
                 button
                     .debug_selector(|| VIEWER_SIGNATURES_ID.into())
@@ -578,8 +600,20 @@ impl Render for ViewerToolbarStrip {
         let signatures_room = signature_button(false, cx).filter(|_| has_edit_pdf);
         let signatures = signature_button(true, cx).filter(|_| has_edit_pdf);
         let background = cx.theme().background;
+        let width = self.width.clone();
+        let toolbar = cx.entity().downgrade();
 
         h_flex()
+            .on_prepaint(move |bounds, window, cx| {
+                let rem = window.rem_size() * SIGNATURES_LABEL_MIN_REMS;
+                let was_labelled = width.replace(bounds.size.width) >= rem;
+                if was_labelled != (bounds.size.width >= rem) {
+                    let toolbar = toolbar.clone();
+                    window.defer(cx, move |_, cx| {
+                        toolbar.update(cx, |_, cx| cx.notify()).ok();
+                    });
+                }
+            })
             .id(VIEWER_TOOLBAR_ID)
             .debug_selector(|| VIEWER_TOOLBAR_ID.into())
             .tab_group()
@@ -612,13 +646,14 @@ impl Render for ViewerToolbarStrip {
                             .children(edit_pdf)
                             .child(
                                 h_flex()
-                                    .w(px(VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH))
+                                    .id(VIEWER_TOOLBAR_CONTROLS_ID)
+                                    .debug_selector(|| VIEWER_TOOLBAR_CONTROLS_ID.into())
                                     .flex_shrink_0()
                                     .justify_center()
                                     .items_center()
                                     .gap_2()
-                                    // Match the shell's standard edge inset; keep intrinsic
-                                    // control sizes intact at the 480px centre-column contract.
+                                    // Match the shell's standard edge inset; controls keep
+                                    // their intrinsic sizes and scroll rather than shrink.
                                     .px_1()
                                     .py_1()
                                     .when_some(self.zoom_control.clone(), |toolbar, control| {
@@ -645,7 +680,12 @@ impl Render for ViewerToolbarStrip {
                             )
                             .when(has_edit_pdf, |content| {
                                 content.child(
-                                    h_flex().flex_1().justify_end().children(signatures_room),
+                                    h_flex()
+                                        .flex_1()
+                                        .flex_shrink_0()
+                                        .min_w(rems(EDIT_PDF_SLOT_MIN_REMS))
+                                        .justify_end()
+                                        .children(signatures_room),
                                 )
                             }),
                     ),

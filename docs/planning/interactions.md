@@ -624,14 +624,18 @@ with it.
   seconds.
 - *Native:* a pan (Pan tool, Space or middle button) goes past the pages into
   blank space until 48px of a page stays in view; zooming over blank space
-  keeps the page where it is. Scrolling stops at the pages' margins, as a
+  keeps the page where it is. Scrolling stops at the pages' edges, as a
   document scrolls; after a pan it may scroll back towards the pages but no
   further out.
 - Zoom In, Zoom Out, Actual Size and the zoom menu zoom about the view centre.
 - Switching Continuous and Single Page keeps the current page, and the point
   at the view centre when it is on that page.
+- The viewport meets the toolbar and rails with no frame, and the pages meet
+  its edges: only the space between pages (24pt at 100%) is blank. The
+  scroll bars float over the pages.
 - Fit Width centres the current page across the view and Fit Page centres the
-  whole page; a window resize refits and reframes. A fit is resolved when it
+  whole page, each filling the view to a tenth of a percent; a window resize
+  refits and reframes, staying on the pages. A fit is resolved when it
   is chosen or the window resizes, not refitted to each page scrolled past
   (as in Revu, where a wider page runs past the view's sides).
 - The current page is the one level with the view centre.
@@ -646,7 +650,9 @@ with it.
   is cleaned up alike: the paper made transparent and cropped to the ink.
 - A digitally signed PDF shows a signatures button at the toolbar's right
   edge, opposite Edit PDF (it stays there when a narrow toolbar scrolls,
-  the controls fading out beneath it): "Checking signatures…" while its signatures are
+  the controls fading out beneath it; below about 850 points of toolbar it
+  shows only its icon, whose tooltip still says which, so the view controls stay
+  centred): "Checking signatures…" while its signatures are
   checked in the background, then "Signed" (green shield), "Signer not
   verified" (amber: a signer's certificate is not trusted, out of date or
   cannot be checked) or "Signature invalid" (red: signed bytes altered or

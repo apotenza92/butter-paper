@@ -12224,6 +12224,14 @@ impl DocumentWorkspace {
                 if preset == ViewerFitPreset::Page {
                     scroll_y = rect.y + rect.height / 2. - viewport_height / 2.;
                 }
+                // Zooming out about the view centre can leave the view above
+                // the first page (or below the last): a refit stays on the
+                // pages and their margins, centred when they fit.
+                scroll_y = if plan.total_height > viewport_height {
+                    scroll_y.clamp(0., plan.total_height - viewport_height)
+                } else {
+                    (plan.total_height - viewport_height) / 2.
+                };
                 session.view_state.set_scroll(scroll_x, scroll_y);
                 session.viewer.set_scroll(scroll_x, scroll_y);
                 session.pending_page_frame = None;
@@ -26526,7 +26534,8 @@ impl Render for DocumentWorkspace {
         let properties_visible =
             self.right_rail_actions_open || inspector_visible || pending_non_creation_editor;
         // Preserve the user's open/width preferences while temporarily yielding
-        // thumbnail space to properties and the stock minimum canvas width.
+        // thumbnail space to properties and the viewer toolbar, which needs
+        // more than the stock minimum canvas width to show all its controls.
         let rem = window.rem_size();
         let required_width = rem * 3.
             + right_rail_width(self.right_rail_columns, rem)
@@ -26536,7 +26545,7 @@ impl Render for DocumentWorkspace {
             } else {
                 px(0.)
             }
-            + px(100.); // Pinned ResizablePanel's default minimum; not re-exported by the facade.
+            + rem * crate::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS;
         let thumbnails_fit = window.viewport_size().width >= required_width;
         let thumbnails_visible = self.pages_panel_open && thumbnails_fit;
         let sidebar_panel = self.render_thumbnail_sidebar(
@@ -26853,7 +26862,8 @@ impl Render for DocumentWorkspace {
                     .debug_selector(|| DOCUMENT_PAGE_ID.into())
                     .flex_1()
                     .size_full()
-                    .p_4()
+                    // The viewport meets the toolbar and rails: no frame, and
+                    // the scroll bars float over the pages.
                     .bg(cx.theme().secondary)
                     .child(
                         gpui::div().relative().size_full().child(viewport).child(

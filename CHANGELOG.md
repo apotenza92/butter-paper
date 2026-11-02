@@ -4,6 +4,29 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Viewing
+
+- Pages fill the view: the grey frame round the page and its margins are
+  gone, so Fit Width and Fit Page use the whole view (to a tenth of a
+  percent), and the scroll bars float over the page. Pages keep the gap
+  between them.
+- Resizing a window in Fit Width or Fit Page no longer leaves empty space
+  above the first page.
+
+### Toolbar and windows
+
+- The zoom and page view controls stay centred in the toolbar as the
+  window narrows, and stay in full view: the toolbar no longer reserves
+  empty space round them. On a signed PDF, the signatures button shows only
+  its icon when the toolbar is narrow.
+- Document windows are at least 828 points wide, wide enough for Edit PDF
+  and every toolbar control. Page Thumbnails steps aside while the window
+  is too narrow for it and the whole toolbar, and comes back when the
+  window widens.
+- The Add page menu in Page Thumbnails is no longer in bold.
+
 ## [0.3.9]
 
 ### Signatures

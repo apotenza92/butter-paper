@@ -99,13 +99,21 @@ impl RenderOnce for PropertyInspectorHeader {
             .flex_shrink_0()
             .items_center()
             .px_3()
-            .text_sm()
-            .font_semibold()
             .border_b_1()
             .border_color(cx.theme().border)
             // Equal lanes keep the title centred; each fits the standard X.
             .child(div().w_6().flex_none())
-            .child(div().flex_1().min_w_0().text_center().child(self.title))
+            // Only the title is semibold: a trailing control's menu or
+            // popover inherits the row's text style.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_center()
+                    .text_sm()
+                    .font_semibold()
+                    .child(self.title),
+            )
             .child(div().w_6().flex_none().children(trailing))
     }
 }
