@@ -102,10 +102,14 @@ changes it; history is in git.
   the open document and were lost on closing it, and applying to several
   pages covers reuse.
 
-- Windows have a least size, set where the layout stops working rather than
-  where everything shows: document windows 640 × 480 (the tool rail folds
-  into its overflow menu and the view toolbar scrolls sideways below about
-  940 wide), Settings 600 × 420. A restored or cascaded window smaller than
+- Windows have a least size: document windows 828 × 480, where the view
+  toolbar shows Edit PDF and all its controls, centred, between the left
+  rail and the two-column tool rail (the tool rail folds into its overflow
+  menu when short), Settings 600 × 420. Page Thumbnails yields to the
+  toolbar: it hides while the window is too narrow for both, and returns
+  when it widens. The toolbar scrolls sideways only when something else
+  squeezes it (an open properties panel, a widened tool rail or a larger
+  interface size). A restored or cascaded window smaller than
   that opens at it. Dialogs stay within the window: a taller one scrolls
   its body between its title and buttons; panels such as Snap settings do
   the same.

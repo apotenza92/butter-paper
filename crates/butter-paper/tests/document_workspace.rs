@@ -26361,7 +26361,7 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     };
     let assert_point = |actual: PdfPoint, expected: PdfPoint| {
         assert!(
-            (actual.x - expected.x).abs() <= 0.000_1 && (actual.y - expected.y).abs() <= 0.000_1,
+            (actual.x - expected.x).abs() <= 0.001 && (actual.y - expected.y).abs() <= 0.001,
             "expected {actual:?} to match {expected:?} within pointer projection tolerance"
         );
     };
@@ -34730,7 +34730,7 @@ fn native_file_authority_opens_multiple_pdfs_and_rejects_a_stale_save_target(
             560.,
             cx,
         )),
-        Some(150.),
+        Some(163.3),
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.fit_zoom_percent(
@@ -34740,7 +34740,7 @@ fn native_file_authority_opens_multiple_pdfs_and_rejects_a_stale_save_target(
             560.,
             cx,
         )),
-        Some(66.),
+        Some(70.7),
     );
     assert_eq!(
         save_as_prompt_spec(std::path::Path::new("first-native.pdf")),

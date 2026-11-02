@@ -25,7 +25,10 @@ use butter_paper::{
     generated_document::{GeneratedDocumentRequest, GeneratedPattern},
     page_view_control::{PageViewControl, PageViewMode},
     template_preview::TemplatePreview,
-    viewer_toolbar_strip::{VIEWER_TOOLBAR_CONTENT_ID, ViewerToolbarStrip},
+    viewer_toolbar_strip::{
+        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
+        ViewerToolbarStrip,
+    },
     zoom_control::{DEFAULT_VIEWER_ZOOM, ZoomControl},
 };
 use gpui::{
@@ -39,7 +42,6 @@ const NORMAL_WIDTH: f32 = 1200.;
 const MINIMUM_WIDTH: f32 = 900.;
 const CONSTRAINED_WIDTH: f32 = 320.;
 const DOCUMENT_TAB_REQUIRED_WIDTH: f32 = 380.;
-const VIEWER_TOOLBAR_REQUIRED_WIDTH: f32 = 667.;
 const DOCUMENT_TAB_POINTER_DRAG_THRESHOLD: f32 = 6.;
 const DOCUMENT_TAB_DRAG_SITE_PLAN_ID: &str = "document-tab-drag-site-plan";
 const DOCUMENT_TAB_DROP_SITE_PLAN_ID: &str = "document-tab-drop-target-site-plan";
@@ -157,6 +159,15 @@ fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, Harne
         .take()
         .expect("the document-tab harness entities must be retained");
     (cx, entities)
+}
+
+/// The viewer toolbar content fills the strip, or holds its controls at
+/// their intrinsic width where the strip is narrower.
+fn viewer_toolbar_required_width(cx: &mut gpui::VisualTestContext) -> Pixels {
+    bounds(cx, VIEWER_TOOLBAR_ID)
+        .size
+        .width
+        .max(bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID).size.width)
 }
 
 fn bounds(cx: &mut gpui::VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
@@ -1277,7 +1288,7 @@ fn pointer_drag_preview_preserves_tab_strip_geometry_at_all_frozen_widths(cx: &m
     }
     assert_eq!(
         bounds(cx, VIEWER_TOOLBAR_CONTENT_ID).size.width,
-        px(VIEWER_TOOLBAR_REQUIRED_WIDTH)
+        viewer_toolbar_required_width(cx)
     );
 }
 
@@ -1722,7 +1733,7 @@ fn document_tab_labels_cap_long_text_without_shrinking_targets_or_other_state(
 
     assert_eq!(
         bounds(cx, VIEWER_TOOLBAR_CONTENT_ID).size.width,
-        px(VIEWER_TOOLBAR_REQUIRED_WIDTH)
+        viewer_toolbar_required_width(cx)
     );
     assert_eq!(
         entities.viewer_toolbar.read_with(cx, |toolbar, _| {
@@ -2117,7 +2128,7 @@ fn dirty_close_confirmation_preserves_dialog_tab_strip_and_toolbar_geometry(
     );
     assert_eq!(
         bounds(cx, VIEWER_TOOLBAR_CONTENT_ID).size.width,
-        px(VIEWER_TOOLBAR_REQUIRED_WIDTH)
+        viewer_toolbar_required_width(cx)
     );
 }
 
@@ -2735,7 +2746,7 @@ fn document_tab_bar_preserves_targets_at_normal_minimum_and_overflow_widths(
 
     assert_eq!(
         bounds(cx, VIEWER_TOOLBAR_CONTENT_ID).size.width,
-        px(VIEWER_TOOLBAR_REQUIRED_WIDTH),
-        "the previously accepted 667 px viewer-toolbar contract is unchanged"
+        viewer_toolbar_required_width(cx),
+        "the viewer toolbar keeps its intrinsic controls"
     );
 }

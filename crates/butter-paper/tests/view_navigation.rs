@@ -599,6 +599,25 @@ fn fit_page_after_a_window_resize_still_frames_the_page(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn fit_width_refit_on_a_narrower_window_stays_on_the_first_page(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(FitWidth);
+    let top = h.frame();
+    assert!(top.scroll.1 >= -TOLERANCE, "starts at the top: {top:?}");
+    // Each narrower window zooms out about the view centre; the refit must
+    // not leave blank space above the first page beyond its margin.
+    for width in [1100., 950., 830.] {
+        h.cx.simulate_resize(size(px(width), px(800.)));
+        let frame = h.frame();
+        assert_eq!(frame.preset, ViewerZoomPreset::FitWidth);
+        assert!(
+            frame.scroll.1 >= -TOLERANCE,
+            "Fit Width refit at {width} scrolled above the first page: {frame:?}"
+        );
+    }
+}
+
+#[gpui::test]
 fn fit_width_scrolling_across_mixed_page_widths_does_not_jump(cx: &mut TestAppContext) {
     let mut h = setup(cx, &MIXED_PAGES);
     h.action(FitWidth);
@@ -1179,16 +1198,17 @@ fn pan_extents_hold_in_single_page_mode(cx: &mut TestAppContext) {
     assert_pan_extents(&mut h, "single page 400%");
 }
 
-/// The viewer's blank space around the pages at a zoom (`PAGE_GAP`).
-fn page_gap(zoom: f32) -> f32 {
-    24. * zoom / 100.
+/// The viewer's blank space around the pages: none, as the pages meet the
+/// viewport's edges (only the space between pages is a gap).
+fn page_edge_margin(_zoom: f32) -> f32 {
+    0.
 }
 
 #[gpui::test]
 fn wheel_scrolling_stops_at_the_first_and_last_pages(cx: &mut TestAppContext) {
     let mut h = setup(cx, &MIXED_PAGES);
     h.set_zoom(200.);
-    let gap = page_gap(200.);
+    let gap = page_edge_margin(200.);
     for _ in 0..200 {
         h.wheel(0., -400., false);
     }
@@ -1196,7 +1216,7 @@ fn wheel_scrolling_stops_at_the_first_and_last_pages(cx: &mut TestAppContext) {
     let last = bottom.page(4).expect("the last page is in view");
     assert!(
         (f32::from(bottom.viewport.bottom() - last.bottom()) - gap).abs() <= TOLERANCE,
-        "wheel scrolling down stops at the last page's bottom margin: {bottom:?}"
+        "wheel scrolling down stops at the last page's bottom edge: {bottom:?}"
     );
     h.wheel(0., 300., false);
     let nudged = h.frame();
@@ -1216,7 +1236,7 @@ fn wheel_scrolling_stops_at_the_first_and_last_pages(cx: &mut TestAppContext) {
     let first = top.page(0).unwrap();
     assert!(
         (f32::from(first.top() - top.viewport.top()) - gap).abs() <= TOLERANCE,
-        "wheel scrolling up stops at the first page's top margin: {top:?}"
+        "wheel scrolling up stops at the first page's top edge: {top:?}"
     );
 }
 
@@ -1225,7 +1245,7 @@ fn horizontal_wheel_scrolling_stops_at_the_page_sides(cx: &mut TestAppContext) {
     let mut h = setup(cx, &MIXED_PAGES);
     h.set_zoom(300.);
     h.go_to_page(1);
-    let gap = page_gap(300.);
+    let gap = page_edge_margin(300.);
     for _ in 0..80 {
         h.wheel(-400., 0., false);
     }
@@ -1254,7 +1274,7 @@ fn wheel_scrolling_never_goes_further_into_blank_space_a_pan_reached(cx: &mut Te
     let panned = h.frame();
     let panned_top = panned.page(0).unwrap().top();
     assert!(
-        f32::from(panned_top - panned.viewport.top()) > page_gap(200.) + 300.,
+        f32::from(panned_top - panned.viewport.top()) > page_edge_margin(200.) + 300.,
         "a pan reaches the blank space above the first page: {panned:?}"
     );
     h.wheel(0., 300., false);

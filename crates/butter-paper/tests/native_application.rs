@@ -1189,8 +1189,11 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
             // when there is room for it once, and scroll with it otherwise.
             let edit_pdf = cx.debug_bounds("viewer-edit-pdf").unwrap();
             let slot = px(16. * butter_paper::viewer_toolbar_strip::EDIT_PDF_SLOT_MIN_REMS);
-            let controls =
-                px(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH);
+            let controls = cx
+                .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
+                .unwrap()
+                .size
+                .width;
             assert!(
                 edit_pdf.right() <= first.left(),
                 "Edit PDF switch overlaps at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, first={first:?}"
@@ -1261,7 +1264,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         let shell = cx.new(|cx| ApplicationCloseShell::new_for_native_window(close, window, cx));
         Root::new(shell, window, cx)
     });
-    cx.simulate_resize(gpui::size(px(1500.), px(800.)));
+    cx.simulate_resize(gpui::size(px(2100.), px(800.)));
     let settle = |cx: &mut gpui::VisualTestContext| {
         for _ in 0..5 {
             cx.run_until_parked();
@@ -1328,14 +1331,22 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         );
     }
     // Window resizing and hiding/reopening a neighbour must preserve preferences.
-    for width in [1000., 1700., 1500.] {
+    for width in [1600., 2300., 2100.] {
         cx.simulate_resize(gpui::size(px(width), px(800.)));
         settle(cx);
         assert_eq!(cx.debug_bounds(left_id).unwrap().size.width, px(360.));
         assert_eq!(cx.debug_bounds(right_id).unwrap().size.width, px(400.));
     }
-    // The exact fit boundary has no extra rounding margin or oscillation.
-    for (width, visible) in [(991., false), (992., true), (991., false), (1000., true)] {
+    // The exact fit boundary has no extra rounding margin or oscillation:
+    // both rails, both sidebars and the viewer toolbar's least width.
+    let fit =
+        48. + 84. + 360. + 400. + 16. * butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS;
+    for (width, visible) in [
+        (fit - 1., false),
+        (fit, true),
+        (fit - 1., false),
+        (1600., true),
+    ] {
         cx.simulate_resize(gpui::size(px(width), px(800.)));
         settle(cx);
         assert_eq!(
@@ -1353,7 +1364,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         .unwrap()
         .center();
     cx.simulate_click(toggle, gpui::Modifiers::default()); // disabled while it cannot fit
-    cx.simulate_resize(gpui::size(px(1500.), px(800.)));
+    cx.simulate_resize(gpui::size(px(2100.), px(800.)));
     settle(cx);
     assert_eq!(cx.debug_bounds(left_id).unwrap().size.width, px(360.));
     assert_eq!(cx.debug_bounds(right_id).unwrap().size.width, px(400.));
@@ -1423,7 +1434,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
             "reset must not change {other}"
         );
     }
-    cx.simulate_resize(gpui::size(px(1800.), px(1000.)));
+    cx.simulate_resize(gpui::size(px(2600.), px(1000.)));
     for level in [-3, 3, 0] {
         cx.update(|window, cx| {
             butter_paper::application_shell::apply_application_ui_zoom(level, px(16.), window, cx);
@@ -1450,7 +1461,9 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         assert_eq!(toolbar.left(), cx.debug_bounds(left_id).unwrap().right());
         assert_eq!(toolbar.right(), cx.debug_bounds(right_id).unwrap().left());
         if level == 3 {
-            cx.simulate_resize(gpui::size(px(900.), px(1000.)));
+            // Wide enough for thumbnails beside the viewer toolbar's least
+            // width at this interface size, but not for properties as well.
+            cx.simulate_resize(gpui::size(px(2200.), px(1000.)));
             settle(cx);
             assert!(
                 cx.debug_bounds(left_id).is_none(),
@@ -1467,7 +1480,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
                 cx.debug_bounds("document-workspace-right-rail")
                     .unwrap()
                     .right()
-                    <= px(900.)
+                    <= px(2200.)
             );
             let properties_toggle = cx
                 .debug_bounds("document-workspace-rail-actions")
@@ -1486,7 +1499,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
             cx.simulate_click(properties_toggle, gpui::Modifiers::default());
             settle(cx);
             assert!(cx.debug_bounds(left_id).is_none());
-            cx.simulate_resize(gpui::size(px(1800.), px(1000.)));
+            cx.simulate_resize(gpui::size(px(2600.), px(1000.)));
             settle(cx);
             assert!((cx.debug_bounds(left_id).unwrap().size.width - rem * 18.75).abs() < px(1.));
         }

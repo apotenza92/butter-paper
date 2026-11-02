@@ -483,12 +483,12 @@ mod tests {
     fn fit_resize_manual_zoom_and_per_mode_wheel_settings_are_retained() {
         let mut view = NativeDocumentViewState::default();
         view.update_viewport(1_000., 560., (612., 792.));
-        assert_eq!(view.zoom_percent(), 150.);
+        assert_eq!(view.zoom_percent(), 163.3);
         view.set_fit_preset(ViewerFitPreset::Page);
         view.update_viewport(1_000., 560., (612., 792.));
-        assert_eq!(view.zoom_percent(), 66.);
+        assert_eq!(view.zoom_percent(), 70.7);
         view.update_viewport(840., 560., (612., 792.));
-        assert_eq!(view.zoom_percent(), 66.);
+        assert_eq!(view.zoom_percent(), 70.7);
         view.set_manual_zoom(125.);
         view.update_viewport(400., 300., (612., 792.));
         assert_eq!(view.zoom_percent(), 125.);

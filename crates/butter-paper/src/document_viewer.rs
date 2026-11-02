@@ -19,9 +19,12 @@ use crate::page_view_control::PageViewMode;
 
 /// While panned into blank space, at least this much of the pages stays in view.
 pub const PAN_KEEP_VISIBLE_PX: f32 = 48.;
+/// The space between pages; the pages meet the viewport's edges.
 const PAGE_GAP: f32 = 24.;
 const MAX_ACTIVE_TILE_JOBS: usize = 2;
-const FIT_ZOOM_STEP: f32 = 0.02;
+/// Fits round down to a tenth of a percent, so a fitted page fills the view
+/// to within a pixel.
+const FIT_ZOOM_STEP: f32 = 0.001;
 const PREVIEW_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const FULL_CACHE_BYTES: usize = 160 * 1024 * 1024;
 const DETAIL_CACHE_BYTES: usize = 64 * 1024 * 1024;
@@ -76,15 +79,15 @@ pub fn resolve_fit_zoom_percent(
     {
         return 6.25;
     }
-    let fit_width = viewport_width / (page_width.max(1.) + PAGE_GAP * 2.);
+    let fit_width = viewport_width / page_width.max(1.);
     let raw = match preset {
         ViewerFitPreset::Width => fit_width,
-        ViewerFitPreset::Page => {
-            fit_width.min(viewport_height / (page_height.max(1.) + PAGE_GAP * 2.))
-        }
+        ViewerFitPreset::Page => fit_width.min(viewport_height / page_height.max(1.)),
     };
-    let quantized = (raw / FIT_ZOOM_STEP).floor() * FIT_ZOOM_STEP;
-    ((quantized * 1_000.).round() / 1_000.).clamp(0.0625, 64.) * 100.
+    // A small allowance keeps float error from flooring a step too far;
+    // whole steps convert to an exact tenth of a percent.
+    let steps = (raw / FIT_ZOOM_STEP + 1e-3).floor();
+    (steps * (FIT_ZOOM_STEP * 1_000.) / 10.).clamp(6.25, 6_400.)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1551,14 +1554,20 @@ mod tests {
     }
 
     #[test]
-    fn fit_zoom_matches_the_electron_gap_quantization_contract() {
+    fn fits_fill_the_view_to_a_tenth_of_a_percent() {
+        // The pages meet the viewport's edges, so a fit is the view over the
+        // page, rounded down.
         assert_eq!(
             resolve_fit_zoom_percent(ViewerFitPreset::Width, 1_000., 560., 612., 792.),
-            150.
+            163.3
         );
         assert_eq!(
             resolve_fit_zoom_percent(ViewerFitPreset::Page, 1_000., 560., 612., 792.),
-            66.
+            70.7
+        );
+        assert_eq!(
+            resolve_fit_zoom_percent(ViewerFitPreset::Width, 612., 560., 612., 792.),
+            100.
         );
         assert_eq!(
             resolve_fit_zoom_percent(ViewerFitPreset::Page, 0., 0., 612., 792.),

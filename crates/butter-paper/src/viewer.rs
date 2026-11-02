@@ -559,9 +559,11 @@ fn build_page_layouts(
                 .iter()
                 .map(|page| finite_positive(page.width_points, 1.0) * zoom)
                 .fold(0.0, f32::max);
-            let total_width = viewport_width.max(widest_page + gap * 2.0);
+            // The pages meet the viewport's edges; only the space between
+            // them is a gap.
+            let total_width = viewport_width.max(widest_page);
             let mut layouts = Vec::with_capacity(pages.len());
-            let mut page_y = gap;
+            let mut page_y = 0.0;
             for (row_index, page) in pages.iter().enumerate() {
                 let width = finite_positive(page.width_points, 1.0) * zoom;
                 let height = finite_positive(page.height_points, 1.0) * zoom;
@@ -575,7 +577,12 @@ fn build_page_layouts(
                 });
                 page_y += height + gap;
             }
-            (layouts, total_width, page_y)
+            let total_height = if layouts.is_empty() {
+                0.0
+            } else {
+                page_y - gap
+            };
+            (layouts, total_width, total_height)
         }
         RenderLayout::Cad {
             organisation,

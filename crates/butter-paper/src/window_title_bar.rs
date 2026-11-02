@@ -64,17 +64,23 @@ pub fn format_window_title_for_application(
     title
 }
 
-/// Window bounds of `size`, centred in the primary display's usable area:
-/// the screen less the menu bar and Dock on macOS (and the taskbar where
-/// the platform reports it), shrunk to fit it.
-/// The least content size of a document window: the tool rail folds into
-/// its overflow menu and the view toolbar scrolls, but the page, dialogs
-/// (the signing dialog is 460 points wide) and panels such as Snap settings
-/// still fit.
+/// The least content size of a document window: the view toolbar shows all
+/// its controls, centred, between the left rail and the two-column tool rail
+/// (Page Thumbnails yields to it when the window is narrower than both); the
+/// tool rail folds into its overflow menu, but the page, dialogs (the signing
+/// dialog is 460 points wide) and panels such as Snap settings still fit.
 pub const DOCUMENT_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
-    width: gpui::px(640.),
+    width: gpui::px(
+        LEFT_RAIL_WIDTH
+            + crate::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS * 16.
+            + TOOL_RAIL_WIDTH,
+    ),
     height: gpui::px(480.),
 };
+/// The left rail and default two-column tool rail, at the default interface
+/// size.
+const LEFT_RAIL_WIDTH: f32 = 48.;
+const TOOL_RAIL_WIDTH: f32 = 84.;
 
 /// The least content size of the Settings window: its category rail, list
 /// and a readable column of settings.
@@ -92,6 +98,9 @@ pub fn at_least(
     size.max(&minimum)
 }
 
+/// Window bounds of `size`, centred in the primary display's usable area:
+/// the screen less the menu bar and Dock on macOS (and the taskbar where
+/// the platform reports it), shrunk to fit it.
 pub fn centered_window_bounds(
     size: gpui::Size<gpui::Pixels>,
     cx: &gpui::App,
@@ -192,7 +201,7 @@ mod tests {
         let small = gpui::size(gpui::px(300.), gpui::px(900.));
         assert_eq!(
             at_least(small, DOCUMENT_WINDOW_MIN_SIZE),
-            gpui::size(gpui::px(640.), gpui::px(900.))
+            gpui::size(gpui::px(828.), gpui::px(900.))
         );
         let large = gpui::size(gpui::px(1200.), gpui::px(800.));
         assert_eq!(at_least(large, DOCUMENT_WINDOW_MIN_SIZE), large);

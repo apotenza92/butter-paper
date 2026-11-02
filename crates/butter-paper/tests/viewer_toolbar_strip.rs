@@ -15,9 +15,10 @@ use butter_paper::{
         PageViewControl, PageViewMode, SINGLE_PAGE_PRIMARY_ID, SINGLE_PAGE_SPLIT_ID,
     },
     viewer_toolbar_strip::{
-        FIT_BUTTON_GROUP_ID, FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, VIEWER_TOOLBAR_CONTENT_ID,
-        VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH, VIEWER_TOOLBAR_ID, VIEWER_TOOLBAR_SCROLL_ID,
-        ViewerToolbarStrip,
+        EDIT_PDF_ID, FIT_BUTTON_GROUP_ID, FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset,
+        SIGNATURES_LABEL_MIN_REMS, SignatureStatus, VIEWER_SIGNATURES_ID,
+        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
+        VIEWER_TOOLBAR_MIN_REMS, VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarStrip,
     },
     zoom_control::{
         DEFAULT_VIEWER_ZOOM, MAX_VIEWER_ZOOM, MIN_VIEWER_ZOOM, ZOOM_GROUP_ID, ZOOM_IN_ID,
@@ -645,20 +646,19 @@ fn cad_toolbar_preserves_non_wrapping_targets_at_fixed_widths(cx: &mut TestAppCo
     set_width(cx, &entities.harness, MINIMUM_CENTER_STRIP_WIDTH);
     let minimum_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
     let minimum_content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-    assert_eq!(
-        minimum_content.size.width,
-        px(VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH)
-    );
+    // The controls fit a 480 px strip at their intrinsic width, so it does
+    // not scroll.
+    assert_eq!(minimum_content.size.width, minimum_toolbar.size.width);
+    assert!(bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID).size.width <= minimum_toolbar.size.width);
     let minimum_targets = cad_interactive_bounds(cx);
     assert_target_geometry_is_preserved(&normal_targets, &minimum_targets);
     for target in minimum_targets {
         assert_fully_inside(minimum_content, target);
     }
     assert_cad_target_order(&minimum_targets);
-    assert!(
-        minimum_targets[10].right() > minimum_toolbar.right(),
-        "the 480 px viewport must exercise the frozen toolbar overflow contract"
-    );
+    for target in minimum_targets {
+        assert_fully_inside(minimum_toolbar, target);
+    }
 
     set_width(cx, &entities.harness, CONSTRAINED_OVERFLOW_WIDTH);
     let constrained_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
@@ -724,10 +724,10 @@ fn toolbar_composition_preserves_targets_across_representative_widths(cx: &mut T
     let minimum_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
     assert_eq!(minimum_toolbar.size.width, px(MINIMUM_CENTER_STRIP_WIDTH));
     let minimum_content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-    assert_eq!(
-        minimum_content.size.width,
-        px(VIEWER_TOOLBAR_FROZEN_CONTENT_WIDTH)
-    );
+    // The controls fit a 480 px strip at their intrinsic width, so it does
+    // not scroll.
+    assert_eq!(minimum_content.size.width, minimum_toolbar.size.width);
+    assert!(bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID).size.width <= minimum_toolbar.size.width);
     let minimum_targets = interactive_bounds(cx);
     assert_target_geometry_is_preserved(&normal_targets, &minimum_targets);
     assert!(minimum_targets[0].right() <= minimum_targets[1].left());
@@ -738,10 +738,9 @@ fn toolbar_composition_preserves_targets_across_representative_widths(cx: &mut T
     assert!(minimum_targets[6].right() <= minimum_targets[8].left());
     assert_fully_inside(minimum_targets[6], minimum_targets[5]);
     assert_fully_inside(minimum_targets[8], minimum_targets[7]);
-    assert!(
-        minimum_targets[8].right() > minimum_toolbar.right(),
-        "the 480 px viewport must exercise the frozen toolbar overflow contract"
-    );
+    for target in minimum_targets {
+        assert_fully_inside(minimum_toolbar, target);
+    }
 
     set_width(cx, &entities.harness, CONSTRAINED_OVERFLOW_WIDTH);
     let constrained_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
@@ -1414,4 +1413,61 @@ fn toolbar_traces_pointer_menu_escape_disabled_and_double_click(cx: &mut TestApp
         Some(&toolbar_focus),
         "the disabled caret must not open or take focus"
     );
+}
+
+#[gpui::test]
+fn toolbar_centres_controls_between_edit_pdf_and_signatures_down_to_its_minimum(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::pdf_signatures::Verdict;
+
+    let (cx, entities) = open_harness(cx);
+    entities
+        .toolbar
+        .update(cx, |toolbar, cx| toolbar.set_edit_pdf(Some(false), cx));
+    let minimum = 16. * VIEWER_TOOLBAR_MIN_REMS;
+    let labelled = 16. * SIGNATURES_LABEL_MIN_REMS;
+    for status in [
+        None,
+        Some(SignatureStatus::Checking),
+        Some(SignatureStatus::Checked(Verdict::Valid)),
+        Some(SignatureStatus::Checked(Verdict::Unverified)),
+        Some(SignatureStatus::Checked(Verdict::Invalid)),
+    ] {
+        entities
+            .toolbar
+            .update(cx, |toolbar, cx| toolbar.set_signatures(status, cx));
+        for width in [1400., labelled, labelled - 1., 760., minimum] {
+            set_width(cx, &entities.harness, width);
+            // The signatures label follows the width laid out last frame.
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
+            let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
+            let controls = bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID);
+            let edit_pdf = bounds(cx, EDIT_PDF_ID);
+            assert_eq!(
+                content.size.width, toolbar.size.width,
+                "the toolbar scrolls at {width} with {status:?}"
+            );
+            assert!(
+                (controls.center().x - toolbar.center().x).abs() <= px(0.5),
+                "controls off centre at {width} with {status:?}: toolbar={toolbar:?}, controls={controls:?}"
+            );
+            assert!(edit_pdf.left() >= toolbar.left() && edit_pdf.right() <= controls.left());
+            if status.is_some() {
+                let signatures = bounds(cx, VIEWER_SIGNATURES_ID);
+                assert!(
+                    signatures.left() >= controls.right() && signatures.right() <= toolbar.right(),
+                    "signatures overlap the controls at {width} with {status:?}: controls={controls:?}, signatures={signatures:?}"
+                );
+                let icon_only = signatures.size.width <= signatures.size.height;
+                assert_eq!(
+                    icon_only,
+                    width < labelled,
+                    "signatures label at {width} with {status:?}: {signatures:?}"
+                );
+            }
+        }
+    }
 }
