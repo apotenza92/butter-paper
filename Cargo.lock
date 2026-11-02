@@ -899,7 +899,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "butter-paper"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes-gcm",
  "async-channel",
@@ -2844,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.5.2"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=1ac8e906a9290135ddf0dc2be399732c1e8a2b80#1ac8e906a9290135ddf0dc2be399732c1e8a2b80"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=01f2bb538939e098a32e3a3745f67790d70d6b4f#01f2bb538939e098a32e3a3745f67790d70d6b4f"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2876,7 +2876,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.5.2"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=1ac8e906a9290135ddf0dc2be399732c1e8a2b80#1ac8e906a9290135ddf0dc2be399732c1e8a2b80"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=01f2bb538939e098a32e3a3745f67790d70d6b4f#01f2bb538939e098a32e3a3745f67790d70d6b4f"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2921,7 +2921,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-assets"
 version = "0.5.1"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=1ac8e906a9290135ddf0dc2be399732c1e8a2b80#1ac8e906a9290135ddf0dc2be399732c1e8a2b80"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=01f2bb538939e098a32e3a3745f67790d70d6b4f#01f2bb538939e098a32e3a3745f67790d70d6b4f"
 dependencies = [
  "anyhow",
  "gpui",
@@ -2935,7 +2935,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.5.1"
-source = "git+https://github.com/apotenza92/gpui-kit?rev=1ac8e906a9290135ddf0dc2be399732c1e8a2b80#1ac8e906a9290135ddf0dc2be399732c1e8a2b80"
+source = "git+https://github.com/apotenza92/gpui-kit?rev=01f2bb538939e098a32e3a3745f67790d70d6b4f#01f2bb538939e098a32e3a3745f67790d70d6b4f"
 dependencies = [
  "proc-macro2",
  "quote",

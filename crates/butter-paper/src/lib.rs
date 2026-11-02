@@ -66,6 +66,7 @@ pub mod pdf_content_moves;
 pub mod pdf_engine;
 pub mod pdf_file_authority;
 pub mod pdf_forms;
+pub mod pdf_links;
 pub mod pdf_merge;
 pub mod pdf_page_base;
 pub mod pdf_page_structure;

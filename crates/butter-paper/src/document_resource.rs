@@ -19,6 +19,7 @@ use crate::{
     pdf_content_geometry::PageSnapGeometry,
     pdf_engine::PdfPersistenceSession,
     pdf_forms::FormLayer,
+    pdf_links::LinkLayer,
     pdf_text_edit::PageTextLayer,
     pdf_worker::{
         AnnotationRenderMode, ClipRect, DocumentEdits, DocumentInfo, JobId, PageGeometry,
@@ -386,6 +387,10 @@ pub trait NativeDocumentResource: Send + Sync {
     fn form_layer(&self) -> Arc<FormLayer> {
         Arc::default()
     }
+    /// The document's links, read when it was opened.
+    fn link_layer(&self) -> Arc<LinkLayer> {
+        Arc::default()
+    }
     fn render_tile(&self, request: TileRequest) -> Result<RasterSurface, String>;
     /// A tile shown only until a full-quality one replaces it: drawn as fast
     /// as the worker can, images unsmoothed.
@@ -592,6 +597,10 @@ impl OpenedNativeDocument {
         self.resource.form_layer()
     }
 
+    pub fn link_layer(&self) -> Arc<LinkLayer> {
+        self.resource.link_layer()
+    }
+
     pub fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
         self.resource.set_document_edits(edits)
     }
@@ -764,6 +773,9 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
         if let Ok(mut form_layer) = resource.form_layer.lock() {
             *form_layer = Arc::new(persistence.form_layer());
         }
+        if let Ok(mut link_layer) = resource.link_layer.lock() {
+            *link_layer = Arc::new(persistence.link_layer());
+        }
         if !edits.is_empty() {
             // Before the first renders. A failure leaves the source content;
             // the session reports it when it shows its edits.
@@ -899,6 +911,7 @@ struct PdfiumWorkerResource {
     released: AtomicBool,
     digitally_signed: AtomicBool,
     form_layer: Mutex<Arc<FormLayer>>,
+    link_layer: Mutex<Arc<LinkLayer>>,
     /// The kept pages the worker has been sent, by name.
     sent_page_bases: Mutex<std::collections::HashSet<String>>,
 }
@@ -989,6 +1002,7 @@ impl PdfiumWorkerResource {
                 released: AtomicBool::new(false),
                 digitally_signed: AtomicBool::new(false),
                 form_layer: Mutex::default(),
+                link_layer: Mutex::default(),
                 sent_page_bases: Mutex::default(),
             }))
         })();
@@ -1511,6 +1525,13 @@ impl NativeDocumentResource for PdfiumWorkerResource {
 
     fn form_layer(&self) -> Arc<FormLayer> {
         self.form_layer
+            .lock()
+            .map(|layer| layer.clone())
+            .unwrap_or_default()
+    }
+
+    fn link_layer(&self) -> Arc<LinkLayer> {
+        self.link_layer
             .lock()
             .map(|layer| layer.clone())
             .unwrap_or_default()

@@ -4,6 +4,24 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.1]
+
+### Links
+
+- Links in PDFs work: with the Select tool, a link shows the pointing hand
+  and a click opens it. Web and email links open in your browser or mail
+  app; links to another page of the document go to that page. Links to
+  files, other programs or scripts are not opened.
+
+### Forms
+
+- Form fields stay on their own page when pages are added, moved or
+  deleted: a new blank page no longer fills the fields of the page it
+  pushed down, and Tab moves through the fields in the new page order.
+- The box you type a form field's text in fits the field and uses its text
+  size at the current zoom, so text in small fields is no longer cut off
+  and multi-line fields no longer shrink while you type.
+
 ## [0.4.0]
 
 ### Viewing

@@ -1,7 +1,8 @@
 //! Filling form fields with the Select tool: a press in a text field opens
 //! its editor, Tab moves to the next field and Escape finishes, each value
 //! is one undoable change, check boxes and radio buttons toggle on a click,
-//! and the worker is told what to render.
+//! and the worker is told what to render. Fields and links stay on their own
+//! page when pages are rearranged, and fields sit above links.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,8 +18,9 @@ use butter_paper::document_workspace::{
 };
 use butter_paper::page_view_control::PageViewMode;
 use butter_paper::pdf_forms::{FormFieldEdit, FormLayer, FormValue, extract_form_layer};
+use butter_paper::pdf_links::{LinkLayer, LinkTarget, PdfLink};
 use butter_paper::pdf_worker::DocumentEdits;
-use gpui::{AppContext as _, Modifiers, Pixels, Point, TestAppContext, point, px};
+use gpui::{AppContext as _, Modifiers, MouseButton, Pixels, Point, TestAppContext, point, px};
 use gpui_component::Root;
 
 const PAGE: (f32, f32) = (595.3, 841.9);
@@ -40,6 +42,7 @@ fn fixture_form() -> FormLayer {
 
 struct FormResource {
     form: Arc<FormLayer>,
+    links: Arc<LinkLayer>,
     shown: Arc<Mutex<Vec<Vec<FormFieldEdit>>>>,
     released: AtomicBool,
 }
@@ -67,6 +70,10 @@ impl NativeDocumentResource for FormResource {
         self.form.clone()
     }
 
+    fn link_layer(&self) -> Arc<LinkLayer> {
+        self.links.clone()
+    }
+
     fn set_document_edits(&self, edits: &DocumentEdits) -> Result<(), String> {
         self.shown.lock().unwrap().push(edits.forms.clone());
         Ok(())
@@ -92,6 +99,19 @@ fn form_workspace(
     Arc<Mutex<Vec<Vec<FormFieldEdit>>>>,
     &mut gpui::VisualTestContext,
 ) {
+    form_workspace_with_links(cx, LinkLayer::default())
+}
+
+/// The fixture form, its page carrying `links` too.
+fn form_workspace_with_links(
+    cx: &mut TestAppContext,
+    links: LinkLayer,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    DocumentId,
+    Arc<Mutex<Vec<Vec<FormFieldEdit>>>>,
+    &mut gpui::VisualTestContext,
+) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -110,6 +130,7 @@ fn form_workspace(
     let shown = Arc::new(Mutex::new(Vec::new()));
     let resource = Arc::new(FormResource {
         form: Arc::new(fixture_form()),
+        links: Arc::new(links),
         shown: shown.clone(),
         released: AtomicBool::new(false),
     });
@@ -149,8 +170,29 @@ fn widget_centre(
     field: &str,
     widget: usize,
 ) -> Point<Pixels> {
+    widget_centre_on(cx, document_id, field, widget, 0)
+}
+
+/// The window point where a field's widget would be on shown page `page`.
+fn widget_centre_on(
+    cx: &mut gpui::VisualTestContext,
+    document_id: DocumentId,
+    field: &str,
+    widget: usize,
+    page: u32,
+) -> Point<Pixels> {
     let rect = fixture_form().field(field).unwrap().widgets[widget].rect;
-    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    rect_centre_on(cx, document_id, rect, page)
+}
+
+/// The window point at the centre of a page rectangle on shown page `page`.
+fn rect_centre_on(
+    cx: &mut gpui::VisualTestContext,
+    document_id: DocumentId,
+    rect: [f64; 4],
+    page: u32,
+) -> Point<Pixels> {
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, page).into_boxed_str());
     let layer = cx.debug_bounds(layer_id).unwrap();
     // The page is centred in its layer at a uniform scale.
     let scale = (f32::from(layer.size.width) / PAGE.0).min(f32::from(layer.size.height) / PAGE.1);
@@ -365,6 +407,221 @@ fn a_choice_field_opens_its_menu_and_escape_leaves_it_unchanged(cx: &mut TestApp
     assert_eq!(
         value_of(&workspace, cx, document_id, "BuildingClass"),
         FormValue::Choices(vec!["Class 1a".into()])
+    );
+}
+
+/// Fields stay on their own page when pages are rearranged: a blank page
+/// added before it has none, the moved page fills, and once the page is
+/// deleted nothing does.
+#[gpui::test]
+fn fields_follow_their_page_when_pages_are_rearranged(cx: &mut TestAppContext) {
+    let (workspace, document_id, _, cx) = form_workspace(cx);
+    let redraw = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.insert_blank_page(document_id, 0, cx)
+        })
+        .unwrap();
+    redraw(cx);
+    // The blank page is shown first, where the form page used to be.
+    let on_blank = widget_centre_on(cx, document_id, "ApplicantName", 0, 0);
+    click(cx, on_blank);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.form_field_focus_summary(cx)),
+        None,
+        "a new blank page has no fields"
+    );
+    // That click on empty page began a selection box; Escape cancels it.
+    cx.simulate_keystrokes("escape");
+    redraw(cx);
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.activate_thumbnail_page(document_id, 1, cx));
+    });
+    redraw(cx);
+    let on_form = widget_centre_on(cx, document_id, "ApplicantName", 0, 1);
+    click(cx, on_form);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.form_field_focus_summary(cx)),
+        Some(("ApplicantName".into(), String::new()))
+    );
+    cx.simulate_input("Ada");
+    cx.simulate_keystrokes("tab");
+    redraw(cx);
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.form_field_focus_summary(cx))
+            .map(|(name, _)| name),
+        Some("Email".into()),
+        "Tab moves through the moved page's fields"
+    );
+    cx.simulate_keystrokes("escape");
+    redraw(cx);
+    assert_eq!(
+        value_of(&workspace, cx, document_id, "ApplicantName"),
+        FormValue::Text("Ada".into())
+    );
+
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.delete_pages(document_id, &[1], cx)
+        })
+        .unwrap();
+    redraw(cx);
+    let on_remaining = widget_centre_on(cx, document_id, "ApplicantName", 0, 0);
+    click(cx, on_remaining);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.form_field_focus_summary(cx)),
+        None,
+        "a deleted page's fields are not filled elsewhere"
+    );
+}
+
+const WEB_LINK: [f64; 4] = [300., 100., 500., 120.];
+const FILE_LINK: [f64; 4] = [300., 150., 500., 170.];
+const PAGE_LINK: [f64; 4] = [300., 200., 500., 220.];
+
+fn page_links() -> LinkLayer {
+    let link = |rect, target| PdfLink {
+        page_index: 0,
+        rect,
+        target,
+    };
+    let applicant = fixture_form().field("ApplicantName").unwrap().widgets[0].rect;
+    LinkLayer {
+        links: vec![
+            link(
+                WEB_LINK,
+                LinkTarget::Uri("https://example.com/watch".into()),
+            ),
+            link(FILE_LINK, LinkTarget::Uri("file:///etc/passwd".into())),
+            link(PAGE_LINK, LinkTarget::Page(0)),
+            // Under a field, which takes the press.
+            link(
+                applicant,
+                LinkTarget::Uri("https://example.com/under".into()),
+            ),
+        ],
+    }
+}
+
+/// A click on a web link opens it; a drag from it, a field above it and an
+/// address other than a web or mail one do not.
+#[gpui::test]
+fn a_click_on_a_link_opens_it_beneath_fields(cx: &mut TestAppContext) {
+    let (workspace, document_id, _, cx) = form_workspace_with_links(cx, page_links());
+    let web = rect_centre_on(cx, document_id, WEB_LINK, 0);
+    cx.simulate_mouse_move(web, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_mouse_down(web, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        web + point(px(40.), px(0.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        web + point(px(40.), px(0.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        cx.opened_url(),
+        None,
+        "a drag from a link does not follow it"
+    );
+
+    click(cx, web);
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://example.com/watch")
+    );
+
+    let field = widget_centre(cx, document_id, "ApplicantName", 0);
+    click(cx, field);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.form_field_focus_summary(cx)),
+        Some(("ApplicantName".into(), String::new())),
+        "the field above a link takes the press"
+    );
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://example.com/watch")
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+
+    let file = rect_centre_on(cx, document_id, FILE_LINK, 0);
+    click(cx, file);
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://example.com/watch")
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Butter Paper only opens web and email links.".into())
+    );
+}
+
+/// A link to a page shows that page where it is now, and a copy of a page
+/// carries its links.
+#[gpui::test]
+fn a_link_to_a_page_follows_it_when_pages_are_rearranged(cx: &mut TestAppContext) {
+    let (workspace, document_id, _, cx) = form_workspace_with_links(cx, page_links());
+    let redraw = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    let current_page = |workspace: &gpui::Entity<DocumentWorkspace>,
+                        cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .session(document_id, cx)
+                .unwrap()
+                .read(cx)
+                .current_page()
+        })
+    };
+    // Shown pages: a blank page, the file's page, then a copy of it.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.insert_blank_page(document_id, 0, cx)
+        })
+        .unwrap();
+    redraw(cx);
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.duplicate_pages(document_id, &[1], cx)
+        })
+        .unwrap();
+    redraw(cx);
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.activate_thumbnail_page(document_id, 0, cx));
+    });
+    redraw(cx);
+    // A blank page has no links.
+    let on_blank = rect_centre_on(cx, document_id, WEB_LINK, 0);
+    click(cx, on_blank);
+    assert_eq!(cx.opened_url(), None);
+    cx.simulate_keystrokes("escape");
+    redraw(cx);
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.activate_thumbnail_page(document_id, 2, cx));
+    });
+    redraw(cx);
+    assert_eq!(current_page(&workspace, cx), 2);
+    let on_copy = rect_centre_on(cx, document_id, PAGE_LINK, 2);
+    click(cx, on_copy);
+    redraw(cx);
+    assert_eq!(
+        current_page(&workspace, cx),
+        1,
+        "the copy's link shows the file page where it is now"
     );
 }
 

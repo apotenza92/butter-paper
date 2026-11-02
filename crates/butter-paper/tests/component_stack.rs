@@ -418,3 +418,42 @@ fn continuous_split_control_traces_primary_menu_and_selection(cx: &mut TestAppCo
     assert!(cx.debug_bounds(CONTINUOUS_SPLIT_ID).is_some());
     assert!(cx.debug_bounds(CONTINUOUS_PRIMARY_ID).is_some());
 }
+
+struct ContextMenuView;
+
+impl Render for ContextMenuView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui_component::menu::ContextMenuExt as _;
+        div()
+            .id("context-menu-target")
+            .debug_selector(|| "context-menu-target".into())
+            .size_full()
+            .context_menu(|menu, _, _| menu.label("Item"))
+    }
+}
+
+/// A context menu, once opened and dismissed, is freed with its window: the
+/// menu's dismiss subscription must not keep the menu's state alive.
+#[gpui::test]
+fn a_dismissed_context_menu_is_freed_with_its_window(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let snapshot = cx.update(|cx| cx.leak_detector_snapshot());
+    let (_, window_cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|_| ContextMenuView);
+        Root::new(view, window, cx)
+    });
+    window_cx.update(|window, cx| window.draw(cx).clear(cx));
+    let target = window_cx
+        .debug_bounds("context-menu-target")
+        .unwrap()
+        .center();
+    window_cx.simulate_mouse_down(target, gpui::MouseButton::Right, Modifiers::default());
+    window_cx.simulate_mouse_up(target, gpui::MouseButton::Right, Modifiers::default());
+    window_cx.run_until_parked();
+    window_cx.update(|window, cx| window.draw(cx).clear(cx));
+    window_cx.simulate_keystrokes("escape");
+    window_cx.run_until_parked();
+    window_cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    cx.update(|cx| cx.assert_no_new_leaks(&snapshot));
+}

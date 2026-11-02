@@ -11,6 +11,8 @@ mod content;
 mod forms;
 #[path = "document_workspace_image_drop.rs"]
 mod image_drop;
+#[path = "document_workspace_links.rs"]
+mod links;
 #[path = "document_workspace_merge.rs"]
 mod merge;
 #[path = "document_workspace_pages.rs"]
@@ -2954,6 +2956,10 @@ pub struct DocumentWorkspace {
     /// the focus that takes keys for a focused check box or choice field.
     form_field_hover: Option<FormWidgetRef>,
     form_field_focus: Option<FormWidgetRef>,
+    /// Following links with the Select tool: the document whose link is
+    /// under the pointer, and a press on a link awaiting its release.
+    link_hover: Option<DocumentId>,
+    link_press: Option<links::LinkPress>,
     form_field_editor: Option<FormFieldEditor>,
     form_choice_menu: Option<FormChoiceMenu>,
     /// Each painted page's transform, kept across renders (unlike
@@ -4582,6 +4588,8 @@ impl DocumentWorkspace {
             selectable_text: HashMap::new(),
             form_field_hover: None,
             form_field_focus: None,
+            link_hover: None,
+            link_press: None,
             form_field_editor: None,
             form_choice_menu: None,
             form_page_transforms: HashMap::new(),
@@ -18022,6 +18030,14 @@ impl DocumentWorkspace {
         {
             return true;
         }
+        // A link beneath no markup or field is followed on release.
+        if tool == AnnotationTool::Select
+            && !box_armed
+            && !self.editing_content(interaction.document_id, cx)
+            && self.begin_link_press(interaction, point, position, cx)
+        {
+            return true;
+        }
         // Then page text; a press away from text still selects markups. In
         // Edit PDF mode text is edited instead, and a press on empty page
         // draws a selection box.
@@ -19098,13 +19114,21 @@ impl DocumentWorkspace {
         // Form fields are hovered only where no markup is.
         let form_point = (candidate.is_none() && select_hit.is_none()).then_some(point);
         let form_hover_changed = self.update_form_field_hover(interaction, form_point, cx);
-        // Text is hovered where no markup or field is.
+        // Links are hovered where no markup or field is, outside Edit PDF.
+        let link_point = form_point.filter(|_| {
+            self.form_field_hover.is_none()
+                && session.read(cx).annotations.tool() == AnnotationTool::Select
+                && !self.editing_content(document_id, cx)
+        });
+        let link_hover_changed = self.update_link_hover(interaction, link_point, cx);
+        // Text is hovered where no markup, field or link is.
         let text_point = form_point.filter(|_| {
             self.form_field_hover.is_none()
+                && self.link_hover.is_none()
                 && session.read(cx).annotations.tool() == AnnotationTool::Select
         });
         let text_hover_changed = self.update_text_selection_hover(interaction, text_point, cx);
-        let form_hover_changed = form_hover_changed || text_hover_changed;
+        let form_hover_changed = form_hover_changed || link_hover_changed || text_hover_changed;
         if self.hovered_annotation != candidate
             || self.hot_annotation_handle != hot_handle
             || self.select_hover_hit != select_hit
@@ -19128,6 +19152,7 @@ impl DocumentWorkspace {
         let image_hover = self.pending_image_hover.take();
         let page_text_hover = self.page_text_hover.take();
         let form_field_hover = self.form_field_hover.take();
+        let link_hover = self.link_hover.take();
         let text_hover = self.text_selection_hover.take();
         let content_hover = self.content_hover.take();
         let handle_hover = self.content_handle_hover.take();
@@ -19140,6 +19165,7 @@ impl DocumentWorkspace {
             || image_hover.is_some()
             || page_text_hover.is_some()
             || form_field_hover.is_some()
+            || link_hover.is_some()
         {
             cx.notify();
             true
@@ -19232,6 +19258,9 @@ impl DocumentWorkspace {
         if self.pan_drag.is_some() {
             self.update_annotation_pointer(position, modifiers, cx);
             self.pan_drag = None;
+            return true;
+        }
+        if self.finish_link_press(position, cx) {
             return true;
         }
         if self.finish_column_drag(cx)
@@ -25839,6 +25868,7 @@ impl Render for DocumentWorkspace {
         } else {
             select_hover_cursor
                 .or_else(|| self.form_field_cursor(document_id, cx))
+                .or_else(|| self.link_cursor(document_id))
                 .or_else(|| {
                     (annotation_tool == AnnotationTool::Select)
                         .then(|| self.text_selection_cursor(document_id))

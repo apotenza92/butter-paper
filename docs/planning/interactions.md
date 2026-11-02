@@ -143,7 +143,7 @@ tooltip expands the instructions when the window truncates them.
 With Edit PDF off, the Select tool also selects the page's own text to
 copy it, as Acrobat's does; nothing about the PDF changes.
 
-- Markups and fillable fields take a press first. Elsewhere a press in
+- Markups, fillable fields and links take a press first. Elsewhere a press in
   text places the start of a selection and dragging extends it, in reading
   order, to the nearest place in the page's text, including across lines
   and paragraphs. A press away from text clears it and draws a selection
@@ -442,7 +442,7 @@ A PDF's form fields are filled with the Select tool, as in Acrobat and Revu.
   and hover shows a field only where no markup is. Elsewhere a press on a
   field focuses and fills it, and clears any markup selection.
 - A text field opens an editor in place, in the field's text size (a fitted
-  size when it has none), on the paper. Multi-line fields wrap and take
+  size when it has none) at the page's zoom, filling the field, on the paper. Multi-line fields wrap and take
   Enter; password fields are masked; a maximum length stops typing at it.
   Enter finishes a single-line field.
 - Check boxes and radio buttons toggle on a click, or Space when focused. A
@@ -465,6 +465,25 @@ A PDF's form fields are filled with the Select tool, as in Acrobat and Revu.
 - In a digitally signed PDF the first fill asks "Fill in a signed PDF?";
   Fill In allows filling and editing content for that document, as the
   Edit PDF prompt does.
+
+## Following links
+
+With Edit PDF off, the Select tool follows a PDF's link annotations, as
+Acrobat and Preview do.
+
+- Markups and form fields sit above links. Elsewhere a link shows the
+  pointing hand, and a click on it (released within a few pixels of the
+  press) follows it; a press that drags off does nothing and does not
+  start a text selection. Pressing a link clears markup and text
+  selections.
+- Web (`http`, `https`) and `mailto` addresses open with the system.
+  Other addresses (files, programs, JavaScript) are not opened; a status
+  message says so.
+- A link to a page of the document shows that page, or a copy of it after
+  rearranging; a link to a deleted page says so. A page copy shows its file
+  page's links; a new blank page has none.
+- Links are not drawn or outlined beyond what the page itself draws, and
+  are not followed in Edit PDF mode or with other tools.
 
 ## Page scale
 
@@ -520,8 +539,9 @@ page without one measures paper size (1 in = 1 in).
 | In Edit PDF: the band round a paragraph, a drawing or an image, and while dragging it | open hand (Windows: move arrow) |
 | Page text Edit PDF cannot change | not allowed |
 | A fillable text field with Select | I-beam |
-| Page text with Select, where no markup or field is, and while selecting it | I-beam |
+| Page text with Select, where no markup, field or link is, and while selecting it | I-beam |
 | A fillable check box, radio button, combo or list box with Select | pointing hand |
+| A link with Select, where no markup or field is | pointing hand |
 | Moving a markup | closed hand (Windows: move arrow) |
 | Pan tool | open hand; closed while dragging |
 | Elsewhere | arrow |
@@ -567,7 +587,8 @@ with it.
   pages move when pasted, once; copied pages paste as copies until the pages
   are rearranged. Pages paste only into the document they came from.
 - A copy has copies of its page's markups under new names. Form fields stay
-  on the original page only.
+  on the original page only, and are outlined, filled and reached with Tab
+  wherever that page is moved; a deleted page's fields cannot be filled.
 - After a change, the page shown is the one acted on: a moved, added,
   pasted or duplicated page, or the page after a deletion.
 

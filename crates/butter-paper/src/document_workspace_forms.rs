@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::pdf_forms::{FormField, FormFieldEdit, FormFieldKind, FormLayer, FormValue, XfaForm};
+use crate::pdf_page_structure::SourcePagePlaces;
 use gpui::{AnyElement, KeyBinding, actions};
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_component::menu::PopupMenu;
@@ -179,6 +180,14 @@ impl DocumentWorkspace {
             .then_some((layer, session.resource_epoch))
     }
 
+    /// Where the document shows each file page's form fields: on that page
+    /// as arranged now, never on a copy, and nowhere once it is deleted.
+    pub(super) fn form_pages(&self, document_id: DocumentId, cx: &App) -> SourcePagePlaces {
+        self.session(document_id, cx)
+            .map(|session| SourcePagePlaces::new(&session.read(cx).arranged_slots))
+            .unwrap_or_default()
+    }
+
     fn form_field_at(
         &self,
         target: FormWidgetRef,
@@ -229,12 +238,13 @@ impl DocumentWorkspace {
         {
             return false;
         }
+        let pages = self.form_pages(document_id, cx);
         let on_page = |target: FormWidgetRef| {
             target.document_id == document_id
                 && self
                     .form_field_at(target, cx)
                     .and_then(|(_, field)| field.widgets.get(target.widget).cloned())
-                    .is_some_and(|widget| widget.page_index == page_index)
+                    .is_some_and(|widget| pages.shown(widget.page_index) == Some(page_index))
         };
         self.form_field_editor
             .as_ref()
@@ -252,6 +262,7 @@ impl DocumentWorkspace {
         cx: &App,
     ) -> Option<FormWidgetRef> {
         let (layer, epoch) = self.form_layer(interaction.document_id, cx)?;
+        let pages = self.form_pages(interaction.document_id, cx);
         let tolerance = interaction
             .transform
             .tolerance_points(FORM_FIELD_HIT_TOLERANCE_PX)
@@ -259,7 +270,7 @@ impl DocumentWorkspace {
         let mut best: Option<(f64, FormWidgetRef)> = None;
         for (field_index, field) in layer.fields.iter().enumerate() {
             for (widget_index, widget) in field.widgets.iter().enumerate() {
-                if widget.page_index != interaction.page_index
+                if pages.shown(widget.page_index) != Some(interaction.page_index)
                     || !rect_contains(widget.rect, point, tolerance)
                 {
                     continue;
@@ -820,13 +831,19 @@ impl DocumentWorkspace {
         let Some(widget) = field.widgets.get(target.widget) else {
             return;
         };
+        let Some(page) = self
+            .form_pages(target.document_id, cx)
+            .shown(widget.page_index)
+        else {
+            return;
+        };
         let interaction = self
             .page_interactions
-            .get(&(target.document_id, widget.page_index))
+            .get(&(target.document_id, page))
             .copied();
         let viewport = self.viewport_bounds.get(&target.document_id).copied();
         let (Some(interaction), Some(viewport)) = (interaction, viewport) else {
-            self.activate_thumbnail_page(target.document_id, widget.page_index, cx);
+            self.activate_thumbnail_page(target.document_id, page, cx);
             return;
         };
         let Ok(rect) = crate::annotation_model::PdfRect::new(
@@ -882,11 +899,22 @@ impl DocumentWorkspace {
         let Some((layer, epoch)) = self.form_layer(current.document_id, cx) else {
             return;
         };
-        let order = layer
+        // Page by page as the pages are arranged now, skipping deleted ones.
+        let pages = self.form_pages(current.document_id, cx);
+        let mut order = layer
             .tab_order
             .iter()
             .copied()
             .filter(|(field, _)| layer.fields[*field].fillable())
+            .filter_map(|(field, widget)| {
+                let page = pages.shown(layer.fields[field].widgets.get(widget)?.page_index)?;
+                Some((page, (field, widget)))
+            })
+            .collect::<Vec<_>>();
+        order.sort_by_key(|(page, _)| *page);
+        let order = order
+            .into_iter()
+            .map(|(_, entry)| entry)
             .collect::<Vec<_>>();
         if order.is_empty() {
             return;
@@ -985,20 +1013,23 @@ impl DocumentWorkspace {
                     .map(|plan| plan.visible_pages.to_vec())
             })
             .unwrap_or_default();
+        let places = self.form_pages(document_id, cx);
+        // Each widget with the page it shows on: none on a deleted page.
         let widget_rect = |target: Option<FormWidgetRef>| {
             target
                 .filter(|target| target.document_id == document_id && target.epoch == epoch)
                 .and_then(|target| {
                     let field = layer.fields.get(target.field)?;
                     let widget = field.widgets.get(target.widget)?;
-                    Some((target, field, widget))
+                    let page = places.shown(widget.page_index)?;
+                    Some((page, field, widget))
                 })
         };
         let hover = widget_rect(self.form_field_hover)
             .filter(|(_, field, _)| field.fillable() && select_active);
         let focus = widget_rect(self.form_field_focus);
         let editor = self.form_field_editor.as_ref().and_then(|editor| {
-            let (_, field, widget) = widget_rect(Some(editor.target))?;
+            let (page, field, widget) = widget_rect(Some(editor.target))?;
             let multiline = matches!(
                 field.kind,
                 FormFieldKind::Text {
@@ -1007,12 +1038,12 @@ impl DocumentWorkspace {
                 }
             );
             Some((
-                widget.page_index,
+                page,
                 FormEditorPresentation {
                     rect: widget.rect,
                     display_scale: self
                         .form_page_transforms
-                        .get(&(document_id, widget.page_index))
+                        .get(&(document_id, page))
                         .map_or(1., |transform| transform.pixels_per_point() as f32),
                     input: editor.input.clone(),
                     font_size_pt: editor_font_size(widget.font_size, widget.rect, multiline),
@@ -1021,10 +1052,10 @@ impl DocumentWorkspace {
             ))
         });
         let menu = self.form_choice_menu.as_ref().and_then(|menu| {
-            let (_, _, widget) = widget_rect(Some(menu.target))?;
+            let (page, _, widget) = widget_rect(Some(menu.target))?;
             let field_height = self
                 .form_page_transforms
-                .get(&(document_id, widget.page_index))
+                .get(&(document_id, page))
                 .and_then(|transform| {
                     let [left, bottom, right, top] = widget.rect;
                     let rect = crate::annotation_model::PdfRect::new(
@@ -1038,7 +1069,7 @@ impl DocumentWorkspace {
                 })
                 .unwrap_or(0.);
             Some((
-                widget.page_index,
+                page,
                 FormMenuPresentation {
                     menu: menu.menu.clone(),
                     rect: widget.rect,
@@ -1051,8 +1082,8 @@ impl DocumentWorkspace {
         let pages = visible
             .into_iter()
             .filter_map(|page| u32::try_from(page).ok())
-            .chain(hover.map(|(_, _, widget)| widget.page_index))
-            .chain(focus.map(|(_, _, widget)| widget.page_index))
+            .chain(hover.map(|(page, _, _)| page))
+            .chain(focus.map(|(page, _, _)| page))
             .chain(editor.as_ref().map(|(page, _)| *page))
             .chain(menu.as_ref().map(|(page, _)| *page))
             .collect::<std::collections::BTreeSet<_>>();
@@ -1064,7 +1095,7 @@ impl DocumentWorkspace {
                     .iter()
                     .filter(|field| field.fillable())
                     .flat_map(|field| &field.widgets)
-                    .filter(|widget| widget.page_index == page)
+                    .filter(|widget| places.shown(widget.page_index) == Some(page))
                     .map(|widget| widget.rect)
                     .collect()
             } else {
@@ -1074,10 +1105,10 @@ impl DocumentWorkspace {
                 page_index: page,
                 outlines,
                 hover: hover
-                    .filter(|(_, _, widget)| widget.page_index == page)
+                    .filter(|(widget_page, _, _)| *widget_page == page)
                     .map(|(_, _, widget)| widget.rect),
                 focus: focus
-                    .filter(|(_, _, widget)| widget.page_index == page)
+                    .filter(|(widget_page, _, _)| *widget_page == page)
                     .map(|(_, _, widget)| widget.rect),
                 editor: editor
                     .clone()
@@ -1304,17 +1335,25 @@ pub(super) fn form_overlay_element(
         let padding = px((2. * scale).clamp(1., 6.));
         let key_owner = owner;
         let field = match &editor.input {
+            // Inputs are otherwise their stock size: a single-line input
+            // taller than a small field, which would clip its text, and both
+            // in the stock text size rather than the field's.
             FormFieldInput::Line(input) => Input::new(input)
                 .aria_label("Form field")
                 .appearance(false)
                 .bordered(false)
-                .h_full()
+                .size_full()
+                .p_0()
+                .text_size(font_size)
+                .line_height(font_size * 1.2)
                 .into_any_element(),
             FormFieldInput::Lines(input) => Textarea::new(input)
                 .aria_label("Form field")
                 .appearance(false)
                 .bordered(false)
                 .size_full()
+                .text_size(font_size)
+                .line_height(font_size * 1.15)
                 .editor_paddings(Edges {
                     top: padding,
                     right: padding,

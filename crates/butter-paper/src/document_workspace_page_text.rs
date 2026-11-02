@@ -237,7 +237,14 @@ fn changed_pages(
         if value(before, &edit.name) != value(after, &edit.name)
             && let Some(field) = form.field(&edit.name)
         {
-            pages.extend(field.widgets.iter().map(|widget| widget.page_index));
+            // Fields stay on their original pages, wherever those are now.
+            let places = crate::pdf_page_structure::SourcePagePlaces::new(&after.pages);
+            pages.extend(
+                field
+                    .widgets
+                    .iter()
+                    .filter_map(|widget| places.shown(widget.page_index)),
+            );
         }
     }
     pages

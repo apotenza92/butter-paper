@@ -1749,6 +1749,10 @@ impl PdfPersistenceSession {
         crate::pdf_forms::extract_form_layer(&self.document)
     }
 
+    pub fn link_layer(&self) -> crate::pdf_links::LinkLayer {
+        crate::pdf_links::extract_link_layer(&self.document)
+    }
+
     pub fn page_text(
         &self,
         page_index: u32,

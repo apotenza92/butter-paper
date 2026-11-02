@@ -4,7 +4,7 @@
 //! ([`restructure_pages`]); everything else names pages by where they are
 //! shown.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,41 @@ impl PageSlot {
         match self {
             Self::Source { index } | Self::Copy { index } => Self::Copy { index },
             blank => blank,
+        }
+    }
+}
+
+/// Where each file page shows itself (not a copy of it) among `slots`, for
+/// what stays on the original page only, such as form fields. No slots
+/// show the file's pages as the file has them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourcePagePlaces {
+    places: Option<HashMap<u32, u32>>,
+}
+
+impl SourcePagePlaces {
+    pub fn new(slots: &[PageSlot]) -> Self {
+        if slots.is_empty() {
+            return Self::default();
+        }
+        let places = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(shown, slot)| match slot {
+                PageSlot::Source { index } => Some((*index, shown as u32)),
+                _ => None,
+            })
+            .collect();
+        Self {
+            places: Some(places),
+        }
+    }
+
+    /// The shown page of file page `file_page`; none once it is deleted.
+    pub fn shown(&self, file_page: u32) -> Option<u32> {
+        match &self.places {
+            None => Some(file_page),
+            Some(places) => places.get(&file_page).copied(),
         }
     }
 }
@@ -443,6 +478,26 @@ fn clear_references_to(document: &mut Document, removed: &BTreeSet<ObjectId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_pages_show_where_they_are_moved_and_not_as_copies() {
+        let unchanged = SourcePagePlaces::new(&[]);
+        assert_eq!(unchanged.shown(3), Some(3));
+        // File pages 0, 1, 2: page 2 moved first, page 0 copied, page 1
+        // deleted, a blank page added.
+        let places = SourcePagePlaces::new(&[
+            PageSlot::Source { index: 2 },
+            PageSlot::Copy { index: 0 },
+            PageSlot::Blank {
+                width: 612.,
+                height: 792.,
+            },
+            PageSlot::Source { index: 0 },
+        ]);
+        assert_eq!(places.shown(2), Some(0));
+        assert_eq!(places.shown(0), Some(3));
+        assert_eq!(places.shown(1), None);
+    }
 
     /// A file of pages saying "A", "B", ... under an intermediate node, with
     /// a markup and a link on the first page.
