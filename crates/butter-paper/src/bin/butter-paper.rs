@@ -4063,6 +4063,20 @@ mod review_driver {
                         cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenSettings));
                         pause(cx, 500).await;
                     }
+                    "unlock-keychain" => {
+                        // unlock-keychain PATH PASSWORD: a test keychain unlocked
+                        // in this app's own security session (macOS), as the
+                        // login keychain is at login.
+                        #[cfg(target_os = "macos")]
+                        {
+                            let found = butter_paper::system_certificates::keychain_identities(
+                                std::path::Path::new(words[1]),
+                                words[2],
+                            );
+                            writeln!(log, "unlock-keychain: {} identities", found.len()).unwrap();
+                        }
+                        pause(cx, 300).await;
+                    }
                     "signature-settings" => {
                         // Settings ▸ Signatures, as the signing dialog opens it.
                         cx.update(|cx| {

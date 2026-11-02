@@ -328,8 +328,9 @@ mod platform {
     /// Why the store or a smart card would not sign, in words.
     fn refusal(status: i32) -> String {
         match status as u32 {
-            // NTE_USER_CANCELLED, or ERROR_CANCELLED as an HRESULT
-            0x8009_0036 | 0x8007_04C7 => "signing was cancelled".to_owned(),
+            // NTE_USER_CANCELLED, ERROR_CANCELLED as an HRESULT, or
+            // SCARD_W_CANCELLED_BY_USER
+            0x8009_0036 | 0x8007_04C7 | 0x8010_006E => "signing was cancelled".to_owned(),
             0x8010_006B => "the smart card's PIN was wrong".to_owned(),
             0x8010_006C => "the smart card is blocked after too many wrong PINs".to_owned(),
             0x8010_000C | 0x8010_0069 => "the smart card isn't inserted".to_owned(),
