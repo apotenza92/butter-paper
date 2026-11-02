@@ -4,11 +4,7 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
-### Opening
-
-- PDFs whose pages take their size from the document rather than each page,
-  such as files printed to PDF on a Mac and some Acrobat output, open
-  again; they failed with "PdfiumLibraryInternalError".
+## [0.3.9]
 
 ### Signatures
 
@@ -35,16 +31,6 @@ All notable Butter Paper changes are recorded here.
   uses a copied picture such as a screenshot. Choose file also takes a PDF,
   such as a Bluebeam stamp.
 
-### Windows and dialogs
-
-- Windows can no longer be made too small to use: document windows stop at
-  640 × 480 and Settings at 600 × 420.
-- Dialogs fit inside the window: one taller than the window scrolls between
-  its title and buttons, which were cut off before. On Linux they are
-  centred again and no longer cover the title bar.
-- On Windows, checkbox labels, such as Snap settings', show the bottoms of
-  letters like g, p and y; they were cut off.
-
 ### Word documents
 
 - File ▸ Convert to Word Document… opens a dialog that stays up while the
@@ -58,6 +44,22 @@ All notable Butter Paper changes are recorded here.
   a second on a six-core laptop, rather than eight. Pages convert on every
   core, and an image repeated on each page (a letterhead's logo) is saved
   in the Word document once.
+
+### Window sizes and dialogs
+
+- Windows can no longer be made too small to use: document windows stop at
+  640 × 480 and Settings at 600 × 420.
+- Dialogs fit inside the window: one taller than the window scrolls between
+  its title and buttons, which were cut off before. On Linux they are
+  centred again and no longer cover the title bar.
+- On Windows, checkbox labels, such as Snap settings', show the bottoms of
+  letters like g, p and y; they were cut off.
+
+### Opening
+
+- PDFs whose pages take their size from the document rather than each page,
+  such as files printed to PDF on a Mac and some Acrobat output, open
+  again; they failed with "PdfiumLibraryInternalError".
 
 ## [0.3.8]
 
