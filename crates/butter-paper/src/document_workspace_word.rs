@@ -525,7 +525,9 @@ impl DocumentWorkspace {
             })?;
             drop(steps);
             Ok(finished.then(|| ConvertedWordDocument {
-                docx,
+                // As people read it: without Windows' `\\?\` prefix,
+                // which an open document's canonical path has.
+                docx: dunce::simplified(&docx).to_path_buf(),
                 pages,
                 // Asked here, off the main thread: Linux asks `xdg-mime`.
                 app: crate::system_apps::word_document_app(),
