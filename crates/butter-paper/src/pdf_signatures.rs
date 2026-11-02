@@ -1292,10 +1292,14 @@ fn chain_revocation(
     fetch: Option<Fetch<'_>>,
 ) -> Revocation {
     let mut all_good = true;
+    // A chain of only a self-signed certificate has nothing to ask, so its
+    // status stays unknown rather than "not revoked".
+    let mut asked = false;
     for (index, certificate) in chain.iter().enumerate() {
         if certificate.self_signed() {
             continue;
         }
+        asked = true;
         let issuer = chain.get(index + 1).or_else(|| {
             pool.iter()
                 .copied()
@@ -1311,7 +1315,7 @@ fn chain_revocation(
             None => all_good = false,
         }
     }
-    if all_good {
+    if all_good && asked {
         Revocation::Good
     } else {
         Revocation::NotChecked

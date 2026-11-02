@@ -17,6 +17,9 @@ Every certificate, key and identity here is made up for the tests.
 - `make_non_ca_fixture.py` makes `signed-by-a-non-ca.pdf` from the `.p12`
   files: "Jane Doe" at "Big Bank", whose certificate the RSA signer issued
   though it is no CA (an impersonation a checker must not trust).
+- `signed-by-a-smart-card.pdf`: signed by Butter Paper on Windows through
+  the certificate store, with a self-signed "Smart Card Signer" key held on
+  a TPM virtual smart card (`tpmvscmgr`), after its PIN prompt.
 - `gpo-public-law-118-1.pdf`: Public Law 118-1 from govinfo.gov (a US
   government work in the public domain), signed by the US Government
   Publishing Office in BER, as Acrobat-style signers write it.

@@ -47,6 +47,18 @@ fn an_intact_rsa_signature_names_its_signer_and_chains_to_the_trusted_root() {
 }
 
 #[test]
+fn a_smart_card_signature_reads_intact_and_a_self_signed_one_is_not_called_unrevoked() {
+    use butter_paper::pdf_signatures::Revocation;
+    let signature = only("signed-by-a-smart-card.pdf");
+    assert_eq!(signature.signer, "Smart Card Signer");
+    assert_eq!(signature.integrity, Integrity::Intact);
+    assert_eq!(signature.changes, Changes::None);
+    assert_eq!(signature.certificate.trust, Trust::Untrusted);
+    // Nothing issued it, so nothing can say it was not revoked.
+    assert_eq!(signature.certificate.revocation, Revocation::NotChecked);
+}
+
+#[test]
 fn without_its_root_trusted_a_signature_is_intact_but_untrusted() {
     let found = signatures(&fixture("signed-rsa.pdf"), &[]);
     assert_eq!(found[0].integrity, Integrity::Intact);
