@@ -65,7 +65,10 @@ use page_text::{PageTextDocumentState, PageTextEditing, PageTextHover, PageTextO
 pub use signature_checks::{DOCUMENT_SIGNATURES_DIALOG_ID, DOCUMENT_SIGNATURES_LIST_ID};
 use thumbnail_sidebar::{ThumbnailRowsShown, ThumbnailSidebarInputs};
 pub use word::{
-    DOCUMENT_WORD_KEEP_BOTH_ID, DOCUMENT_WORD_REPLACE_CANCEL_ID, DOCUMENT_WORD_REPLACE_ID,
+    ConvertedWordDocument, DOCUMENT_WORD_CANCEL_ID, DOCUMENT_WORD_CONVERT_ID,
+    DOCUMENT_WORD_DIALOG_ID, DOCUMENT_WORD_KEEP_BOTH_ID, DOCUMENT_WORD_OPEN_ID,
+    DOCUMENT_WORD_PROGRESS_ID, DOCUMENT_WORD_REPLACE_ID, DOCUMENT_WORD_SHOW_ID, WordDialog,
+    WordDialogStage,
 };
 #[path = "document_workspace_empty.rs"]
 mod empty;
@@ -2787,16 +2790,13 @@ pub struct DocumentWorkspace {
     pending_close_document_id: Option<DocumentId>,
     pending_publication_warning_generation: Option<u64>,
     close_after_save_document_id: Option<DocumentId>,
-    /// The document to convert to a Word document once its save finishes.
-    word_after_save: Option<DocumentId>,
-    /// Documents being converted now.
-    word_conversions: HashSet<DocumentId>,
-    /// A conversion that would replace an existing Word document, waiting
-    /// for the next render to ask about it: the document and its PDF.
-    word_replace_prompt: Option<(DocumentId, PathBuf)>,
-    /// A finished conversion, waiting for the next render to offer showing
-    /// or opening it, or to say why it failed.
-    word_converted: Option<Result<word::ConvertedWordDocument, String>>,
+    /// The document to convert to a Word document once its save finishes,
+    /// and where the Word document goes.
+    word_after_save: Option<(DocumentId, word::WordTarget)>,
+    /// The document whose Convert to Word Document dialog opens on the
+    /// next render.
+    word_dialog_requested: Option<DocumentId>,
+    word_dialog: Option<WeakEntity<WordDialog>>,
     /// Each signed document's digital signatures.
     signature_checks: HashMap<DocumentId, signature_checks::SignatureCheck>,
     signature_trust: signature_checks::SignatureTrust,
@@ -4491,9 +4491,8 @@ impl DocumentWorkspace {
             pending_publication_warning_generation: None,
             close_after_save_document_id: None,
             word_after_save: None,
-            word_conversions: HashSet::new(),
-            word_replace_prompt: None,
-            word_converted: None,
+            word_dialog_requested: None,
+            word_dialog: None,
             signature_checks: HashMap::new(),
             signature_trust: Default::default(),
             signatures_dialog_requested: None,
@@ -10215,7 +10214,7 @@ impl DocumentWorkspace {
             };
             let Some(path) = selected else {
                 let _ = entity.update(cx, |workspace, cx| {
-                    workspace.cancel_word_after_save(authority.document_id);
+                    workspace.cancel_word_after_save(authority.document_id, None, cx);
                     workspace.cancel_sign_after_save(authority.document_id);
                     if workspace.finish_save_prompt(authority) {
                         cx.notify();
@@ -14007,12 +14006,12 @@ impl DocumentWorkspace {
                             } else {
                                 DocumentSaveFailureOperation::SaveAs
                             },
-                            error,
+                            error.clone(),
                         ));
                     cx.notify();
                 });
                 self.remember_recent_document(request.document_id, cx);
-                self.cancel_word_after_save(request.document_id);
+                self.cancel_word_after_save(request.document_id, Some(error.to_string()), cx);
                 self.cancel_sign_after_save(request.document_id);
                 if self.close_after_save_document_id == Some(request.document_id) {
                     self.close_after_save_document_id = None;
@@ -25191,19 +25190,16 @@ impl Render for DocumentWorkspace {
         if self.merge_dialog_requested {
             cx.defer_in(window, Self::open_merge_dialog);
         }
-        if self.word_replace_prompt.is_some() {
+        if self.word_dialog_requested.is_some() {
             // After this frame: a dialog opened while rendering does not
             // take the keyboard focus.
-            cx.defer_in(window, Self::open_word_replace_prompt);
+            cx.defer_in(window, Self::open_word_dialog);
         }
         if self.signatures_dialog_requested.is_some() {
             cx.defer_in(window, Self::open_signatures_dialog);
         }
         if self.sign_dialog_requested.is_some() {
             cx.defer_in(window, Self::open_sign_dialog);
-        }
-        if self.word_converted.is_some() {
-            cx.defer_in(window, Self::open_word_converted_dialog);
         }
         self.poll_signature_capture(cx);
         if self.signing_failed.is_some() {

@@ -142,9 +142,11 @@ mod platform {
     pub fn reveal(path: &std::path::Path) -> bool {
         use std::os::windows::process::CommandExt as _;
         // Explorer reads `/select,` and a quoted path as one argument; it
-        // exits with 1 even when it shows the folder.
+        // exits with 1 even when it shows the folder. Given an open
+        // document's canonical `\\?\` path it opens the folder without
+        // selecting the file, so the prefix comes off.
         std::process::Command::new("explorer.exe")
-            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .raw_arg(format!("/select,\"{}\"", dunce::simplified(path).display()))
             .spawn()
             .is_ok()
     }

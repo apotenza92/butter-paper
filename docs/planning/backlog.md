@@ -15,9 +15,6 @@ alone do not establish these behaviours.
 - Phone signing with a physical phone (the relay is verified with synthetic
   transfers only), and camera signature capture: permission, capture,
   cancellation and camera release.
-- Convert to Word Document: the converted report opened in Microsoft Word
-  itself (verified only in LibreOffice; the dialog's app names were checked
-  on macOS and Windows).
 
 ## Interface
 

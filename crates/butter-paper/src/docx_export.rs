@@ -13,15 +13,20 @@
 //! headers and footers, and tables without rules are not recognised yet:
 //! their text flows as plain paragraphs.
 
+use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use lopdf::{Document, Object, ObjectId};
 
 use crate::pdf_tables::{TableCell, line_core_box, page_tables};
 use crate::pdf_text_blocks::{PageTextBlock, TextBlockAlignment, paragraph_blocks_in};
 use crate::pdf_text_edit::{
-    PageImage, PageTextLayer, PageTextLine, TextEditLimits, extract_page_text_and_images,
+    FontCache, PageImage, PageTextLayer, PageTextLine, TextEditLimits,
+    extract_page_text_and_images_at,
 };
 
 /// Points to twentieths of a point (Word's twips).
@@ -56,16 +61,41 @@ fn stem(pdf: &Path) -> String {
         .unwrap_or_else(|| "Document".to_owned())
 }
 
+/// How far a conversion has got, for its progress bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvertStep {
+    /// Reading the PDF's file and structure.
+    Reading,
+    /// `done` of `count` pages converted.
+    Page { done: usize, count: usize },
+    /// Writing the Word document.
+    Writing,
+}
+
 /// Converts the PDF at `pdf` into a Word document at `docx`, replacing a
-/// file there. The document is written beside it first and moved into
-/// place, so a failed conversion leaves any earlier one as it was.
-pub fn convert(pdf: &Path, docx: &Path) -> Result<(), String> {
+/// file there, telling `progress` each step. The document is written beside
+/// it first and moved into place, so a failed conversion leaves any earlier
+/// one as it was. When `progress` returns `false` the conversion stops
+/// before its next page and saves nothing: `Ok(false)`.
+pub fn convert(
+    pdf: &Path,
+    docx: &Path,
+    progress: &mut dyn FnMut(ConvertStep) -> bool,
+) -> Result<bool, String> {
+    if !progress(ConvertStep::Reading) {
+        return Ok(false);
+    }
     let bytes =
         std::fs::read(pdf).map_err(|error| format!("The PDF could not be read: {error}"))?;
     // The reader is careful, but a PDF is outside data: a panic in it is a
     // failed conversion, not a crashed app.
-    let converted = std::panic::catch_unwind(|| docx_from_pdf(&bytes))
-        .map_err(|_| "The PDF could not be converted to a Word document.".to_owned())??;
+    let converted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        docx_from_pdf_with_progress(&bytes, progress)
+    }))
+    .map_err(|_| "The PDF could not be converted to a Word document.".to_owned())??;
+    let Some(converted) = converted else {
+        return Ok(false);
+    };
     let name = docx
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -79,22 +109,110 @@ pub fn convert(pdf: &Path, docx: &Path) -> Result<(), String> {
             "The Word document could not be saved over {name}; close it in any app showing \
              it and try again ({error})."
         )
-    })
+    })?;
+    Ok(true)
 }
 
 /// The Word document for PDF `pdf`.
 pub fn docx_from_pdf(pdf: &[u8]) -> Result<Vec<u8>, String> {
+    docx_from_pdf_with_progress(pdf, &mut |_| true)
+        .map(|converted| converted.expect("never stopped"))
+}
+
+/// [`docx_from_pdf`], telling `progress` each page; `None` when it
+/// returned `false` to stop.
+fn docx_from_pdf_with_progress(
+    pdf: &[u8],
+    progress: &mut dyn FnMut(ConvertStep) -> bool,
+) -> Result<Option<Vec<u8>>, String> {
     let document =
         Document::load_mem(pdf).map_err(|error| format!("The PDF could not be read: {error}"))?;
     if document.is_encrypted() {
         return Err("The PDF needs a password to open, so it cannot be converted.".into());
     }
-    let count = document.get_pages().len();
-    let mut media = Vec::new();
-    let pages = (0..count)
-        .map(|index| read_page(&document, index as u32, &mut media))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(write_docx(&pages, &media))
+    // Every page's object, found once: finding one page by its number
+    // walks the whole page tree.
+    let page_ids = document.get_pages().into_values().collect::<Vec<_>>();
+    let count = page_ids.len();
+    if !progress(ConvertStep::Page { done: 0, count }) {
+        return Ok(None);
+    }
+    // Pages read on every core, as each is independent of the others.
+    let mut pages: Vec<Option<Page>> = (0..count).map(|_| None).collect();
+    let mut failed: Option<(usize, String)> = None;
+    let mut done = 0;
+    let mut stopped = false;
+    let fonts = FontCache::default();
+    in_parallel(
+        &page_ids,
+        |index, page_id| read_page(&document, index as u32, *page_id, &fonts),
+        |index, page| {
+            done += 1;
+            match page {
+                Ok(page) => pages[index] = Some(page),
+                // Pages are taken in order, so every page before this one
+                // is read too: the first failure is the first page's.
+                Err(error) => {
+                    if failed.as_ref().is_none_or(|(first, _)| index < *first) {
+                        failed = Some((index, error));
+                    }
+                    return false;
+                }
+            }
+            if done < count && !progress(ConvertStep::Page { done, count }) {
+                stopped = true;
+                return false;
+            }
+            true
+        },
+    );
+    if let Some((_, error)) = failed {
+        return Err(error);
+    }
+    if stopped || !progress(ConvertStep::Writing) {
+        return Ok(None);
+    }
+    let mut pages = pages.into_iter().flatten().collect::<Vec<_>>();
+    let media = embed_images(&document, &mut pages);
+    Ok(Some(write_docx(&pages, &media)))
+}
+
+/// Runs `work` on each of `items` across the machine's cores, taking them in
+/// order, and hands each result to `done` on this thread as it finishes.
+/// When `done` returns `false`, no further item starts.
+fn in_parallel<T: Sync, R: Send>(
+    items: &[T],
+    work: impl Fn(usize, &T) -> R + Sync,
+    mut done: impl FnMut(usize, R) -> bool,
+) {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(items.len());
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let (sender, results) = std::sync::mpsc::channel();
+        for _ in 0..threads {
+            let (sender, next, stop, work) = (sender.clone(), &next, &stop, &work);
+            scope.spawn(move || {
+                while !stop.load(Ordering::Acquire) {
+                    let index = next.fetch_add(1, Ordering::AcqRel);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    if sender.send((index, work(index, item))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for (index, result) in results {
+            if !done(index, result) {
+                stop.store(true, Ordering::Release);
+            }
+        }
+    });
 }
 
 // --- The page model -------------------------------------------------------
@@ -165,7 +283,9 @@ struct Table {
 
 struct Image {
     rect: [f64; 4],
-    /// Into the document's media.
+    /// The image XObject drawn.
+    object: ObjectId,
+    /// Into the document's media, once [`embed_images`] has encoded it.
     media: usize,
 }
 
@@ -174,9 +294,22 @@ struct Media {
     extension: &'static str,
 }
 
-fn read_page(document: &Document, index: u32, media: &mut Vec<Media>) -> Result<Page, String> {
-    let (layer, images) = extract_page_text_and_images(document, index, &TextEditLimits::default())
-        .map_err(|error| format!("Page {} could not be read: {error:?}", index + 1))?;
+fn read_page(
+    document: &Document,
+    index: u32,
+    page_id: ObjectId,
+    fonts: &FontCache,
+) -> Result<Page, String> {
+    let (layer, images) = extract_page_text_and_images_at(
+        document,
+        index,
+        page_id,
+        &TextEditLimits::default(),
+        fonts,
+    )
+    .map_err(|error| format!("Page {} could not be read: {error:?}", index + 1))?;
+    // Shared by each paragraph's reflow rather than copied for each.
+    let layer = Arc::new(layer);
     let page_box = layer.page_box.unwrap_or([0., 0., 612., 792.]);
     // Declared tables and the grids the page rules (an untagged page's).
     let declared = page_tables(&layer);
@@ -224,10 +357,9 @@ fn read_page(document: &Document, index: u32, media: &mut Vec<Media>) -> Result<
         let Some(first) = lines.first().copied() else {
             continue;
         };
-        let breaks =
-            crate::pdf_text_reflow::Paragraph::new(std::sync::Arc::new(layer.clone()), block)
-                .map(|paragraph| paragraph.hard_breaks().to_vec())
-                .unwrap_or_else(|| vec![false; lines.len()]);
+        let breaks = crate::pdf_text_reflow::Paragraph::new(layer.clone(), block)
+            .map(|paragraph| paragraph.hard_breaks().to_vec())
+            .unwrap_or_else(|| vec![false; lines.len()]);
         if let Some(para) = paragraph(&layer, &lines, &breaks, block.alignment, block.pitch) {
             place(para, Some(block), first);
         }
@@ -260,11 +392,7 @@ fn read_page(document: &Document, index: u32, media: &mut Vec<Media>) -> Result<
             ruled,
         }));
     }
-    for image in images {
-        if let Some(item) = image_item(document, image, media) {
-            items.push(item);
-        }
-    }
+    items.extend(images.into_iter().filter_map(image_item));
     // Reading order: top to bottom, then left to right.
     items.sort_by(|a, b| {
         let (a, b) = (a.bounds(), b.bounds());
@@ -308,12 +436,17 @@ fn paragraph(
         left = left.min(line_left);
         right = right.max(line_right);
         first_left.get_or_insert(line_left);
+        // A line has a few styles but many characters: each style once.
+        let mut styles: Vec<Option<RunStyle>> = vec![None; line.styles.len()];
         let mut last_style = None;
+        let mut buffer = [0; 4];
         for character in &line.chars[start..=end] {
-            let style = run_style(layer, line, character.style, underline);
-            push(&style, &character.character.to_string());
-            last_style = Some(style);
+            let style = styles[character.style]
+                .get_or_insert_with(|| run_style(layer, line, character.style, underline));
+            push(style, character.character.encode_utf8(&mut buffer));
+            last_style = Some(character.style);
         }
+        let last_style = last_style.and_then(|style| styles[style].clone());
         if index + 1 < lines.len()
             && let Some(style) = last_style
         {
@@ -465,19 +598,67 @@ fn font_family(
 
 // --- Images --------------------------------------------------------------
 
-/// The image `image` draws, as media the document embeds: a JPEG as it is,
-/// anything else PNG. Images the reader cannot decode are left out.
-fn image_item(document: &Document, image: PageImage, media: &mut Vec<Media>) -> Option<Item> {
+/// The image `image` draws, unless it is too small to matter.
+fn image_item(image: PageImage) -> Option<Item> {
     let [left, bottom, right, top] = image.rect;
     if right - left < 4. || top - bottom < 4. {
         return None;
     }
-    let (bytes, extension) = image_bytes(document, image.object)?;
-    media.push(Media { bytes, extension });
     Some(Item::Image(Image {
         rect: image.rect,
-        media: media.len() - 1,
+        object: image.object,
+        media: usize::MAX,
     }))
+}
+
+/// The media the document embeds for the images `pages` draw: a JPEG as it
+/// is, anything else PNG, each image once however often it is drawn (a logo
+/// on every page). Images the reader cannot decode are left out.
+fn embed_images(document: &Document, pages: &mut [Page]) -> Vec<Media> {
+    let mut objects = Vec::new();
+    let mut slots = HashMap::new();
+    for page in pages.iter() {
+        for item in &page.items {
+            if let Item::Image(image) = item {
+                slots.entry(image.object).or_insert_with(|| {
+                    objects.push(image.object);
+                    objects.len() - 1
+                });
+            }
+        }
+    }
+    let mut encoded: Vec<Option<(Vec<u8>, &'static str)>> = vec![None; objects.len()];
+    in_parallel(
+        &objects,
+        |_, object| image_bytes(document, *object),
+        |index, bytes| {
+            encoded[index] = bytes;
+            true
+        },
+    );
+    // Numbered in the order first drawn, without the ones left out.
+    let mut media = Vec::new();
+    let numbers = encoded
+        .into_iter()
+        .map(|bytes| {
+            let (bytes, extension) = bytes?;
+            media.push(Media { bytes, extension });
+            Some(media.len() - 1)
+        })
+        .collect::<Vec<_>>();
+    for page in pages {
+        page.items.retain_mut(|item| match item {
+            Item::Image(image) => match numbers[slots[&image.object]] {
+                Some(number) => {
+                    image.media = number;
+                    true
+                }
+                None => false,
+            },
+            _ => true,
+        });
+    }
+    media
 }
 
 fn resolved<'a>(document: &'a Document, object: &'a Object) -> Option<&'a Object> {
@@ -725,44 +906,52 @@ fn rgb_pixels(
 /// Text for XML: escaped, without characters XML cannot hold.
 fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\t' | '\n' | '\r' => escaped.push(character),
-            character if (character as u32) < 0x20 => {}
-            '\u{fffe}' | '\u{ffff}' => {}
-            character => escaped.push(character),
-        }
-    }
+    escape_into(text, &mut escaped);
     escaped
 }
 
+/// [`escape`], written onto the end of `out`.
+fn escape_into(text: &str, out: &mut String) {
+    for character in text.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\t' | '\n' | '\r' => out.push(character),
+            character if (character as u32) < 0x20 => {}
+            '\u{fffe}' | '\u{ffff}' => {}
+            character => out.push(character),
+        }
+    }
+}
+
+// The XML is written straight onto the document's: formatting each piece
+// as a string of its own first took most of the time spent writing it.
 fn run_xml(run: &Run, out: &mut String) {
     let style = &run.style;
-    let mut properties = format!(
-        "<w:rFonts w:ascii=\"{0}\" w:hAnsi=\"{0}\" w:cs=\"{0}\" w:eastAsia=\"{0}\"/>",
-        escape(&style.font)
+    let font = escape(&style.font);
+    let _ = write!(
+        out,
+        "<w:r><w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\" w:cs=\"{font}\" w:eastAsia=\"{font}\"/>"
     );
     if style.bold {
-        properties.push_str("<w:b/><w:bCs/>");
+        out.push_str("<w:b/><w:bCs/>");
     }
     if style.italic {
-        properties.push_str("<w:i/><w:iCs/>");
+        out.push_str("<w:i/><w:iCs/>");
     }
     if style.underline {
-        properties.push_str("<w:u w:val=\"single\"/>");
+        out.push_str("<w:u w:val=\"single\"/>");
     }
     if let Some([r, g, b]) = style.colour {
-        properties.push_str(&format!("<w:color w:val=\"{r:02X}{g:02X}{b:02X}\"/>"));
+        let _ = write!(out, "<w:color w:val=\"{r:02X}{g:02X}{b:02X}\"/>");
     }
     let half_points = (style.size * 2.).round().max(2.) as i64;
-    properties.push_str(&format!(
-        "<w:sz w:val=\"{half_points}\"/><w:szCs w:val=\"{half_points}\"/>"
-    ));
-    out.push_str(&format!("<w:r><w:rPr>{properties}</w:rPr>"));
+    let _ = write!(
+        out,
+        "<w:sz w:val=\"{half_points}\"/><w:szCs w:val=\"{half_points}\"/></w:rPr>"
+    );
     for (index, piece) in run.text.split('\n').enumerate() {
         if index > 0 {
             out.push_str("<w:br/>");
@@ -772,10 +961,9 @@ fn run_xml(run: &Run, out: &mut String) {
                 out.push_str("<w:tab/>");
             }
             if !part.is_empty() {
-                out.push_str(&format!(
-                    "<w:t xml:space=\"preserve\">{}</w:t>",
-                    escape(part)
-                ));
+                out.push_str("<w:t xml:space=\"preserve\">");
+                escape_into(part, out);
+                out.push_str("</w:t>");
             }
         }
     }
@@ -793,15 +981,15 @@ fn para_xml(
     section: Option<&str>,
     out: &mut String,
 ) {
-    let mut properties = String::new();
-    let line = match para.pitch {
-        Some(pitch) => format!(" w:line=\"{}\" w:lineRule=\"atLeast\"", twips(pitch)),
-        None => String::new(),
-    };
-    properties.push_str(&format!(
-        "<w:spacing w:before=\"{}\" w:after=\"0\"{line}/>",
+    let _ = write!(
+        out,
+        "<w:p><w:pPr><w:spacing w:before=\"{}\" w:after=\"0\"",
         twips(before.max(0.))
-    ));
+    );
+    if let Some(pitch) = para.pitch {
+        let _ = write!(out, " w:line=\"{}\" w:lineRule=\"atLeast\"", twips(pitch));
+    }
+    out.push_str("/>");
     // A single line's alignment shows only against the text area: one
     // ending at its right edge, or centred in it, keeps that place
     // whatever the font's widths in the word processor.
@@ -823,12 +1011,12 @@ fn para_xml(
         let left = para.left - area_left;
         let first = para.first_left - para.left;
         if left.abs() >= 1. || first.abs() >= 1. {
-            let first = if first >= 0. {
-                format!(" w:firstLine=\"{}\"", twips(first))
+            let _ = write!(out, "<w:ind w:left=\"{}\"", twips(left));
+            let _ = if first >= 0. {
+                write!(out, " w:firstLine=\"{}\"/>", twips(first))
             } else {
-                format!(" w:hanging=\"{}\"", twips(-first))
+                write!(out, " w:hanging=\"{}\"/>", twips(-first))
             };
-            properties.push_str(&format!("<w:ind w:left=\"{}\"{first}/>", twips(left)));
         }
     }
     let justification = match alignment {
@@ -837,11 +1025,11 @@ fn para_xml(
         TextBlockAlignment::Center => "center",
         TextBlockAlignment::Justified => "both",
     };
-    properties.push_str(&format!("<w:jc w:val=\"{justification}\"/>"));
+    let _ = write!(out, "<w:jc w:val=\"{justification}\"/>");
     if let Some(section) = section {
-        properties.push_str(section);
+        out.push_str(section);
     }
-    out.push_str(&format!("<w:p><w:pPr>{properties}</w:pPr>"));
+    out.push_str("</w:pPr>");
     for run in &para.runs {
         run_xml(run, out);
     }
@@ -859,7 +1047,8 @@ fn image_xml(
 ) {
     let [left, bottom, right, top] = image.rect;
     let (cx, cy) = (emu(right - left), emu(top - bottom));
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "<w:p><w:pPr><w:spacing w:before=\"{}\" w:after=\"0\"/><w:ind w:left=\"{}\"/>{}</w:pPr>\
          <w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\">\
          <wp:extent cx=\"{cx}\" cy=\"{cy}\"/><wp:docPr id=\"{id}\" name=\"Picture {id}\"/>\
@@ -873,7 +1062,7 @@ fn image_xml(
         twips(before.max(0.)),
         twips((left - area_left).max(0.)),
         section.unwrap_or(""),
-    ));
+    );
 }
 
 fn table_xml(table: &Table, area_left: f64, out: &mut String) {
@@ -905,7 +1094,8 @@ fn table_xml(table: &Table, area_left: f64, out: &mut String) {
             format!("<w:{side} w:val=\"{border}\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
         })
         .collect::<String>();
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "<w:tbl><w:tblPr><w:tblW w:w=\"{}\" w:type=\"dxa\"/><w:tblInd w:w=\"{}\" w:type=\"dxa\"/>\
          <w:tblBorders>{borders}</w:tblBorders><w:tblLayout w:type=\"fixed\"/>\
          <w:tblCellMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:left w:w=\"{2}\" w:type=\"dxa\"/>\
@@ -914,18 +1104,19 @@ fn table_xml(table: &Table, area_left: f64, out: &mut String) {
         widths.iter().sum::<i64>(),
         twips(table.columns[0] - area_left),
         twips(inset),
-    ));
+    );
     for width in &widths {
-        out.push_str(&format!("<w:gridCol w:w=\"{width}\"/>"));
+        let _ = write!(out, "<w:gridCol w:w=\"{width}\"/>");
     }
     out.push_str("</w:tblGrid>");
     let row_count = table.rows.len() - 1;
     let column_count = table.columns.len() - 1;
     for row in 0..row_count {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "<w:tr><w:trPr><w:trHeight w:val=\"{}\" w:hRule=\"atLeast\"/></w:trPr>",
             twips(table.rows[row] - table.rows[row + 1])
-        ));
+        );
         let mut column = 0;
         while column < column_count {
             let found = table.cells.iter().find(|(cell, _)| {
@@ -962,9 +1153,10 @@ fn table_xml(table: &Table, area_left: f64, out: &mut String) {
             } else {
                 String::new()
             };
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 "<w:tc><w:tcPr><w:tcW w:w=\"{width}\" w:type=\"dxa\"/>{grid_span}{merge}</w:tcPr>"
-            ));
+            );
             if paras.is_empty() {
                 out.push_str("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\"/></w:pPr></w:p>");
             }
@@ -1040,81 +1232,129 @@ fn margins(page: &Page) -> [f64; 4] {
 }
 
 fn document_xml(pages: &[Page], media_relationships: &[String]) -> String {
-    let mut body = String::new();
-    let mut picture = 0;
-    for (index, page) in pages.iter().enumerate() {
-        let margins = margins(page);
-        let area_left = page.page_box[0] + margins[0];
-        let area_right = page.page_box[2] - margins[2];
-        let section = section_xml(page, margins);
-        let last_page = index + 1 == pages.len();
-        // The last page's section is the body's; the others end with a
-        // paragraph holding theirs.
-        let ends_section =
-            |item: usize| (!last_page && item + 1 == page.items.len()).then_some(section.as_str());
-        let mut previous = page.page_box[3] - margins[3];
-        for (item_index, item) in page.items.iter().enumerate() {
-            let before = previous - item.bounds()[3];
-            match item {
-                Item::Paragraph(para) => para_xml(
-                    para,
-                    before,
-                    area_left,
-                    area_right,
-                    ends_section(item_index),
-                    &mut body,
-                ),
-                Item::Image(image) => {
-                    picture += 1;
-                    image_xml(
-                        image,
-                        before,
-                        area_left,
-                        picture,
-                        &media_relationships[image.media],
-                        ends_section(item_index),
-                        &mut body,
-                    )
-                }
-                Item::Table(table) => {
-                    if before > 1. {
-                        // The gap above a table, as an empty paragraph's
-                        // spacing.
-                        body.push_str(&format!(
-                            "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"{}\" w:lineRule=\"exact\"/></w:pPr></w:p>",
-                            twips(before.max(1.))
-                        ));
-                    }
-                    table_xml(table, area_left, &mut body);
-                    if let Some(section) = ends_section(item_index) {
-                        body.push_str(&format!(
-                            "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/>{section}</w:pPr></w:p>"
-                        ));
-                    }
-                }
-            }
-            previous = item.bounds()[1];
-        }
-        if page.items.is_empty() && !last_page {
-            body.push_str(&format!("<w:p><w:pPr>{section}</w:pPr></w:p>"));
-        }
-        if last_page {
-            if matches!(page.items.last(), Some(Item::Table(_))) {
-                // A table cannot end the document.
-                body.push_str("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/></w:pPr></w:p>");
-            }
-            body.push_str(&section);
-        }
-    }
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+    // Pictures are numbered through the document: each page's first one.
+    let first_pictures = pages
+        .iter()
+        .scan(0, |pictures, page| {
+            let first = *pictures;
+            *pictures += page
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::Image(_)))
+                .count();
+            Some(first)
+        })
+        .collect::<Vec<_>>();
+    // Each page's XML is its own, so the pages are written on every core.
+    let mut bodies = vec![String::new(); pages.len()];
+    in_parallel(
+        pages,
+        |index, page| {
+            let mut body = String::new();
+            page_xml(
+                page,
+                index + 1 == pages.len(),
+                first_pictures[index],
+                media_relationships,
+                &mut body,
+            );
+            body
+        },
+        |index, body| {
+            bodies[index] = body;
+            true
+        },
+    );
+    const HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
          <w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" \
          xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" \
          xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" \
          xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" \
          xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">\
-         <w:body>{body}</w:body></w:document>"
-    )
+         <w:body>";
+    const TAIL: &str = "</w:body></w:document>";
+    let mut xml = String::with_capacity(
+        HEAD.len() + bodies.iter().map(String::len).sum::<usize>() + TAIL.len(),
+    );
+    xml.push_str(HEAD);
+    for body in &bodies {
+        xml.push_str(body);
+    }
+    xml.push_str(TAIL);
+    xml
+}
+
+/// The body XML of `page`, whose first picture follows `picture` others.
+fn page_xml(
+    page: &Page,
+    last_page: bool,
+    mut picture: usize,
+    media_relationships: &[String],
+    body: &mut String,
+) {
+    let margins = margins(page);
+    let area_left = page.page_box[0] + margins[0];
+    let area_right = page.page_box[2] - margins[2];
+    let section = section_xml(page, margins);
+    // The last page's section is the body's; the others end with a
+    // paragraph holding theirs.
+    let ends_section =
+        |item: usize| (!last_page && item + 1 == page.items.len()).then_some(section.as_str());
+    let mut previous = page.page_box[3] - margins[3];
+    for (item_index, item) in page.items.iter().enumerate() {
+        let before = previous - item.bounds()[3];
+        match item {
+            Item::Paragraph(para) => para_xml(
+                para,
+                before,
+                area_left,
+                area_right,
+                ends_section(item_index),
+                body,
+            ),
+            Item::Image(image) => {
+                picture += 1;
+                image_xml(
+                    image,
+                    before,
+                    area_left,
+                    picture,
+                    &media_relationships[image.media],
+                    ends_section(item_index),
+                    body,
+                )
+            }
+            Item::Table(table) => {
+                if before > 1. {
+                    // The gap above a table, as an empty paragraph's
+                    // spacing.
+                    let _ = write!(
+                        body,
+                        "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"{}\" w:lineRule=\"exact\"/></w:pPr></w:p>",
+                        twips(before.max(1.))
+                    );
+                }
+                table_xml(table, area_left, body);
+                if let Some(section) = ends_section(item_index) {
+                    let _ = write!(
+                        body,
+                        "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/>{section}</w:pPr></w:p>"
+                    );
+                }
+            }
+        }
+        previous = item.bounds()[1];
+    }
+    if page.items.is_empty() && !last_page {
+        let _ = write!(body, "<w:p><w:pPr>{section}</w:pPr></w:p>");
+    }
+    if last_page {
+        if matches!(page.items.last(), Some(Item::Table(_))) {
+            // A table cannot end the document.
+            body.push_str("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"20\" w:lineRule=\"exact\"/></w:pPr></w:p>");
+        }
+        body.push_str(&section);
+    }
 }
 
 const CONTENT_TYPES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
@@ -1163,12 +1403,13 @@ fn write_docx(pages: &[Page], media: &[Media]) -> Vec<u8> {
          <Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings\" Target=\"settings.xml\"/>",
     );
     for (index, item) in media.iter().enumerate() {
-        document_relationships.push_str(&format!(
+        let _ = write!(
+            document_relationships,
             "<Relationship Id=\"{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image{}.{}\"/>",
             relationships[index],
             index + 1,
             item.extension
-        ));
+        );
     }
     document_relationships.push_str("</Relationships>");
     let mut entries = vec![
@@ -1216,6 +1457,41 @@ fn write_docx(pages: &[Page], media: &[Media]) -> Vec<u8> {
 
 // --- Zip -----------------------------------------------------------------
 
+/// `contents` deflated in pieces on every core and joined into one stream,
+/// as `pigz` does: each piece but the last ends with a sync flush, on a
+/// byte boundary without ending the stream, so the pieces join as they
+/// are. Level 3 takes half the default's time for a document an eighth
+/// larger (Word compresses it again when it saves).
+fn deflate_in_parallel(contents: &[u8]) -> Vec<u8> {
+    const PIECE: usize = 1 << 20;
+    let pieces = contents.chunks(PIECE).collect::<Vec<_>>();
+    let last = pieces.len().saturating_sub(1);
+    let mut deflated = vec![Vec::new(); pieces.len().max(1)];
+    let deflate = |index: usize, piece: &[u8]| {
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(3));
+        encoder.write_all(piece).expect("writing to memory");
+        if index == last {
+            encoder.finish().expect("writing to memory")
+        } else {
+            encoder.flush().expect("writing to memory");
+            std::mem::take(encoder.get_mut())
+        }
+    };
+    if pieces.is_empty() {
+        deflated[0] = deflate(0, &[]);
+    }
+    in_parallel(
+        &pieces,
+        |index, piece| deflate(index, piece),
+        |index, bytes| {
+            deflated[index] = bytes;
+            true
+        },
+    );
+    deflated.concat()
+}
+
 /// A zip archive of `entries` (name, contents, whether to deflate), as the
 /// Open Packaging Conventions read one: no encryption, no Zip64.
 fn zip(entries: &[(String, Vec<u8>, bool)]) -> Vec<u8> {
@@ -1226,10 +1502,7 @@ fn zip(entries: &[(String, Vec<u8>, bool)]) -> Vec<u8> {
     for (name, contents, deflate) in entries {
         let crc = crc32fast::hash(contents);
         let (method, data) = if *deflate {
-            let mut encoder =
-                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
-            encoder.write_all(contents).expect("writing to memory");
-            (8u16, encoder.finish().expect("writing to memory"))
+            (8u16, deflate_in_parallel(contents))
         } else {
             (0u16, contents.clone())
         };
@@ -1282,6 +1555,24 @@ fn zip(entries: &[(String, Vec<u8>, bool)]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pieces deflated apart join into one stream that inflates to the
+    /// whole, whether it is several pieces, one or empty.
+    #[test]
+    fn pieces_deflated_on_every_core_join_into_one_stream() {
+        use std::io::Read as _;
+        let text = (0..200_000)
+            .map(|index| format!("<w:t>{}</w:t>", index * 7919 % 100_003))
+            .collect::<String>();
+        for contents in [text.as_bytes(), b"<w:body/>".as_slice(), b"".as_slice()] {
+            let mut inflated = Vec::new();
+            flate2::read::DeflateDecoder::new(deflate_in_parallel(contents).as_slice())
+                .read_to_end(&mut inflated)
+                .unwrap();
+            assert_eq!(inflated, contents);
+        }
+        assert!(text.len() > 3 << 20, "several pieces");
+    }
 
     #[test]
     fn the_word_document_goes_beside_the_pdf() {
