@@ -166,7 +166,9 @@ jobs:
               --server-args="-screen 0 1600x1100x24" \
               target/debug/butter-paper "$review/fixture.pdf" || status=$?
           else
-            timeout 600 target/debug/butter-paper "$review/fixture.pdf" || status=$?
+            # macOS has no timeout(1): perl's alarm ends a hung run alike.
+            perl -e 'alarm shift; exec @ARGV' 600 \
+              target/debug/butter-paper "$review/fixture.pdf" || status=$?
           fi
           grep -E '^(ok|FAIL)' "$review/captures/review.log" || true
           test "$status" = 0 && test ! -e "$review/captures/FAILED"
