@@ -43,6 +43,9 @@ impl RecentDocuments {
             .load()
             .map_err(|error| format!("{error:?}"))?
             .into_parts();
+        // Another app's copy, recorded before such copies were left out.
+        let copies = crate::save_places::CopyRoots::system();
+        paths.retain(|path| crate::save_places::app_copy_owner(path, &copies).is_none());
         paths.truncate(MAX_RECENT_DOCUMENTS);
         Ok(Self {
             paths,

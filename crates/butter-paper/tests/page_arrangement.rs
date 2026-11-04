@@ -738,7 +738,7 @@ fn merge_documents_cancel_closes_the_dialog(cx: &mut TestAppContext) {
         click_count: 1,
     });
     settle(cx);
-    // The menu's only item sits just below and right of the press.
+    // Its first item sits just below and right of the press.
     let item = gpui::point(press.x + gpui::px(40.), press.y + gpui::px(16.));
     cx.simulate_click(item, gpui::Modifiers::none());
     settle(cx);

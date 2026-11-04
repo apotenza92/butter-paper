@@ -234,18 +234,26 @@ impl DocumentSaveFailure {
                 "The source PDF changed outside Butter Paper. Use Save As to preserve this document's edits without replacing the newer source."
             }
             DocumentSaveFailureKind::FolderRefused => {
-                if cfg!(target_os = "macos") {
-                    "macOS didn't let Butter Paper save in this folder. Allow Butter Paper to use it in Privacy & Security, then retry, or use Save As to save a copy somewhere else."
+                if !self.refused_by_privacy() {
+                    "Your account doesn't have permission to save in this folder. Save it somewhere else."
+                } else if cfg!(target_os = "macos") {
+                    "macOS didn't let Butter Paper save in this folder. Save it somewhere else."
                 } else if cfg!(windows) {
-                    "Windows didn't let Butter Paper save in this folder; Controlled folder access may protect it. Allow Butter Paper in Windows Security, then retry, or use Save As to save a copy somewhere else."
+                    "Windows didn't let Butter Paper save in this folder; Controlled folder access may protect it. Save it somewhere else."
                 } else {
-                    "This folder doesn't let Butter Paper save in it. Allow it, then retry, or use Save As to save a copy somewhere else."
+                    "This folder doesn't let Butter Paper save in it. Save it somewhere else."
                 }
             }
         }
     }
 
     /// Whether the system refused the save's folder.
+    /// Whether the system's privacy protection refused the folder, which a
+    /// setting can allow, rather than the folder's own permissions.
+    pub fn refused_by_privacy(&self) -> bool {
+        self.folder_refused() && crate::save_places::refused_by_privacy(&self.message)
+    }
+
     pub fn folder_refused(&self) -> bool {
         self.kind == DocumentSaveFailureKind::FolderRefused
     }
@@ -449,6 +457,11 @@ pub struct NativeDocumentSession {
     pub(crate) viewport_size: Option<(f32, f32)>,
     pub(crate) temporary_source: Option<(GeneratedDocumentStore, OwnedGeneratedDocument)>,
     pub(crate) save_as_required: bool,
+    /// Why changes can't go back to the opened PDF, which makes Save choose
+    /// a new file.
+    pub(crate) source_place: Option<crate::save_places::SourcePlace>,
+    /// The prompt for a place to save it has been shown.
+    pub(crate) source_place_asked: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -519,6 +532,8 @@ impl NativeDocumentSession {
             viewport_size: None,
             temporary_source: None,
             save_as_required: false,
+            source_place: None,
+            source_place_asked: false,
         }
     }
 

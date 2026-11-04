@@ -398,8 +398,10 @@ impl DocumentWorkspace {
                 let session = session.read(cx);
                 let blocked = if !matches!(session.status, NativeDocumentStatus::Ready) {
                     Some("Still opening".into())
-                } else if session.is_dirty() && self.document_requires_save_as(document_id, cx) {
+                } else if session.is_dirty() && session.save_as_required {
                     Some("Never saved: save it to a file first".into())
+                } else if session.is_dirty() && self.document_requires_save_as(document_id, cx) {
+                    Some("Has changes: save it somewhere first".into())
                 } else {
                     None
                 };

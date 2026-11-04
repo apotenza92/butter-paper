@@ -28,6 +28,7 @@ impl DocumentWorkspace {
         if paths.is_empty() {
             return None;
         }
+        let file_manager = crate::system_apps::file_manager_label();
         let rows = paths
             .iter()
             .map(|path| {
@@ -98,13 +99,11 @@ impl DocumentWorkspace {
                             .debug_selector(move || folder_selector.clone())
                             .ghost()
                             .icon(IconName::FolderOpen)
-                            .tooltip("Show in folder")
+                            .tooltip(format!("Show in {file_manager}"))
                             .on_click(move |_, _, cx| {
-                                if !crate::system_apps::reveal_in_file_explorer(&reveal_path) {
-                                    cx.reveal_path(&reveal_path);
-                                }
+                                crate::system_apps::reveal(&reveal_path, cx);
                             }),
-                        format!("Show {full_path} in folder"),
+                        format!("Show {full_path} in {file_manager}"),
                     ))
             })
             .collect::<Vec<_>>();

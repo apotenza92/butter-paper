@@ -1536,7 +1536,7 @@ fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestA
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/rail-fixture.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/rail-fixture.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -1691,7 +1691,7 @@ fn workspace_right_rail_replaces_horizontal_tools_and_keeps_canvas_band_between_
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/right-rail-fixture.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/right-rail-fixture.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -1871,7 +1871,7 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/rail-interactions.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/rail-interactions.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -2214,7 +2214,7 @@ fn highlight_defaults_panel_events_are_document_scoped_and_disabled_safe(cx: &mu
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/highlight-defaults-a.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/highlight-defaults-a.pdf"), cx)
     });
     cx.run_until_parked();
     let first = workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
@@ -2270,7 +2270,7 @@ fn highlight_defaults_panel_events_are_document_scoped_and_disabled_safe(cx: &mu
         );
     });
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/highlight-defaults-b.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/highlight-defaults-b.pdf"), cx)
     });
     cx.run_until_parked();
     let second = workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
@@ -2311,7 +2311,7 @@ fn pending_thumbnail_result_cannot_repopulate_a_closed_rotated_or_replaced_docum
         });
         let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
         workspace.update(cx, |workspace, cx| {
-            workspace.open_path(PathBuf::from("/tmp/sidebar-stale.pdf"), cx)
+            workspace.open_path(PathBuf::from("/documents/sidebar-stale.pdf"), cx)
         });
         cx.run_until_parked();
         let id = workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
@@ -2325,7 +2325,7 @@ fn pending_thumbnail_result_cannot_repopulate_a_closed_rotated_or_replaced_docum
                     .open(&OpenDocumentRequest {
                         document_id: id,
                         generation: 2,
-                        path: PathBuf::from("/tmp/sidebar-stale.pdf"),
+                        path: PathBuf::from("/documents/sidebar-stale.pdf"),
                     })
                     .unwrap();
                 assert_eq!(
@@ -2391,7 +2391,7 @@ fn thumbnail_click_scrolls_the_continuous_canvas_to_its_page(cx: &mut TestAppCon
     });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/sidebar-navigation.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/sidebar-navigation.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -2449,7 +2449,7 @@ fn sidebar_loads_visible_late_pages_and_retries_failure_without_navigation(
     backend.preview_failure.store(true, Ordering::Release);
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/sidebar-late-pages.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/sidebar-late-pages.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -2515,7 +2515,7 @@ fn sidebar_draws_the_rows_a_fling_stops_on_and_not_the_rows_it_passes(cx: &mut T
         workspace
     });
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/sidebar-fling.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/sidebar-fling.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -2580,7 +2580,7 @@ fn arriving_thumbnails_leave_the_canvas_tiles_alone(cx: &mut TestAppContext) {
     });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/canvas-steady.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/canvas-steady.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -2644,7 +2644,7 @@ fn clicking_a_drawn_thumbnail_moves_to_its_page_at_once(cx: &mut TestAppContext)
     });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/instant-page.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/instant-page.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -2759,7 +2759,7 @@ fn sidebar_reveals_page_selected_by_external_canvas_scroll(cx: &mut TestAppConte
     });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/tmp/sidebar-canvas-scroll.pdf"), cx)
+        workspace.open_path(PathBuf::from("/documents/sidebar-canvas-scroll.pdf"), cx)
     });
     cx.run_until_parked();
     let observed = workspace.clone();
@@ -2969,7 +2969,7 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
     for has_document in [false, true] {
         if has_document {
             workspace.update(cx, |workspace, cx| {
-                workspace.open_path(PathBuf::from("/tmp/update-review.pdf"), cx)
+                workspace.open_path(PathBuf::from("/documents/update-review.pdf"), cx)
             });
             cx.run_until_parked();
         }

@@ -166,11 +166,12 @@ on the page's content wherever no markup or fillable field takes a press;
 the other tools draw markups as usual, and turning it on arms Select.
 
 For more than Edit PDF does, File > Convert to Word Document… opens a
-dialog that converts the PDF into `Name.docx` beside it, on macOS, Windows
-and Linux alike, with no other app needed. The dialog names the Word
+dialog that converts the PDF into `Name.docx` beside it (in Downloads for
+another app's copy, such as a mail attachment, or a PDF on a read-only
+disk), on macOS, Windows and Linux alike, with no other app needed. The dialog names the Word
 document and offers Convert (Save and Convert when there are unsaved
 changes, which are saved first, by Save As for a document that needs a
-file) beside Cancel. When `Name.docx` exists, it says so and offers Replace
+file or a new place) beside Cancel. When `Name.docx` exists, it says so and offers Replace
 or Keep Both (the new one as `Name 2.docx` and on) instead. The dialog then
 stays up while it works: a progress bar in the Word document's row counts
 the pages converted. Closing it (top-right X or Escape) stops the
@@ -185,9 +186,12 @@ the dialog says why and the unsaved changes stay. A PDF saved from a Word
 document as `Name.docx.pdf` converts to `Name.docx`. When the system will
 not let it save in the PDF's folder (macOS protects Downloads, Documents
 and the Desktop; Windows' Controlled folder access; a read-only folder),
-the dialog says so and offers Choose where to save…, a Save panel starting
-in that folder, and on macOS Open Privacy Settings (Files and Folders),
-and nothing is left in the folder. A signed copy saved where a Save panel
+the dialog says so, naming the folder (“this PDF's folder” for one only
+an app knows), and offers Save to Downloads and Choose where to save…, a
+Save panel starting in Downloads; without a Downloads folder, Choose where
+to save… starts in the PDF's folder. On macOS and Windows the message names
+the switch that allows the folder (as for Save), and without Downloads a
+button opens its settings page. Nothing is left in the folder. A signed copy saved where a Save panel
 allows only that file is written in place the same way.
 
 The converter writes what Edit PDF reads (see
@@ -225,12 +229,15 @@ Every page converts to one page of the same size.
 - With an edit or a selection in hand, a press on empty page ends it and
   does no more, as for markups; the next click or drag there starts a
   selection box or lasso, which selects content too.
-- Content is framed, never tinted, and nothing is outlined until the
-  pointer reaches it: one thin box, a few pixels off the content at any
-  zoom, in markups' hover blue while hovered and their selection blue while
-  selected or edited. A
-  paragraph's box holds its lines' full height, the same hovered,
-  selected or edited. While dragged or resized, the content itself follows
+- Content is framed, never tinted: one thin box, a few pixels off the
+  content at any zoom, in markups' hover blue, and their selection blue
+  while hovered, selected or edited. Paragraphs are framed whenever Edit PDF is on;
+  drawings and images once the pointer reaches them. A paragraph's box
+  holds its lines' full height and their whole text, spaces and tabs
+  included, the same framed, selected or edited, and is where a click edits
+  it. Where two boxes would overlap or nearly touch, their facing edges
+  meet on one line halfway between them; boxes whose text itself overlaps,
+  or one within another, keep their edges. While dragged or resized, the content itself follows
   the pointer every frame, inside its box: its picture as the page showed
   it, with text's and drawings' paper clear so what it passes over shows,
   while the page is shown without it; once let go, the picture stays until
@@ -295,8 +302,8 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   the items' text), and where it runs from the foot of one column to the
   top of the next.
 - In Edit PDF, every editable paragraph on the visible pages is outlined
-  faintly (not text outside the page's visible area); hovering outlines one
-  strongly. A page's text is read once the view
+  in hover blue (not text outside the page's visible area), so what a click
+  edits shows without hovering; the hovered and edited ones turn selection blue. A page's text is read once the view
   settles on it and dropped when the view moves far away, so scrolling a long
   document never queues pages it passes.
 - A line is everything drawn on one baseline, however the producer split it

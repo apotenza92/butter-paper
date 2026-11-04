@@ -85,6 +85,22 @@ impl DocumentWorkspace {
             )
         })
         .when_some(save_failure.filter(|_| recovery_only), |root, failure| {
+            // Where the switch that allows the refused folder is.
+            let permission = failure
+                .refused_by_privacy()
+                .then(|| self.session(document_id, cx))
+                .flatten()
+                .and_then(|session| {
+                    crate::save_places::folder_permission(session.read(cx).path.parent()?)
+                });
+            let message = match &permission {
+                Some(permission) => format!(
+                    "{} {}",
+                    failure.presentation_message(),
+                    permission.sentence("retry")
+                ),
+                None => failure.presentation_message().to_owned(),
+            };
             root.child(
                 v_flex()
                     .debug_selector(|| DOCUMENT_SAVE_ERROR_ALERT_ID.into())
@@ -94,7 +110,7 @@ impl DocumentWorkspace {
                     .child(
                         Alert::error(
                             DOCUMENT_SAVE_ERROR_ALERT_ID,
-                            failure.presentation_message().to_owned(),
+                            message,
                         )
                             .title(save_failure_title)
                             .flex_1().min_w_0(),
@@ -115,26 +131,37 @@ impl DocumentWorkspace {
                             )
                         },
                     )
-                    .when(failure.folder_refused() && (cfg!(target_os = "macos") || cfg!(windows)), |actions| {
+                    .when_some(permission, |actions, permission| {
                         actions.child(
                             Button::new(DOCUMENT_SAVE_ERROR_SETTINGS_ID)
                                 .debug_selector(|| DOCUMENT_SAVE_ERROR_SETTINGS_ID.into())
                                 .accessibility_id(DOCUMENT_SAVE_ERROR_SETTINGS_ID)
                                 .outline()
-                                .label(if cfg!(windows) {
-                                    "Open Windows Security"
-                                } else {
-                                    "Open Privacy Settings"
-                                })
-                                .on_click(|_, _, cx| {
-                                    cx.open_url(if cfg!(windows) {
-                                        "windowsdefender://ransomwareprotection"
-                                    } else {
-                                        "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
-                                    });
-                                }),
+                                .label(permission.button)
+                                .on_click(move |_, _, cx| cx.open_url(permission.url)),
                         )
                     })
+                    .when(
+                        failure.folder_refused()
+                            && failure.operation == DocumentSaveFailureOperation::InPlace
+                            && self.downloads_folder().is_some_and(|downloads| {
+                                // Not Downloads again when it refused.
+                                self.session(document_id, cx).is_some_and(|session| {
+                                    session.read(cx).path.parent() != Some(downloads)
+                                })
+                            }),
+                        |actions| {
+                            actions.child(
+                                Button::new(DOCUMENT_SAVE_ERROR_DOWNLOADS_ID)
+                                    .debug_selector(|| DOCUMENT_SAVE_ERROR_DOWNLOADS_ID.into())
+                                    .accessibility_id(DOCUMENT_SAVE_ERROR_DOWNLOADS_ID)
+                                    .label("Save to Downloads")
+                                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                                        workspace.save_document_to_downloads(document_id, cx);
+                                    })),
+                            )
+                        },
+                    )
                     .child(
                         Button::new(DOCUMENT_SAVE_ERROR_SAVE_AS_ID)
                             .debug_selector(|| DOCUMENT_SAVE_ERROR_SAVE_AS_ID.into())

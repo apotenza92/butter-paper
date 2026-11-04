@@ -130,8 +130,23 @@ impl DocumentWorkspace {
                         .id(SharedString::from(format!("document-tab-menu-{tab_document_id}")))
                         .absolute()
                         .inset_0()
-                        .context_menu(move |menu, _, _| {
+                        .context_menu(move |menu, _, cx| {
                             let merge_control = menu_control.clone();
+                            // Its PDF in the file manager, while it is a file
+                            // there: not before a new PDF is first saved, nor
+                            // for another app's copy, deep in that app's
+                            // folders.
+                            let path = menu_control.upgrade().and_then(|workspace| {
+                                let session = workspace.read(cx).session(tab_document_id, cx)?;
+                                let session = session.read(cx);
+                                (!session.save_as_required
+                                    && !matches!(
+                                        session.source_place,
+                                        Some(crate::save_places::SourcePlace::AppCopy(_))
+                                    ))
+                                .then(|| session.path().to_path_buf())
+                                .filter(|path| path.is_file())
+                            });
                             menu.item(PopupMenuItem::new("Merge documents…").on_click(
                                 move |_, window, cx| {
                                     let _ = merge_control.update(cx, |workspace, cx| {
@@ -139,6 +154,18 @@ impl DocumentWorkspace {
                                     });
                                 },
                             ))
+                            .item(
+                                PopupMenuItem::new(format!(
+                                    "Show in {}",
+                                    crate::system_apps::file_manager_label()
+                                ))
+                                .disabled(path.is_none())
+                                .on_click(move |_, _, cx| {
+                                    if let Some(path) = &path {
+                                        crate::system_apps::reveal(path, cx);
+                                    }
+                                }),
+                            )
                         });
                     let tab = Tab::new()
                         // Short titles still leave a grab area clear of the

@@ -400,21 +400,12 @@ impl PageTextEditState {
             .unwrap_or_default()
     }
 
-    /// Each wrapped line's extent, in page space: the paragraph's frame.
-    /// Like the hover frame, it spans the line's visible text, not spaces
-    /// or tabs before or after it; a line with none spans what it has.
+    /// Each wrapped line's extent, in page space: the paragraph's frame,
+    /// spaces and tabs included, as its outline is drawn.
     pub fn frame_quads(&self) -> Vec<PageQuad> {
         (0..self.wrapped.len())
             .map(|index| {
                 let line = &self.wrapped[index];
-                let chars = &line.layout.chars[..line.range.len().min(line.layout.chars.len())];
-                let mut visible = chars
-                    .iter()
-                    .filter(|character| !character.character.is_whitespace());
-                if let Some(first) = visible.next() {
-                    let last = visible.next_back().unwrap_or(first);
-                    return self.quad_on(index, first.x, last.x + last.advance);
-                }
                 let start = line
                     .layout
                     .chars
@@ -1672,23 +1663,17 @@ mod tests {
     }
 
     #[test]
-    fn the_editing_frame_spans_the_visible_text_as_the_hover_frame_does() {
-        // A heading a word processor ended with spaces: the frame stops at
-        // its last letter, not at the spaces after it.
+    fn the_editing_frame_takes_in_spaces_after_the_text() {
+        // A heading a word processor ended with spaces: they are part of
+        // the line, so the frame runs over them, as its outline does.
         let plain = editor(vec![line("Heal", 700., usize::MAX)], 400., 0);
         let spaced = editor(vec![line("Heal    ", 700., usize::MAX)], 400., 0);
         let width = |state: &PageTextEditState| {
             let quad = state.frame_quads()[0];
             quad[1].0 - quad[0].0
         };
-        assert!(width(&spaced) > 0.);
-        assert!(
-            (width(&spaced) - width(&plain)).abs() < 1e-6,
-            "{} {}",
-            width(&spaced),
-            width(&plain)
-        );
-        // A line of spaces alone still has a frame to type in.
+        assert!(width(&spaced) > width(&plain) + 1.);
+        // A line of spaces alone has a frame too.
         let blank = editor(vec![line("   ", 700., usize::MAX)], 400., 0);
         assert!(width(&blank) > 0.);
     }

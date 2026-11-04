@@ -33,6 +33,7 @@
 2. Make the smallest change that satisfies the task. Avoid speculative infrastructure and archived experiments.
 3. Add or update deterministic tests for behaviour changes. Run the narrowest relevant checks while iterating.
 4. Apply the checks below before handoff, then review the final diff for generated files, stale references, secrets and unrelated changes.
+5. Show every added or changed behaviour someone can see in the app with screenshots in the handoff, for the user's review: the real app, cropped to the change, before and after where that helps, with each state that matters (hover, pressed, narrow window, error). Link them by absolute path. Say so when a change has nothing visible to show.
 
 | Change | Required checks |
 | --- | --- |

@@ -3,6 +3,8 @@ mod alerts;
 #[cfg(feature = "review-driver")]
 #[path = "document_workspace_bench.rs"]
 mod bench;
+#[path = "document_workspace_source_place.rs"]
+mod source_place;
 #[cfg(feature = "review-driver")]
 pub use bench::ThumbnailBenchProbe;
 #[path = "document_workspace_content.rs"]
@@ -68,9 +70,10 @@ pub use signature_checks::{DOCUMENT_SIGNATURES_DIALOG_ID, DOCUMENT_SIGNATURES_LI
 use thumbnail_sidebar::{ThumbnailRowsShown, ThumbnailSidebarInputs};
 pub use word::{
     ConvertedWordDocument, DOCUMENT_WORD_CANCEL_ID, DOCUMENT_WORD_CHOOSE_ID,
-    DOCUMENT_WORD_CONVERT_ID, DOCUMENT_WORD_DIALOG_ID, DOCUMENT_WORD_KEEP_BOTH_ID,
-    DOCUMENT_WORD_OPEN_ID, DOCUMENT_WORD_PRIVACY_ID, DOCUMENT_WORD_PROGRESS_ID,
-    DOCUMENT_WORD_REPLACE_ID, DOCUMENT_WORD_SHOW_ID, WordDialog, WordDialogStage,
+    DOCUMENT_WORD_CONVERT_ID, DOCUMENT_WORD_DIALOG_ID, DOCUMENT_WORD_DOWNLOADS_ID,
+    DOCUMENT_WORD_KEEP_BOTH_ID, DOCUMENT_WORD_OPEN_ID, DOCUMENT_WORD_PRIVACY_ID,
+    DOCUMENT_WORD_PROGRESS_ID, DOCUMENT_WORD_REPLACE_ID, DOCUMENT_WORD_SHOW_ID, WordDialog,
+    WordDialogStage,
 };
 #[path = "document_workspace_empty.rs"]
 mod empty;
@@ -724,6 +727,15 @@ pub const DOCUMENT_STRAIGHT_LINE_OPACITY_50_ID: &str =
 pub const DOCUMENT_SAVE_ERROR_ALERT_ID: &str = "document-workspace-save-error-alert";
 pub const DOCUMENT_SAVE_ERROR_RETRY_ID: &str = "document-workspace-save-error-retry";
 pub const DOCUMENT_SAVE_ERROR_SAVE_AS_ID: &str = "document-workspace-save-error-save-as";
+/// After the system refused the PDF's folder: the same name in Downloads.
+pub const DOCUMENT_SAVE_ERROR_DOWNLOADS_ID: &str = "document-workspace-save-error-downloads";
+/// The prompt, on its first change, for a PDF whose changes can't go back
+/// to it (another app's copy, a read-only file or disk), and its actions.
+pub const DOCUMENT_SOURCE_PLACE_DIALOG_ID: &str = "document-workspace-source-place";
+pub const DOCUMENT_SOURCE_PLACE_DOWNLOADS_ID: &str = "document-workspace-source-place-downloads";
+pub const DOCUMENT_SOURCE_PLACE_CHOOSE_ID: &str = "document-workspace-source-place-choose";
+pub const DOCUMENT_SOURCE_PLACE_KEEP_EDITING_ID: &str =
+    "document-workspace-source-place-keep-editing";
 /// After the system refused a save's folder: the settings that allow it
 /// (Privacy & Security on macOS, Windows Security on Windows).
 pub const DOCUMENT_SAVE_ERROR_SETTINGS_ID: &str = "document-workspace-save-error-settings";
@@ -3008,6 +3020,8 @@ pub struct DocumentWorkspace {
     signature_name_input: Option<Entity<InputState>>,
     recent_documents: Entity<crate::recent_documents::RecentDocuments>,
     recent_documents_subscription: Option<Subscription>,
+    /// Other apps' copies and the Downloads folder their changes go to.
+    save_places: crate::save_places::SavePlaces,
     recent_signature_store: Option<Arc<RecentSignatureStore>>,
     recent_signatures: Vec<RecentSignaturePreview>,
     recent_signatures_loading: bool,
@@ -4422,6 +4436,9 @@ impl DocumentWorkspace {
     }
 
     pub fn new(cx: &mut Context<Self>) -> Self {
+        // Linux asks for the file manager's name on a thread: ready for the
+        // first tab menu.
+        crate::system_apps::file_manager_label();
         let template_control = cx.new(TemplateSplitControl::new);
         let template_subscription = cx.subscribe(
             &template_control,
@@ -4638,6 +4655,7 @@ impl DocumentWorkspace {
             signature_name_input: None,
             recent_documents: cx.new(|_| crate::recent_documents::RecentDocuments::default()),
             recent_documents_subscription: None,
+            save_places: crate::save_places::SavePlaces::system(),
             recent_signature_store: None,
             recent_signatures: Vec::new(),
             recent_signatures_loading: false,
@@ -4737,11 +4755,75 @@ impl DocumentWorkspace {
         cx.notify();
     }
 
+    /// Where other apps keep their copies, and the Downloads folder, for
+    /// tests to set.
+    pub fn set_save_places(&mut self, places: crate::save_places::SavePlaces) {
+        self.save_places = places;
+    }
+
+    pub fn downloads_folder(&self) -> Option<&Path> {
+        self.save_places.downloads.as_deref()
+    }
+
+    fn source_place_for(&self, pdf: &Path) -> Option<crate::save_places::SourcePlace> {
+        self.save_places.source_place(pdf)
+    }
+
+    /// Why the document's changes can't go back to its PDF, if they can't.
+    pub fn document_source_place(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Option<crate::save_places::SourcePlace> {
+        self.session(document_id, cx)
+            .and_then(|session| session.read(cx).source_place)
+    }
+
+    /// Save to Downloads, from the source-place prompt or a refused save: a new PDF of the same
+    /// name in Downloads (numbered when that name is taken), which the
+    /// document then is.
+    pub fn save_document_to_downloads(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let Some(downloads) = self.save_places.downloads.clone() else {
+            return;
+        };
+        let Some(session) = self.session(document_id, cx) else {
+            return;
+        };
+        let name = crate::save_places::saved_copy_name(&session.read(cx).path);
+        let target = crate::save_places::unused_path_in(&downloads, &name);
+        let _ = self.save_as_path(document_id, target, cx);
+    }
+
+    /// “Saved “Name.pdf” in Downloads”, for the status bar.
+    fn saved_elsewhere_note(&self, saved: &Path) -> String {
+        let name = saved
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let folder = if saved.parent() == self.downloads_folder() {
+            "Downloads".to_owned()
+        } else {
+            saved
+                .parent()
+                .and_then(Path::file_name)
+                .map(|folder| format!("“{}”", folder.to_string_lossy()))
+                .unwrap_or_else(|| "the folder chosen".to_owned())
+        };
+        format!("Saved “{name}” in {folder}")
+    }
+
     fn remember_recent_document(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
         let path = self.session(document_id, cx).and_then(|session| {
             let session = session.read(cx);
-            (matches!(session.status, NativeDocumentStatus::Ready) && !session.save_as_required)
-                .then(|| session.path().to_path_buf())
+            // Another app's copy goes when that app is done with it: Open
+            // Recent would reopen a stale copy, not the person's file.
+            (matches!(session.status, NativeDocumentStatus::Ready)
+                && !session.save_as_required
+                && !matches!(
+                    session.source_place,
+                    Some(crate::save_places::SourcePlace::AppCopy(_))
+                ))
+            .then(|| session.path().to_path_buf())
         });
         if let Some(path) = path {
             self.recent_documents
@@ -9715,6 +9797,7 @@ impl DocumentWorkspace {
         let semantic_snap_settings = self.semantic_snap_settings;
         let session = cx.new(|_| {
             let mut session = NativeDocumentSession::opening(document_id, path.clone(), generation);
+            session.source_place = self.source_place_for(&path);
             session
                 .annotations
                 .set_semantic_snap_settings(semantic_snap_settings)
@@ -10189,8 +10272,21 @@ impl DocumentWorkspace {
             {
                 return;
             }
+            let spec = match (session.source_place, &self.save_places.downloads) {
+                // Its first save, which can't go back to the PDF: under its
+                // own name, starting in Downloads.
+                (Some(place), downloads) => SaveAsPromptSpec {
+                    directory: downloads
+                        .clone()
+                        .filter(|_| place.moves_new_files())
+                        .or_else(|| session.path.parent().map(Path::to_path_buf))
+                        .unwrap_or_default(),
+                    suggested_name: crate::save_places::saved_copy_name(&session.path),
+                },
+                (None, _) => save_as_prompt_spec(&session.path),
+            };
             (
-                save_as_prompt_spec(&session.path),
+                spec,
                 SavePromptAuthority {
                     document_id,
                     document_generation: session.generation,
@@ -14389,9 +14485,15 @@ impl DocumentWorkspace {
         let source_page_coordinate_spaces = saved.opened.page_coordinate_spaces;
         let new_resource = saved.opened.resource;
         let reopened_generation = self.next_generation();
+        let source_place = self.source_place_for(request.target_path());
+        // Saved somewhere new because it couldn't go back: say where.
+        let moved_note = (!request.is_in_place() && session.read(cx).source_place.is_some())
+            .then(|| self.saved_elsewhere_note(request.target_path()));
         let old_resource = session.update(cx, |session, cx| {
             let old_resource = session.resource.replace(new_resource);
             session.path = request.target_path().to_path_buf();
+            session.source_place = source_place;
+            session.source_place_asked = false;
             session.title = saved.opened.title;
             // The saved file has the pages as arranged.
             session.set_file_pages(
@@ -14465,6 +14567,13 @@ impl DocumentWorkspace {
         self.last_painted_page_evidence
             .retain(|(document_id, _), _| *document_id != request.document_id);
         self.ensure_visible_page_content_snap_geometry(request.document_id, true, cx);
+        if !request.is_in_place() {
+            // The PDF saved as is the document now, and the one to reopen.
+            self.remember_recent_document(request.document_id, cx);
+        }
+        if let Some(note) = moved_note {
+            self.annotation_statuses.insert(request.document_id, note);
+        }
         if self.close_after_save_document_id == Some(request.document_id) {
             let saved_current_revision = self
                 .annotation_snapshot(request.document_id, cx)
@@ -16115,8 +16224,9 @@ impl DocumentWorkspace {
         cx: &App,
     ) -> Option<DocumentSaveRoute> {
         self.session(document_id, cx).map(|session| {
+            let session = session.read(cx);
             resolve_document_save_route(
-                session.read(cx).save_as_required,
+                session.save_as_required || session.source_place.is_some(),
                 PdfPersistenceSession::in_place_publication_capability(),
             )
         })
@@ -25484,6 +25594,9 @@ impl Render for DocumentWorkspace {
         }
         if self.merge_dialog_requested {
             cx.defer_in(window, Self::open_merge_dialog);
+        }
+        if self.source_place_prompt_due(cx).is_some() {
+            cx.defer_in(window, Self::open_source_place_prompt);
         }
         if self.word_dialog_requested.is_some() {
             // After this frame: a dialog opened while rendering does not

@@ -77,6 +77,13 @@ timeout 300 scripts/gnome-headless/run.sh target/debug/butter-paper "$review/fix
 `tests/review/word-table.txt`, run the same way against a copy of
 `tests/fixtures/text-edit/word-table.pdf`, reviews an untagged report's cell
 editing and Convert to Word Document.
+`tests/review/source-place.txt` reviews the prompt for a PDF whose changes
+can't go back to it: run it against a copy of that fixture in the system's
+temp folder, with `BP_REVIEW_DOWNLOADS_DIR` naming a scratch folder to stand
+for Downloads (a review build only), so it neither writes into the reviewer's
+Downloads nor meets macOS's privacy prompt. macOS lets no app but Mail read
+Mail's attachment folder until Mail hands it a file, so a scripted review
+can't open one there.
 
 To run `cargo xtask dev` on the logged-in desktop from an SSH shell, set
 `WAYLAND_DISPLAY=wayland-0` (and `XDG_RUNTIME_DIR=/run/user/$(id -u)` if the

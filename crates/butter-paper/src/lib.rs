@@ -34,6 +34,7 @@ pub mod generated_document;
 pub mod highlight_compositor;
 pub mod highlight_defaults_panel;
 pub mod property_controls;
+pub mod save_places;
 mod sidebar_sizing;
 mod system_fonts;
 pub use annotation_adapter::tool_properties;

@@ -171,10 +171,29 @@ changes it; history is in git.
   system refuses that copy (macOS protects Downloads, Documents and the
   Desktop until the app is allowed them; Windows' Controlled folder access;
   a read-only folder), Save leaves the PDF untouched and its Recovery item
-  says why, with Retry, Save As… and, on macOS and Windows, a button to the
-  settings that allow the folder. Save never rewrites the PDF in place
-  instead. The Mac app states why it saves in those folders, so macOS can
-  ask the first time.
+  says why, with Retry, Save to Downloads (unless Downloads refused it),
+  Save As… and, on macOS and Windows, the exact switch that allows the
+  folder with a button to its settings page: on macOS the item under Butter
+  Paper in Files & Folders (Desktop, Documents or Downloads Folder,
+  Removable or Network Volumes), otherwise Full Disk Access (which needs a
+  reopen); on Windows, Controlled folder access's allowed apps. Save never rewrites the PDF in place instead. The Mac app
+  states why it saves in those folders, so macOS can ask the first time.
+- A PDF whose changes can't go back to it is told apart when it opens:
+  another app's copy (Mail's, Outlook's or Messages' attachment, a
+  temporary file, a file opened from inside a zip: on macOS anything in
+  `~/Library` but iCloud Drive and `~/Library/CloudStorage`, and the temp
+  folders; on Windows `%LOCALAPPDATA%`, Temp included; on Linux `/tmp`,
+  `/var/tmp` and `~/.cache`), a read-only file or a read-only disk. Reading
+  it needs nothing. Its first change, and only then (once any text edit
+  under way ends), opens a prompt naming what it is, with Save to Downloads
+  (the system's Downloads folder: XDG's on Linux, the known folder on
+  Windows; the same name, numbered when taken), Choose where to save…, a
+  Save panel starting in Downloads under its own name, and Keep editing, which keeps the changes. It asks
+  once per document. This is the one prompt for unsaved changes, as saving
+  them back is not possible. Save and closing with changes go to the Save
+  panel too. Another app's copy
+  never enters Open Recent, which would reopen a stale copy rather than the
+  person's file; once saved, the saved PDF is the document and its entry.
 - New from template and Manage templates split list and preview 50/50.
 - Transient panels and dialogs close with an icon-only top-right X inside the
   content; the word Cancel is reserved for a decision prompt beside a commit or
@@ -270,7 +289,8 @@ changes it; history is in git.
     reports and failed on others.
 - Heavier rework of a PDF goes to a word processor: Convert to Word
   Document converts it with Butter Paper's own converter, on every
-  platform, saves the .docx beside the PDF (asking before replacing an
+  platform, saves the .docx beside the PDF (in Downloads for another
+  app's copy or a PDF on a read-only disk; asking before replacing an
   existing one) and offers to show or open it. Unsaved changes are saved
   first. It depends on no installed app: driving Microsoft Word (AppleScript,
   COM) failed silently for users and needed Word, which Linux lacks. Other
@@ -343,7 +363,11 @@ changes it; history is in git.
 
 - The blank workspace shows up to 20 recently opened PDFs, newest first, with
   filenames and folder paths. Each file can be reopened or revealed separately
-  in the system file manager; long paths truncate in the middle with the full path on hover.
+  in the system file manager (its button named for it: Show in Finder, File
+  Explorer, or the Linux default folder app); long paths truncate in the
+  middle with the full path on hover. A tab's right-click menu reveals its
+  PDF the same way, unavailable before a new PDF is first saved and for
+  another app's copy.
 - History is shared across windows and retained across launches. Only successful
   opens and saves enter it; generated blank/template sources enter after saving.
   The list only offers files that exist: it is checked at launch, when a window

@@ -4,6 +4,36 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.4]
+
+### Edit PDF
+
+- While Edit PDF is on, every paragraph you can edit shows its light blue
+  box, so you can see what a click edits without hovering; the one under
+  the pointer, and the one you are editing, turn dark blue.
+- A paragraph's box takes in all its text, spaces and tabs included, and a
+  click anywhere in it edits it. Boxes that would overlap, such as table
+  cells and paragraphs close together, share an edge instead.
+
+### Saving
+
+- A PDF opened from another app's copy (a Mail, Outlook or Messages
+  attachment, a temporary file, a file from inside a zip), a read-only file
+  or a read-only disk asks where to save it the first time you change it,
+  with Save to Downloads and Choose where to save…, instead of failing to
+  save. Save does the same.
+- Convert to Word puts such a PDF's Word document in Downloads, and a folder
+  that refuses it now offers Save to Downloads in one click, with a shorter
+  message that names the folder as you know it.
+- When macOS or Windows refuses a folder, the message now says exactly which
+  switch allows it (such as Privacy & Security › Files & Folders › Downloads
+  Folder under Butter Paper), with a button that opens that page.
+- Attachment copies no longer appear in Open Recent; a PDF saved with Save As
+  does.
+- A tab's right-click menu has Show in Finder (File Explorer on Windows, your
+  folder app on Linux), and the recent files' folder button is named the same
+  way.
+
 ## [0.4.3]
 
 ### Edit PDF

@@ -1,6 +1,6 @@
 [package]
 name = "butter-paper"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 publish = false
 license = "MIT"
@@ -22,6 +22,7 @@ base64 = "0.22.1"
 chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 cosmic-text = "0.19.0"
 crc32fast = "1.5.1"
+dirs = "6.0.0"
 dunce = "1.0.5"
 flate2 = "1.1.10"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }

@@ -4,10 +4,11 @@
 //! first (Replace or Keep Both when the Word document exists), shows the
 //! save and each page converted on a progress bar, then offers to show the
 //! Word document in the file manager or open it in the system's app for
-//! Word documents, or says why it could not convert. When the system will
-//! not let it save beside the PDF (macOS protects Downloads, Documents and
-//! the Desktop), it offers a Save panel for somewhere else and, on macOS,
-//! the privacy settings that allow the folder.
+//! Word documents, or says why it could not convert. A PDF that is another
+//! app's copy or on a read-only disk converts into Downloads instead
+//! ([`crate::save_places`]). When the system will not let it save in the
+//! folder (macOS protects Downloads, Documents and the Desktop; Windows'
+//! Controlled folder access), it offers Downloads or a Save panel.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,8 +28,10 @@ pub const DOCUMENT_WORD_REPLACE_ID: &str = "document-word-replace";
 pub const DOCUMENT_WORD_SHOW_ID: &str = "document-word-show";
 /// After the system refused the PDF's folder: a Save panel for another place.
 pub const DOCUMENT_WORD_CHOOSE_ID: &str = "document-word-choose";
-/// After macOS refused the PDF's folder: Privacy & Security ▸ Files and
-/// Folders.
+/// After the system refused the PDF's folder: the Word document in Downloads.
+pub const DOCUMENT_WORD_DOWNLOADS_ID: &str = "document-word-downloads";
+/// After the system refused the PDF's folder, with no Downloads to offer:
+/// the setting that allows that folder.
 pub const DOCUMENT_WORD_PRIVACY_ID: &str = "document-word-privacy";
 pub const DOCUMENT_WORD_OPEN_ID: &str = "document-word-open";
 
@@ -76,8 +79,19 @@ pub struct WordDialog {
     document_id: DocumentId,
     /// The PDF's name and where it is.
     pdf: PathBuf,
+    /// Where its Word document goes: beside it, or Downloads for another
+    /// app's copy.
+    folder: PathBuf,
+    /// The folder as a person knows it: “Documents”, or “this PDF’s
+    /// folder” for one with a name only an app knows.
+    folder_label: String,
+    /// The Downloads folder, when it is not `folder`.
+    downloads: Option<PathBuf>,
     /// The PDF has changes to save before it converts.
     unsaved: bool,
+    /// The system's privacy protection refused the folder (which a setting
+    /// can allow), not the folder's own permissions.
+    privacy_refused: bool,
     /// `Name.docx` is beside the PDF already.
     exists: bool,
     stage: WordDialogStage,
@@ -102,6 +116,20 @@ impl WordDialog {
         )
     }
 
+    /// The setting that allows the refused folder, when one would.
+    fn folder_permission(&self) -> Option<crate::save_places::FolderPermission> {
+        self.privacy_refused
+            .then(|| crate::save_places::folder_permission(&self.folder))
+            .flatten()
+    }
+
+    /// Where its Word document goes, and how the dialog names it.
+    fn set_folder(&mut self, (folder, label, downloads): (PathBuf, String, Option<PathBuf>)) {
+        self.folder = folder;
+        self.folder_label = label;
+        self.downloads = downloads;
+    }
+
     /// The name of the folder `path` is in.
     fn folder_name(path: &Path) -> String {
         path.parent()
@@ -121,7 +149,7 @@ impl WordDialog {
         match &self.stage {
             WordDialogStage::Converting { docx, .. } => Self::file_name(docx),
             WordDialogStage::Converted(converted) => Self::file_name(&converted.docx),
-            _ => Self::file_name(&crate::docx_export::docx_path_for(&self.pdf)),
+            _ => Self::file_name(&crate::docx_export::docx_path_in(&self.folder, &self.pdf)),
         }
     }
 
@@ -151,15 +179,25 @@ impl Render for WordDialog {
         let pdf_name = Self::file_name(&self.pdf);
         let docx_name = self.docx_name();
         // Kept while it works, so the dialog does not jump as it starts.
+        let beside = self.pdf.parent() == Some(self.folder.as_path());
+        let destination = if beside {
+            "beside the PDF".to_owned()
+        } else {
+            format!("in {}", self.folder_label)
+        };
         let description = match &self.stage {
             WordDialogStage::Ready
             | WordDialogStage::Saving
             | WordDialogStage::Converting { .. } => Some(if self.unsaved {
-                "Your changes are saved to the PDF first. The text, tables and images then \
-                 convert into a Word document you can edit, saved beside the PDF."
+                format!(
+                    "Your changes are saved to the PDF first. The text, tables and images then \
+                     convert into a Word document you can edit, saved {destination}."
+                )
             } else {
-                "The text, tables and images convert into a Word document you can edit, saved \
-                 beside the PDF."
+                format!(
+                    "The text, tables and images convert into a Word document you can edit, \
+                     saved {destination}."
+                )
             }),
             _ => None,
         };
@@ -189,7 +227,13 @@ impl Render for WordDialog {
                     .map(|first| first.to_uppercase().chain(place).collect())
                     .unwrap_or_default()
             }
-            _ => format!("Beside {pdf_name}"),
+            _ => {
+                if beside {
+                    format!("Beside {pdf_name}")
+                } else {
+                    format!("In {}", self.folder_label)
+                }
+            }
         };
         let progress = self.progress();
         let done = matches!(self.stage, WordDialogStage::Converted(_));
@@ -263,7 +307,7 @@ impl Render for WordDialog {
             Alert::warning(
                 "document-word-exists",
                 format!(
-                    "{} is already beside the PDF. Replace it, or keep both and save this one \
+                    "{} is already {destination}. Replace it, or keep both and save this one \
                      under a new name.",
                     self.docx_name()
                 ),
@@ -274,27 +318,36 @@ impl Render for WordDialog {
                 Some(Alert::error("document-word-failed", error.clone()))
             }
             WordDialogStage::NotPermitted => {
-                let folder = format!("“{}”", Self::folder_name(&self.pdf));
-                Some(Alert::warning(
-                    "document-word-not-permitted",
-                    if cfg!(target_os = "macos") {
-                        format!(
-                            "macOS didn't let Butter Paper save in {folder}. Choose where to save \
-                             the Word document, or allow Butter Paper to use {folder} in Privacy \
-                             & Security and convert again."
-                        )
+                let folder = &self.folder_label;
+                let other = if self.downloads.is_some() {
+                    "Save it in Downloads or another folder"
+                } else {
+                    "Choose another folder"
+                };
+                Some(
+                    Alert::warning(
+                        "document-word-not-permitted",
+                        match self.folder_permission() {
+                            Some(permission) if cfg!(windows) => format!(
+                                "Controlled folder access may protect it. {other}. {}",
+                                permission.sentence("convert again")
+                            ),
+                            Some(permission) => {
+                                format!("{other}. {}", permission.sentence("convert again"))
+                            }
+                            None => format!("{other}."),
+                        },
+                    )
+                    .title(if !self.privacy_refused {
+                        format!("You don’t have permission to save in {folder}")
+                    } else if cfg!(target_os = "macos") {
+                        format!("macOS didn’t let Butter Paper save in {folder}")
                     } else if cfg!(windows) {
-                        format!(
-                            "Windows didn't let Butter Paper save in {folder}; Controlled folder \
-                             access may protect it. Choose where to save the Word document."
-                        )
+                        format!("Windows didn’t let Butter Paper save in {folder}")
                     } else {
-                        format!(
-                            "The folder {folder} doesn't let Butter Paper save files in it. \
-                             Choose where to save the Word document."
-                        )
-                    },
-                ))
+                        format!("Butter Paper can’t save in {folder}")
+                    }),
+                )
             }
             _ => None,
         };
@@ -347,12 +400,18 @@ impl DocumentWorkspace {
             let session = session.read(cx);
             (session.path.clone(), session.is_dirty())
         };
-        let unsaved = dirty || self.document_requires_save_as(document_id, cx);
-        let exists = crate::docx_export::docx_path_for(&pdf).exists();
+        // A PDF that can't be saved where it opened still converts as it is.
+        let unsaved = dirty;
+        let (folder, folder_label, downloads) = self.word_folder(document_id, &pdf, cx);
+        let exists = crate::docx_export::docx_path_in(&folder, &pdf).exists();
         let dialog = cx.new(|_| WordDialog {
             document_id,
             pdf,
+            folder,
+            folder_label,
+            downloads,
             unsaved,
+            privacy_refused: false,
             exists,
             stage: WordDialogStage::Ready,
             stop: Arc::new(AtomicBool::new(false)),
@@ -436,23 +495,10 @@ impl DocumentWorkspace {
                     )
                 }
                 WordDialogStage::NotPermitted => {
-                    let privacy = cfg!(target_os = "macos").then(|| {
-                        Button::new(DOCUMENT_WORD_PRIVACY_ID)
-                            .debug_selector(|| DOCUMENT_WORD_PRIVACY_ID.into())
-                            .outline()
-                            .label("Open Privacy Settings")
-                            .on_click(|_, _, cx| {
-                                cx.open_url(
-                                    "x-apple.systempreferences:com.apple.preference.security?\
-                                     Privacy_FilesAndFolders",
-                                );
-                            })
-                    });
                     let choose = {
                         let workspace = workspace.clone();
                         Button::new(DOCUMENT_WORD_CHOOSE_ID)
                             .debug_selector(|| DOCUMENT_WORD_CHOOSE_ID.into())
-                            .primary()
                             .label("Choose where to save…")
                             .on_click(move |_, _, cx| {
                                 let _ = workspace.update(cx, |workspace, cx| {
@@ -460,7 +506,40 @@ impl DocumentWorkspace {
                                 });
                             })
                     };
-                    Some(DialogFooter::new().children(privacy).child(choose))
+                    let footer = match state.downloads.clone() {
+                        // Downloads in one press, as the place to go.
+                        Some(downloads) => {
+                            let workspace = workspace.clone();
+                            let pdf = state.pdf.clone();
+                            DialogFooter::new().child(choose.outline()).child(
+                                Button::new(DOCUMENT_WORD_DOWNLOADS_ID)
+                                    .debug_selector(|| DOCUMENT_WORD_DOWNLOADS_ID.into())
+                                    .primary()
+                                    .label("Save to Downloads")
+                                    .on_click(move |_, _, cx| {
+                                        let docx = crate::docx_export::unused_docx_path_in(
+                                            &downloads, &pdf,
+                                        );
+                                        let _ = workspace.update(cx, |workspace, cx| {
+                                            workspace.convert_from_word_dialog(
+                                                WordTarget::Chosen(docx),
+                                                cx,
+                                            )
+                                        });
+                                    }),
+                            )
+                        }
+                        None => DialogFooter::new()
+                            .children(state.folder_permission().map(|permission| {
+                                Button::new(DOCUMENT_WORD_PRIVACY_ID)
+                                    .debug_selector(|| DOCUMENT_WORD_PRIVACY_ID.into())
+                                    .outline()
+                                    .label(permission.button)
+                                    .on_click(move |_, _, cx| cx.open_url(permission.url))
+                            }))
+                            .child(choose.primary()),
+                    };
+                    Some(footer)
                 }
                 _ => None,
             };
@@ -529,7 +608,7 @@ impl DocumentWorkspace {
             let session = session.read(cx);
             (session.is_dirty(), session.path.clone())
         };
-        if dirty || self.document_requires_save_as(document_id, cx) {
+        if dirty {
             self.word_after_save = Some((document_id, target));
             dialog.update(cx, |dialog, cx| {
                 dialog.set_stage(WordDialogStage::Saving, cx)
@@ -572,18 +651,52 @@ impl DocumentWorkspace {
         self.convert_saved_to_word(path, target, cx);
     }
 
+    /// Where the document's Word document goes: beside its PDF at `pdf`,
+    /// or Downloads when that is another app's copy or on a read-only disk;
+    /// with the folder's name as the dialog shows it, and Downloads when
+    /// that is somewhere else to offer.
+    fn word_folder(
+        &self,
+        document_id: DocumentId,
+        pdf: &Path,
+        cx: &App,
+    ) -> (PathBuf, String, Option<PathBuf>) {
+        let downloads = self.downloads_folder().map(Path::to_path_buf);
+        let beside = pdf.parent().map(Path::to_path_buf).unwrap_or_default();
+        let folder = match (self.document_source_place(document_id, cx), &downloads) {
+            (Some(place), Some(downloads)) if place.moves_new_files() => downloads.clone(),
+            _ => beside,
+        };
+        let label = if downloads.as_ref() == Some(&folder) {
+            "Downloads".to_owned()
+        } else if self.save_places.is_app_copy(pdf) && pdf.parent() == Some(folder.as_path()) {
+            "this PDF’s folder".to_owned()
+        } else {
+            folder
+                .file_name()
+                .map(|name| format!("“{}”", name.to_string_lossy()))
+                .unwrap_or_else(|| "this folder".to_owned())
+        };
+        let downloads = downloads.filter(|downloads| *downloads != folder);
+        (folder, label, downloads)
+    }
+
     /// Converts the saved PDF at `pdf`, or, when `Name.docx` turned out to
-    /// be beside it already, asks again with Replace and Keep Both.
+    /// be there already, asks again with Replace and Keep Both.
     fn convert_saved_to_word(&mut self, pdf: PathBuf, target: WordTarget, cx: &mut Context<Self>) {
         let Some(dialog) = self.word_dialog() else {
             return;
         };
+        // A Save As before it may have moved the PDF.
+        let place = self.word_folder(dialog.read(cx).document_id, &pdf, cx);
+        let folder = place.0.clone();
+        dialog.update(cx, |dialog, _| dialog.set_folder(place));
         let docx = match target {
             WordTarget::Chosen(docx) => docx,
-            WordTarget::Replace => crate::docx_export::docx_path_for(&pdf),
-            WordTarget::KeepBoth => crate::docx_export::unused_docx_path_for(&pdf),
+            WordTarget::Replace => crate::docx_export::docx_path_in(&folder, &pdf),
+            WordTarget::KeepBoth => crate::docx_export::unused_docx_path_in(&folder, &pdf),
             WordTarget::New => {
-                let docx = crate::docx_export::docx_path_for(&pdf);
+                let docx = crate::docx_export::docx_path_in(&folder, &pdf);
                 if docx.exists() {
                     dialog.update(cx, |dialog, cx| {
                         dialog.pdf = pdf;
@@ -644,7 +757,8 @@ impl DocumentWorkspace {
                 Ok(Some(converted)) => dialog.set_stage(WordDialogStage::Converted(converted), cx),
                 // Stopped: the dialog has closed.
                 Ok(None) => {}
-                Err(ConvertError::NotPermitted(_)) => {
+                Err(ConvertError::NotPermitted(error)) => {
+                    dialog.privacy_refused = crate::save_places::refused_by_privacy(&error);
                     dialog.set_stage(WordDialogStage::NotPermitted, cx)
                 }
                 Err(ConvertError::Failed(error)) => {
@@ -655,15 +769,21 @@ impl DocumentWorkspace {
         .detach();
     }
 
-    /// After the system refused the PDF's folder: a Save panel, starting
-    /// there, for where the Word document goes, then converts to it.
+    /// After the system refused the folder: a Save panel, starting in
+    /// Downloads, for where the Word document goes, then converts to it.
     fn choose_word_document_path(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = self.word_dialog() else {
             return;
         };
-        let pdf = dialog.read(cx).pdf.clone();
-        let docx = crate::docx_export::docx_path_for(&pdf);
-        let directory = pdf.parent().map(Path::to_path_buf).unwrap_or_default();
+        let (pdf, folder) = {
+            let dialog = dialog.read(cx);
+            (dialog.pdf.clone(), dialog.folder.clone())
+        };
+        let docx = crate::docx_export::docx_path_in(&folder, &pdf);
+        let directory = self
+            .downloads_folder()
+            .map(Path::to_path_buf)
+            .unwrap_or(folder);
         let name = docx
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
@@ -714,8 +834,7 @@ impl DocumentWorkspace {
         self.word_after_save = None;
         let unsaved = self
             .session(document_id, cx)
-            .is_some_and(|session| session.read(cx).is_dirty())
-            || self.document_requires_save_as(document_id, cx);
+            .is_some_and(|session| session.read(cx).is_dirty());
         if let Some(dialog) = self.word_dialog() {
             dialog.update(cx, |dialog, cx| {
                 dialog.unsaved = unsaved;

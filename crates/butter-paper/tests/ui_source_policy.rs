@@ -360,6 +360,11 @@ fn every_dialog_has_a_dismissal_contract_test() {
             &["the_signatures_dialog_keeps_the_dialog_dismissal_contract"],
         ),
         (
+            "document_workspace_source_place.rs",
+            1,
+            &["the_prompt_keeps_the_dialog_dismissal_contract"],
+        ),
+        (
             "document_workspace_word.rs",
             1,
             &["the_word_dialog_keeps_the_dialog_dismissal_contract"],

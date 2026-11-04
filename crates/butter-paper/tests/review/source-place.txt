@@ -1,0 +1,52 @@
+# Another app's copy: run against a copy of
+# tests/fixtures/text-edit/word-table.pdf placed where an app keeps its copies
+# (the system's temp folder: a scripted run can't read Mail's). Coordinates
+# are window content points for a 1300 x 900 window. Set
+# BP_REVIEW_DOWNLOADS_DIR to a scratch folder, which Save to Downloads then
+# writes into.
+wait 1500
+place 0 120 120 1300 900
+wait 1500
+# Reading it shows nothing.
+expect-hidden 0 document-workspace-source-place
+shot opened
+# Its tab's menu can't show another app's copy in the file manager.
+right-click 0 175 56
+wait 800
+shot tab-menu-copy
+key 0 escape
+wait 600
+key 0 r
+drag 0 420 420 640 560 rectangle
+wait 800
+key 0 v
+wait 600
+# Its first change opens the prompt: what it is, and where to save it.
+expect-shown 0 document-workspace-source-place
+shot prompt
+# At the narrowest window it still fits.
+place 0 120 120 600 800
+wait 1200
+shot prompt-narrow
+place 0 120 120 1300 900
+wait 1200
+click-id 0 document-workspace-source-place-downloads
+wait 3000
+expect-hidden 0 document-workspace-source-place
+shot saved
+# Saved in Downloads, it can.
+right-click 0 175 56
+wait 800
+shot tab-menu-saved
+key 0 escape
+wait 600
+# The saved PDF converts beside itself, in Downloads.
+convert-to-word
+wait 1200
+shot convert-asked
+key 0 enter
+wait 8000
+shot converted
+key 0 escape
+wait 800
+quit

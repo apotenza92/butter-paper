@@ -17,6 +17,34 @@ pub fn file_manager() -> String {
         .unwrap_or_else(|| "Folder".to_owned())
 }
 
+/// [`file_manager`] for a menu or tooltip, without waiting: Linux asks
+/// `xdg-mime`, which runs once on its own thread, and until it answers this
+/// is `Folder`. The first call starts it.
+pub fn file_manager_label() -> String {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    static ASKED: std::sync::Once = std::sync::Once::new();
+    if let Some(name) = NAME.get() {
+        return name.clone();
+    }
+    if cfg!(any(target_os = "macos", windows)) {
+        return NAME.get_or_init(file_manager).clone();
+    }
+    ASKED.call_once(|| {
+        std::thread::spawn(|| {
+            let _ = NAME.set(file_manager());
+        });
+    });
+    "Folder".to_owned()
+}
+
+/// Shows `path` selected in the file manager: File Explorer through
+/// [`reveal_in_file_explorer`] on Windows, GPUI elsewhere.
+pub fn reveal(path: &std::path::Path, cx: &gpui::App) {
+    if !reveal_in_file_explorer(path) {
+        cx.reveal_path(path);
+    }
+}
+
 /// Shows `path` selected in Windows' File Explorer, returning whether it
 /// did. GPUI's `reveal_path` does this through a shell call on a thread
 /// without COM set up, which fails silently on Windows; `explorer.exe

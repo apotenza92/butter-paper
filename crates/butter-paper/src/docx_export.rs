@@ -52,6 +52,17 @@ pub fn docx_path_for(pdf: &Path) -> PathBuf {
     pdf.with_file_name(format!("{}.docx", stem(pdf)))
 }
 
+/// `Name.docx` for the PDF at `pdf`, in `folder`.
+pub fn docx_path_in(folder: &Path, pdf: &Path) -> PathBuf {
+    folder.join(format!("{}.docx", stem(pdf)))
+}
+
+/// In `folder` without replacing a file: [`docx_path_in`] while that is
+/// free, then the first free `Name 2.docx`, `Name 3.docx`, ….
+pub fn unused_docx_path_in(folder: &Path, pdf: &Path) -> PathBuf {
+    crate::save_places::unused_path_in(folder, &format!("{}.docx", stem(pdf)))
+}
+
 /// Beside the PDF without replacing a file: [`docx_path_for`] while that is
 /// free, then the first free `Name 2.docx`, `Name 3.docx`, ….
 pub fn unused_docx_path_for(pdf: &Path) -> PathBuf {

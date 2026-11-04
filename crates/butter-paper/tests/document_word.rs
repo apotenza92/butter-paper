@@ -14,6 +14,7 @@ use butter_paper::document_workspace::{
     DOCUMENT_WORD_OPEN_ID, DOCUMENT_WORD_REPLACE_ID, DOCUMENT_WORD_SHOW_ID, DocumentWorkspace,
     NativeDocumentOpener, OpenDocumentRequest, WordDialogStage, init_document_workspace_actions,
 };
+use butter_paper::save_places::{CopyRoots, SavePlaces};
 use gpui::{AppContext as _, Modifiers, TestAppContext};
 use gpui_component::Root;
 
@@ -118,6 +119,28 @@ fn open<'a>(
     PathBuf,
     &'a mut gpui::VisualTestContext,
 ) {
+    open_in(cx, name, Places::default())
+}
+
+/// Where the fixture opens from, and the Downloads folder, inside its
+/// scratch folder.
+#[derive(Default)]
+struct Places {
+    /// Opened from another app's copy: `Mail Downloads/<id>/report.pdf`.
+    app_copy: bool,
+    /// `Downloads` beside it.
+    downloads: bool,
+}
+
+fn open_in<'a>(
+    cx: &'a mut TestAppContext,
+    name: &str,
+    places: Places,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    PathBuf,
+    &'a mut gpui::VisualTestContext,
+) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -128,7 +151,26 @@ fn open<'a>(
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
-    let pdf = scratch.join("report.pdf");
+    let scratch = scratch.canonicalize().unwrap();
+    let copies = scratch.join("Mail Downloads");
+    let folder = if places.app_copy {
+        copies.join("415D1A6D-BBB5-41C0-8F26-432ED18F9FF9")
+    } else {
+        scratch.clone()
+    };
+    std::fs::create_dir_all(&folder).unwrap();
+    let downloads = places.downloads.then(|| scratch.join("Downloads"));
+    if let Some(downloads) = &downloads {
+        std::fs::create_dir_all(downloads).unwrap();
+    }
+    let save_places = SavePlaces {
+        copies: CopyRoots {
+            copies: vec![copies],
+            own_files: Vec::new(),
+        },
+        downloads,
+    };
+    let pdf = folder.join("report.pdf");
     std::fs::copy(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/text-edit/word-table.pdf"),
         &pdf,
@@ -146,7 +188,10 @@ fn open<'a>(
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
     cx.update(|window, _| window.activate_window());
-    workspace.update(cx, |workspace, cx| workspace.open_path(pdf, cx));
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_save_places(save_places);
+        workspace.open_path(pdf, cx)
+    });
     redraw(cx);
     workspace.update(cx, |workspace, cx| {
         workspace.convert_active_document_to_word(cx)
@@ -430,6 +475,56 @@ fn a_folder_that_refuses_the_word_document_offers_a_save_panel(cx: &mut TestAppC
     redraw(cx);
     assert_eq!(converted(&workspace, cx), chosen);
     assert!(chosen.exists());
+}
+
+/// Another app's copy (here Mail's) converts into Downloads, not beside
+/// the copy, which no one could find and the app may refuse.
+#[gpui::test]
+fn another_apps_copy_converts_into_downloads(cx: &mut TestAppContext) {
+    let (workspace, scratch, cx) = open_in(
+        cx,
+        "app-copy",
+        Places {
+            app_copy: true,
+            downloads: true,
+        },
+    );
+    click(cx, DOCUMENT_WORD_CONVERT_ID);
+    assert_eq!(
+        converted(&workspace, cx),
+        scratch.join("Downloads/report.docx")
+    );
+    assert!(scratch.join("Downloads/report.docx").exists());
+}
+
+/// A folder that refuses the Word document offers Downloads in one press.
+#[cfg(unix)]
+#[gpui::test]
+fn a_folder_that_refuses_the_word_document_offers_downloads(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_WORD_DOWNLOADS_ID;
+    use std::os::unix::fs::PermissionsExt as _;
+    let (workspace, scratch, cx) = open_in(
+        cx,
+        "not-permitted-downloads",
+        Places {
+            app_copy: false,
+            downloads: true,
+        },
+    );
+    std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o555)).unwrap();
+    click(cx, DOCUMENT_WORD_CONVERT_ID);
+    std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(stage_is(&workspace, cx, |stage| matches!(
+        stage,
+        WordDialogStage::NotPermitted
+    )));
+    std::fs::write(scratch.join("Downloads/report.docx"), b"").unwrap();
+    click(cx, DOCUMENT_WORD_DOWNLOADS_ID);
+    // Beside a Word document of the same name, not over it.
+    assert_eq!(
+        converted(&workspace, cx),
+        scratch.join("Downloads/report 2.docx")
+    );
 }
 
 #[test]

@@ -268,6 +268,14 @@ impl Drop for ScratchFiles {
     }
 }
 
+/// The tests' scratch folder: not the system's temp folder, whose PDFs are
+/// temporary copies that Save does not write back to.
+fn test_scratch() -> PathBuf {
+    let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    scratch
+}
+
 struct ScratchDirectories(Vec<PathBuf>);
 
 impl Drop for ScratchDirectories {
@@ -9459,7 +9467,7 @@ fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
-    let root = std::env::temp_dir().join(format!(
+    let root = test_scratch().join(format!(
         "bp-workspace-save-recovery-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -9893,7 +9901,7 @@ fn in_place_save_keeps_the_published_document_live_when_durability_has_a_warning
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
-    let root = std::env::temp_dir().join(format!(
+    let root = test_scratch().join(format!(
         "bp-workspace-publication-warning-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -10668,7 +10676,7 @@ fn save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place_on_native_s
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
-    let scratch = std::env::temp_dir().join(format!(
+    let scratch = test_scratch().join(format!(
         "bp-workspace-save-as-names-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -10772,7 +10780,7 @@ fn a_folder_that_refuses_the_save_says_so_and_retry_saves_once_allowed_on_native
     use butter_paper::document_workspace::DOCUMENT_SAVE_ERROR_SETTINGS_ID;
     use std::os::unix::fs::PermissionsExt as _;
     cx.update(gpui_component::init);
-    let scratch = std::env::temp_dir().join(format!(
+    let scratch = test_scratch().join(format!(
         "bp-workspace-folder-refused-save-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -10896,7 +10904,7 @@ fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
-    let scratch = std::env::temp_dir().join(format!(
+    let scratch = test_scratch().join(format!(
         "bp-workspace-external-source-save-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

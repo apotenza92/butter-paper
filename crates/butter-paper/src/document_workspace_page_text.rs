@@ -116,6 +116,9 @@ pub(super) struct PageTextOverlay {
     pub page_index: u32,
     /// The frames of the hovered paragraph, drawing or image.
     pub hover: Vec<Quad>,
+    /// While Edit PDF is on, a frame round each paragraph that can be
+    /// edited, so what a click edits shows without hovering it.
+    pub outlines: Vec<Quad>,
     /// The edited paragraph, a quad per line.
     pub frame: Vec<Quad>,
     pub selection: Vec<Quad>,
@@ -250,7 +253,7 @@ fn changed_pages(
     pages
 }
 
-fn visible_span(
+fn line_span(
     layer: &PageTextLayer,
     line: &PageTextLine,
     edit: Option<&PageTextEdit>,
@@ -261,12 +264,10 @@ fn visible_span(
             layout_text_edit_fitted(layer, line, &line.original_runs(), Default::default()).ok()?
         }
     };
-    let mut visible = layout
-        .chars
-        .iter()
-        .filter(|character| !character.character.is_whitespace());
-    let first = visible.next()?;
-    let last = visible.next_back().unwrap_or(first);
+    // Spaces and tabs count: the box is where the line's text is, as a
+    // click edits it, even where that text is blank.
+    let first = layout.chars.first()?;
+    let last = layout.chars.last().unwrap_or(first);
     Some((first.x, last.x + last.advance))
 }
 
@@ -413,7 +414,7 @@ impl DocumentWorkspace {
                 continue;
             };
             let edit = self.page_text_line_edit(document_id, page_index, *anchor, cx);
-            if let Some((x0, x1)) = visible_span(layer, line, edit.as_ref()) {
+            if let Some((x0, x1)) = line_span(layer, line, edit.as_ref()) {
                 quads.push(line.quad(x0, x1));
             }
             for extra in edit.iter().flat_map(|edit| &edit.layout.extra_lines) {
@@ -1051,12 +1052,12 @@ impl DocumentWorkspace {
             let block = blocks
                 .iter()
                 .find(|block| block.lines.contains(&line.anchor));
-            if let Some(span) = visible_span(&layer, line, edit.as_ref()) {
+            if let Some(span) = line_span(&layer, line, edit.as_ref()) {
                 consider(line, block, span, offset);
             }
             for extra in edit.iter().flat_map(|edit| &edit.layout.extra_lines) {
                 let base = extra_line_base(line, extra.below);
-                if let Some(span) = visible_span(
+                if let Some(span) = line_span(
                     &layer,
                     &base,
                     Some(&PageTextEdit {
@@ -2389,6 +2390,63 @@ impl DocumentWorkspace {
                 }),
             }
         }
+        // While Edit PDF is on, every paragraph in view that a click
+        // edits is framed, the edited one by its own frame.
+        if self.content_edit_mode(document_id) {
+            let pages = self
+                .session(document_id, cx)
+                .and_then(|session| {
+                    session
+                        .read(cx)
+                        .viewer
+                        .plan_snapshot()
+                        .map(|plan| plan.visible_pages.clone())
+                })
+                .unwrap_or_default();
+            for page in pages {
+                let page_index = page as u32;
+                let Some((layer, blocks)) = self.page_text_blocks(document_id, page_index, cx)
+                else {
+                    continue;
+                };
+                let tables = self.shown_page_table_edits(document_id, page_index, cx);
+                let moves = self.shown_page_content_moves(document_id, page_index, cx);
+                let table_refs = tables.iter().collect::<Vec<_>>();
+                let outlines = blocks
+                    .iter()
+                    .filter(|block| {
+                        editing.is_none_or(|editing| {
+                            (editing.page_index, editing.anchor) != (page_index, block.lines[0])
+                        })
+                    })
+                    .filter_map(|block| {
+                        let offset = block_offset(&layer, block, &table_refs, &moves)?;
+                        let bounds = super::content::quads_bounds(&self.paragraph_line_quads(
+                            document_id,
+                            page_index,
+                            &layer,
+                            block,
+                            cx,
+                        ))?;
+                        Some(shifted(&bounds_quad(bounds), offset))
+                    })
+                    .collect::<Vec<_>>();
+                if outlines.is_empty() {
+                    continue;
+                }
+                match overlays
+                    .iter_mut()
+                    .find(|overlay| overlay.page_index == page_index)
+                {
+                    Some(overlay) => overlay.outlines = outlines,
+                    None => overlays.push(PageTextOverlay {
+                        page_index,
+                        outlines,
+                        ..Default::default()
+                    }),
+                }
+            }
+        }
         // The selected content, and the drawing or image under the pointer.
         for (page, selected, hover, handles) in self.content_overlays(document_id, cx) {
             match overlays
@@ -2609,6 +2667,72 @@ macro_rules! forward_actions {
     }};
 }
 
+/// Moves the facing edges of frames that would overlap, or nearly touch, to
+/// one line halfway between them, so neighbouring paragraphs' frames meet
+/// rather than cross. Frames overlap by their padding, `padding` each side,
+/// or close to it; frames whose content itself overlaps, or one within
+/// another, are left as they are.
+pub(super) fn separate_frames(frames: &mut [gpui::Bounds<Pixels>], padding: Pixels) {
+    // A 1px border is drawn inside each frame's bounds: edges half a pixel
+    // past the middle put both borders on the same pixels.
+    let half = px(0.5);
+    let reach = padding * 2. + px(2.);
+    for i in 0..frames.len() {
+        for j in i + 1..frames.len() {
+            let (a, b) = (frames[i], frames[j]);
+            let across = a.right().min(b.right()) - a.left().max(b.left());
+            let down = a.bottom().min(b.bottom()) - a.top().max(b.top());
+            if across <= -px(2.) || down <= -px(2.) {
+                continue;
+            }
+            let contains = |outer: gpui::Bounds<Pixels>, inner: gpui::Bounds<Pixels>| {
+                outer.left() <= inner.left()
+                    && outer.right() >= inner.right()
+                    && outer.top() <= inner.top()
+                    && outer.bottom() >= inner.bottom()
+            };
+            if contains(a, b) || contains(b, a) {
+                continue;
+            }
+            // Apart along the axis they overlap least on.
+            let vertical = down <= across;
+            let overlap = if vertical { down } else { across };
+            if overlap > reach {
+                continue;
+            }
+            let (first, second) = if vertical {
+                if a.center().y <= b.center().y {
+                    (i, j)
+                } else {
+                    (j, i)
+                }
+            } else if a.center().x <= b.center().x {
+                (i, j)
+            } else {
+                (j, i)
+            };
+            let (upper, lower) = (frames[first], frames[second]);
+            if vertical {
+                let middle = (upper.bottom() + lower.top()) / 2.;
+                frames[first] =
+                    gpui::Bounds::from_corners(upper.origin, point(upper.right(), middle + half));
+                frames[second] = gpui::Bounds::from_corners(
+                    point(lower.left(), middle - half),
+                    point(lower.right(), lower.bottom()),
+                );
+            } else {
+                let middle = (upper.right() + lower.left()) / 2.;
+                frames[first] =
+                    gpui::Bounds::from_corners(upper.origin, point(middle + half, upper.bottom()));
+                frames[second] = gpui::Bounds::from_corners(
+                    point(middle - half, lower.top()),
+                    point(lower.right(), lower.bottom()),
+                );
+            }
+        }
+    }
+}
+
 /// Draws a page's Edit PDF Content overlay: the hovered line, and the edited
 /// line's frame, selection and caret.
 pub(super) fn page_text_overlay_element(
@@ -2696,11 +2820,37 @@ pub(super) fn page_text_overlay_element(
                 use super::interaction_chrome::{
                     ChromeState, hover_colour, paint_feedback_handle, selection_colour,
                 };
-                for quad in &painted.hover {
-                    stroke_frame(quad, hover_colour(), window);
+                // Paragraph frames, and the edited one's, share their
+                // edges where they would overlap rather than cross.
+                let mut frames = painted
+                    .outlines
+                    .iter()
+                    .chain(&painted.frame)
+                    .map(frame_bounds)
+                    .collect::<Vec<_>>();
+                separate_frames(&mut frames, px(super::content::FRAME_PADDING_PIXELS));
+                let (outline_frames, edited_frames) = frames.split_at(painted.outlines.len());
+                let shown = |quad: &Quad| {
+                    painted
+                        .outlines
+                        .iter()
+                        .position(|outline| outline == quad)
+                        .map_or_else(|| frame_bounds(quad), |index| outline_frames[index])
+                };
+                let stroke =
+                    |bounds: gpui::Bounds<Pixels>, color: gpui::Hsla, window: &mut Window| {
+                        window.paint_quad(gpui::outline(bounds, color, gpui::BorderStyle::Solid));
+                    };
+                // Every editable paragraph in hover blue; the one under the
+                // pointer and the edited one in selection blue.
+                for bounds in outline_frames {
+                    stroke(*bounds, hover_colour(), window);
                 }
-                for quad in &painted.frame {
-                    stroke_frame(quad, accent, window);
+                for quad in &painted.hover {
+                    stroke(shown(quad), selection_colour(), window);
+                }
+                for bounds in edited_frames {
+                    stroke(*bounds, selection_colour(), window);
                 }
                 // The text a table or paragraph runs into, pointed out.
                 for rect in painted.warnings.iter().flat_map(|label| &label.overlapped) {
@@ -2926,5 +3076,48 @@ mod tests {
         let overlapped = overlapped_text(&layer, &anchors, &[at(700.), at(662.)]);
         assert_eq!(overlapped.len(), 1, "{overlapped:?}");
         assert!((overlapped[0][1] - 657.).abs() < 0.01, "{overlapped:?}");
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::separate_frames;
+    use gpui::{Bounds, point, px};
+
+    fn frame(x0: f32, y0: f32, x1: f32, y1: f32) -> Bounds<gpui::Pixels> {
+        Bounds::from_corners(point(px(x0), px(y0)), point(px(x1), px(y1)))
+    }
+
+    #[test]
+    fn stacked_paragraphs_frames_meet_on_one_line_halfway() {
+        // Two lines' frames, 3px padding each, overlapping by 2px.
+        let mut frames = [frame(10., 10., 200., 40.), frame(10., 38., 180., 70.)];
+        separate_frames(&mut frames, px(3.));
+        assert_eq!(frames[0].bottom(), px(39.5));
+        assert_eq!(frames[1].top(), px(38.5));
+        // Their 1px borders cover the same pixel row, 38.5 to 39.5.
+        assert_eq!(frames[0].top(), px(10.));
+        assert_eq!(frames[1].bottom(), px(70.));
+    }
+
+    #[test]
+    fn side_by_side_cells_meet_on_one_line_halfway() {
+        let mut frames = [frame(10., 10., 104., 40.), frame(100., 10., 200., 40.)];
+        separate_frames(&mut frames, px(3.));
+        assert_eq!(frames[0].right(), px(102.5));
+        assert_eq!(frames[1].left(), px(101.5));
+    }
+
+    #[test]
+    fn frames_apart_within_or_over_each_other_are_left_alone() {
+        let apart = [frame(10., 10., 100., 40.), frame(10., 60., 100., 90.)];
+        let within = [frame(0., 0., 300., 300.), frame(10., 10., 100., 40.)];
+        // Text that really overlaps: far more than the frames' padding.
+        let over = [frame(10., 10., 100., 60.), frame(10., 30., 100., 90.)];
+        for frames in [apart, within, over] {
+            let mut moved = frames;
+            separate_frames(&mut moved, px(3.));
+            assert_eq!(moved, frames);
+        }
     }
 }
