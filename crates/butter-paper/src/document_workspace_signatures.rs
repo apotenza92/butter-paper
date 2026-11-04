@@ -5,12 +5,12 @@
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use super::*;
+use crate::pdf_signatures::SignatureStatus;
 use crate::pdf_signatures::{
     Changes, Integrity, Revocation, SignatureReport, Trust, Verdict, document_verdict,
     signatures_checked, system_trusted_roots,
 };
 use crate::signature_trust::TrustStore;
-use crate::viewer_toolbar_strip::SignatureStatus;
 use gpui::div;
 use gpui_component::Icon;
 

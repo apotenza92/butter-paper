@@ -1754,3 +1754,57 @@ fn a_template_saved_in_another_window_appears_in_the_list(cx: &mut TestAppContex
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[path = "support/dialog_contract.rs"]
+mod dialog_contract;
+
+// Paints Root's dialog layer, as the application's windows do, so the
+// dialog's controls and backdrop can be pressed.
+struct TemplateDialogLayerHarness(Entity<TemplateManagerView>);
+
+impl Render for TemplateDialogLayerHarness {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui::ParentElement as _;
+        let _keep_manager_alive = &self.0;
+        div()
+            .size_full()
+            .children(Root::render_dialog_layer(window, cx))
+    }
+}
+
+#[gpui::test]
+fn the_template_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let manager_slot = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let manager_slot = manager_slot.clone();
+        move |window, cx| {
+            let model = TemplateManagerModel::new(
+                vec![TemplateManagerRecord::built_in(
+                    "built-in-blank",
+                    "Blank Paper",
+                    "A3 · Landscape",
+                )],
+                "built-in-blank",
+            )
+            .unwrap();
+            let manager = cx.new(|cx| TemplateManagerView::new(model, window, cx));
+            manager_slot.replace(Some(manager.clone()));
+            let harness = cx.new(|_| TemplateDialogLayerHarness(manager));
+            Root::new(harness, window, cx)
+        }
+    });
+    let manager = manager_slot.borrow().clone().unwrap();
+    let reopen = move |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| TemplateManagerView::open_dialog(&manager, window, cx));
+    };
+    reopen.clone()(cx);
+    dialog_contract::assert_dialog_dismissal(
+        cx,
+        "Templates",
+        TEMPLATE_MANAGER_ID,
+        TEMPLATE_MANAGER_CLOSE_ID,
+        dialog_contract::Outside::Closes,
+        reopen,
+    );
+}

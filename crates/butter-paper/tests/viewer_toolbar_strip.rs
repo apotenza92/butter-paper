@@ -15,10 +15,10 @@ use butter_paper::{
         PageViewControl, PageViewMode, SINGLE_PAGE_PRIMARY_ID, SINGLE_PAGE_SPLIT_ID,
     },
     viewer_toolbar_strip::{
-        EDIT_PDF_ID, FIT_BUTTON_GROUP_ID, FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset,
-        SIGNATURES_LABEL_MIN_REMS, SignatureStatus, VIEWER_SIGNATURES_ID,
-        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
-        VIEWER_TOOLBAR_MIN_REMS, VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarStrip,
+        EDIT_PDF_COMPACT_SLOT_REMS, EDIT_PDF_ID, EDIT_PDF_SLOT_MIN_REMS, FIT_BUTTON_GROUP_ID,
+        FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, VIEWER_TOOLBAR_CONTENT_ID,
+        VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID, VIEWER_TOOLBAR_MIN_REMS,
+        VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarFit, ViewerToolbarStrip, viewer_toolbar_rems,
     },
     zoom_control::{
         DEFAULT_VIEWER_ZOOM, MAX_VIEWER_ZOOM, MIN_VIEWER_ZOOM, ZOOM_GROUP_ID, ZOOM_IN_ID,
@@ -37,7 +37,13 @@ use gpui_component::Root;
 // fills ordinary widths without distributing the groups across the strip and
 // scrolls only once that intrinsic content no longer fits.
 const NORMAL_WIDTH: f32 = 720.;
-const MINIMUM_CENTER_STRIP_WIDTH: f32 = 480.;
+/// The centre controls' strip, with the page field's room for four-digit
+/// page counts.
+const MINIMUM_CENTER_STRIP_WIDTH: f32 = 480.
+    + 16.
+        * butter_paper::page_navigator::indicator_room_rems(
+            butter_paper::page_navigator::PAGE_NAVIGATOR_MAX_DIGITS,
+        );
 const CONSTRAINED_OVERFLOW_WIDTH: f32 = 320.;
 const EXPECTED_ZOOM_OUT_ID: &str = "viewer-zoom-out";
 const EXPECTED_ZOOM_IN_ID: &str = "viewer-zoom-in";
@@ -80,12 +86,17 @@ fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, Harne
             let single_page = cx.new(|_| PageViewControl::single_page());
             let zoom = cx.new(|_| ZoomControl::new());
             let toolbar = cx.new(|cx| {
-                ViewerToolbarStrip::new_with_zoom(
+                let mut toolbar = ViewerToolbarStrip::new_with_zoom(
                     continuous.clone(),
                     single_page.clone(),
                     zoom.clone(),
                     cx,
-                )
+                );
+                // The widest page field a document is budgeted for.
+                let navigator = cx.new(|_| butter_paper::page_navigator::PageNavigator::new());
+                toolbar.set_page_navigator(navigator, cx);
+                toolbar.sync_pages(0, 9_999, cx);
+                toolbar
             });
             let harness = cx.new(|_| ToolbarHarness {
                 width: px(NORMAL_WIDTH),
@@ -646,8 +657,8 @@ fn cad_toolbar_preserves_non_wrapping_targets_at_fixed_widths(cx: &mut TestAppCo
     set_width(cx, &entities.harness, MINIMUM_CENTER_STRIP_WIDTH);
     let minimum_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
     let minimum_content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-    // The controls fit a 480 px strip at their intrinsic width, so it does
-    // not scroll.
+    // The controls fit the minimum strip at their intrinsic width, so it
+    // does not scroll.
     assert_eq!(minimum_content.size.width, minimum_toolbar.size.width);
     assert!(bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID).size.width <= minimum_toolbar.size.width);
     let minimum_targets = cad_interactive_bounds(cx);
@@ -1416,58 +1427,51 @@ fn toolbar_traces_pointer_menu_escape_disabled_and_double_click(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn toolbar_centres_controls_between_edit_pdf_and_signatures_down_to_its_minimum(
+fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
     cx: &mut TestAppContext,
 ) {
-    use butter_paper::pdf_signatures::Verdict;
-
     let (cx, entities) = open_harness(cx);
     entities
         .toolbar
         .update(cx, |toolbar, cx| toolbar.set_edit_pdf(Some(false), cx));
     let minimum = 16. * VIEWER_TOOLBAR_MIN_REMS;
-    let labelled = 16. * SIGNATURES_LABEL_MIN_REMS;
-    for status in [
-        None,
-        Some(SignatureStatus::Checking),
-        Some(SignatureStatus::Checked(Verdict::Valid)),
-        Some(SignatureStatus::Checked(Verdict::Unverified)),
-        Some(SignatureStatus::Checked(Verdict::Invalid)),
-    ] {
-        entities
-            .toolbar
-            .update(cx, |toolbar, cx| toolbar.set_signatures(status, cx));
-        for width in [1400., labelled, labelled - 1., 760., minimum] {
-            set_width(cx, &entities.harness, width);
-            // The signatures label follows the width laid out last frame.
-            cx.run_until_parked();
-            cx.update(|window, cx| window.draw(cx).clear(cx));
-            let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
-            let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-            let controls = bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID);
-            let edit_pdf = bounds(cx, EDIT_PDF_ID);
-            assert_eq!(
-                content.size.width, toolbar.size.width,
-                "the toolbar scrolls at {width} with {status:?}"
-            );
+    for width in [1400., 1100., 900., minimum + 64., minimum] {
+        set_width(cx, &entities.harness, width);
+        // How much of the page navigator shows follows the width laid out
+        // last frame.
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
+        let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
+        let controls = bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID);
+        let edit_pdf = bounds(cx, EDIT_PDF_ID);
+        assert_eq!(
+            content.size.width, toolbar.size.width,
+            "the toolbar scrolls at {width}"
+        );
+        // Centred while the Edit PDF slot's width is free either side;
+        // narrower, the space opposite gives way and they move right. Narrower
+        // still, Edit PDF is its icon alone, in a slot that holds it.
+        let labelled =
+            toolbar.size.width >= px(16. * viewer_toolbar_rems(ViewerToolbarFit::Full, false, 4));
+        let room = px(16.
+            * if labelled {
+                EDIT_PDF_SLOT_MIN_REMS
+            } else {
+                EDIT_PDF_COMPACT_SLOT_REMS
+            });
+        if toolbar.size.width >= controls.size.width + room * 2. {
             assert!(
                 (controls.center().x - toolbar.center().x).abs() <= px(0.5),
-                "controls off centre at {width} with {status:?}: toolbar={toolbar:?}, controls={controls:?}"
+                "controls off centre at {width}: toolbar={toolbar:?}, controls={controls:?}"
             );
-            assert!(edit_pdf.left() >= toolbar.left() && edit_pdf.right() <= controls.left());
-            if status.is_some() {
-                let signatures = bounds(cx, VIEWER_SIGNATURES_ID);
-                assert!(
-                    signatures.left() >= controls.right() && signatures.right() <= toolbar.right(),
-                    "signatures overlap the controls at {width} with {status:?}: controls={controls:?}, signatures={signatures:?}"
-                );
-                let icon_only = signatures.size.width <= signatures.size.height;
-                assert_eq!(
-                    icon_only,
-                    width < labelled,
-                    "signatures label at {width} with {status:?}: {signatures:?}"
-                );
-            }
+        } else {
+            assert!(
+                controls.left() - toolbar.left() >= room - px(0.5),
+                "the Edit PDF slot shrank at {width}"
+            );
         }
+        assert!(edit_pdf.left() >= toolbar.left() && edit_pdf.right() <= controls.left());
+        assert!(controls.right() <= toolbar.right());
     }
 }

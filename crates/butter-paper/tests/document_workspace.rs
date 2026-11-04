@@ -67,8 +67,8 @@ use butter_paper::document_workspace::{
     DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID, DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID,
     DOCUMENT_PUBLICATION_WARNING_CLOSE_ID, DOCUMENT_RECOVERY_ALERT_ID,
     DOCUMENT_RECOVERY_PREPARATION_ALERT_ID, DOCUMENT_RECOVERY_PREPARATION_RETRY_ID,
-    DOCUMENT_RECOVERY_RETRY_ID, DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_REDACT_PENDING_ALERT_ID,
-    DOCUMENT_REDACT_TOOL_ID, DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
+    DOCUMENT_RECOVERY_RETRY_ID, DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_REDACT_TOOL_ID,
+    DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
     DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
     DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
     DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
@@ -26956,6 +26956,9 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
     scroll_annotation_target_into_view(cx, DOCUMENT_REDACT_TOOL_ID);
+    let page_layer_id =
+        Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    let page_before = cx.debug_bounds(page_layer_id).unwrap();
     let redact_button = cx
         .debug_bounds(DOCUMENT_REDACT_TOOL_ID)
         .expect("Redact must render as a real GPUI Component Button with tool-redact id");
@@ -26966,9 +26969,12 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
             .annotation_tool(request.document_id, cx)),
         Some(AnnotationTool::Redact),
     );
-    assert!(
-        cx.debug_bounds(DOCUMENT_REDACT_PENDING_ALERT_ID).is_some(),
-        "the real GPUI Component warning must remain visible while Redact is active",
+    // The warning is in the status bar, in place of the tool help: nothing
+    // above the page appears, so the page stays where it was.
+    assert_eq!(
+        cx.debug_bounds(page_layer_id).unwrap(),
+        page_before,
+        "choosing Redact must not move the page",
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.redact_pending_status_text(cx)),
@@ -28018,7 +28024,6 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
         .expect("the real GPUI Component Redact button must render");
     cx.simulate_click(redact_button.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(DOCUMENT_REDACT_PENDING_ALERT_ID).is_some());
     if let Some(accessibility_tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
         assert!(accessibility_tree.contains("Pending redaction mark"));
         assert!(accessibility_tree.contains(
@@ -45040,6 +45045,182 @@ fn press_that_dismisses_the_canvas_context_menu_draws_nothing(cx: &mut TestAppCo
         before + 1,
         "the next press draws normally"
     );
+}
+
+/// A window root that draws the in-window menu bar above the workspace, as
+/// Windows and Linux do, and optionally an occluding surface (standing in for
+/// a notification or any other unregistered layer) over the page.
+struct LayeredWorkspaceRoot {
+    menu_bar: gpui::Entity<gpui_component::menu::AppMenuBar>,
+    workspace: gpui::Entity<DocumentWorkspace>,
+    /// Space before the menu titles, so a menu can drop over the page.
+    menu_inset: std::rc::Rc<std::cell::Cell<Pixels>>,
+    occluder: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<Pixels>>>>,
+}
+
+impl gpui::Render for LayeredWorkspaceRoot {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{
+            InteractiveElement as _, ParentElement as _, Styled as _, prelude::FluentBuilder as _,
+        };
+        gpui::div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(
+                gpui::div()
+                    .h(px(28.))
+                    .pl(self.menu_inset.get())
+                    .child(self.menu_bar.clone()),
+            )
+            .child(gpui::div().flex_1().min_h_0().child(self.workspace.clone()))
+            .when_some(self.occluder.get(), |root, bounds| {
+                root.child(gpui::deferred(
+                    gpui::anchored().position(bounds.origin).child(
+                        gpui::div()
+                            .id("test-occluder")
+                            .occlude()
+                            .w(bounds.size.width)
+                            .h(bounds.size.height),
+                    ),
+                ))
+            })
+    }
+}
+
+fn layered_test_workspace(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    DocumentId,
+    std::rc::Rc<std::cell::Cell<Pixels>>,
+    std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<Pixels>>>>,
+    &mut gpui::VisualTestContext,
+) {
+    use gpui_component::GlobalState;
+    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        let items = (0..24)
+            .map(|index| gpui::MenuItem::action(format!("Item {index}"), gpui::NoAction))
+            .collect();
+        GlobalState::global_mut(cx).set_app_menus(vec![
+            gpui::Menu {
+                name: "File".into(),
+                items,
+                disabled: false,
+            }
+            .owned(),
+        ]);
+    });
+    let menu_inset = std::rc::Rc::new(std::cell::Cell::new(px(0.)));
+    let occluder = std::rc::Rc::new(std::cell::Cell::new(None));
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        let menu_inset = menu_inset.clone();
+        let occluder = occluder.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            let menu_bar = gpui_component::menu::AppMenuBar::new(cx);
+            let root = cx.new(|_| LayeredWorkspaceRoot {
+                menu_bar,
+                workspace,
+                menu_inset,
+                occluder,
+            });
+            Root::new(root, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("pan.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace.set_view_configuration(request.document_id, PageViewMode::Continuous, 400., cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    (workspace, request.document_id, menu_inset, occluder, cx)
+}
+
+#[gpui::test]
+fn pressing_an_in_window_menu_item_over_the_page_never_reaches_the_canvas(cx: &mut TestAppContext) {
+    let (workspace, document_id, menu_inset, _, cx) = layered_test_workspace(cx);
+    let rectangle_tool = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_tool.center(), Modifiers::default());
+    let before = rectangle_count(&workspace, document_id, cx);
+
+    // Put the File menu over the middle of the page, then open it.
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    menu_inset.set(viewport.center().x - px(40.));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let title = point(viewport.center().x - px(30.), px(14.));
+    cx.simulate_mouse_down(title, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(title, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    // Press an item that lies over the page and drag a little, as a hand does.
+    let item = point(title.x + px(20.), viewport.top() + px(40.));
+    cx.simulate_mouse_down(item, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        point(item.x + px(30.), item.y + px(30.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        point(item.x + px(30.), item.y + px(30.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        rectangle_count(&workspace, document_id, cx),
+        before,
+        "the menu press drew nothing on the page beneath"
+    );
+
+    // Dismiss whatever is left open, then the page draws again.
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    drag_across_viewport(cx);
+    assert_eq!(rectangle_count(&workspace, document_id, cx), before + 1);
+}
+
+#[gpui::test]
+fn a_press_on_a_surface_drawn_over_the_page_never_reaches_the_canvas(cx: &mut TestAppContext) {
+    let (workspace, document_id, _, occluder, cx) = layered_test_workspace(cx);
+    let rectangle_tool = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
+    cx.simulate_click(rectangle_tool.center(), Modifiers::default());
+    let before = rectangle_count(&workspace, document_id, cx);
+
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    occluder.set(Some(gpui::Bounds::centered_at(
+        viewport.center(),
+        size(px(240.), px(200.)),
+    )));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    drag_across_viewport(cx);
+    assert_eq!(
+        rectangle_count(&workspace, document_id, cx),
+        before,
+        "the press on the surface drew nothing on the page beneath"
+    );
+
+    occluder.set(None);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    drag_across_viewport(cx);
+    assert_eq!(rectangle_count(&workspace, document_id, cx), before + 1);
 }
 
 #[gpui::test]

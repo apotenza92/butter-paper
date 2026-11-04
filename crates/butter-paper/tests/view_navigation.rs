@@ -82,11 +82,16 @@ fn raster(width: u32, height: u32) -> RasterSurface {
     .unwrap()
 }
 
-struct Resource(Arc<AtomicBool>);
+/// A document's release, and whether it is digitally signed.
+struct Resource(Arc<AtomicBool>, bool);
 
 impl NativeDocumentResource for Resource {
     fn worker_pid(&self) -> Option<u32> {
         Some(4343)
+    }
+
+    fn digitally_signed(&self) -> bool {
+        self.1
     }
 
     fn render_page(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
@@ -133,7 +138,13 @@ impl NativeDocumentOpener for Opener {
             (0..pages.len() as u32)
                 .map(|page| ThumbnailSurface::new(page, raster(8, 10)))
                 .collect(),
-            Arc::new(Resource(Arc::new(AtomicBool::new(false)))),
+            Arc::new(Resource(
+                Arc::new(AtomicBool::new(false)),
+                request
+                    .path
+                    .file_name()
+                    .is_some_and(|name| name.as_encoded_bytes().starts_with(b"signed")),
+            )),
         )
     }
 }
@@ -1655,5 +1666,301 @@ fn page_raster_and_annotations_share_the_full_paper_bounds(cx: &mut TestAppConte
                 "Annotation coordinates must use the same paper bounds"
             );
         }
+    }
+}
+
+/// The page a page turn shows on its first frame: the height of the raster
+/// under it (the test renders encode the page as `page + 2`), or `None`
+/// while only its coarse thumbnail stands in.
+fn first_frame_raster_height(h: &mut Harness<'_>, lines: f32) -> Option<u32> {
+    // The page on screen sharpens (preview tiles promote on a timer), and
+    // only then are the pages beside it drawn.
+    h.cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    h.settle();
+    let at = h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+    h.cx.simulate_mouse_move(at, None, Modifiers::default());
+    // Dispatched without running background work, so the page's own render
+    // is still on the way, as on the frame a turn first draws.
+    h.cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Lines(point(0., lines)),
+                ..Default::default()
+            }),
+            cx,
+        )
+    });
+    let document = h.document;
+    let height = h.workspace.read_with(h.cx, |workspace, cx| {
+        workspace
+            .session(document, cx)
+            .unwrap()
+            .read(cx)
+            .current_base_raster()
+            .map(|raster| raster.height())
+    });
+    h.settle();
+    height
+}
+
+#[gpui::test]
+fn single_page_turns_show_the_next_page_sharp_on_their_first_frame(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    h.action(FitPage);
+    h.single_page_wheel_scrolls();
+    assert_eq!(h.frame().current_page, 0);
+
+    // The page beside the current one was drawn ahead: a turn shows it as
+    // its own render at once, not its thumbnail scaled up.
+    assert_eq!(first_frame_raster_height(&mut h, -3.), Some(1 + 2));
+    assert_eq!(h.frame().current_page, 1);
+    assert_eq!(first_frame_raster_height(&mut h, -3.), Some(2 + 2));
+    // The page just left is kept: turning back is as sharp.
+    assert_eq!(first_frame_raster_height(&mut h, 3.), Some(1 + 2));
+    assert_eq!(h.frame().current_page, 1);
+}
+
+fn navigator_label(h: &mut Harness<'_>) -> String {
+    h.workspace.read_with(h.cx, |workspace, cx| {
+        workspace.page_navigator().read(cx).indicator_label()
+    })
+}
+
+fn navigator_can_go(h: &mut Harness<'_>) -> (bool, bool) {
+    h.workspace.read_with(h.cx, |workspace, cx| {
+        let navigator = workspace.page_navigator().read(cx);
+        (navigator.can_go_back(), navigator.can_go_forward())
+    })
+}
+
+#[gpui::test]
+fn the_page_navigator_turns_jumps_and_takes_a_typed_page(cx: &mut TestAppContext) {
+    use butter_paper::page_navigator::{
+        PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_INPUT_ID, PAGE_LAST_ID, PAGE_NEXT_ID,
+        PAGE_PREVIOUS_ID,
+    };
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    assert_eq!(navigator_label(&mut h), "1 / 5");
+    assert_eq!(navigator_can_go(&mut h), (false, true));
+    // A disabled button takes no press.
+    h.click(PAGE_PREVIOUS_ID);
+    assert_eq!(h.frame().current_page, 0);
+
+    h.click(PAGE_NEXT_ID);
+    assert_eq!(h.frame().current_page, 1);
+    assert_eq!(navigator_label(&mut h), "2 / 5");
+    assert_eq!(navigator_can_go(&mut h), (true, true));
+    h.click(PAGE_LAST_ID);
+    assert_eq!(h.frame().current_page, 4);
+    assert_eq!(navigator_label(&mut h), "5 / 5");
+    assert_eq!(navigator_can_go(&mut h), (true, false));
+    h.click(PAGE_PREVIOUS_ID);
+    assert_eq!(h.frame().current_page, 3);
+    h.click(PAGE_FIRST_ID);
+    assert_eq!(h.frame().current_page, 0);
+
+    // Clicking the page number opens it for typing, selected, so a page
+    // typed replaces it; Enter goes there.
+    h.click(PAGE_INDICATOR_ID);
+    assert!(h.cx.debug_bounds(PAGE_INPUT_ID).is_some());
+    h.cx.simulate_input("3");
+    h.cx.simulate_keystrokes("enter");
+    h.settle();
+    assert_eq!(h.frame().current_page, 2);
+    assert!(h.cx.debug_bounds(PAGE_INPUT_ID).is_none());
+    assert_eq!(navigator_label(&mut h), "3 / 5");
+
+    // A page past the end goes to the last.
+    h.click(PAGE_INDICATOR_ID);
+    h.cx.simulate_input("40");
+    h.cx.simulate_keystrokes("enter");
+    h.settle();
+    assert_eq!(h.frame().current_page, 4);
+
+    // Letters that are tool shortcuts type into the field instead, and
+    // Escape keeps the page shown.
+    let tool = h.workspace.read_with(h.cx, |workspace, cx| {
+        workspace.annotation_tool(h.document, cx)
+    });
+    h.click(PAGE_INDICATOR_ID);
+    h.cx.simulate_input("ve");
+    h.cx.simulate_keystrokes("escape");
+    h.settle();
+    assert!(h.cx.debug_bounds(PAGE_INPUT_ID).is_none());
+    assert_eq!(h.frame().current_page, 4);
+    assert_eq!(
+        h.workspace.read_with(h.cx, |workspace, cx| workspace
+            .annotation_tool(h.document, cx)),
+        tool
+    );
+
+    // Continuous view goes to the page too.
+    h.action(ContinuousView);
+    h.click(PAGE_FIRST_ID);
+    let frame = h.frame();
+    assert_eq!(frame.current_page, 0, "{frame:?}");
+    h.click(PAGE_INDICATOR_ID);
+    h.cx.simulate_input("4");
+    h.cx.simulate_keystrokes("enter");
+    let frame = h.frame();
+    assert_eq!(frame.current_page, 3, "{frame:?}");
+    assert!(
+        frame
+            .page(3)
+            .is_some_and(|page| page.top() <= frame.viewport.top() + px(TOLERANCE)
+                && page.bottom() > frame.viewport.top()),
+        "the page typed is in view: {frame:?}"
+    );
+}
+
+#[gpui::test]
+fn a_narrow_toolbar_keeps_the_page_field_and_drops_the_page_buttons(cx: &mut TestAppContext) {
+    use butter_paper::page_navigator::{
+        PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_LAST_ID, PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
+    };
+    // A four-digit page count: the widest page field the least window holds.
+    let mut h = setup(cx, &PAGES_1000);
+    let shown = |h: &mut Harness<'_>| {
+        [
+            PAGE_FIRST_ID,
+            PAGE_PREVIOUS_ID,
+            PAGE_INDICATOR_ID,
+            PAGE_NEXT_ID,
+            PAGE_LAST_ID,
+        ]
+        .map(|id| h.cx.debug_bounds(id).is_some())
+    };
+    assert_eq!(shown(&mut h), [true; 5]);
+    // The least window: the page field alone, and the toolbar still fits.
+    h.cx.simulate_resize(butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE);
+    h.settle();
+    h.settle();
+    assert_eq!(shown(&mut h), [false, false, true, false, false]);
+    let toolbar = h.cx.debug_bounds("viewer-toolbar").unwrap();
+    let content = h.cx.debug_bounds("viewer-toolbar-content").unwrap();
+    assert_eq!(
+        content.size.width, toolbar.size.width,
+        "the toolbar scrolls"
+    );
+    // The whole toolbar turns full at once: just narrower than it needs,
+    // still compact; at its width, Edit PDF's label and every page button.
+    let full =
+        16. * butter_paper::viewer_toolbar_strip::viewer_toolbar_rems(
+            butter_paper::viewer_toolbar_strip::ViewerToolbarFit::Full,
+            false,
+            4,
+        ) + f32::from(butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE.width)
+            - 16. * butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS;
+    let labelled =
+        |h: &mut Harness<'_>| h.cx.debug_bounds("viewer-edit-pdf").unwrap().size.width > px(100.);
+    h.cx.simulate_resize(size(px(full - 1.), px(800.)));
+    h.settle();
+    h.settle();
+    assert_eq!(shown(&mut h), [false, false, true, false, false]);
+    assert!(!labelled(&mut h));
+    h.cx.simulate_resize(size(px(full), px(800.)));
+    h.settle();
+    h.settle();
+    assert_eq!(shown(&mut h), [true; 5]);
+    assert!(labelled(&mut h));
+}
+
+static PAGES_999: [(f32, f32); 999] = [(612., 792.); 999];
+static PAGES_1000: [(f32, f32); 1000] = [(612., 792.); 1000];
+
+/// Half a 1920-pixel screen, less Windows' invisible resize borders.
+const HALF_1080P_WIDTH: f32 = 944.;
+
+#[gpui::test]
+fn the_whole_toolbar_fits_half_a_1080p_screen_with_sidebars_collapsed_999(cx: &mut TestAppContext) {
+    whole_toolbar_fits_half_1080p(cx, &PAGES_999);
+}
+
+#[gpui::test]
+fn the_whole_toolbar_fits_half_a_1080p_screen_with_sidebars_collapsed_1000(
+    cx: &mut TestAppContext,
+) {
+    whole_toolbar_fits_half_1080p(cx, &PAGES_1000);
+}
+
+#[gpui::test]
+fn a_signed_document_s_whole_toolbar_fits_half_a_1080p_screen(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{EDIT_PDF_ID, VIEWER_SIGNATURES_ID};
+    // A real signed file, so its signatures check, shown as a document of
+    // a thousand pages.
+    let signed = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/signatures/signed-rsa.pdf"
+    );
+    let (mut h, _) = setup_tabs(cx, &PAGES_1000, &[signed]);
+    let wide_edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
+    whole_toolbar_fits(&mut h, "signed");
+    // Not compact: Edit PDF keeps its label.
+    let edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
+    assert_eq!(edit_pdf.size, wide_edit_pdf.size);
+    let toolbar = h.cx.debug_bounds("viewer-toolbar").unwrap();
+    let controls =
+        h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
+            .unwrap();
+    let signatures =
+        h.cx.debug_bounds(VIEWER_SIGNATURES_ID)
+            .expect("the signatures button shows");
+    assert!(
+        signatures.left() >= controls.right() && signatures.right() <= toolbar.right(),
+        "{signatures:?} beside {controls:?} in {toolbar:?}"
+    );
+}
+
+fn whole_toolbar_fits_half_1080p(cx: &mut TestAppContext, pages: &'static [(f32, f32)]) {
+    let mut h = setup(cx, pages);
+    whole_toolbar_fits(&mut h, &pages.len().to_string());
+}
+
+fn whole_toolbar_fits(h: &mut Harness<'_>, document: &str) {
+    use butter_paper::page_navigator::{
+        PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_LAST_ID, PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
+    };
+    use butter_paper::viewer_toolbar_strip::{
+        EDIT_PDF_ID, VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
+    };
+    h.cx.simulate_resize(size(px(HALF_1080P_WIDTH), px(1000.)));
+    h.settle();
+    h.settle();
+    let toolbar = h.cx.debug_bounds(VIEWER_TOOLBAR_ID).unwrap();
+    let content = h.cx.debug_bounds(VIEWER_TOOLBAR_CONTENT_ID).unwrap();
+    assert_eq!(
+        content.size.width, toolbar.size.width,
+        "the toolbar scrolls"
+    );
+    let controls = h.cx.debug_bounds(VIEWER_TOOLBAR_CONTROLS_ID).unwrap();
+    let edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
+    assert!(
+        edit_pdf.right() <= controls.left(),
+        "Edit PDF overlaps the controls"
+    );
+    assert!(controls.right() <= toolbar.right());
+    for id in [
+        PAGE_FIRST_ID,
+        PAGE_PREVIOUS_ID,
+        PAGE_INDICATOR_ID,
+        PAGE_NEXT_ID,
+        PAGE_LAST_ID,
+        "viewer-zoom-menu",
+        "viewer-fit-width",
+        "viewer-fit-page",
+        "continuous-view-split",
+        "single-page-view-split",
+    ] {
+        let bounds =
+            h.cx.debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} hidden at half 1080p for {document}"));
+        assert!(
+            bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(),
+            "{id}"
+        );
     }
 }

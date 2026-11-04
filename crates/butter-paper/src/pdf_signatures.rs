@@ -187,6 +187,14 @@ pub enum Trust {
     NotForSigning,
 }
 
+/// What the status bar's signatures button shows for a digitally signed
+/// document.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignatureStatus {
+    Checking,
+    Checked(Verdict),
+}
+
 /// What a signature, or a document's signatures together, amount to.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Verdict {

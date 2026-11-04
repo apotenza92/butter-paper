@@ -3,7 +3,8 @@ name: CI
 # Tests every push to main and every pull request. Releasing runs no tests
 # (see AGENTS.md); this is where they run. macOS runs the full suite and the
 # real-PDFium tests, Windows runs clippy and the tests, and Linux compiles
-# every target.
+# every target. On all three, gui-smoke runs the real app through
+# crates/butter-paper/tests/review/gui-smoke.txt.
 
 permissions:
   contents: read
@@ -108,3 +109,94 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Compile every target
         run: cargo check --workspace --all-targets --locked
+
+  gui-smoke:
+    # The real app on each platform, driven by the review driver through
+    # crates/butter-paper/tests/review/gui-smoke.txt: each dialog closes by
+    # Cancel or its X, Escape and a press beside it, and Sign with
+    # Certificate says over the page what to draw. A failed expectation exits
+    # the app with 1 and fails the job. Windows and Linux click through the
+    # operating system (BP_REVIEW_OS_CLICK_CMD); macOS clicks inside the app,
+    # as macOS asks for permission to post pointer events.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, windows-2025, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux prerequisites, a virtual display and software Vulkan
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential clang libdbus-1-dev libfontconfig-dev libvulkan-dev \
+            libx11-dev libxcb1-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config \
+            xvfb xauth xdotool imagemagick mesa-vulkan-drivers fonts-dejavu-core
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: gui-smoke
+      - name: Build with the review driver
+        run: cargo build --locked -p butter-paper --bins --features review-driver
+      - name: Run the GUI smoke check (macOS and Linux)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          library="$(cargo xtask pdfium | tail -1)"
+          review="$PWD/target/gui-smoke"
+          mkdir -p "$review"
+          cp crates/butter-paper/tests/fixtures/text-edit/word-table.pdf "$review/fixture.pdf"
+          export BP_NATIVE_DEVELOPMENT=1
+          export BP_GPUI_DATA_DIR="$review/profile"
+          export BP_PDFIUM_LIBRARY="$library"
+          export BP_REVIEW_SCRIPT="$PWD/crates/butter-paper/tests/review/gui-smoke.txt"
+          export BP_REVIEW_OUT="$review/captures"
+          status=0
+          if [ "$RUNNER_OS" = Linux ]; then
+            # No window manager under Xvfb: the window sits where the script
+            # places it, so screen points are exact.
+            export BP_REVIEW_CAPTURE_CMD='import -window root {path}'
+            export BP_REVIEW_OS_CLICK_CMD='xdotool mousemove {x} {y} click 1'
+            timeout 600 xvfb-run --auto-servernum \
+              --server-args="-screen 0 1600x1100x24" \
+              target/debug/butter-paper "$review/fixture.pdf" || status=$?
+          else
+            timeout 600 target/debug/butter-paper "$review/fixture.pdf" || status=$?
+          fi
+          grep -E '^(ok|FAIL)' "$review/captures/review.log" || true
+          test "$status" = 0 && test ! -e "$review/captures/FAILED"
+      - name: Run the GUI smoke check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $library = (cargo xtask pdfium | Select-Object -Last 1).Trim()
+          $review = Join-Path $PWD 'target\gui-smoke'
+          New-Item -ItemType Directory -Force $review | Out-Null
+          Copy-Item crates\butter-paper\tests\fixtures\text-edit\word-table.pdf "$review\fixture.pdf"
+          $env:BP_NATIVE_DEVELOPMENT = '1'
+          $env:BP_GPUI_DATA_DIR = "$review\profile"
+          $env:BP_PDFIUM_LIBRARY = $library
+          $env:BP_REVIEW_SCRIPT = Join-Path $PWD 'crates\butter-paper\tests\review\gui-smoke.txt'
+          $env:BP_REVIEW_OUT = "$review\captures"
+          $click = Join-Path $PWD 'scripts\windows\click.ps1'
+          # Scripts may not run by default; this one is ours.
+          $env:BP_REVIEW_OS_CLICK_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -File '$click' {x} {y}"
+          $app = Start-Process -FilePath target\debug\butter-paper.exe `
+            -ArgumentList "`"$review\fixture.pdf`"" -PassThru
+          # Read the handle now, or ExitCode stays empty after the exit.
+          $null = $app.Handle
+          if (-not $app.WaitForExit(600000)) { Stop-Process -Id $app.Id -Force; throw 'the GUI smoke check hung' }
+          Select-String -Path "$review\captures\review.log" -Pattern '^(ok|FAIL)' | ForEach-Object { $_.Line }
+          if ($app.ExitCode -ne 0 -or (Test-Path "$review\captures\FAILED")) { throw "the GUI smoke check failed ($($app.ExitCode))" }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: gui-smoke-${{ runner.os }}
+          path: target/gui-smoke/captures
+          if-no-files-found: warn

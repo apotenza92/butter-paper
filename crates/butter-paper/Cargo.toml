@@ -1,6 +1,6 @@
 [package]
 name = "butter-paper"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 publish = false
 license = "MIT"
@@ -26,8 +26,8 @@ dunce = "1.0.5"
 flate2 = "1.1.10"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "01f2bb538939e098a32e3a3745f67790d70d6b4f" }
-gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "01f2bb538939e098a32e3a3745f67790d70d6b4f" }
+gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "f30c8e026298f01dfda8d1a2948677871dfd0f69" }
+gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "f30c8e026298f01dfda8d1a2948677871dfd0f69" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "crypto-rust", "sync-secret-service", "windows-native"] }
 libc = "0.2"

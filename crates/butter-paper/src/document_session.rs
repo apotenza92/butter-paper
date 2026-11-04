@@ -213,6 +213,28 @@ impl DocumentSaveFailure {
     }
 }
 
+/// A whole-page image of a page beside the current one in Single Page,
+/// drawn as the page's own render is, so turning to it shows it sharp at
+/// once rather than from its coarse thumbnail.
+pub(crate) struct AdjacentPageImage {
+    pub(crate) page_index: u32,
+    pub(crate) key: AdjacentPageKey,
+    pub(crate) base_raster: RasterSurface,
+    pub(crate) image: Arc<RenderImage>,
+    /// Drawn ahead for this page, rather than kept from when it was shown:
+    /// a turn to it takes it as the page's render.
+    pub(crate) rendered_ahead: bool,
+}
+
+/// What an adjacent page image was drawn from; it stands in for the page
+/// only while all of it still holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AdjacentPageKey {
+    pub(crate) resource_epoch: u64,
+    pub(crate) rotation: PageRotation,
+    pub(crate) content_revision: u64,
+}
+
 pub(crate) struct ThumbnailPresentation {
     pub(crate) page_index: u32,
     pub(crate) base_raster: RasterSurface,
@@ -355,9 +377,12 @@ pub struct NativeDocumentSession {
     /// The page `current_image` and `current_base_raster` show: in
     /// Continuous view the current page follows scrolling and can differ.
     pub(crate) current_image_page: Option<u32>,
-    /// The page shown from its thumbnail while its render is on the way;
-    /// `current_base_raster` is then empty.
+    /// The page shown from its thumbnail, or from its adjacent page image,
+    /// while its render is on the way; `current_base_raster` is empty when
+    /// it shows the thumbnail.
     pub(crate) placeholder_page: Option<u32>,
+    /// Whole-page images of the pages either side of the current one.
+    pub(crate) adjacent_page_images: Vec<AdjacentPageImage>,
     pub(crate) thumbnails: Vec<ThumbnailPresentation>,
     pub(crate) thumbnail_requests: HashMap<u32, ThumbnailRequestState>,
     /// Bumped when a page's drawn content changes without a new resource
@@ -435,6 +460,7 @@ impl NativeDocumentSession {
             current_image: None,
             current_image_page: None,
             placeholder_page: None,
+            adjacent_page_images: Vec::new(),
             thumbnails: Vec::new(),
             thumbnail_requests: HashMap::new(),
             thumbnail_content_revisions: HashMap::new(),
@@ -835,6 +861,8 @@ impl NativeDocumentSession {
             .extend(retired.into_iter().map(|thumbnail| thumbnail.image));
         self.thumbnail_requests.clear();
         self.thumbnail_content_revisions.clear();
+        // Pages moved: an image may no longer be of the page at its index.
+        self.retire_adjacent_page_images(|_| false);
         self.page_content_geometry_requests.clear();
         self.page_content_geometry_lru.clear();
         // The current page stays the page it was, or the nearest left.
@@ -1077,6 +1105,84 @@ impl NativeDocumentSession {
                 .sum();
         }
         Ok(())
+    }
+
+    /// What a whole-page image of `page_index` drawn now would show.
+    pub(crate) fn adjacent_page_key(&self, page_index: u32) -> Option<AdjacentPageKey> {
+        let rotation = self
+            .page_rotation(page_index)
+            .or_else(|| self.source_page_rotations.get(page_index as usize).copied())?;
+        Some(AdjacentPageKey {
+            resource_epoch: self.resource_epoch,
+            rotation,
+            content_revision: self
+                .thumbnail_content_revisions
+                .get(&page_index)
+                .copied()
+                .unwrap_or(0),
+        })
+    }
+
+    /// The adjacent page image of `page_index`, if it still shows the page.
+    pub(crate) fn adjacent_page_image(&self, page_index: u32) -> Option<&AdjacentPageImage> {
+        let key = self.adjacent_page_key(page_index)?;
+        self.adjacent_page_images
+            .iter()
+            .find(|image| image.page_index == page_index && image.key == key)
+    }
+
+    /// Keeps `base_raster` of `page_index` as an adjacent page image, if
+    /// the page still sits beside the current one and `key` still holds.
+    pub(crate) fn keep_adjacent_page_image(
+        &mut self,
+        page_index: u32,
+        key: AdjacentPageKey,
+        base_raster: RasterSurface,
+        image: Arc<RenderImage>,
+        rendered_ahead: bool,
+    ) -> bool {
+        if page_index.abs_diff(self.current_page) != 1
+            || self.adjacent_page_key(page_index) != Some(key)
+        {
+            self.retired_images.push(image);
+            return false;
+        }
+        self.retire_adjacent_page_images(|kept| kept.page_index != page_index);
+        self.adjacent_page_images.push(AdjacentPageImage {
+            page_index,
+            key,
+            base_raster,
+            image,
+            rendered_ahead,
+        });
+        self.prune_adjacent_page_images();
+        true
+    }
+
+    /// Drops the adjacent page images no longer beside the current page or
+    /// no longer showing their page.
+    pub(crate) fn prune_adjacent_page_images(&mut self) {
+        let current = self.current_page;
+        let keys = self
+            .adjacent_page_images
+            .iter()
+            .map(|image| self.adjacent_page_key(image.page_index))
+            .collect::<Vec<_>>();
+        let mut index = 0;
+        self.retire_adjacent_page_images(|image| {
+            let keep = image.page_index.abs_diff(current) == 1 && keys[index] == Some(image.key);
+            index += 1;
+            keep
+        });
+    }
+
+    fn retire_adjacent_page_images(&mut self, mut keep: impl FnMut(&AdjacentPageImage) -> bool) {
+        let (kept, removed) = std::mem::take(&mut self.adjacent_page_images)
+            .into_iter()
+            .partition::<Vec<_>, _>(|image| keep(image));
+        self.adjacent_page_images = kept;
+        self.retired_images
+            .extend(removed.into_iter().map(|image| image.image));
     }
 
     /// Unloads the thumbnails furthest from the rows shown until those

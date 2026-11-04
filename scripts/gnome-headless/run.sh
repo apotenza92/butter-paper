@@ -40,9 +40,16 @@ exec dbus-run-session -- sh -c '
   sleep 2
   "$here/key.py" ff1b  # leave the overview GNOME opens at login
   if [ "$x11" = 1 ]; then
-    new=$(ls /tmp/.X11-unix | sort | grep -vxF "$before" | head -1)
+    # The display Mutter names in its log; its socket may be abstract, with
+    # no file in /tmp/.X11-unix, so a new file there is only the fallback.
+    new=$(sed -n "s/.*Using public X11 display :\([0-9]*\).*/\1/p" "$log" | tail -1)
+    [ -n "$new" ] || new=$(ls /tmp/.X11-unix | sort | grep -vxF "$before" | head -1)
     [ -n "$new" ] || { echo "Xwayland did not start; see $log" >&2; exit 1; }
     export DISPLAY=":${new#X}"
+    # Xwayland under Mutter only admits clients with its cookie: the newest
+    # auth file, written as Xwayland started for this session.
+    XAUTHORITY=$(ls -t "$XDG_RUNTIME_DIR"/.mutter-Xwaylandauth.* 2>/dev/null | head -1)
+    export XAUTHORITY
     unset WAYLAND_DISPLAY
     "$@"
   else

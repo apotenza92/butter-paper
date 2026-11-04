@@ -1,17 +1,24 @@
 //! Convert to Word Document: Butter Paper's own PDF to Word (`.docx`)
 //! converter, with no Word, LibreOffice or other converter installed.
 //!
-//! Each page is read as Edit PDF Content reads it: paragraphs with their
-//! runs (font family, size, bold, italic, underline, colour), alignment and
-//! line spacing; tables the structure tree declares, and grids the page
-//! rules on all sides; and the images its content draws. They are written
-//! as flowing Word content in reading order, top to bottom: paragraphs as
-//! paragraphs (never text boxes or frames), tables as Word tables on their
-//! column grid with merged cells kept, images inline. The space above each
-//! comes from the gap above it on the page; each page is a section of its
-//! own size and margins. Fonts are named, not embedded. Columns, lists,
-//! headers and footers, and tables without rules are not recognised yet:
-//! their text flows as plain paragraphs.
+//! A page that reads as a document is read as Edit PDF Content reads it:
+//! paragraphs with their runs (font family, size, bold, italic, underline,
+//! colour), alignment and line spacing; tables the structure tree declares,
+//! and grids the page rules on all sides; and the images its content draws.
+//! They are written as flowing Word content in reading order, top to
+//! bottom: paragraphs as paragraphs, tables as Word tables on their column
+//! grid with merged cells kept, images inline. The space above each comes
+//! from the gap above it on the page; each page is a section of its own
+//! size and margins. Columns, lists, headers and footers, and tables
+//! without rules are not recognised yet: their text flows as plain
+//! paragraphs.
+//!
+//! A page flowing text cannot hold (a sheet larger than A3, a drawing or
+//! map, text at an angle or over an image) keeps its layout instead
+//! ([`crate::docx_fixed`]): its drawings and images are pictures behind its
+//! text, paths as SVG, and each line of text is a text box at its place.
+//! Either way the document has the PDF's pages, one section each. Fonts are
+//! named, not embedded.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -90,7 +97,7 @@ pub fn convert(
     // The reader is careful, but a PDF is outside data: a panic in it is a
     // failed conversion, not a crashed app.
     let converted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        docx_from_pdf_with_progress(&bytes, progress)
+        docx_from_pdf_with_progress(&bytes, None, progress)
     }))
     .map_err(|_| "The PDF could not be converted to a Word document.".to_owned())??;
     let Some(converted) = converted else {
@@ -115,7 +122,15 @@ pub fn convert(
 
 /// The Word document for PDF `pdf`.
 pub fn docx_from_pdf(pdf: &[u8]) -> Result<Vec<u8>, String> {
-    docx_from_pdf_with_progress(pdf, &mut |_| true)
+    docx_from_pdf_with_progress(pdf, None, &mut |_| true)
+        .map(|converted| converted.expect("never stopped"))
+}
+
+/// The Word document of pages `pages` (counted from zero) of PDF `pdf`,
+/// read as part of the whole document (fonts it shares between pages
+/// included).
+pub fn docx_from_pdf_pages(pdf: &[u8], pages: std::ops::Range<usize>) -> Result<Vec<u8>, String> {
+    docx_from_pdf_with_progress(pdf, Some(pages), &mut |_| true)
         .map(|converted| converted.expect("never stopped"))
 }
 
@@ -123,6 +138,7 @@ pub fn docx_from_pdf(pdf: &[u8]) -> Result<Vec<u8>, String> {
 /// returned `false` to stop.
 fn docx_from_pdf_with_progress(
     pdf: &[u8],
+    only: Option<std::ops::Range<usize>>,
     progress: &mut dyn FnMut(ConvertStep) -> bool,
 ) -> Result<Option<Vec<u8>>, String> {
     let document =
@@ -132,7 +148,13 @@ fn docx_from_pdf_with_progress(
     }
     // Every page's object, found once: finding one page by its number
     // walks the whole page tree.
-    let page_ids = document.get_pages().into_values().collect::<Vec<_>>();
+    let mut page_ids = document.get_pages().into_values().collect::<Vec<_>>();
+    let mut first_page = 0;
+    if let Some(only) = only {
+        let end = only.end.min(page_ids.len());
+        first_page = only.start.min(end);
+        page_ids = page_ids[first_page..end].to_vec();
+    }
     let count = page_ids.len();
     if !progress(ConvertStep::Page { done: 0, count }) {
         return Ok(None);
@@ -145,7 +167,7 @@ fn docx_from_pdf_with_progress(
     let fonts = FontCache::default();
     in_parallel(
         &page_ids,
-        |index, page_id| read_page(&document, index as u32, *page_id, &fonts),
+        |index, page_id| read_page(&document, (first_page + index) as u32, *page_id, &fonts),
         |index, page| {
             done += 1;
             match page {
@@ -173,8 +195,9 @@ fn docx_from_pdf_with_progress(
         return Ok(None);
     }
     let mut pages = pages.into_iter().flatten().collect::<Vec<_>>();
-    let media = embed_images(&document, &mut pages);
-    Ok(Some(write_docx(&pages, &media)))
+    let mut media = embed_images(&document, &mut pages);
+    let fallback = embed_svgs(&mut pages, &mut media);
+    Ok(Some(write_docx(&pages, &media, fallback)))
 }
 
 /// Runs `work` on each of `items` across the machine's cores, taking them in
@@ -222,6 +245,9 @@ struct Page {
     /// Left, bottom, right, top.
     page_box: [f64; 4],
     items: Vec<Item>,
+    /// The page keeps the PDF's layout instead of flowing (`items` is then
+    /// empty).
+    fixed: Option<crate::docx_fixed::FixedPage>,
 }
 
 enum Item {
@@ -292,6 +318,11 @@ struct Image {
 struct Media {
     bytes: Vec<u8>,
     extension: &'static str,
+    /// The image's soft mask, when it is one opacity everywhere or opaque
+    /// within a rectangle and clear outside it: drawn as the picture's
+    /// opacity and crop instead of in its pixels.
+    alpha: f64,
+    crop: Option<[f64; 4]>,
 }
 
 fn read_page(
@@ -311,6 +342,25 @@ fn read_page(
     // Shared by each paragraph's reflow rather than copied for each.
     let layer = Arc::new(layer);
     let page_box = layer.page_box.unwrap_or([0., 0., 612., 792.]);
+    let graphics =
+        crate::pdf_page_graphics::page_graphics(document, page_id, page_box, &|object| {
+            image_bytes(document, object)
+        });
+    if crate::docx_fixed::keeps_layout(&layer, &graphics) {
+        let scale = crate::docx_fixed::page_scale(page_box);
+        let lines = crate::docx_fixed::fixed_lines(&layer, page_box, &graphics, scale);
+        return Ok(Page {
+            page_box,
+            items: Vec::new(),
+            fixed: Some(crate::docx_fixed::FixedPage {
+                scale,
+                graphics,
+                lines,
+                svg_media: Vec::new(),
+                picture_media: Vec::new(),
+            }),
+        });
+    }
     // Declared tables and the grids the page rules (an untagged page's).
     let declared = page_tables(&layer);
     let blocks = paragraph_blocks_in(&layer, &declared);
@@ -365,11 +415,11 @@ fn read_page(
         }
     }
     // Text Edit PDF cannot change still converts, a line at a time.
-    for line in layer
-        .lines
-        .iter()
-        .filter(|line| line.read_only.is_some() && !line.text.trim().is_empty())
-    {
+    for line in layer.lines.iter().filter(|line| {
+        line.read_only.is_some()
+            && !crate::docx_fixed::invisible(line)
+            && !line.text.trim().is_empty()
+    }) {
         if let Some(para) = paragraph(&layer, &[line], &[false], TextBlockAlignment::Left, None) {
             place(para, None, line);
         }
@@ -398,7 +448,11 @@ fn read_page(
         let (a, b) = (a.bounds(), b.bounds());
         b[3].total_cmp(&a[3]).then(a[0].total_cmp(&b[0]))
     });
-    Ok(Page { page_box, items })
+    Ok(Page {
+        page_box,
+        items,
+        fixed: None,
+    })
 }
 
 /// The paragraph of `lines`, joined as Edit PDF joins them: a wrap is a
@@ -541,7 +595,7 @@ fn run_style(
 /// Roman bold, `LiberationSans-Italic` Liberation Sans italic. A name that
 /// says nothing (`F1`, a subset's `CIDFont+F2`) is the matching common
 /// family.
-fn font_family(
+pub(crate) fn font_family(
     postscript: &str,
     fallback: crate::pdf_text_edit::FallbackFamily,
 ) -> (String, bool, bool) {
@@ -620,17 +674,25 @@ fn embed_images(document: &Document, pages: &mut [Page]) -> Vec<Media> {
     for page in pages.iter() {
         for item in &page.items {
             if let Item::Image(image) = item {
-                slots.entry(image.object).or_insert_with(|| {
-                    objects.push(image.object);
+                slots.entry((image.object, false)).or_insert_with(|| {
+                    objects.push((image.object, false));
                     objects.len() - 1
                 });
             }
         }
+        for image in fixed_pictures(page) {
+            slots
+                .entry((image.object, image.over_paper))
+                .or_insert_with(|| {
+                    objects.push((image.object, image.over_paper));
+                    objects.len() - 1
+                });
+        }
     }
-    let mut encoded: Vec<Option<(Vec<u8>, &'static str)>> = vec![None; objects.len()];
+    let mut encoded: Vec<Option<EncodedImage>> = (0..objects.len()).map(|_| None).collect();
     in_parallel(
         &objects,
-        |_, object| image_bytes(document, *object),
+        |_, (object, over_paper)| encode_image(document, *object, *over_paper),
         |index, bytes| {
             encoded[index] = bytes;
             true
@@ -641,14 +703,43 @@ fn embed_images(document: &Document, pages: &mut [Page]) -> Vec<Media> {
     let numbers = encoded
         .into_iter()
         .map(|bytes| {
-            let (bytes, extension) = bytes?;
-            media.push(Media { bytes, extension });
+            let encoded = bytes?;
+            media.push(Media {
+                bytes: encoded.bytes,
+                extension: encoded.extension,
+                alpha: encoded.alpha,
+                crop: encoded.crop,
+            });
             Some(media.len() - 1)
         })
         .collect::<Vec<_>>();
-    for page in pages {
+    for page in pages.iter_mut() {
+        let pictures = fixed_pictures(page)
+            .map(|image| numbers[slots[&(image.object, image.over_paper)]])
+            .collect::<Vec<_>>();
+        if let Some(fixed) = &mut page.fixed {
+            // Pictures that cannot be encoded are left out.
+            let mut kept = pictures.into_iter();
+            fixed.graphics.layers.retain(|layer| match layer {
+                crate::pdf_page_graphics::GraphicsLayer::Picture(_) => {
+                    kept.next().flatten().is_some()
+                }
+                crate::pdf_page_graphics::GraphicsLayer::Svg(_) => true,
+            });
+            fixed.picture_media = fixed
+                .graphics
+                .layers
+                .iter()
+                .filter_map(|layer| match layer {
+                    crate::pdf_page_graphics::GraphicsLayer::Picture(image) => {
+                        numbers[slots[&(image.object, image.over_paper)]]
+                    }
+                    crate::pdf_page_graphics::GraphicsLayer::Svg(_) => None,
+                })
+                .collect();
+        }
         page.items.retain_mut(|item| match item {
-            Item::Image(image) => match numbers[slots[&image.object]] {
+            Item::Image(image) => match numbers[slots[&(image.object, false)]] {
                 Some(number) => {
                     image.media = number;
                     true
@@ -660,6 +751,67 @@ fn embed_images(document: &Document, pages: &mut [Page]) -> Vec<Media> {
     }
     media
 }
+
+/// The pictures a fixed page places, in layer order.
+fn fixed_pictures(page: &Page) -> impl Iterator<Item = &crate::pdf_page_graphics::PlacedImage> {
+    page.fixed.iter().flat_map(|fixed| {
+        fixed
+            .graphics
+            .layers
+            .iter()
+            .filter_map(|layer| match layer {
+                crate::pdf_page_graphics::GraphicsLayer::Picture(image) => Some(image),
+                crate::pdf_page_graphics::GraphicsLayer::Svg(_) => None,
+            })
+    })
+}
+
+/// Adds each fixed page's SVG layers to the document's media, moving them
+/// out of the pages, and the picture shown where SVG is not drawn.
+fn embed_svgs(pages: &mut [Page], media: &mut Vec<Media>) -> Option<usize> {
+    let mut fallback = None;
+    for page in pages {
+        let Some(fixed) = &mut page.fixed else {
+            continue;
+        };
+        let [left, bottom, right, top] = page.page_box;
+        let size = ((right - left) * fixed.scale, (top - bottom) * fixed.scale);
+        for layer in &mut fixed.graphics.layers {
+            if let crate::pdf_page_graphics::GraphicsLayer::Svg(svg) = layer {
+                // Its own size is the picture's: LibreOffice draws an SVG
+                // shown at another size as a blurred bitmap.
+                let svg = crate::pdf_page_graphics::with_display_size(std::mem::take(svg), size);
+                media.push(Media {
+                    bytes: svg.into_bytes(),
+                    extension: "svg",
+                    alpha: 1.,
+                    crop: None,
+                });
+                fixed.svg_media.push(media.len() - 1);
+                if fallback.is_none() {
+                    media.push(Media {
+                        bytes: TRANSPARENT_PNG.to_vec(),
+                        extension: "png",
+                        alpha: 1.,
+                        crop: None,
+                    });
+                    fallback = Some(media.len() - 1);
+                }
+            }
+        }
+    }
+    fallback
+}
+
+/// A transparent pixel: what a word processor without SVG shows for a
+/// drawing layer.
+const TRANSPARENT_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
 
 fn resolved<'a>(document: &'a Document, object: &'a Object) -> Option<&'a Object> {
     document.dereference(object).ok().map(|(_, object)| object)
@@ -737,7 +889,185 @@ fn filters(dict: &lopdf::Dictionary, document: &Document) -> Vec<Vec<u8>> {
     }
 }
 
+/// An image as the document embeds it.
+struct EncodedImage {
+    bytes: Vec<u8>,
+    extension: &'static str,
+    alpha: f64,
+    crop: Option<[f64; 4]>,
+}
+
+/// What an image's soft mask does.
+enum MaskEffect {
+    /// Nothing: it is opaque everywhere.
+    Opaque,
+    /// One opacity everywhere.
+    Uniform(f64),
+    /// Opaque within a rectangle (fractions cut from the left, top, right
+    /// and bottom) and clear outside it.
+    Crop([f64; 4]),
+    /// Anything else, drawn in the picture's own alpha.
+    Soft,
+}
+
+fn mask_effect(document: &Document, mask: &Object) -> MaskEffect {
+    let Some(stream) = resolved(document, mask).and_then(|mask| mask.as_stream().ok()) else {
+        return MaskEffect::Opaque;
+    };
+    let dimension = |key: &[u8]| {
+        stream
+            .dict
+            .get(key)
+            .ok()
+            .and_then(|value| resolved(document, value))
+            .and_then(|value| value.as_i64().ok())
+    };
+    let (Some(width), Some(height)) = (dimension(b"Width"), dimension(b"Height")) else {
+        return MaskEffect::Soft;
+    };
+    let bits = dimension(b"BitsPerComponent").unwrap_or(8);
+    let Ok(alpha) = stream.decompressed_content() else {
+        return MaskEffect::Soft;
+    };
+    let (width, height) = (width.max(1) as usize, height.max(1) as usize);
+    if bits != 8 || alpha.len() < width * height {
+        return MaskEffect::Soft;
+    }
+    let alpha = &alpha[..width * height];
+    let first = alpha[0];
+    if alpha.iter().all(|value| *value == first) {
+        return match first {
+            255 => MaskEffect::Opaque,
+            value => MaskEffect::Uniform(f64::from(value) / 255.),
+        };
+    }
+    // Opaque inside its bounds and clear outside: a crop.
+    let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
+    for y in 0..height {
+        let row = &alpha[y * width..(y + 1) * width];
+        for (x, value) in row.iter().enumerate() {
+            match value {
+                255 => {
+                    left = left.min(x);
+                    right = right.max(x + 1);
+                    top = top.min(y);
+                    bottom = bottom.max(y + 1);
+                }
+                0 => {}
+                _ => return MaskEffect::Soft,
+            }
+        }
+    }
+    if left >= right || top >= bottom {
+        return MaskEffect::Soft;
+    }
+    let inside_opaque = (top..bottom).all(|y| {
+        alpha[y * width + left..y * width + right]
+            .iter()
+            .all(|v| *v == 255)
+    });
+    if !inside_opaque {
+        return MaskEffect::Soft;
+    }
+    MaskEffect::Crop([
+        left as f64 / width as f64,
+        top as f64 / height as f64,
+        (width - right) as f64 / width as f64,
+        (height - bottom) as f64 / height as f64,
+    ])
+}
+
+/// An image as JPEG (as it is) or PNG, its pixels alone: a soft mask that
+/// is a rectangle is left for the picture's crop to draw, and one that is
+/// one opacity is drawn over white for an image `over_paper` (nothing
+/// drawn beneath it, so it stays a JPEG) and into the alpha of a PNG
+/// otherwise.
+fn encode_image(document: &Document, object: ObjectId, over_paper: bool) -> Option<EncodedImage> {
+    let stream = document.get_object(object).ok()?.as_stream().ok()?;
+    let effect = match stream.dict.get(b"SMask") {
+        Ok(mask) => mask_effect(document, mask),
+        Err(_) => MaskEffect::Opaque,
+    };
+    let (alpha, crop) = match effect {
+        MaskEffect::Opaque => (1., None),
+        MaskEffect::Uniform(alpha) => (alpha, None),
+        MaskEffect::Crop(crop) => (1., Some(crop)),
+        MaskEffect::Soft => {
+            let (bytes, extension) = image_bytes(document, object)?;
+            return Some(EncodedImage {
+                bytes,
+                extension,
+                alpha: 1.,
+                crop: None,
+            });
+        }
+    };
+    if alpha <= 0. {
+        return None;
+    }
+    let (bytes, extension) = image_pixels(document, object, false)?;
+    // Over other drawing, one opacity goes into the picture's alpha: every
+    // word processor draws that, where LibreOffice ignores a picture's own
+    // opacity.
+    if !over_paper && alpha < 1. {
+        let mut rgba = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let opacity = (alpha * 255.).round() as u8;
+        for pixel in rgba.pixels_mut() {
+            pixel.0[3] = opacity;
+        }
+        let mut png = Vec::new();
+        image::ImageEncoder::write_image(
+            image::codecs::png::PngEncoder::new(&mut png),
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .ok()?;
+        return Some(EncodedImage {
+            bytes: png,
+            extension: "png",
+            alpha: 1.,
+            crop,
+        });
+    }
+    if over_paper && alpha < 1. {
+        let decoded = image::load_from_memory(&bytes).ok()?.to_rgb8();
+        let mut faded = decoded;
+        for pixel in faded.pixels_mut() {
+            for channel in &mut pixel.0 {
+                *channel = (255. - alpha * (255. - f64::from(*channel))).round() as u8;
+            }
+        }
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+            .encode_image(&faded)
+            .ok()?;
+        return Some(EncodedImage {
+            bytes: jpeg,
+            extension: "jpeg",
+            alpha: 1.,
+            crop,
+        });
+    }
+    Some(EncodedImage {
+        bytes,
+        extension,
+        alpha,
+        crop,
+    })
+}
+
+/// An image as JPEG or PNG, its soft mask drawn into its alpha.
 fn image_bytes(document: &Document, object: ObjectId) -> Option<(Vec<u8>, &'static str)> {
+    image_pixels(document, object, true)
+}
+
+fn image_pixels(
+    document: &Document,
+    object: ObjectId,
+    with_mask: bool,
+) -> Option<(Vec<u8>, &'static str)> {
     let stream = document.get_object(object).ok()?.as_stream().ok()?;
     let dict = &stream.dict;
     let number = |key: &[u8]| {
@@ -759,11 +1089,36 @@ fn image_bytes(document: &Document, object: ObjectId) -> Option<(Vec<u8>, &'stat
         return None;
     }
     let (components, palette) = colour_space(document, dict.get(b"ColorSpace").ok()?)?;
-    let has_mask = dict.get(b"SMask").is_ok();
+    let has_mask = with_mask && dict.get(b"SMask").is_ok();
     let filters = filters(dict, document);
-    // A plain JPEG embeds as it is.
-    if filters == [b"DCTDecode".to_vec()] && matches!(components, 1 | 3) && !has_mask {
-        return Some((stream.content.clone(), "jpeg"));
+    // A soft mask that covers nothing (all opaque) changes nothing.
+    let has_mask = has_mask
+        && !resolved(document, dict.get(b"SMask").ok()?)
+            .and_then(|mask| mask.as_stream().ok())
+            .and_then(|mask| mask.decompressed_content().ok())
+            .is_some_and(|alpha| !alpha.is_empty() && alpha.iter().all(|value| *value == 255));
+    // A plain JPEG embeds as it is, once out of any compression around it
+    // (PDF24 deflates its JPEGs).
+    if filters.last().is_some_and(|filter| filter == b"DCTDecode")
+        && matches!(components, 1 | 3)
+        && !has_mask
+    {
+        if filters.len() == 1 {
+            return Some((stream.content.clone(), "jpeg"));
+        }
+        let mut copy = stream.clone();
+        copy.dict.set(
+            "Filter",
+            Object::Array(
+                filters[..filters.len() - 1]
+                    .iter()
+                    .map(|name| Object::Name(name.clone()))
+                    .collect(),
+            ),
+        );
+        if let Ok(jpeg) = copy.decompressed_content() {
+            return Some((jpeg, "jpeg"));
+        }
     }
     let pixels = if filters.last().is_some_and(|filter| filter == b"DCTDecode") {
         let jpeg = if filters.len() == 1 {
@@ -904,14 +1259,14 @@ fn rgb_pixels(
 // --- WordprocessingML ----------------------------------------------------
 
 /// Text for XML: escaped, without characters XML cannot hold.
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     escape_into(text, &mut escaped);
     escaped
 }
 
 /// [`escape`], written onto the end of `out`.
-fn escape_into(text: &str, out: &mut String) {
+pub(crate) fn escape_into(text: &str, out: &mut String) {
     for character in text.chars() {
         match character {
             '&' => out.push_str("&amp;"),
@@ -1187,8 +1542,9 @@ fn table_xml(table: &Table, area_left: f64, out: &mut String) {
 
 /// A page's section properties: its size and margins.
 fn section_xml(page: &Page, margins: [f64; 4]) -> String {
+    let scale = page.fixed.as_ref().map_or(1., |fixed| fixed.scale);
     let [left, bottom, right, top] = page.page_box;
-    let (width, height) = (right - left, top - bottom);
+    let (width, height) = ((right - left) * scale, (top - bottom) * scale);
     let orient = if width > height {
         " w:orient=\"landscape\""
     } else {
@@ -1231,7 +1587,12 @@ fn margins(page: &Page) -> [f64; 4] {
     ]
 }
 
-fn document_xml(pages: &[Page], media_relationships: &[String]) -> String {
+fn document_xml(
+    pages: &[Page],
+    media_relationships: &[String],
+    media: &[Media],
+    fallback: Option<usize>,
+) -> String {
     // Pictures are numbered through the document: each page's first one.
     let first_pictures = pages
         .iter()
@@ -1251,6 +1612,42 @@ fn document_xml(pages: &[Page], media_relationships: &[String]) -> String {
         pages,
         |index, page| {
             let mut body = String::new();
+            if let Some(fixed) = &page.fixed {
+                let svg = fixed
+                    .svg_media
+                    .iter()
+                    .map(|media| media_relationships[*media].clone())
+                    .collect::<Vec<_>>();
+                let pictures = fixed
+                    .picture_media
+                    .iter()
+                    .map(|index| crate::docx_fixed::PictureMedia {
+                        relationship: media_relationships[*index].clone(),
+                        alpha: media[*index].alpha,
+                        crop: media[*index].crop,
+                    })
+                    .collect::<Vec<_>>();
+                let fallback = fallback.map_or("", |media| media_relationships[media].as_str());
+                let last = index + 1 == pages.len();
+                let section = section_xml(page, [0.; 4]);
+                crate::docx_fixed::fixed_page_xml(
+                    fixed,
+                    page.page_box,
+                    &crate::docx_fixed::FixedMedia {
+                        svg: &svg,
+                        pictures: &pictures,
+                        fallback,
+                    },
+                    // Ids apart from the flowing pages' pictures.
+                    1_000_000 + 100_000 * index,
+                    (!last).then_some(section.as_str()),
+                    &mut body,
+                );
+                if last {
+                    body.push_str(&section);
+                }
+                return body;
+            }
             page_xml(
                 page,
                 index + 1 == pages.len(),
@@ -1270,7 +1667,8 @@ fn document_xml(pages: &[Page], media_relationships: &[String]) -> String {
          xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" \
          xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" \
          xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" \
-         xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">\
+         xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" \
+         xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\">\
          <w:body>";
     const TAIL: &str = "</w:body></w:document>";
     let mut xml = String::with_capacity(
@@ -1363,6 +1761,7 @@ const CONTENT_TYPES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone
 <Default Extension=\"xml\" ContentType=\"application/xml\"/>\
 <Default Extension=\"png\" ContentType=\"image/png\"/>\
 <Default Extension=\"jpeg\" ContentType=\"image/jpeg\"/>\
+<Default Extension=\"svg\" ContentType=\"image/svg+xml\"/>\
 <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>\
 <Override PartName=\"/word/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml\"/>\
 <Override PartName=\"/word/settings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml\"/>\
@@ -1392,7 +1791,7 @@ const SETTINGS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"ye
 <w:compat><w:compatSetting w:name=\"compatibilityMode\" w:uri=\"http://schemas.microsoft.com/office/word\" w:val=\"15\"/></w:compat>\
 </w:settings>";
 
-fn write_docx(pages: &[Page], media: &[Media]) -> Vec<u8> {
+fn write_docx(pages: &[Page], media: &[Media], fallback: Option<usize>) -> Vec<u8> {
     let relationships = (0..media.len())
         .map(|index| format!("rId{}", index + 3))
         .collect::<Vec<_>>();
@@ -1425,7 +1824,7 @@ fn write_docx(pages: &[Page], media: &[Media]) -> Vec<u8> {
         ),
         (
             "word/document.xml".to_owned(),
-            document_xml(pages, &relationships).into_bytes(),
+            document_xml(pages, &relationships, media, fallback).into_bytes(),
             true,
         ),
         (
@@ -1445,11 +1844,11 @@ fn write_docx(pages: &[Page], media: &[Media]) -> Vec<u8> {
         ),
     ];
     for (index, item) in media.iter().enumerate() {
-        // Images are compressed already.
+        // Images are compressed already; SVG is text.
         entries.push((
             format!("word/media/image{}.{}", index + 1, item.extension),
             item.bytes.clone(),
-            false,
+            item.extension == "svg",
         ));
     }
     zip(&entries)

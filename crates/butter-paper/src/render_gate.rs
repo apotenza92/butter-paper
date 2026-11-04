@@ -13,6 +13,9 @@ use std::{
 /// Lowest first.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RenderPriority {
+    /// A page beside the one in view, drawn ahead in case the user turns to
+    /// it: anything asked for meanwhile goes first.
+    Prefetch,
     /// Thumbnails, which the sidebar asks for one at a time.
     Thumbnail,
     /// The whole-page image of a page navigated to, under its tiles (a

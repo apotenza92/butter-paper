@@ -362,3 +362,26 @@ fn closing_while_it_saves_forgets_the_conversion(cx: &mut TestAppContext) {
     )));
     assert!(!scratch.join("report.docx").exists());
 }
+
+#[path = "support/dialog_contract.rs"]
+mod dialog_contract;
+
+#[gpui::test]
+fn the_word_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_WORD_CANCEL_ID;
+    let (workspace, _scratch, cx) = open(cx, "contract");
+    let reopen = move |cx: &mut gpui::VisualTestContext| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.convert_active_document_to_word(cx)
+        });
+        redraw(cx);
+    };
+    dialog_contract::assert_dialog_dismissal(
+        cx,
+        "Convert to Word document",
+        DOCUMENT_WORD_DIALOG_ID,
+        DOCUMENT_WORD_CANCEL_ID,
+        dialog_contract::Outside::Closes,
+        reopen,
+    );
+}

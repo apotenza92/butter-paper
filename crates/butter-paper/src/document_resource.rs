@@ -336,6 +336,15 @@ pub trait NativeDocumentResource: Send + Sync {
     fn render_page_image(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
         self.render_page(page_index, width)
     }
+    /// The whole-page image of a page beside the one in view, drawn as
+    /// `render_page_image` draws it but after everything else asked for.
+    fn render_adjacent_page_image(
+        &self,
+        page_index: u32,
+        width: u32,
+    ) -> Result<RasterSurface, String> {
+        self.render_page_image(page_index, width)
+    }
     fn render_page_with_pdf_annotations(
         &self,
         page_index: u32,
@@ -1369,6 +1378,20 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             desired_width,
             AnnotationRenderMode::RetainedOnly,
             RenderPriority::PageImage,
+            false,
+        )
+    }
+
+    fn render_adjacent_page_image(
+        &self,
+        page_index: u32,
+        desired_width: u32,
+    ) -> Result<RasterSurface, String> {
+        self.render_page_with_policy(
+            page_index,
+            desired_width,
+            AnnotationRenderMode::RetainedOnly,
+            RenderPriority::Prefetch,
             false,
         )
     }

@@ -85,6 +85,91 @@ impl DocumentWorkspace {
         })
     }
 
+    /// The prompt over the page while a box is drawn for a signature: what
+    /// to draw, and an X that stops. The status bar says it too, but a
+    /// command chosen from a menu needs an answer where the user is looking.
+    pub(super) fn render_signature_box_prompt(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let capture = self
+            .signature_box
+            .as_ref()
+            .filter(|capture| Some(capture.document_id) == self.active_document_id)?;
+        let document_id = capture.document_id;
+        let text = match capture.purpose {
+            BoxPurpose::TakeSignature => "Drag a box around the signature on the page",
+            BoxPurpose::PlaceDigitalSignature => "Drag a box where the signature goes",
+        };
+        let bounds = self.signature_box_prompt_bounds.clone();
+        let theme = cx.theme();
+        Some(
+            gpui::div()
+                .absolute()
+                .top_3()
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    h_flex()
+                        .id(DOCUMENT_SIGNATURE_BOX_PROMPT_ID)
+                        .debug_selector(|| DOCUMENT_SIGNATURE_BOX_PROMPT_ID.into())
+                        .relative()
+                        .gap_2()
+                        .pl_3()
+                        .pr_1()
+                        .py_1()
+                        .max_w_full()
+                        .rounded(theme.radius_lg)
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.popover)
+                        .text_color(theme.popover_foreground)
+                        .shadow_md()
+                        .text_sm()
+                        .cursor(CursorStyle::Arrow)
+                        .child(
+                            gpui::canvas(move |area, _, _| bounds.set(Some(area)), |_, _, _, _| {})
+                                .absolute()
+                                .inset_0(),
+                        )
+                        .child(gpui::div().min_w_0().truncate().child(text))
+                        .child(
+                            crate::accessible_button::close_icon_button(
+                                DOCUMENT_SIGNATURE_BOX_CANCEL_ID,
+                                "Stop drawing the box",
+                            )
+                            .on_click(cx.listener(
+                                move |workspace, _: &ClickEvent, _, cx| {
+                                    workspace.cancel_signature_box(document_id, cx);
+                                },
+                            )),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Whether a press at `position` is on that prompt.
+    pub(super) fn signature_box_prompt_owns(&self, position: gpui::Point<Pixels>) -> bool {
+        self.signature_box
+            .as_ref()
+            .is_some_and(|capture| Some(capture.document_id) == self.active_document_id)
+            && self
+                .signature_box_prompt_bounds
+                .get()
+                .is_some_and(|bounds| bounds.contains(&position))
+    }
+
+    /// Stops drawing a box for a signature, as Esc does.
+    pub(super) fn cancel_signature_box(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        self.signature_box = None;
+        self.signature_box_prompt_bounds.set(None);
+        let _ = self.set_annotation_tool(document_id, AnnotationTool::Select, cx);
+        cx.notify();
+    }
+
     /// Takes the box once the Snapshot tool has drawn it; stops waiting
     /// when another tool is chosen.
     pub(super) fn poll_signature_capture(&mut self, cx: &mut Context<Self>) {

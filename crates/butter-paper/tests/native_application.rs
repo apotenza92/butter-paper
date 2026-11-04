@@ -1331,7 +1331,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         );
     }
     // Window resizing and hiding/reopening a neighbour must preserve preferences.
-    for width in [1600., 2300., 2100.] {
+    for width in [1800., 2300., 2100.] {
         cx.simulate_resize(gpui::size(px(width), px(800.)));
         settle(cx);
         assert_eq!(cx.debug_bounds(left_id).unwrap().size.width, px(360.));
@@ -1345,7 +1345,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         (fit - 1., false),
         (fit, true),
         (fit - 1., false),
-        (1600., true),
+        (1800., true),
     ] {
         cx.simulate_resize(gpui::size(px(width), px(800.)));
         settle(cx);
@@ -1434,7 +1434,9 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
             "reset must not change {other}"
         );
     }
-    cx.simulate_resize(gpui::size(px(2600.), px(1000.)));
+    // Wide enough for both sidebars and the toolbar at the largest
+    // interface size.
+    cx.simulate_resize(gpui::size(px(2800.), px(1000.)));
     for level in [-3, 3, 0] {
         cx.update(|window, cx| {
             butter_paper::application_shell::apply_application_ui_zoom(level, px(16.), window, cx);
@@ -1499,7 +1501,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
             cx.simulate_click(properties_toggle, gpui::Modifiers::default());
             settle(cx);
             assert!(cx.debug_bounds(left_id).is_none());
-            cx.simulate_resize(gpui::size(px(2600.), px(1000.)));
+            cx.simulate_resize(gpui::size(px(2800.), px(1000.)));
             settle(cx);
             assert!((cx.debug_bounds(left_id).unwrap().size.width - rem * 18.75).abs() < px(1.));
         }

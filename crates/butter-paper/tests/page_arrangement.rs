@@ -679,6 +679,20 @@ fn merge_documents_cancel_closes_the_dialog(cx: &mut TestAppContext) {
     workspace.update(cx, |workspace, cx| workspace.request_merge_dialog(cx));
     settle(cx);
     assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    // A press on the dimmed backdrop, outside the dialog, closes it.
+    let dialog = cx.debug_bounds("document-merge-dialog").unwrap();
+    cx.simulate_click(
+        gpui::point(gpui::px(100.), dialog.bottom() + gpui::px(60.)),
+        gpui::Modifiers::none(),
+    );
+    settle(cx);
+    assert!(
+        !cx.update(|window, cx| window.has_active_dialog(cx)),
+        "a click outside closes Merge Documents"
+    );
+    workspace.update(cx, |workspace, cx| workspace.request_merge_dialog(cx));
+    settle(cx);
+    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
     let cancel = cx.debug_bounds(DOCUMENT_MERGE_CANCEL_ID).unwrap();
     cx.simulate_click(cancel.center(), gpui::Modifiers::none());
     settle(cx);
@@ -724,10 +738,6 @@ fn merge_documents_cancel_closes_the_dialog(cx: &mut TestAppContext) {
         click_count: 1,
     });
     settle(cx);
-    eprintln!(
-        "PROBE menu open, dialog? {}",
-        cx.update(|window, cx| window.has_active_dialog(cx))
-    );
     // The menu's only item sits just below and right of the press.
     let item = gpui::point(press.x + gpui::px(40.), press.y + gpui::px(16.));
     cx.simulate_click(item, gpui::Modifiers::none());
@@ -888,4 +898,117 @@ impl gpui::Render for MergeFocusShell {
             .child(self.workspace.clone())
             .children(dialogs)
     }
+}
+
+#[path = "support/dialog_contract.rs"]
+mod dialog_contract;
+
+#[gpui::test]
+fn merge_documents_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{DOCUMENT_MERGE_CANCEL_ID, DOCUMENT_MERGE_DIALOG_ID};
+    use butter_paper::generated_document::GeneratedDocumentStore;
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.join(format!(
+        "target/test-scratch/merge-contract-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let store = GeneratedDocumentStore::new(root.join("generated")).unwrap();
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| {
+                DocumentWorkspace::with_opener_and_generated_store(
+                    Arc::new(CountingOpener),
+                    store,
+                    cx,
+                )
+            });
+            workspace_slot.replace(Some(workspace.clone()));
+            let shell = cx.new(|_| MergeModalShell(workspace));
+            Root::new(shell, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    for name in ["bp-multi-page-v1.pdf", "bp-annotation-all-v1.pdf"] {
+        let file = manifest.join("tests/fixtures").join(name);
+        workspace.update(cx, |workspace, cx| workspace.open_path(file, cx));
+    }
+    cx.run_until_parked();
+    let reopen = {
+        let workspace = workspace.clone();
+        move |cx: &mut gpui::VisualTestContext| {
+            workspace.update(cx, |workspace, cx| workspace.request_merge_dialog(cx));
+            dialog_contract::settle(cx);
+        }
+    };
+    reopen.clone()(cx);
+    dialog_contract::assert_dialog_dismissal(
+        cx,
+        "Merge documents",
+        DOCUMENT_MERGE_DIALOG_ID,
+        DOCUMENT_MERGE_CANCEL_ID,
+        dialog_contract::Outside::Closes,
+        reopen,
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn the_page_scale_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
+    use butter_paper::generated_document::GeneratedDocumentStore;
+    use butter_paper::page_scale_control::{PAGE_SCALE_CANCEL_ID, PAGE_SCALE_DIALOG_ID};
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.join(format!(
+        "target/test-scratch/scale-contract-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let store = GeneratedDocumentStore::new(root.join("generated")).unwrap();
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(|cx| {
+                DocumentWorkspace::with_opener_and_generated_store(
+                    Arc::new(CountingOpener),
+                    store,
+                    cx,
+                )
+            });
+            workspace_slot.replace(Some(workspace.clone()));
+            let shell = cx.new(|_| MergeModalShell(workspace));
+            Root::new(shell, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let file = manifest.join("tests/fixtures/bp-multi-page-v1.pdf");
+    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(file, cx));
+    cx.run_until_parked();
+    let reopen = move |cx: &mut gpui::VisualTestContext| {
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_page_scale_dialog(document_id, 0, window, cx)
+        });
+    };
+    reopen.clone()(cx);
+    dialog_contract::assert_dialog_dismissal(
+        cx,
+        "Page scale",
+        PAGE_SCALE_DIALOG_ID,
+        PAGE_SCALE_CANCEL_ID,
+        dialog_contract::Outside::Closes,
+        reopen,
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -9,6 +9,10 @@ pub const CONTINUOUS_ICON_ID: &str = "viewer-continuous-icon";
 pub const SINGLE_PAGE_ICON_ID: &str = "viewer-single-page-icon";
 pub const ZOOM_OUT_ICON_ID: &str = "viewer-zoom-out-icon";
 pub const ZOOM_IN_ICON_ID: &str = "viewer-zoom-in-icon";
+pub const FIRST_PAGE_ICON_ID: &str = "viewer-first-page-icon";
+pub const PREVIOUS_PAGE_ICON_ID: &str = "viewer-previous-page-icon";
+pub const NEXT_PAGE_ICON_ID: &str = "viewer-next-page-icon";
+pub const LAST_PAGE_ICON_ID: &str = "viewer-last-page-icon";
 
 type Segment = ((f32, f32), (f32, f32));
 
@@ -33,6 +37,11 @@ const FIT_PAGE_SEGMENTS: [Segment; 12] = [
     ((3., 3.), (8., 3.)),
     ((9., 9.), (3., 3.)),
 ];
+/// Lucide's chevron-left, chevron-first and their mirrors, on the same 24 px
+/// grid and stroke as the zoom and fit icons beside them.
+const CHEVRON_LEFT: [(f32, f32); 3] = [(15., 18.), (9., 12.), (15., 6.)];
+const CHEVRON_FIRST: [(f32, f32); 3] = [(17., 18.), (11., 12.), (17., 6.)];
+const FIRST_BAR: Segment = ((7., 6.), (7., 18.));
 const RECTANGLE_VERTICAL: (f32, f32, f32, f32, f32) = (6., 2., 12., 20., 2.);
 const ZOOM_LENS: (f32, f32, f32) = (11., 11., 8.);
 
@@ -44,6 +53,10 @@ enum ViewerIconKind {
     SinglePage,
     ZoomOut,
     ZoomIn,
+    FirstPage,
+    PreviousPage,
+    NextPage,
+    LastPage,
 }
 
 pub fn fit_width_icon(color: Hsla) -> impl IntoElement {
@@ -68,6 +81,22 @@ pub fn zoom_out_icon(color: Hsla) -> impl IntoElement {
 
 pub fn zoom_in_icon(color: Hsla) -> impl IntoElement {
     viewer_icon(ZOOM_IN_ICON_ID, ViewerIconKind::ZoomIn, color)
+}
+
+pub fn first_page_icon(color: Hsla) -> impl IntoElement {
+    viewer_icon(FIRST_PAGE_ICON_ID, ViewerIconKind::FirstPage, color)
+}
+
+pub fn previous_page_icon(color: Hsla) -> impl IntoElement {
+    viewer_icon(PREVIOUS_PAGE_ICON_ID, ViewerIconKind::PreviousPage, color)
+}
+
+pub fn next_page_icon(color: Hsla) -> impl IntoElement {
+    viewer_icon(NEXT_PAGE_ICON_ID, ViewerIconKind::NextPage, color)
+}
+
+pub fn last_page_icon(color: Hsla) -> impl IntoElement {
+    viewer_icon(LAST_PAGE_ICON_ID, ViewerIconKind::LastPage, color)
 }
 
 fn viewer_icon(id: &'static str, kind: ViewerIconKind, color: Hsla) -> impl IntoElement {
@@ -144,6 +173,31 @@ fn paint_icon(
             if matches!(kind, ViewerIconKind::ZoomIn) {
                 path.move_to(at(11., 8.));
                 path.line_to(at(11., 14.));
+            }
+        }
+        ViewerIconKind::FirstPage
+        | ViewerIconKind::PreviousPage
+        | ViewerIconKind::NextPage
+        | ViewerIconKind::LastPage => {
+            // The left-pointing pair, mirrored about the centre for the
+            // right-pointing pair.
+            let mirrored = matches!(kind, ViewerIconKind::NextPage | ViewerIconKind::LastPage);
+            let x = |x: f32| if mirrored { 24. - x } else { x };
+            let first_or_last =
+                matches!(kind, ViewerIconKind::FirstPage | ViewerIconKind::LastPage);
+            let chevron = if first_or_last {
+                CHEVRON_FIRST
+            } else {
+                CHEVRON_LEFT
+            };
+            path.move_to(at(x(chevron[0].0), chevron[0].1));
+            for (px_, py_) in &chevron[1..] {
+                path.line_to(at(x(*px_), *py_));
+            }
+            if first_or_last {
+                let (from, to) = FIRST_BAR;
+                path.move_to(at(x(from.0), from.1));
+                path.line_to(at(x(to.0), to.1));
             }
         }
     }

@@ -3986,6 +3986,8 @@ mod review_driver {
             pause(cx, 2500).await;
             let script_started = std::time::Instant::now();
             let mut frames_saved = 0usize;
+            // Failed `expect…` lines: the run exits 1 when any failed.
+            let mut failures = 0usize;
             let mut recorder: Option<(std::rc::Rc<std::cell::Cell<bool>>, gpui::Task<()>)> = None;
             for line in script.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
                 writeln!(log, "> {line}").unwrap();
@@ -4385,6 +4387,228 @@ mod review_driver {
                         let continuous = words.get(5) == Some(&"continuous");
                         let sweep = words.get(6).and_then(|word| word.parse().ok()).unwrap_or(0);
                         super::thumb_bench::run(cx, window, fraction, fling_ms, click_row, continuous, sweep, &out, &mut log).await;
+                    }
+                    "click-id" | "click-beside" => {
+                        // click-id W SELECTOR: a left click at the centre of the
+                        // element painted with that debug selector. click-beside W
+                        // SELECTOR clicks halfway between the window's left edge
+                        // and the element, level with its centre: the backdrop
+                        // beside a dialog.
+                        let window = number(1) as usize;
+                        let selector = words[2];
+                        let beside = words[0] == "click-beside";
+                        let Some(position) = element_point(cx, window, selector, beside) else {
+                            failures += 1;
+                            writeln!(log, "FAIL: {} {selector}: not painted", words[0]).unwrap();
+                            continue;
+                        };
+                        writeln!(log, "{} {selector} at {position:?}", words[0]).unwrap();
+                        for event in [
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                pressed_button: None,
+                                modifiers: Modifiers::default(),
+                            }),
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            }),
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                            }),
+                        ] {
+                            dispatch_raw(cx, window, event);
+                            pause(cx, 50).await;
+                        }
+                        pause(cx, 400).await;
+                    }
+                    "os-click-id" | "os-click-beside" => {
+                        // os-click-id W SELECTOR: the same click as click-id, as
+                        // real operating-system pointer input through
+                        // BP_REVIEW_OS_CLICK_CMD ({x} {y}, screen device pixels),
+                        // so it passes through the platform's own event handling.
+                        // Without the command it falls back to click-id's.
+                        let window = number(1) as usize;
+                        let selector = words[2];
+                        let beside = words[0] == "os-click-beside";
+                        let Some(position) = element_point(cx, window, selector, beside) else {
+                            failures += 1;
+                            writeln!(log, "FAIL: {} {selector}: not painted", words[0]).unwrap();
+                            continue;
+                        };
+                        let screen = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let scale = entry
+                                .handle
+                                .update(cx, |_, window, _| window.scale_factor())
+                                .ok()?;
+                            Some(window_screen_point(entry.handle, position, cx)?.scale(scale))
+                        });
+                        match (std::env::var("BP_REVIEW_OS_CLICK_CMD"), screen) {
+                            (Ok(command), Some(screen)) => {
+                                let command = command
+                                    .replace("{x}", &format!("{:.0}", screen.x.0))
+                                    .replace("{y}", &format!("{:.0}", screen.y.0));
+                                writeln!(log, "{} {selector} at screen {screen:?}", words[0]).unwrap();
+                                let mut process = if cfg!(windows) {
+                                    let mut process = std::process::Command::new("powershell.exe");
+                                    process.args(["-NoProfile", "-Command", &command]);
+                                    // No console window: one would open over the
+                                    // app and take the click.
+                                    #[cfg(windows)]
+                                    {
+                                        use std::os::windows::process::CommandExt as _;
+                                        process.creation_flags(0x0800_0000);
+                                    }
+                                    process
+                                } else {
+                                    let mut process = std::process::Command::new("sh");
+                                    process.args(["-c", &command]);
+                                    process
+                                };
+                                // Run it alongside: the app must keep handling the events.
+                                match process.spawn() {
+                                    Ok(mut child) => {
+                                        for _ in 0..200 {
+                                            pause(cx, 100).await;
+                                            if child.try_wait().ok().flatten().is_some() {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        failures += 1;
+                                        writeln!(log, "FAIL: {}: {error}", words[0]).unwrap();
+                                    }
+                                }
+                            }
+                            _ => {
+                                writeln!(log, "{}: no BP_REVIEW_OS_CLICK_CMD; clicking in-app", words[0]).unwrap();
+                                for event in [
+                                    PlatformInput::MouseMove(MouseMoveEvent {
+                                        position,
+                                        pressed_button: None,
+                                        modifiers: Modifiers::default(),
+                                    }),
+                                    PlatformInput::MouseDown(MouseDownEvent {
+                                        button: MouseButton::Left,
+                                        position,
+                                        modifiers: Modifiers::default(),
+                                        click_count: 1,
+                                        first_mouse: false,
+                                    }),
+                                    PlatformInput::MouseUp(MouseUpEvent {
+                                        button: MouseButton::Left,
+                                        position,
+                                        modifiers: Modifiers::default(),
+                                        click_count: 1,
+                                    }),
+                                ] {
+                                    dispatch_raw(cx, window, event);
+                                    pause(cx, 50).await;
+                                }
+                            }
+                        }
+                        pause(cx, 600).await;
+                        // The click must have reached the element: a pointer the
+                        // window saw elsewhere means the screen point was wrong,
+                        // and what follows would test the wrong thing.
+                        let landed = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            entry
+                                .handle
+                                .update(cx, |_, window, _| {
+                                    let pointer = window.mouse_position();
+                                    // Screen points are whole pixels.
+                                    (pointer - position).magnitude() <= 3.
+                                })
+                                .ok()
+                        });
+                        if landed != Some(true) {
+                            failures += 1;
+                            let seen = cx.update(|cx| {
+                                document_window_entries(cx).get(window).cloned().and_then(|entry| {
+                                    entry.handle.update(cx, |_, window, _| window.mouse_position()).ok()
+                                })
+                            });
+                            writeln!(
+                                log,
+                                "FAIL: {} {selector}: the pointer reached {seen:?}, not {position:?}",
+                                words[0]
+                            )
+                            .unwrap();
+                        }
+                    }
+                    "expect-dialog" => {
+                        // expect-dialog W open|closed
+                        let window = number(1) as usize;
+                        let want = words[2] == "open";
+                        let open = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            entry
+                                .handle
+                                .update(cx, |_, window, cx| {
+                                    use gpui_component::WindowExt as _;
+                                    window.has_active_dialog(cx)
+                                })
+                                .ok()
+                        });
+                        if open == Some(want) {
+                            writeln!(log, "ok: dialog {}", words[2]).unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: expected dialog {}, found open={open:?}", words[2]).unwrap();
+                        }
+                    }
+                    "expect-shown" | "expect-hidden" => {
+                        // expect-shown W SELECTOR: the element is painted inside
+                        // the window. expect-hidden W SELECTOR: it is not painted.
+                        let window = number(1) as usize;
+                        let selector = words[2];
+                        let shown = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            entry
+                                .handle
+                                .update(cx, |_, window, _| {
+                                    let viewport = Bounds::new(point(px(0.), px(0.)), window.viewport_size());
+                                    window
+                                        .debug_bounds(selector)
+                                        .is_some_and(|bounds| viewport.contains(&bounds.center()))
+                                })
+                                .ok()
+                        });
+                        let want = words[0] == "expect-shown";
+                        if shown == Some(want) {
+                            writeln!(log, "ok: {selector} {}", if want { "shown" } else { "hidden" }).unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: {} {selector}: shown={shown:?}", words[0]).unwrap();
+                        }
+                    }
+                    "expect-tool" => {
+                        // expect-tool W TOOL: the active document's tool, as the
+                        // shot log names it (Select, Snapshot…).
+                        let window = number(1) as usize;
+                        let tool = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let document_id = workspace.active_document_id()?;
+                            workspace.annotation_tool(document_id, cx)
+                        });
+                        let found = format!("{tool:?}");
+                        if found == format!("Some({})", words[2]) {
+                            writeln!(log, "ok: tool {}", words[2]).unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: expected tool {}, found {found}", words[2]).unwrap();
+                        }
                     }
                     "click" => {
                         // click W X Y [COUNT]: a left click at window coordinates.
@@ -4931,10 +5155,11 @@ mod review_driver {
                                         let saved = window.render_to_image().map(|image| image.save(&path).is_ok());
                                         writeln!(
                                             log,
-                                            "frame {frames_saved} at={at} {name} step={step} page={:?} zoom={:?} tiles drawn/sharp/planned={:?} saved={saved:?}",
+                                            "frame {frames_saved} at={at} {name} step={step} page={:?} zoom={:?} tiles drawn/sharp/planned={:?} base image width={:?} saved={saved:?}",
                                             probe.as_ref().map(|probe| probe.current_page + 1),
                                             probe.as_ref().map(|probe| probe.zoom_percent),
                                             probe.as_ref().map(|probe| (probe.current_tiles_drawn, probe.current_tiles_sharp, probe.current_tiles_planned)),
+                                            probe.as_ref().map(|probe| probe.current_base_width),
                                         )
                                         .unwrap();
                                     });
@@ -5429,6 +5654,30 @@ mod review_driver {
                             }
                         });
                         pause(cx, 800).await;
+                        // Wait until the window reports its new size: on X11 the
+                        // frame arrives later, and os-click lines place the real
+                        // pointer from it.
+                        for _ in 0..30 {
+                            let settled = cx.update(|cx| {
+                                let entry = document_window_entries(cx).get(window).cloned()?;
+                                entry
+                                    .handle
+                                    .update(cx, |_, window, _| {
+                                        let margin = gpui_component::window_paddings(window);
+                                        let frame = window.bounds().size;
+                                        (frame.width - size.width - margin.left - margin.right).abs()
+                                            < px(2.)
+                                            && (frame.height - size.height - margin.top - margin.bottom)
+                                                .abs()
+                                                < px(2.)
+                                    })
+                                    .ok()
+                            });
+                            if settled != Some(false) {
+                                break;
+                            }
+                            pause(cx, 100).await;
+                        }
                     }
                     "move-to-new-window" => {
                         cx.update(|cx| cx.dispatch_action(&MoveDocumentToNewWindow));
@@ -5444,6 +5693,13 @@ mod review_driver {
                         pause(cx, 800).await;
                     }
                     "quit" => {
+                        if failures > 0 {
+                            // A failed check fails the run, without waiting on a
+                            // quit that unsaved changes could hold up.
+                            writeln!(log, "FAILED: {failures} expectation(s) failed").unwrap();
+                            std::fs::write(out.join("FAILED"), format!("{failures}\n")).ok();
+                            std::process::exit(1);
+                        }
                         writeln!(log, "quitting").unwrap();
                         cx.update(|cx| cx.dispatch_action(&RequestApplicationQuit));
                         // Trace the close transactions until the process exits.
@@ -5816,6 +6072,44 @@ mod review_driver {
                 captured as f32 / seconds
             );
         }
+    }
+
+    /// Sends input at raw window coordinates, as an element's painted
+    /// bounds give them (no title bar offset to add).
+    fn dispatch_raw(cx: &mut AsyncApp, window: usize, event: PlatformInput) {
+        note_input(&event);
+        cx.update(|cx| {
+            if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                let _ = entry
+                    .handle
+                    .update(cx, |_, window, cx| window.dispatch_event(event, cx));
+            }
+        });
+    }
+
+    /// Where to click the element painted with `selector` in raw window
+    /// coordinates: its centre, or beside it on the backdrop.
+    fn element_point(
+        cx: &mut AsyncApp,
+        window: usize,
+        selector: &str,
+        beside: bool,
+    ) -> Option<Point<Pixels>> {
+        cx.update(|cx| {
+            let entry = document_window_entries(cx).get(window).cloned()?;
+            entry
+                .handle
+                .update(cx, |_, window, _| {
+                    let bounds = window.debug_bounds(selector)?;
+                    Some(if beside {
+                        point((bounds.left() / 2.).max(px(4.)), bounds.center().y)
+                    } else {
+                        bounds.center()
+                    })
+                })
+                .ok()
+                .flatten()
+        })
     }
 
     fn dispatch(cx: &mut AsyncApp, window: usize, event: PlatformInput) {

@@ -59,7 +59,7 @@ pub(super) struct ViewportInputs {
     pub viewer_plan: Option<ViewerPlanSnapshot>,
     pub viewer_scroll: ScrollHandle,
     pub viewport_cursor_style: CursorStyle,
-    pub viewport_observer: Canvas<()>,
+    pub viewport_observer: Canvas<gpui::Hitbox>,
 }
 
 impl DocumentWorkspace {

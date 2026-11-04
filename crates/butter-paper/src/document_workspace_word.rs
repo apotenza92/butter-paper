@@ -303,6 +303,10 @@ impl DocumentWorkspace {
         window.open_dialog(cx, move |surface, _, cx| {
             let state = dialog.read(cx);
             let ready = matches!(state.stage, WordDialogStage::Ready);
+            let working = matches!(
+                state.stage,
+                WordDialogStage::Saving | WordDialogStage::Converting { .. }
+            );
             let footer = match &state.stage {
                 WordDialogStage::Ready => {
                     let keep_both = state.exists.then(|| {
@@ -382,8 +386,9 @@ impl DocumentWorkspace {
                 .max_w_full()
                 // Cancel decides while it asks; afterwards the X closes it.
                 .close_button(!ready)
-                // A stray press beside it must not stop a conversion.
-                .overlay_closable(false)
+                // A press beside it closes it, as for any dialog, except
+                // while it works: a stray press must not stop a conversion.
+                .overlay_closable(!working)
                 .child(dialog.clone())
                 .when_some(footer, |surface, footer| surface.footer(footer))
                 .on_ok(move |_, _, cx| match &ok_dialog.read(cx).stage {

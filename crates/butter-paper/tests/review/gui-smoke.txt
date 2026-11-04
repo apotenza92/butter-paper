@@ -1,0 +1,82 @@
+# GUI smoke check, run before every release on Linux, Windows and macOS
+# (the Review workflow) against a copy of
+# tests/fixtures/text-edit/word-table.pdf. Each `expect…` line fails the run
+# when the app disagrees; the run then exits 1 and writes FAILED beside the
+# log. `os-click-*` lines click through the operating system where
+# BP_REVIEW_OS_CLICK_CMD is set, so the platform's own event handling is in
+# the path; elsewhere they click inside the app. The window keeps the frame
+# it opens with: on X11 without a window manager, a frame set by `place`
+# reaches the app late, and os-click lines would aim from the old one.
+# Coordinates in `click` lines are window content points below the title
+# bar; they fall on the page in the default 1200 x 800 window.
+wait 4000
+shot start
+expect-dialog 0 closed
+# Without a window manager (Xvfb) the window has no focus until clicked, and
+# the first press only gives it focus: click the status bar first.
+os-click-id 0 document-status-bar
+
+# Merge documents: Cancel, a press beside it and Escape each close it.
+merge-documents
+wait 1000
+expect-dialog 0 open
+expect-shown 0 document-merge-cancel
+shot merge
+os-click-id 0 document-merge-cancel
+expect-dialog 0 closed
+merge-documents
+wait 1000
+os-click-beside 0 document-merge-dialog
+expect-dialog 0 closed
+merge-documents
+wait 1000
+key 0 escape
+wait 600
+expect-dialog 0 closed
+
+# Convert to Word: the same.
+convert-to-word
+wait 1000
+expect-dialog 0 open
+os-click-id 0 document-word-cancel
+expect-dialog 0 closed
+convert-to-word
+wait 1000
+os-click-beside 0 document-word-dialog
+expect-dialog 0 closed
+
+# About: its X and a press beside it.
+about
+wait 1000
+expect-dialog 0 open
+os-click-id 0 dialog-close-button
+expect-dialog 0 closed
+about
+wait 1000
+os-click-beside 0 application-about-content
+expect-dialog 0 closed
+
+# Sign with Certificate: says over the page what to draw, with the
+# Signature tool shown in use; its X stops.
+sign-with-certificate
+wait 1000
+expect-shown 0 document-signature-box-prompt
+shot sign-prompt
+os-click-id 0 document-signature-box-cancel
+expect-hidden 0 document-signature-box-prompt
+expect-tool 0 Select
+# Then the box, then the dialog, which Cancel and a press beside close.
+sign-with-certificate
+wait 1000
+click 0 500 520 1
+wait 300
+move 0 800 600
+wait 400
+click 0 800 600 1
+wait 1500
+expect-dialog 0 open
+expect-hidden 0 document-signature-box-prompt
+shot sign-dialog
+os-click-id 0 document-sign-cancel
+expect-dialog 0 closed
+quit

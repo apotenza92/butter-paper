@@ -303,6 +303,11 @@ impl DocumentWorkspace {
                         if phase != DispatchPhase::Capture
                             || event.button != MouseButton::Middle
                             || crate::overlay_state::press_owned_by_overlay(window, cx)
+                            || middle_down_control
+                                .read_with(cx, |workspace, _| {
+                                    workspace.viewport_press_occluded(event.position, window)
+                                })
+                                .unwrap_or(true)
                         {
                             return;
                         }
@@ -340,6 +345,17 @@ impl DocumentWorkspace {
                     // dismisses it (or acts inside it); it never also starts a
                     // canvas selection or edit.
                     if crate::overlay_state::press_owned_by_overlay(window, cx) {
+                        return;
+                    }
+                    // A press on anything drawn over the page (the in-window
+                    // menu bar's menus, notifications) belongs to that layer:
+                    // it must not click through to the document beneath.
+                    if down_control
+                        .read_with(cx, |workspace, _| {
+                            workspace.viewport_press_occluded(event.position, window)
+                        })
+                        .unwrap_or(true)
+                    {
                         return;
                     }
                     let started = down_control

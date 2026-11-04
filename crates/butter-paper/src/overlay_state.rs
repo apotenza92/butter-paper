@@ -95,11 +95,26 @@ pub fn any_overlay_open(cx: &App) -> bool {
 pub fn press_owned_by_overlay(window: &mut Window, cx: &mut App) -> bool {
     if any_overlay_open(cx)
         || (cx.has_global::<GlobalState>() && GlobalState::is_in_deferred_context(cx))
+        || popup_menu_focused(window)
     {
         return true;
     }
     matches!(window.root::<Root>(), Some(Some(_)))
         && (window.has_active_dialog(cx) || window.has_active_sheet(cx))
+}
+
+/// The key context gpui-component gives every popup menu.
+const POPUP_MENU_CONTEXT: &str = "PopupMenu";
+
+/// Whether an open popup menu holds focus. The in-window menu bar (Windows
+/// and Linux) opens its menus without registering them as deferred popups,
+/// but an open menu always focuses itself, so a press while one is focused
+/// only acts inside it or dismisses it.
+fn popup_menu_focused(window: &Window) -> bool {
+    window
+        .context_stack()
+        .iter()
+        .any(|context| context.contains(POPUP_MENU_CONTEXT))
 }
 
 #[cfg(test)]

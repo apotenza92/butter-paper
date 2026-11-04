@@ -2237,6 +2237,365 @@ fn font_program(document: &Document, descriptor: &Dictionary) -> Option<std::syn
     decoded_cached(program, MAX_FONT_PROGRAM_BYTES).ok()
 }
 
+/// Adds to `decode` the text of each Identity-H code (a CID) whose glyph
+/// the CIDFontType2 `descendant`'s TrueType `program` maps a Unicode
+/// character to, for codes `decode` lacks.
+fn fill_from_truetype(
+    document: &Document,
+    descendant: &Dictionary,
+    program: &[u8],
+    decode: &mut HashMap<u32, String>,
+) -> usize {
+    let Ok(face) = ttf_parser::Face::parse(program, 0) else {
+        return 0;
+    };
+    // Glyph to CID: the identity, or the inverse of a CIDToGIDMap stream.
+    let mapping = descendant
+        .get(b"CIDToGIDMap")
+        .ok()
+        .and_then(|value| resolve(document, value).ok());
+    let glyph_cids: Option<HashMap<u16, u32>> = match mapping {
+        Some(Object::Stream(stream)) => {
+            let bytes = decoded_cached(stream, 1 << 20).ok();
+            bytes.map(|bytes| {
+                let mut cids = HashMap::new();
+                for (cid, pair) in bytes.chunks_exact(2).enumerate() {
+                    let glyph = u16::from_be_bytes([pair[0], pair[1]]);
+                    if glyph != 0 {
+                        cids.entry(glyph).or_insert(cid as u32);
+                    }
+                }
+                cids
+            })
+        }
+        _ => None,
+    };
+    let mut found: Vec<(u32, char)> = Vec::new();
+    let cid_of = |glyph: u16| match &glyph_cids {
+        Some(cids) => cids.get(&glyph).copied(),
+        None => Some(u32::from(glyph)),
+    };
+    let subtables = face
+        .tables()
+        .cmap
+        .map(|cmap| {
+            cmap.subtables
+                .into_iter()
+                .filter(|table| table.is_unicode())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // A subset without a character map (PDF24's) still names its glyphs.
+    if subtables.is_empty() {
+        for glyph in 1..face.number_of_glyphs() {
+            if let Some(character) = face
+                .glyph_name(ttf_parser::GlyphId(glyph))
+                .and_then(glyph_name_char)
+                && let Some(cid) = cid_of(glyph)
+            {
+                found.push((cid, character));
+            }
+        }
+    }
+    for subtable in subtables {
+        subtable.codepoints(|codepoint| {
+            let (Some(character), Some(glyph)) =
+                (char::from_u32(codepoint), subtable.glyph_index(codepoint))
+            else {
+                return;
+            };
+            if glyph.0 == 0 || character.is_control() {
+                return;
+            }
+            let cid = match &glyph_cids {
+                Some(cids) => match cids.get(&glyph.0) {
+                    Some(cid) => *cid,
+                    None => return,
+                },
+                None => u32::from(glyph.0),
+            };
+            found.push((cid, character));
+        });
+    }
+    // The lowest character for a glyph several share (a space and a
+    // no-break space).
+    found.sort_unstable();
+    let named = found.len();
+    for (cid, character) in found {
+        fill_text(decode, cid, character);
+    }
+    named
+}
+
+/// A glyph's outline as a key: its points and commands, which the same
+/// glyph of the same font draws alike in every subset of it.
+fn outline_key(face: &ttf_parser::Face, glyph: u16) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    struct Key(std::collections::hash_map::DefaultHasher, usize);
+    impl ttf_parser::OutlineBuilder for Key {
+        fn move_to(&mut self, x: f32, y: f32) {
+            (0u8, x as i32, y as i32).hash(&mut self.0);
+            self.1 += 1;
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            (1u8, x as i32, y as i32).hash(&mut self.0);
+            self.1 += 1;
+        }
+        fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+            (2u8, x1 as i32, y1 as i32, x as i32, y as i32).hash(&mut self.0);
+            self.1 += 1;
+        }
+        fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+            (
+                3u8, x1 as i32, y1 as i32, x2 as i32, y2 as i32, x as i32, y as i32,
+            )
+                .hash(&mut self.0);
+            self.1 += 1;
+        }
+        fn close(&mut self) {
+            4u8.hash(&mut self.0);
+        }
+    }
+    let mut key = Key(std::collections::hash_map::DefaultHasher::new(), 0);
+    face.outline_glyph(ttf_parser::GlyphId(glyph), &mut key)?;
+    // Too simple a shape (a bar, a dot) is shared by different characters.
+    (key.1 >= 4).then(|| key.0.finish())
+}
+
+/// The CID drawing each glyph of a CIDFontType2, by its CIDToGIDMap.
+fn glyph_cids(document: &Document, descendant: &Dictionary) -> Option<HashMap<u16, u32>> {
+    match descendant
+        .get(b"CIDToGIDMap")
+        .ok()
+        .and_then(|value| resolve(document, value).ok())
+    {
+        Some(Object::Stream(stream)) => decoded_cached(stream, 1 << 20).ok().map(|bytes| {
+            let mut cids = HashMap::new();
+            for (cid, pair) in bytes.chunks_exact(2).enumerate() {
+                let glyph = u16::from_be_bytes([pair[0], pair[1]]);
+                if glyph != 0 {
+                    cids.entry(glyph).or_insert(cid as u32);
+                }
+            }
+            cids
+        }),
+        _ => None,
+    }
+}
+
+/// Fills `decode` for the glyphs of `program` (font `base`'s, whose
+/// program names no characters) that another font of its family in the
+/// document draws with the same outline and knows the character of, by
+/// its own character map or ToUnicode map: PDF24 embeds many subsets of
+/// one font, renumbering their glyphs, with ToUnicode maps that each leave
+/// different characters out.
+fn fill_from_family_outlines(
+    document: &Document,
+    base: &str,
+    descendant: &Dictionary,
+    program: &[u8],
+    limits: &TextEditLimits,
+    decode: &mut HashMap<u32, String>,
+) {
+    let family = base.split_once('+').map_or(base, |(_, name)| name);
+    let Ok(face) = ttf_parser::Face::parse(program, 0) else {
+        return;
+    };
+    // Outline to character, over the family's fonts. Characters drawn
+    // alike (Latin a, Cyrillic а) take the lowest.
+    let mut known: HashMap<u64, char> = HashMap::new();
+    let learn = |key: u64, character: char, known: &mut HashMap<u64, char>| {
+        known
+            .entry(key)
+            .and_modify(|existing| *existing = (*existing).min(character))
+            .or_insert(character);
+    };
+    let mut seen = std::collections::HashSet::new();
+    for object in document.objects.values() {
+        let Ok(font) = object.as_dict() else {
+            continue;
+        };
+        if font.get(b"Subtype").ok().and_then(|s| s.as_name().ok()) != Some(b"Type0") {
+            continue;
+        }
+        let Some(name) = font.get(b"BaseFont").ok().and_then(|n| n.as_name().ok()) else {
+            continue;
+        };
+        let name = String::from_utf8_lossy(name);
+        if name.split_once('+').map_or(name.as_ref(), |(_, rest)| rest) != family {
+            continue;
+        }
+        let Some(other) = font
+            .get(b"DescendantFonts")
+            .ok()
+            .and_then(|value| resolve(document, value).ok())
+            .and_then(|value| value.as_array().ok())
+            .and_then(|array| array.first())
+            .and_then(|value| resolve_dict(document, value))
+        else {
+            continue;
+        };
+        let Some(descriptor) = get_dict(document, other, b"FontDescriptor") else {
+            continue;
+        };
+        let Some(file) = descriptor
+            .get(b"FontFile2")
+            .ok()
+            .and_then(|f| f.as_reference().ok())
+        else {
+            continue;
+        };
+        if !seen.insert(file) {
+            continue;
+        }
+        let Some(other_program) = font_program(document, descriptor) else {
+            continue;
+        };
+        let Ok(other_face) = ttf_parser::Face::parse(&other_program, 0) else {
+            continue;
+        };
+        // Its program's own character map.
+        if let Some(cmap) = other_face.tables().cmap {
+            for table in cmap
+                .subtables
+                .into_iter()
+                .filter(|table| table.is_unicode())
+            {
+                table.codepoints(|codepoint| {
+                    if let (Some(character), Some(glyph)) =
+                        (char::from_u32(codepoint), table.glyph_index(codepoint))
+                        && !character.is_control()
+                        && let Some(key) = outline_key(&other_face, glyph.0)
+                    {
+                        learn(key, character, &mut known);
+                    }
+                });
+            }
+        }
+        // Its ToUnicode map, CID to glyph.
+        let cids = glyph_cids(document, other);
+        let glyph_of: HashMap<u32, u16> = match &cids {
+            Some(cids) => cids.iter().map(|(glyph, cid)| (*cid, *glyph)).collect(),
+            None => HashMap::new(),
+        };
+        if let Ok(map) = to_unicode_map(document, font, 2, limits) {
+            for (cid, text) in map {
+                let mut characters = text.chars();
+                let (Some(character), None) = (characters.next(), characters.next()) else {
+                    continue;
+                };
+                if character.is_control() {
+                    continue;
+                }
+                let glyph = match &cids {
+                    Some(_) => glyph_of.get(&cid).copied(),
+                    None => u16::try_from(cid).ok(),
+                };
+                if let Some(key) = glyph.and_then(|glyph| outline_key(&other_face, glyph)) {
+                    learn(key, character, &mut known);
+                }
+            }
+        }
+    }
+    let cids = glyph_cids(document, descendant);
+    for glyph in 1..face.number_of_glyphs() {
+        let Some(key) = outline_key(&face, glyph) else {
+            continue;
+        };
+        let Some(character) = known.get(&key) else {
+            continue;
+        };
+        let cid = match &cids {
+            Some(cids) => match cids.get(&glyph) {
+                Some(cid) => *cid,
+                None => continue,
+            },
+            None => u32::from(glyph),
+        };
+        fill_text(decode, cid, *character);
+    }
+}
+
+/// Sets code `cid`'s text to `character` unless it has real text: an entry
+/// mapping it to nothing, a control character or U+FFFD (PDF24 writes such
+/// entries) is no text.
+fn fill_text(decode: &mut HashMap<u32, String>, cid: u32, character: char) {
+    let entry = decode.entry(cid).or_default();
+    if entry
+        .chars()
+        .all(|existing| existing.is_control() || existing == '\u{fffd}')
+    {
+        *entry = character.to_string();
+    }
+}
+
+/// The character a glyph name stands for (Adobe Glyph List names for
+/// ASCII, Latin-1 punctuation, `uniXXXX` and `uXXXX`).
+fn glyph_name_char(name: &str) -> Option<char> {
+    let base = name.split('.').next().unwrap_or(name);
+    if let Some(hex) = base.strip_prefix("uni").filter(|hex| hex.len() == 4) {
+        return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+    }
+    if let Some(hex) = base
+        .strip_prefix('u')
+        .filter(|hex| (4..=6).contains(&hex.len()) && hex.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+    }
+    let mut characters = base.chars();
+    if let (Some(character), None) = (characters.next(), characters.next())
+        && character.is_ascii_alphanumeric()
+    {
+        return Some(character);
+    }
+    if let Some(character) =
+        (' '..='~').find(|character| ascii_glyph_names(*character).contains(&base))
+    {
+        return Some(character);
+    }
+    Some(match base {
+        "endash" => '\u{2013}',
+        "emdash" => '\u{2014}',
+        "quoteleft" => '\u{2018}',
+        "quotedblleft" => '\u{201c}',
+        "quotedblright" => '\u{201d}',
+        "quotesinglbase" => '\u{201a}',
+        "quotedblbase" => '\u{201e}',
+        "bullet" => '\u{2022}',
+        "ellipsis" => '\u{2026}',
+        "degree" => '\u{b0}',
+        "copyright" => '\u{a9}',
+        "registered" => '\u{ae}',
+        "trademark" => '\u{2122}',
+        "nbspace" | "nonbreakingspace" => '\u{a0}',
+        "multiply" => '\u{d7}',
+        "plusminus" => '\u{b1}',
+        "section" => '\u{a7}',
+        "paragraph" => '\u{b6}',
+        "periodcentered" => '\u{b7}',
+        "twosuperior" => '\u{b2}',
+        "threesuperior" => '\u{b3}',
+        "onehalf" => '\u{bd}',
+        "onequarter" => '\u{bc}',
+        "threequarters" => '\u{be}',
+        "eacute" => '\u{e9}',
+        "egrave" => '\u{e8}',
+        "aacute" => '\u{e1}',
+        "agrave" => '\u{e0}',
+        "udieresis" => '\u{fc}',
+        "odieresis" => '\u{f6}',
+        "adieresis" => '\u{e4}',
+        "ccedilla" => '\u{e7}',
+        "ntilde" => '\u{f1}',
+        "germandbls" => '\u{df}',
+        "Euro" => '\u{20ac}',
+        "sterling" => '\u{a3}',
+        "fi" => '\u{fb01}',
+        "fl" => '\u{fb02}',
+        _ => return None,
+    })
+}
+
 /// The codes of `decode` whose glyph a TrueType program draws, looked up as
 /// a viewer does: a symbolic font's by code, another's by character.
 /// Whitespace needs no outline.
@@ -2896,7 +3255,7 @@ fn load_type0_font(
     let descriptor = get_dict(document, descendant, b"FontDescriptor");
     let (fallback, family_known) =
         fallback_face(base, descriptor.map(|descriptor| (descriptor, document)));
-    let decode = to_unicode_map(document, font, 2, limits)?;
+    let mut decode = to_unicode_map(document, font, 2, limits)?;
     if decode.is_empty() && cmap.is_none() {
         return Err(TextEditError::ReadOnly(format!(
             "font {base} has no Unicode mapping"
@@ -2948,6 +3307,20 @@ fn load_type0_font(
                 }
                 None => break,
             }
+        }
+    }
+    // A ToUnicode map that leaves codes out (PDF24 keeps only some): the
+    // embedded TrueType program's own character map, or glyph names, give
+    // the rest; failing those, the same font embedded whole elsewhere in
+    // the document, whose glyphs a subset keeping their numbers shares.
+    if cmap.is_none()
+        && let Some(program) = descriptor.and_then(|descriptor| font_program(document, descriptor))
+    {
+        let named = fill_from_truetype(document, descendant, &program, &mut decode);
+        // A program naming nothing is a subset of a font (its name may have
+        // lost its subset tag).
+        if named == 0 {
+            fill_from_family_outlines(document, base, descendant, &program, limits, &mut decode);
         }
     }
     let mut encode = BTreeMap::new();

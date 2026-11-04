@@ -6,6 +6,7 @@ pub const DOWNLOAD_ICON: &str = "icons/download.svg";
 pub const SIGNATURE_VALID_ICON: &str = "icons/shield-check.svg";
 pub const SIGNATURE_UNVERIFIED_ICON: &str = "icons/shield-alert.svg";
 pub const SIGNATURE_INVALID_ICON: &str = "icons/rail/shield-x.svg";
+pub const EDIT_PDF_ICON: &str = "icons/file-pen-line.svg";
 
 /// Product icons supplement, rather than modify, the stock component assets.
 pub struct ApplicationAssets;
@@ -16,6 +17,7 @@ impl AssetSource for ApplicationAssets {
             DOWNLOAD_ICON => Some(include_bytes!("../assets/icons/download.svg")),
             SIGNATURE_VALID_ICON => Some(include_bytes!("../assets/icons/shield-check.svg")),
             SIGNATURE_UNVERIFIED_ICON => Some(include_bytes!("../assets/icons/shield-alert.svg")),
+            EDIT_PDF_ICON => Some(include_bytes!("../assets/icons/file-pen-line.svg")),
             "icons/grip-vertical.svg" => Some(include_bytes!("../assets/icons/grip-vertical.svg")),
             "icons/thumbnail-rotate-left.svg" => {
                 Some(include_bytes!("../assets/icons/thumbnail-rotate-left.svg"))
@@ -96,6 +98,7 @@ impl AssetSource for ApplicationAssets {
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut entries = gpui_component_assets::Assets.list(path)?;
         for icon in [
+            EDIT_PDF_ICON,
             "icons/grip-vertical.svg",
             "icons/thumbnail-rotate-left.svg",
             "icons/thumbnail-rotate-right.svg",

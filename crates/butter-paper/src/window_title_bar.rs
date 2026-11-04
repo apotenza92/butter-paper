@@ -201,7 +201,7 @@ mod tests {
         let small = gpui::size(gpui::px(300.), gpui::px(900.));
         assert_eq!(
             at_least(small, DOCUMENT_WINDOW_MIN_SIZE),
-            gpui::size(gpui::px(828.), gpui::px(900.))
+            gpui::size(gpui::px(746.), gpui::px(900.))
         );
         let large = gpui::size(gpui::px(1200.), gpui::px(800.));
         assert_eq!(at_least(large, DOCUMENT_WINDOW_MIN_SIZE), large);

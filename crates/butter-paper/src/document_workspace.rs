@@ -623,7 +623,6 @@ pub const DOCUMENT_CLOUD_PLUS_TOOL_ID: &str = "tool-cloud-plus";
 pub const DOCUMENT_DIMENSION_TOOL_ID: &str = "tool-dimension";
 pub const DOCUMENT_CALLOUT_TOOL_ID: &str = "tool-callout";
 pub const DOCUMENT_REDACT_TOOL_ID: &str = "tool-redact";
-pub const DOCUMENT_REDACT_PENDING_ALERT_ID: &str = "document-workspace-redact-pending-alert";
 pub const DOCUMENT_SIGNED_TEXT_EDIT_DIALOG_ID: &str = "document-workspace-signed-text-edit";
 pub const DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID: &str =
     "document-workspace-signed-text-edit-confirm";
@@ -673,6 +672,8 @@ pub const DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID: &str =
 pub const DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID: &str =
     "document-workspace-signature-recent-remove-confirm";
 pub const DOCUMENT_SNAPSHOT_TOOL_ID: &str = "tool-snapshot";
+pub const DOCUMENT_SIGNATURE_BOX_PROMPT_ID: &str = "document-signature-box-prompt";
+pub const DOCUMENT_SIGNATURE_BOX_CANCEL_ID: &str = "document-signature-box-cancel";
 pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
 pub const DOCUMENT_SNAP_CLOSE_ID: &str = "viewer-snap-close";
@@ -2783,6 +2784,10 @@ pub struct DocumentWorkspace {
     last_painted_page_evidence: HashMap<(DocumentId, u32), PaintedPageEvidence>,
     /// Visible viewport bounds in window coordinates, independent of scroll.
     viewport_bounds: HashMap<DocumentId, Bounds<Pixels>>,
+    /// Hitbox over each visible viewport, inserted beneath the pages. A press
+    /// inside the viewport that does not hover it lands on something drawn
+    /// on top (a menu, popup, notification or dialog), not on the document.
+    viewport_hitboxes: HashMap<DocumentId, gpui::Hitbox>,
     /// Scroll offset (content pixels) at the last paint of each viewport.
     viewport_painted_scroll: HashMap<DocumentId, (f32, f32)>,
     /// Layout paired with that painted offset; pending zoom plans are not yet visible.
@@ -2818,6 +2823,9 @@ pub struct DocumentWorkspace {
     /// A Snapshot box being drawn for a signature (From the page, or where
     /// a digital signature goes).
     signature_box: Option<signature_capture::BoxCapture>,
+    /// Where the prompt over the page for that box was last drawn: a press
+    /// there belongs to the prompt, not the page.
+    signature_box_prompt_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Finds the system's signing identities.
     system_identity_source: fn() -> Vec<crate::system_certificates::SystemIdentity>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
@@ -2946,6 +2954,8 @@ pub struct DocumentWorkspace {
     /// requested meanwhile only moves `requested_page`; the next render
     /// starts from there when this one is shown.
     navigation_in_flight: HashSet<DocumentId>,
+    /// Documents drawing a whole-page image of a page beside the current one.
+    adjacent_page_renders_in_flight: HashSet<DocumentId>,
     /// Page text selected with the Select tool.
     text_selection: Option<text_selection::TextSelection>,
     /// The document whose page text is under the pointer, with Select.
@@ -3039,6 +3049,7 @@ pub struct DocumentWorkspace {
     template_control: Entity<TemplateSplitControl>,
     _template_subscription: Subscription,
     viewer_toolbar: Entity<ViewerToolbarStrip>,
+    page_navigator: Entity<crate::page_navigator::PageNavigator>,
     viewer_resizable: Entity<ResizableState>,
     left_sidebar_sizing: crate::sidebar_sizing::SidebarSizing,
     right_sidebar_sizing: crate::sidebar_sizing::SidebarSizing,
@@ -4427,8 +4438,12 @@ impl DocumentWorkspace {
                 cx,
             )
         });
+        let page_navigator = cx.new(|_| crate::page_navigator::PageNavigator::new());
         let viewer_resizable = cx.new(|_| ResizableState::default());
-        viewer_toolbar.update(cx, |toolbar, cx| toolbar.set_disabled(true, cx));
+        viewer_toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_page_navigator(page_navigator.clone(), cx);
+            toolbar.set_disabled(true, cx);
+        });
         let viewer_toolbar_subscriptions = vec![
             cx.subscribe(
                 &continuous_control,
@@ -4452,6 +4467,12 @@ impl DocumentWorkspace {
                 &viewer_toolbar,
                 |workspace, _, event: &ViewerToolbarStripEvent, cx| {
                     workspace.handle_viewer_toolbar_event(*event, cx);
+                },
+            ),
+            cx.subscribe(
+                &page_navigator,
+                |workspace, _, event: &crate::page_navigator::PageNavigatorEvent, cx| {
+                    workspace.handle_page_navigator_event(*event, cx);
                 },
             ),
         ];
@@ -4489,6 +4510,7 @@ impl DocumentWorkspace {
             page_interactions: HashMap::new(),
             last_painted_page_evidence: HashMap::new(),
             viewport_bounds: HashMap::new(),
+            viewport_hitboxes: HashMap::new(),
             viewport_painted_scroll: HashMap::new(),
             viewport_painted_layouts: HashMap::new(),
             active_annotation_pointer: None,
@@ -4509,6 +4531,7 @@ impl DocumentWorkspace {
             signing_failed: None,
             system_identity_source: crate::system_certificates::system_identities,
             signature_box: None,
+            signature_box_prompt_bounds: Rc::default(),
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
             new_tab_open: false,
@@ -4583,6 +4606,7 @@ impl DocumentWorkspace {
             restricted_edit_prompt: None,
             status_message: None,
             navigation_in_flight: HashSet::new(),
+            adjacent_page_renders_in_flight: HashSet::new(),
             text_selection: None,
             text_selection_hover: None,
             selectable_text: HashMap::new(),
@@ -4654,6 +4678,7 @@ impl DocumentWorkspace {
             template_control,
             _template_subscription: template_subscription,
             viewer_toolbar,
+            page_navigator,
             viewer_resizable,
             left_sidebar_sizing: crate::sidebar_sizing::SidebarSizing::new(0),
             right_sidebar_sizing: crate::sidebar_sizing::SidebarSizing::new(1),
@@ -6343,6 +6368,7 @@ impl DocumentWorkspace {
         self.last_painted_page_evidence
             .retain(|(owner, _), _| *owner != document_id);
         self.viewport_bounds.remove(&document_id);
+        self.viewport_hitboxes.remove(&document_id);
         self.viewport_painted_scroll.remove(&document_id);
         self.viewport_painted_layouts.remove(&document_id);
         self.annotation_statuses.remove(&document_id);
@@ -11442,6 +11468,44 @@ impl DocumentWorkspace {
         self.set_view_configuration(document_id, mode, (zoom * 100.) as f32, cx);
     }
 
+    /// The view toolbar's page navigator.
+    pub fn page_navigator(&self) -> &Entity<crate::page_navigator::PageNavigator> {
+        &self.page_navigator
+    }
+
+    /// The toolbar's page navigator goes to a page as a thumbnail click
+    /// does, in either view: Previous and Next from the page last asked
+    /// for, so quick presses keep going while pages render.
+    fn handle_page_navigator_event(
+        &mut self,
+        event: crate::page_navigator::PageNavigatorEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::page_navigator::PageNavigatorEvent;
+        if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
+            return;
+        }
+        let Some(document_id) = self.active_ready_document_id(cx) else {
+            return;
+        };
+        let Some((requested, page_count)) = self.session(document_id, cx).map(|session| {
+            let session = session.read(cx);
+            (session.requested_page, session.page_sizes.len() as u32)
+        }) else {
+            return;
+        };
+        let last = page_count.saturating_sub(1);
+        let target = match event {
+            PageNavigatorEvent::First => 0,
+            PageNavigatorEvent::Previous => requested.saturating_sub(1),
+            PageNavigatorEvent::Next => requested.saturating_add(1).min(last),
+            PageNavigatorEvent::Last => last,
+            PageNavigatorEvent::GoTo(page) => page.min(last),
+        };
+        self.activate_thumbnail_page(document_id, target, cx);
+        cx.notify();
+    }
+
     fn handle_viewer_toolbar_event(
         &mut self,
         event: ViewerToolbarStripEvent,
@@ -11481,7 +11545,16 @@ impl DocumentWorkspace {
         let signatures = self
             .active_ready_document_id(cx)
             .and_then(|document_id| self.signature_status(document_id));
+        let pages = self
+            .active_ready_document_id(cx)
+            .and_then(|document_id| self.session(document_id, cx))
+            .map(|session| {
+                let session = session.read(cx);
+                (session.current_page, session.page_sizes.len() as u32)
+            });
         self.viewer_toolbar.update(cx, |toolbar, cx| {
+            let (current_page, page_count) = pages.unwrap_or((0, 0));
+            toolbar.sync_pages(current_page, page_count, cx);
             // The switch shows while a document is open, disabled until
             // one is ready.
             toolbar.set_edit_pdf(Some(edit_pdf.unwrap_or(false)), cx);
@@ -12550,6 +12623,7 @@ impl DocumentWorkspace {
         });
         self.dispatch_viewer_jobs(document_id, cx);
         self.arm_viewer_quality_timer(document_id, cx);
+        self.render_adjacent_pages(document_id, cx);
         cx.notify();
     }
 
@@ -12993,6 +13067,24 @@ impl DocumentWorkspace {
         let Ok(request) = self.begin_page_navigation(document_id, page_index, cx) else {
             return;
         };
+        // A page drawn ahead was drawn as this render would draw it: take
+        // it, so a turn costs the worker only the new page's tiles.
+        let rendered_ahead = self.session(document_id, cx).and_then(|session| {
+            session
+                .read(cx)
+                .adjacent_page_image(page_index)
+                .filter(|adjacent| adjacent.rendered_ahead)
+                .map(|adjacent| adjacent.base_raster.clone())
+        });
+        if let Some(raster) = rendered_ahead {
+            self.show_navigation_placeholder(document_id, page_index, cx);
+            if self.apply_page_result(&request, Ok(raster), cx) == ApplyDisposition::Applied {
+                self.thumbnail_from_page_image(&request, cx);
+            }
+            self.pump_thumbnails(document_id, cx);
+            self.render_adjacent_pages(document_id, cx);
+            return;
+        }
         let Some(resource) = self
             .session(document_id, cx)
             .and_then(|session| session.read(cx).resource.clone())
@@ -13044,6 +13136,100 @@ impl DocumentWorkspace {
                     }
                 }
                 workspace.pump_thumbnails(document_id, cx);
+                workspace.render_adjacent_pages(document_id, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// In Single Page, draws the whole-page images of the pages either side
+    /// of the current one, one at a time, once the current page shows
+    /// sharp: a turn of the wheel or a key then shows the next page at
+    /// once, as sharp as its own render, rather than its coarse thumbnail.
+    pub(super) fn render_adjacent_pages(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        if self.adjacent_page_renders_in_flight.contains(&document_id)
+            || self.navigation_in_flight.contains(&document_id)
+        {
+            return;
+        }
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let next = {
+            let state = session.read(cx);
+            let current = state.current_page;
+            let settled = matches!(state.status, NativeDocumentStatus::Ready)
+                && state.view_state.mode() == PageViewMode::SinglePage
+                && state.resource.is_some()
+                && state.pending_rotation_generation.is_none()
+                && state.placeholder_page.is_none()
+                && state.requested_page == current
+                && state.current_image_page == Some(current);
+            // The page on screen renders first: its tiles, then this.
+            let sharp = settled
+                && state.viewer.plan_snapshot().is_some_and(|plan| {
+                    plan.tiles
+                        .iter()
+                        .filter(|tile| tile.page == current as usize)
+                        .all(|tile| {
+                            matches!(
+                                state.viewer.visible_tile_quality(*tile),
+                                Some(
+                                    crate::document_viewer::ViewerRenderQuality::Full
+                                        | crate::document_viewer::ViewerRenderQuality::Detail
+                                )
+                            )
+                        })
+                });
+            if !sharp {
+                return;
+            }
+            let page_count = state.page_sizes.len() as u32;
+            [current.checked_add(1), current.checked_sub(1)]
+                .into_iter()
+                .flatten()
+                .filter(|page| *page < page_count)
+                .find(|page| state.adjacent_page_image(*page).is_none())
+                .and_then(|page| {
+                    let key = state.adjacent_page_key(page)?;
+                    let source = *state.source_page_rotations.get(page as usize)?;
+                    Some((page, key, source, state.resource.clone()?))
+                })
+        };
+        let Some((page_index, key, source_rotation, resource)) = next else {
+            return;
+        };
+        let task = cx.background_executor().spawn(async move {
+            let surface = resource
+                .render_adjacent_page_image(page_index, DEFAULT_PAGE_RENDER_WIDTH)
+                .and_then(|surface| surface.rotated(key.rotation.delta_from(source_rotation)))?;
+            let image = surface.clone().into_render_image()?;
+            Ok::<_, String>((surface, image))
+        });
+        self.adjacent_page_renders_in_flight.insert(document_id);
+        cx.spawn(async move |entity, cx| {
+            let result = task.await;
+            let _ = entity.update(cx, |workspace, cx| {
+                workspace
+                    .adjacent_page_renders_in_flight
+                    .remove(&document_id);
+                let Some(session) = workspace.session(document_id, cx).cloned() else {
+                    return;
+                };
+                // A failure leaves the turn to the thumbnail, as before.
+                let Ok((surface, image)) = result else {
+                    return;
+                };
+                let kept = session.update(cx, |session, _| {
+                    session.keep_adjacent_page_image(page_index, key, surface, image, true)
+                });
+                if kept {
+                    workspace.render_adjacent_pages(document_id, cx);
+                }
             });
         })
         .detach();
@@ -13098,6 +13284,23 @@ impl DocumentWorkspace {
             if session.current_page == page_index && session.placeholder_page.is_none() {
                 return false;
             }
+            // The page left stays at hand beside the new one, so turning
+            // back shows it sharp at once.
+            let left = session.current_page;
+            let outgoing = (session.placeholder_page.is_none()
+                && session.current_image_page == Some(left))
+            .then(|| {
+                let key = session.adjacent_page_key(left)?;
+                Some((
+                    key,
+                    session.current_base_raster.clone()?,
+                    session.current_image.clone()?,
+                ))
+            })
+            .flatten();
+            let adjacent = session
+                .adjacent_page_image(page_index)
+                .map(|adjacent| (adjacent.base_raster.clone(), adjacent.image.clone()));
             let rotation = session.page_rotation(page_index).or_else(|| {
                 session
                     .source_page_rotations
@@ -13110,7 +13313,18 @@ impl DocumentWorkspace {
                 .map(|thumbnail| thumbnail.image.clone());
             session.current_page = page_index;
             session.placeholder_page = Some(page_index);
-            if let Some(image) = thumbnail {
+            if let Some((base_raster, image)) = adjacent {
+                // Drawn as the page's own render is: it shows sharp at
+                // once, and the render replaces it unchanged.
+                session.current_base_raster = Some(base_raster);
+                session.current_image_page = Some(page_index);
+                if let Some(previous) = session.current_image.replace(image) {
+                    session.retired_images.push(previous);
+                }
+                if let Err(error) = session.present_current_page_highlights() {
+                    session.presentation_error = Some(error);
+                }
+            } else if let Some(image) = thumbnail {
                 // A thumbnail is too coarse to cut a Snapshot from.
                 session.current_base_raster = None;
                 session.current_image_page = Some(page_index);
@@ -13118,6 +13332,10 @@ impl DocumentWorkspace {
                     session.retired_images.push(previous);
                 }
             }
+            if let Some((key, base_raster, image)) = outgoing {
+                session.keep_adjacent_page_image(left, key, base_raster, image, false);
+            }
+            session.prune_adjacent_page_images();
             // The viewer plans the new page on its next frame, keeping the
             // pages it shows until then.
             session.pending_navigation_scroll = Some(page_index);
@@ -17808,6 +18026,27 @@ impl DocumentWorkspace {
         )
     }
 
+    /// Whether a press at `position` lands inside the active document's
+    /// viewport but on something drawn on top of it — an in-window menu, a
+    /// popup, a notification or a page's own blocking surface — so the
+    /// canvas must leave it to that layer instead of clicking through.
+    pub(crate) fn viewport_press_occluded(
+        &self,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+    ) -> bool {
+        let Some(document_id) = self.active_document_id else {
+            return false;
+        };
+        let Some(hitbox) = self.viewport_hitboxes.get(&document_id) else {
+            return false;
+        };
+        self.viewport_bounds
+            .get(&document_id)
+            .is_some_and(|bounds| bounds.contains(&position))
+            && !hitbox.is_hovered(window)
+    }
+
     /// Middle-button drag pans the canvas with any tool, as in the Electron app.
     fn begin_middle_button_pan(
         &mut self,
@@ -17900,6 +18139,9 @@ impl DocumentWorkspace {
                 .and_then(|document_id| self.session(document_id, cx))
                 .is_some_and(|session| session.read(cx).pending_rotation_generation.is_some())
         {
+            return false;
+        }
+        if self.signature_box_prompt_owns(position) {
             return false;
         }
         if self.pending_text_box_editor.is_some() {
@@ -19873,6 +20115,7 @@ impl DocumentWorkspace {
         self.last_painted_page_evidence
             .retain(|(owner, _), _| *owner != document_id);
         self.viewport_bounds.remove(&document_id);
+        self.viewport_hitboxes.remove(&document_id);
         self.viewport_painted_scroll.remove(&document_id);
         self.viewport_painted_layouts.remove(&document_id);
         drop(session);
@@ -24268,6 +24511,9 @@ fn annotation_tool_group(
     pan_active: bool,
     columns: usize,
     signature_popover_open: bool,
+    // A box is being drawn for a signature: Signature shows as the tool in
+    // use, not the Snapshot tool that draws the box.
+    signature_boxing: bool,
     signature_prepare_state: SignaturePrepareState,
     drawn_signature: DrawnSignature,
     signature_input_mode: SignatureInputMode,
@@ -24318,6 +24564,7 @@ fn annotation_tool_group(
         .trigger(
             rail_tool_button(DOCUMENT_SIGNATURE_TOOL_ID, "Signature", "signature")
                 .debug_selector(|| DOCUMENT_SIGNATURE_TOOL_ID.into())
+                .selected(signature_boxing)
                 .disabled(save_busy),
         )
         .content(move |state, window, cx| {
@@ -24867,8 +25114,16 @@ fn annotation_tool_group(
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_SNAPSHOT_TOOL_ID.into())
                     .tooltip("Snapshot (G)")
-                    .selected(annotation_tool == AnnotationTool::Snapshot && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Snapshot && !pan_active)
+                    .selected(
+                        annotation_tool == AnnotationTool::Snapshot
+                            && !pan_active
+                            && !signature_boxing,
+                    )
+                    .toggled(
+                        annotation_tool == AnnotationTool::Snapshot
+                            && !pan_active
+                            && !signature_boxing,
+                    )
                     .disabled(save_busy)
                     .on_click(cx.listener(move |workspace, event, _, cx| {
                         if rail_tool_secondary_click(workspace, event, cx) {
@@ -25953,11 +26208,6 @@ impl Render for DocumentWorkspace {
             });
         }
         let thumbnail_scroll = self.thumbnail_scroll.clone();
-        let redact_pending = annotation_tool == AnnotationTool::Redact
-            || annotation_scene
-                .redacts
-                .iter()
-                .any(|redact| redact.selected);
         if let Some(rectangle) = selected_rectangle.as_ref() {
             let snapshot = RectanglePropertySnapshot {
                 document_id,
@@ -26162,9 +26412,21 @@ impl Render for DocumentWorkspace {
         let viewport_control = cx.entity().downgrade();
         let viewport_observer_scroll = viewer_scroll.clone();
         let painted_layouts = viewer_plan.as_ref().map(|plan| plan.page_layouts.clone());
+        let viewport_hitbox_scroll = viewer_scroll.clone();
         let viewport_observer = canvas(
-            |_, _, _| (),
-            move |bounds, _, window, cx| {
+            move |bounds, window, _| {
+                // Inserted before the pages and their overlays, so only
+                // something drawn on top of the document occludes it.
+                let offset = viewport_hitbox_scroll.offset();
+                window.insert_hitbox(
+                    Bounds {
+                        origin: bounds.origin - offset,
+                        size: bounds.size,
+                    },
+                    gpui::HitboxBehavior::Normal,
+                )
+            },
+            move |bounds, hitbox, window, cx| {
                 // This observer is laid out inside the scrolled content, so its
                 // origin moves with the scroll offset; record the visible viewport.
                 let offset = viewport_observer_scroll.offset();
@@ -26174,6 +26436,7 @@ impl Render for DocumentWorkspace {
                 };
                 let _ = viewport_control.update(cx, |workspace, cx| {
                     workspace.viewport_bounds.insert(document_id, visible);
+                    workspace.viewport_hitboxes.insert(document_id, hitbox);
                     if let Some(layouts) = &painted_layouts {
                         workspace
                             .viewport_painted_layouts
@@ -26331,6 +26594,7 @@ impl Render for DocumentWorkspace {
             self.pan_tool_active || self.middle_pan_active(),
             self.right_rail_columns,
             self.signature_popover_open,
+            self.signature_box_guidance().is_some(),
             self.signature_prepare_state.clone(),
             self.drawn_signature.clone(),
             self.signature_input_mode,
@@ -26896,17 +27160,22 @@ impl Render for DocumentWorkspace {
                     // the scroll bars float over the pages.
                     .bg(cx.theme().secondary)
                     .child(
-                        gpui::div().relative().size_full().child(viewport).child(
-                            gpui::div()
-                                .absolute()
-                                .inset_0()
-                                .debug_selector(|| DOCUMENT_VIEWPORT_SCROLLBARS_ID.into())
-                                .child(
-                                    gpui_component::scroll::Scrollbar::new(&viewer_scrollbar)
-                                        .id("document-viewport-scrollbars")
-                                        .axis(gpui_component::scroll::ScrollbarAxis::Both),
-                                ),
-                        ),
+                        gpui::div()
+                            .relative()
+                            .size_full()
+                            .child(viewport)
+                            .child(
+                                gpui::div()
+                                    .absolute()
+                                    .inset_0()
+                                    .debug_selector(|| DOCUMENT_VIEWPORT_SCROLLBARS_ID.into())
+                                    .child(
+                                        gpui_component::scroll::Scrollbar::new(&viewer_scrollbar)
+                                            .id("document-viewport-scrollbars")
+                                            .axis(gpui_component::scroll::ScrollbarAxis::Both),
+                                    ),
+                            )
+                            .children(self.render_signature_box_prompt(cx)),
                     ),
             ),
         );
@@ -26927,7 +27196,6 @@ impl Render for DocumentWorkspace {
                     column,
                     DocumentAlerts {
                         document_id,
-                        redact_pending,
                         text_box_commit_error,
                         save_failure,
                         save_failure_title,

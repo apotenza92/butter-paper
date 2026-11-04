@@ -50,6 +50,22 @@ impl DocumentWorkspace {
         .detach();
     }
 
+    /// The status bar's line while the Redact tool is chosen or a
+    /// redaction mark is selected: what a mark does not do, in place of the
+    /// tool help, so nothing above the page moves.
+    pub(super) fn redaction_status_context(
+        &self,
+        tool: Option<AnnotationTool>,
+        cx: &Context<Self>,
+    ) -> Option<&'static str> {
+        self.redact_pending_status_text(cx)?;
+        Some(if tool == Some(AnnotationTool::Redact) {
+            "Redact · Click or drag to mark · Marks cover content but don’t remove it from the PDF"
+        } else {
+            "Redaction mark · It covers content but doesn’t remove it from the PDF"
+        })
+    }
+
     pub(super) fn render_status_bar(
         &self,
         window: &Window,
@@ -72,6 +88,8 @@ impl DocumentWorkspace {
             "Text Box · Click away to finish".to_owned()
         } else if let Some(guidance) = self.signature_box_guidance() {
             guidance.to_owned()
+        } else if let Some(redaction) = self.redaction_status_context(tool, cx) {
+            redaction.to_owned()
         } else if editing_content && editing_text {
             "Edit PDF · Type to edit · Esc or click away to finish".to_owned()
         } else if editing_content {
@@ -163,6 +181,10 @@ impl DocumentWorkspace {
             || context.clone(),
             |details| format!("{context}. {details}"),
         );
+        let context_tooltip = match self.redact_pending_status_text(cx) {
+            Some(redaction) => format!("{context_tooltip} {redaction}"),
+            None => context_tooltip,
+        };
         // The current page's scale, shown once it has one or while measuring.
         let scale = self.active_document_id.and_then(|document_id| {
             let session = self.session(document_id, cx)?.read(cx);

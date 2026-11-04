@@ -182,7 +182,17 @@ fn an_intact_signature_from_an_untrusted_certificate_is_unverified(cx: &mut Test
         document_verdict(workspace.document_signatures(document_id).unwrap())
     });
     assert_eq!(verdict, Some(Verdict::Unverified));
-    assert!(cx.debug_bounds(VIEWER_SIGNATURES_ID).is_some());
+    // The shield alone, at the view toolbar's trailing edge.
+    let button = cx.debug_bounds(VIEWER_SIGNATURES_ID).unwrap();
+    let toolbar = cx.debug_bounds("viewer-toolbar").unwrap();
+    assert!(
+        toolbar.contains(&button.center()),
+        "{button:?} not in {toolbar:?}"
+    );
+    assert!(
+        (button.size.width - button.size.height).abs() < gpui::px(1.),
+        "the button is the shield alone"
+    );
 }
 
 #[gpui::test]
@@ -546,4 +556,86 @@ fn a_signature_waiting_on_a_save_that_fails_is_dropped_and_said(cx: &mut TestApp
     );
     assert_eq!(std::fs::read(&pdf).unwrap(), original, "nothing was signed");
     let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[path = "support/dialog_contract.rs"]
+mod dialog_contract;
+
+#[gpui::test]
+fn the_signatures_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
+    let (_workspace, _document_id, cx) = open(cx, fixture("signed-rsa.pdf"), true);
+    let reopen = |cx: &mut gpui::VisualTestContext| click(cx, VIEWER_SIGNATURES_ID);
+    reopen(cx);
+    dialog_contract::assert_dialog_dismissal(
+        cx,
+        "Signatures",
+        DOCUMENT_SIGNATURES_DIALOG_ID,
+        gpui_component::dialog::DIALOG_CLOSE_BUTTON_SELECTOR,
+        dialog_contract::Outside::Closes,
+        reopen,
+    );
+}
+
+#[gpui::test]
+fn the_signing_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_SIGN_CANCEL_ID;
+    let (workspace, _scratch, _pdf, cx) = signing_workspace(cx, "sign-contract", Vec::new);
+    let reopen = {
+        let workspace = workspace.clone();
+        move |cx: &mut gpui::VisualTestContext| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.sign_active_document_with_certificate(cx)
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            draw_box(cx, &workspace, (300., 60.), (540., 120.));
+        }
+    };
+    reopen.clone()(cx);
+    dialog_contract::assert_dialog_dismissal(
+        cx,
+        "Sign with a certificate",
+        DOCUMENT_SIGN_DIALOG_ID,
+        DOCUMENT_SIGN_CANCEL_ID,
+        dialog_contract::Outside::Closes,
+        reopen,
+    );
+}
+
+#[gpui::test]
+fn sign_with_certificate_says_over_the_page_what_to_draw(cx: &mut TestAppContext) {
+    use butter_paper::annotation_adapter::AnnotationTool;
+    use butter_paper::document_workspace::{
+        DOCUMENT_SIGNATURE_BOX_CANCEL_ID, DOCUMENT_SIGNATURE_BOX_PROMPT_ID,
+    };
+    let (workspace, _scratch, _pdf, cx) = signing_workspace(cx, "sign-prompt", Vec::new);
+    let document_id =
+        workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
+    assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_BOX_PROMPT_ID).is_none());
+    workspace.update(cx, |workspace, cx| {
+        workspace.sign_active_document_with_certificate(cx)
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let prompt = cx
+        .debug_bounds(DOCUMENT_SIGNATURE_BOX_PROMPT_ID)
+        .expect("the command answers over the page, where the user is looking");
+    // A press on the prompt is the prompt's, not the start of a box.
+    cx.simulate_click(
+        gpui::point(prompt.left() + gpui::px(12.), prompt.center().y),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_SIGN_DIALOG_ID).is_none()
+            && cx.debug_bounds(DOCUMENT_SIGNATURE_BOX_PROMPT_ID).is_some(),
+        "pressing the prompt draws no box"
+    );
+    // Its X stops, back to the Select tool.
+    click(cx, DOCUMENT_SIGNATURE_BOX_CANCEL_ID);
+    assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_BOX_PROMPT_ID).is_none());
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Select)
+    );
 }

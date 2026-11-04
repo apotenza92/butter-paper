@@ -6,7 +6,6 @@ use super::*;
 /// What the alert stack shows for the active document.
 pub(super) struct DocumentAlerts {
     pub document_id: DocumentId,
-    pub redact_pending: bool,
     pub text_box_commit_error: Option<String>,
     pub save_failure: Option<DocumentSaveFailure>,
     pub save_failure_title: String,
@@ -55,7 +54,6 @@ impl DocumentWorkspace {
     ) -> gpui::Div {
         let DocumentAlerts {
             document_id,
-            redact_pending,
             text_box_commit_error,
             save_failure,
             save_failure_title,
@@ -64,23 +62,6 @@ impl DocumentWorkspace {
             recovery_pending,
         } = alerts;
         column
-        .when(redact_pending && !recovery_only, |root| {
-            root.child(
-                gpui::div()
-                    .id(DOCUMENT_REDACT_PENDING_ALERT_ID)
-                    .debug_selector(|| DOCUMENT_REDACT_PENDING_ALERT_ID.into())
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .child(
-                        Alert::warning(
-                            "document-workspace-redact-pending-message",
-                            PENDING_REDACTION_STATUS,
-                        )
-                        .title("Pending redaction mark"),
-                ),
-            )
-        })
         .when_some(text_box_commit_error.filter(|_| !recovery_only), |root, error| {
             root.child(
                 gpui::div()

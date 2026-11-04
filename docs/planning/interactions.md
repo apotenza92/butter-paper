@@ -191,7 +191,18 @@ each from the gap above it on the page; tables as Word tables on their
 column grid with merged cells kept, bordered when the page rules them;
 images inline where they are drawn; and a section per page with its size
 and margins. Wrapped text runs on to the text area's edge, as the fonts in
-the word processor decide.
+the word processor decide. A page flowing text cannot hold keeps its
+layout instead: a sheet larger than A3 (a drawing set, a poster), a page
+that draws more than rules and boxes (a plan, a map), or one with text at
+an angle or over an image. Its drawings are an SVG picture and its images
+pictures of their own (a JPEG as it is; turned, mirrored, cropped and faded
+as the PDF draws them), stacked in the PDF's paint order; each line of text
+is a borderless text box at its place, quarter turns written vertically,
+with words the PDF sets apart kept apart at tab stops and each stretch
+spaced to the PDF's width in the metric-compatible font (Arial, Times New
+Roman or Courier New stand in for fonts readers are unlikely to have).
+Text a later fill covers stays, hidden under the drawing as on the page.
+Every page converts to one page of the same size.
 
 - Markups and fillable fields come first, for hover and press alike. Then
   a press in text edits it, as in a word processor: a click places the
@@ -620,11 +631,25 @@ with it.
   view, then turn the page: down to the next page, shown from its top edge,
   up to the previous one, shown from its bottom edge, at the same zoom and
   horizontal position. A page that fits turns with each notch or key, and
-  stays centred. Left and Right do the same across. Turning the wheel
-  quickly flicks through the pages: each shows at once from its thumbnail,
-  if drawn, and the view ends on the last page asked for, rendering only
-  that one rather than a render per page. Keys never scroll a page out of
-  view.
+  stays centred. Left and Right do the same across. Once the page shown is
+  sharp, the pages either side of it are drawn ahead (and the page just
+  left is kept), so a turn to one shows it at once as sharp as its own
+  render, never its thumbnail scaled up. Turning the wheel quickly flicks
+  through the pages: each shows at once from its thumbnail, if drawn, and
+  the view ends on the last page asked for, rendering only that one rather
+  than a render per page. Keys never scroll a page out of view.
+- The page navigator in the view toolbar shows the page in view of the
+  total ("3 / 12") between First and Previous page, and Next and Last
+  page, which are disabled at either end. Clicking the page number makes
+  it a field with the number selected: a page typed and Enter goes there
+  (a number past the end goes to the last page; anything else stays put),
+  Escape or clicking elsewhere keeps the page shown, and focus returns to
+  where it was. Letters typed there never switch tools. Previous and Next
+  count from the page last asked for, so quick presses keep going while
+  pages render.
+- A press on anything drawn over the page (a menu of the in-window menu
+  bar, a popup, a notification, a dialog) acts only there or dismisses it;
+  it never also selects, draws or edits on the page beneath.
 - Going to a page (a thumbnail, the page buttons, the wheel) moves there at
   once: the page shows its thumbnail drawn up to size, if the sidebar has
   drawn it, until its own render replaces it. What is on screen renders
@@ -669,11 +694,10 @@ with it.
   a screenshot), Choose file (PNG, JPEG, or a PDF whose first page is the
   signature), and the camera or phone where available, two to a row. Each
   is cleaned up alike: the paper made transparent and cropped to the ink.
-- A digitally signed PDF shows a signatures button at the toolbar's right
-  edge, opposite Edit PDF (it stays there when a narrow toolbar scrolls,
-  the controls fading out beneath it; below about 850 points of toolbar it
-  shows only its icon, whose tooltip still says which, so the view controls stay
-  centred): "Checking signatures…" while its signatures are
+- A digitally signed PDF shows a signatures button at the view toolbar's
+  trailing edge, opposite Edit PDF: the shield alone, so the toolbar keeps
+  its room, with the verdict in its tooltip and accessible name: grey
+  "Checking signatures…" while its signatures are
   checked in the background, then "Signed" (green shield), "Signer not
   verified" (amber: a signer's certificate is not trusted, out of date or
   cannot be checked) or "Signature invalid" (red: signed bytes altered or
@@ -691,9 +715,11 @@ with it.
   signature (an image) selected, the signature goes in its place (the
   signed copy draws it in the signature's box with "Digitally signed by",
   the name and date beside it, and leaves that markup out; the open PDF
-  keeps it); otherwise the status bar asks
-  for a box where it goes (the Snapshot tool, leaving no markup; Esc or
-  another tool cancels). The dialog lists the system's signing
+  keeps it); otherwise a prompt over the top of the page (and the status
+  bar) asks for a box where it goes. The box is drawn as the Snapshot tool
+  draws, leaving no markup, while the rail shows the Signature tool in use;
+  the prompt's X, Esc or another tool cancels, and a press on the prompt
+  draws nothing. Signature ▸ From the page asks the same way. The dialog lists the system's signing
   certificates (looked up in the background; expired ones shown but not
   choosable), the first valid one chosen, then "A certificate file (.p12
   or .pfx)", which asks for the file (the last one chosen is offered

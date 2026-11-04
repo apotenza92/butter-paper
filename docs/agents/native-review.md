@@ -57,7 +57,7 @@ Wayland client of a private headless GNOME Shell with a virtual monitor,
 independent of the logged-in desktop, the real screen and a closed lid; the
 session ends with the command. Inside it, `shot.py OUT.png` captures the
 monitor through Mutter's ScreenCast API, `key.py [KEYSYM_HEX]` presses a key
-and `pointer.py move X Y` or `pointer.py drag X1 Y1 X2 Y2` moves the pointer
+and `pointer.py move X Y`, `pointer.py click X Y` or `pointer.py drag X1 Y1 X2 Y2` moves the pointer
 in monitor pixels, for operating-system input the review driver cannot send,
 such as resizing a window from its edge (the hit zone reaches 4px outside
 the border). They need `gnome-shell`, `python3-gi`, `gstreamer1.0-tools`,
@@ -83,6 +83,48 @@ To run `cargo xtask dev` on the logged-in desktop from an SSH shell, set
 shell lacks it). GPUI uses the GPU the compositor draws on, through Vulkan;
 `ZED_DEVICE_ID=0x<PCI device id>` picks another GPU, and pointing
 `VK_DRIVER_FILES` at a missing file hides Vulkan to check OpenGL.
+
+## GUI smoke check
+
+`crates/butter-paper/tests/review/gui-smoke.txt` drives the real app through
+the commands and dialogs a release must not break: each dialog closes by
+Cancel or its X, Escape and a press beside it, and Sign with Certificate
+prompts over the page. CI's `gui-smoke` job runs it on macOS, Windows and
+Linux for every push to `main` and every pull request; a failed check fails
+the job, whose artifact keeps the log and captures. Add a line to it when a
+basic interaction breaks, and a contract test
+(`tests/support/dialog_contract.rs`) for every new dialog.
+
+Its review-driver lines act on elements by debug selector rather than
+coordinates, so they survive layout changes and window margins:
+
+- `click-id W SELECTOR` clicks the element's centre; `click-beside W
+  SELECTOR` clicks the backdrop halfway between the window's left edge and
+  the element.
+- `os-click-id` and `os-click-beside` click the same points through the
+  operating system with `BP_REVIEW_OS_CLICK_CMD` (`{x} {y}`, screen device
+  pixels), then fail unless the window saw the pointer arrive there. Without
+  the command they click inside the app. Windows uses
+  `scripts/windows/click.ps1`, Linux CI `xdotool` under Xvfb.
+- `expect-dialog W open|closed`, `expect-shown W SELECTOR`, `expect-hidden W
+  SELECTOR` and `expect-tool W TOOL` check state. A failure is logged as
+  `FAIL:`; at `quit` the app writes `FAILED` beside the log and exits 1.
+
+`cargo test` rebuilds `target/debug/butter-paper` without the driver, which
+then ignores the script and runs until the timeout: rebuild with
+`--features review-driver` before a run. Run it locally on Linux as an X11
+client, since a Wayland client cannot know where its window is on screen:
+
+```sh
+cargo build --locked -p butter-paper --bins --features review-driver
+review=$PWD/target/gui-smoke; mkdir -p "$review"
+cp crates/butter-paper/tests/fixtures/text-edit/word-table.pdf "$review/fixture.pdf"
+BP_NATIVE_DEVELOPMENT=1 BP_GPUI_DATA_DIR="$review/profile" BP_PDFIUM_LIBRARY="$(cargo xtask pdfium)" \
+BP_REVIEW_SCRIPT="$PWD/crates/butter-paper/tests/review/gui-smoke.txt" BP_REVIEW_OUT="$review/captures" \
+BP_REVIEW_CAPTURE_CMD="$PWD/scripts/gnome-headless/shot.py {path}" \
+BP_REVIEW_OS_CLICK_CMD="python3 $PWD/scripts/gnome-headless/pointer.py click {x} {y}" \
+timeout 300 scripts/gnome-headless/run.sh --x11 target/debug/butter-paper "$review/fixture.pdf"
+```
 
 ## Windows builds from Linux
 

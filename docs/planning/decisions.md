@@ -102,8 +102,18 @@ changes it; history is in git.
   the open document and were lost on closing it, and applying to several
   pages covers reuse.
 
-- Windows have a least size: document windows 828 × 480, where the view
-  toolbar shows Edit PDF and all its controls, centred, between the left
+- A window filling half a 1920-pixel screen shows the whole interface with
+  its sidebars collapsed: Edit PDF, every view control, the whole page
+  navigator and a signed document's signatures button, for documents of up
+  to 9,999 pages. Changes to the view toolbar keep to that. Narrower than it
+  needs, the whole toolbar turns compact at once, not control by control:
+  the Edit PDF switch shows an icon in place of its label, and the page
+  navigator only its page field. The signatures button is always the shield
+  alone, coloured by the verdict; its tooltip says the verdict, and a click
+  lists the signatures.
+- Windows have a least size: document windows 746 × 480, where the view
+  toolbar shows Edit PDF, the signatures button and all its view controls,
+  with the page field, between the left
   rail and the two-column tool rail (the tool rail folds into its overflow
   menu when short), Settings 600 × 420. Page Thumbnails yields to the
   toolbar: it hides while the window is too narrow for both, and returns
@@ -113,6 +123,15 @@ changes it; history is in git.
   that opens at it. Dialogs stay within the window: a taller one scrolls
   its body between its title and buttons; panels such as Snap settings do
   the same.
+- Every dialog dims the window behind it and closes by Escape, its Cancel
+  or X, and a press on the dimmed backdrop outside it. Alert prompts (a
+  decision with a commit or destructive action) and a dialog busy with
+  work it must not drop (Convert to Word while it saves or converts)
+  ignore the backdrop press. `tests/support/dialog_contract.rs` checks
+  each dialog, and a source-policy test fails for a dialog without it.
+- Tool guidance and warnings that come and go with a tool (Redact's "marks
+  don't remove content") use the status bar, not a banner above the page:
+  nothing above the page appears or moves when a tool is chosen.
 
 - Use the stock gpui-component theme and standard control appearances as the
   UI baseline. Preserve the current application layout and control locations;
@@ -168,7 +187,13 @@ changes it; history is in git.
   rows dragged into order. It opens the result as a new untitled document,
   leaves the originals unchanged, and saves unsaved changes first.
 - The viewer toolbar has zoom, fit and page-mode controls, and the Edit PDF
-  switch at its left; CAD View was removed from it.
+  switch at its left; CAD View was removed from it. A page navigator sits
+  right of the zoom percentage, after Revu's: First page, Previous page, "3
+  / 12" (click it to type a page), Next page and Last page. A compact
+  toolbar drops the four page buttons; the page field always shows. The view
+  controls are centred while the Edit PDF slot's width is free on both
+  sides; in a narrower toolbar the empty space opposite Edit PDF gives way
+  first and they move right, rather than losing controls.
 - Page text editing takes the best of Revu, Acrobat and OnlyOffice rather
   than matching Revu alone (Revu's Edit Text is line-only, for minor
   changes). The target:

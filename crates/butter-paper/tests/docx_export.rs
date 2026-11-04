@@ -622,7 +622,10 @@ fn libreoffice_opens_the_conversions() {
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch/docx");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).unwrap();
-    let mut documents = vec![("illustrated".to_owned(), illustrated().0)];
+    let mut documents = vec![
+        ("illustrated".to_owned(), illustrated().0),
+        ("drawing-sheet".to_owned(), drawing_sheet().0),
+    ];
     for name in [
         "word-table",
         "chrome",
@@ -652,13 +655,181 @@ fn libreoffice_opens_the_conversions() {
         let text = normalise(&String::from_utf8_lossy(&text.stdout));
         let expected = match name.as_str() {
             "illustrated" => "Between the images",
+            "drawing-sheet" => "PLAN LABEL",
             "word-table" => "There are no modifications to the home",
             "quartz" => "Quartz plain text corpus line one.",
             "chrome-table" | "libreoffice-table" => "Bolts, M8 zinc-plated",
             _ => "Project Specification",
         };
         assert!(text.contains(expected), "{name}: {text}");
+        if name == "drawing-sheet" {
+            // The covered room name is kept (under the roof, which text
+            // extraction cannot see), and the sheet is one page.
+            let info = std::process::Command::new("pdfinfo")
+                .arg(out.join(format!("{name}.pdf")))
+                .output()
+                .unwrap();
+            let info = String::from_utf8_lossy(&info.stdout);
+            assert!(text.contains("HIDDEN UNDER THE ROOF"), "{text}");
+            assert!(
+                info.lines()
+                    .any(|line| line.starts_with("Pages:") && line.trim_end().ends_with(" 1")),
+                "{info}"
+            );
+        }
     }
+}
+
+/// An A1 drawing sheet: a plan drawn in paths, a label, a street name
+/// turned a quarter, a room name a later fill (a roof) covers, a photo
+/// drawn turned a quarter and clipped, and a faded photo under everything
+/// (a JPEG with a soft mask of one opacity).
+fn drawing_sheet() -> (Vec<u8>, Vec<u8>) {
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+        .encode(
+            &[30u8, 90, 200].repeat(64),
+            8,
+            8,
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+    let mut document = Document::with_version("1.7");
+    let pages_id = document.new_object_id();
+    let font = document.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let photo = document.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 8, "Height" => 8,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "Filter" => "DCTDecode",
+        },
+        jpeg.clone(),
+    ));
+    let mut half = Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 8, "Height" => 8,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        },
+        vec![127; 64],
+    );
+    half.compress().unwrap();
+    let half = document.add_object(half);
+    let faded = document.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 8, "Height" => 8,
+            "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "Filter" => "DCTDecode",
+            "SMask" => half,
+        },
+        jpeg.clone(),
+    ));
+    // A plan: curved outlines that are more than rules and boxes.
+    let mut content = String::from("q 2384 0 0 1684 0 0 cm /Faded Do Q 0 G 0.5 w ");
+    for index in 0..50 {
+        let x = 200 + index * 30;
+        content.push_str(&format!(
+            "{x} 300 m {} 400 {} 500 {x} 600 c S ",
+            x + 40,
+            x - 40
+        ));
+    }
+    content.push_str(
+        "BT /F1 24 Tf 100 1500 Td (PLAN LABEL) Tj ET \
+         BT /F1 20 Tf 0 1 -1 0 300 700 Tm (WALHALLA STREET) Tj ET \
+         BT /F1 18 Tf 1000 800 Td (HIDDEN UNDER THE ROOF) Tj ET \
+         1 g 950 760 400 80 re f \
+         q 1500 1000 600 400 re W n q 0 400 -300 0 1900 1000 cm /Photo Do Q Q",
+    );
+    let content = document.add_object(Stream::new(Dictionary::new(), content.into_bytes()));
+    let page = document.add_object(dictionary! {
+        "Type" => "Page", "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 2384.into(), 1684.into()],
+        "Contents" => content,
+        "Resources" => dictionary! {
+            "Font" => dictionary! { "F1" => font },
+            "XObject" => dictionary! { "Photo" => photo, "Faded" => faded },
+        },
+    });
+    document.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
+        }),
+    );
+    let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    document.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    (bytes, jpeg)
+}
+
+/// A drawing sheet keeps its layout: its drawing is an SVG picture, its
+/// photos pictures (turned, cropped, faded), each line of text a text box
+/// at its place, in paint order.
+#[test]
+fn a_drawing_sheet_keeps_its_layout() {
+    let (pdf, jpeg) = drawing_sheet();
+    let files = unzip(&docx_from_pdf(&pdf).unwrap());
+    let xml = String::from_utf8(files["word/document.xml"].clone()).unwrap();
+    // One landscape section without margins: A1 scaled to Word's largest
+    // page side, 22 inches, keeping its proportions (Word cuts off a page
+    // larger than that).
+    assert_eq!(xml.matches("<w:sectPr>").count(), 1);
+    assert!(
+        xml.contains("<w:pgSz w:w=\"31680\" w:h=\"22378\" w:orient=\"landscape\"/>"),
+        "{}",
+        &xml[xml.find("<w:pgSz").unwrap()..][..80]
+    );
+    assert!(xml.contains("w:top=\"0\" w:right=\"0\" w:bottom=\"0\" w:left=\"0\""));
+    // The plan is an SVG picture of paths, with a fallback picture.
+    let svg = files
+        .iter()
+        .find(|(name, _)| name.ends_with(".svg"))
+        .map(|(_, bytes)| String::from_utf8(bytes.clone()).unwrap())
+        .expect("an SVG layer");
+    assert!(svg.contains("viewBox=\"0 0 2384 1684\""));
+    // Fifty curves and the roof.
+    assert_eq!(svg.matches("<path ").count(), 51, "{svg}");
+    assert!(xml.contains("asvg:svgBlip"));
+    // Text boxes at their places; the street name written upward.
+    assert!(xml.contains(">PLAN LABEL<"));
+    let street = xml.find(">WALHALLA STREET<").expect("the street name");
+    let street_box = &xml[xml[..street].rfind("<wp:anchor").unwrap()..street];
+    assert!(
+        street_box.contains("vert=\"vert270\"")
+            || xml[street..]
+                .find("vert=\"vert270\"")
+                .is_some_and(|at| at < 1500)
+    );
+    // The covered room name lies under every picture: it comes first.
+    let hidden = xml
+        .find(">HIDDEN UNDER THE ROOF<")
+        .expect("hidden text kept");
+    let first_picture = xml.find("<pic:pic>").unwrap();
+    assert!(hidden < first_picture, "hidden text first");
+    // Nothing lies behind the page's text: LibreOffice stacks that in reverse.
+    assert!(!xml.contains("behindDoc=\"1\""));
+    // The faded photo, over the paper, is faded into a JPEG; the turned photo
+    // is the JPEG as it is, turned a quarter and cropped by its clip.
+    let jpegs = files
+        .iter()
+        .filter(|(name, _)| name.ends_with(".jpeg"))
+        .map(|(_, bytes)| bytes.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(jpegs.len(), 2);
+    assert!(jpegs.contains(&jpeg));
+    let faded = jpegs.iter().find(|bytes| **bytes != jpeg).unwrap();
+    let pixel = image::load_from_memory(faded)
+        .unwrap()
+        .to_rgb8()
+        .get_pixel(4, 4)
+        .0;
+    assert!(
+        pixel.iter().all(|channel| *channel > 100),
+        "faded towards white: {pixel:?}"
+    );
+    assert!(xml.contains("rot=\"5400000\"") || xml.contains("rot=\"16200000\""));
 }
 
 /// Pages read on several cores still come out in order, and an image every

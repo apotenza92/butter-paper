@@ -2,7 +2,7 @@
 # Move or drag the pointer in the current GNOME (Mutter) session, in monitor
 # pixels, with relative motion from the bottom-left corner (absolute motion
 # needs a negotiated ScreenCast stream; top-left is the hot corner).
-# Usage: pointer.py move X Y | drag X1 Y1 X2 Y2
+# Usage: pointer.py move X Y | click X Y | drag X1 Y1 X2 Y2
 import sys
 import time
 
@@ -53,6 +53,10 @@ try:
     relative(-100000, 0)
     args = [float(value) for value in sys.argv[2:]]
     to(*args[:2], steps=10)
+    if sys.argv[1] == "click":
+        time.sleep(0.3)
+        button(True)
+        button(False)
     if sys.argv[1] == "drag":
         time.sleep(0.3)
         button(True)

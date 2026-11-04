@@ -5831,7 +5831,7 @@ pub(crate) enum EmbeddedTextFont {
 }
 
 impl EmbeddedTextFont {
-    fn data(self) -> &'static [u8] {
+    pub(crate) fn data(self) -> &'static [u8] {
         match self {
             Self::ArimoRegular => include_bytes!("../assets/fonts/Arimo-Regular.ttf"),
             Self::ArimoBold => include_bytes!("../assets/fonts/Arimo-Bold.ttf"),

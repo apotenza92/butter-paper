@@ -4,6 +4,50 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.2]
+
+### Pages
+
+- A page navigator sits right of the zoom percentage: First, Previous,
+  "3 / 12", Next and Last page. Click the page number to type the page to
+  go to.
+- In Single Page view, turning to the next or previous page with the mouse
+  wheel shows it sharp at once: the pages either side are drawn ahead,
+  instead of flashing a blurry thumbnail first.
+
+### Toolbar and windows
+
+- The whole interface fits a window half a 1920-pixel screen wide with its
+  sidebars collapsed: Edit PDF, every view control, the page navigator and
+  the signatures button, for documents of up to 9,999 pages.
+- In a narrower window the toolbar turns compact all at once: the Edit PDF
+  switch shows an icon in place of its label, and the page navigator only
+  its page number. Document windows can now be as narrow as 746 points.
+- A signed PDF's signatures button is now the shield alone, coloured by
+  the verdict; hover it for the verdict and click it for the details.
+
+### Clicks
+
+- Clicking a menu item, such as File > Convert to Word Document, no longer
+  also starts a selection on the page behind the menu. A press on anything
+  drawn over the page only acts there.
+- Every dialog closes when you click outside it, as well as by Escape and
+  its Cancel or X, except prompts that ask for a decision and dialogs busy
+  with work they must not drop.
+- Sign with Certificate asks over the page for the box the signature goes
+  in, and its X cancels.
+- Redaction's reminder that marks don't remove content shows in the status
+  bar, so nothing above the page moves when you choose the tool.
+
+### Word documents
+
+- Drawings, plans, maps, posters and slides keep their layout in Convert
+  to Word: their drawings and images are pictures in the PDF's order, and
+  each line of text is an editable text box at its place on the page.
+- Text in PDFs whose fonts leave characters out of their character map
+  (common in files from PDF24) now reads in full, for Edit PDF, selecting
+  and copying text, and Convert to Word.
+
 ## [0.4.1]
 
 ### Links

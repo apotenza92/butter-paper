@@ -94,6 +94,7 @@ impl SidebarSizing {
                             if phase != DispatchPhase::Capture
                                 || event.button != MouseButton::Left
                                 || event.click_count != 2
+                                || crate::overlay_state::press_owned_by_overlay(window, cx)
                             {
                                 return;
                             }

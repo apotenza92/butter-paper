@@ -226,7 +226,6 @@ impl DocumentWorkspace {
                 document_body,
                 DocumentAlerts {
                     document_id,
-                    redact_pending: false,
                     text_box_commit_error: None,
                     save_failure,
                     save_failure_title: "Couldn’t save this document".into(),

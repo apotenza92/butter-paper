@@ -332,3 +332,108 @@ fn panel_popover_and_dialog_closes_share_the_standard_x() {
     let helper = between(&helper, "pub(crate) fn close_icon_button(", "\n}\n");
     assert!(helper.contains(".ghost()") && helper.contains(".small()"));
 }
+
+/// Every ordinary dialog the application opens is checked by a test that
+/// runs `support/dialog_contract.rs` against it: Escape, its Cancel or X and
+/// a press outside it close it. A new `open_dialog` call fails this check
+/// until its file is listed with the test that covers it. Alert prompts
+/// (`open_alert_dialog`) decide, so a press outside them stays inert by
+/// design and they are not listed.
+#[test]
+fn every_dialog_has_a_dismissal_contract_test() {
+    // Source file, its `open_dialog` calls, and the test that keeps the
+    // contract for each.
+    let covered: &[(&str, usize, &[&str])] = &[
+        (
+            "document_workspace_merge.rs",
+            1,
+            &["merge_documents_keeps_the_dialog_dismissal_contract"],
+        ),
+        (
+            "document_workspace_sign.rs",
+            1,
+            &["the_signing_dialog_keeps_the_dialog_dismissal_contract"],
+        ),
+        (
+            "document_workspace_signatures.rs",
+            1,
+            &["the_signatures_dialog_keeps_the_dialog_dismissal_contract"],
+        ),
+        (
+            "document_workspace_word.rs",
+            1,
+            &["the_word_dialog_keeps_the_dialog_dismissal_contract"],
+        ),
+        (
+            "page_scale_control.rs",
+            1,
+            &["the_page_scale_dialog_keeps_the_dialog_dismissal_contract"],
+        ),
+        (
+            "template_manager.rs",
+            1,
+            &["the_template_dialog_keeps_the_dialog_dismissal_contract"],
+        ),
+        (
+            "application_settings.rs",
+            1,
+            &["the_about_dialog_keeps_the_dialog_dismissal_contract"],
+        ),
+    ];
+    let call = Regex::new(r"window\s*\.\s*open_dialog\s*\(").unwrap();
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(directory) = stack.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let calls = call.find_iter(&text).count();
+                if calls > 0 {
+                    let name = path
+                        .strip_prefix(&src)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    found.push((name, calls));
+                }
+            }
+        }
+    }
+    found.sort();
+    let mut expected: Vec<_> = covered
+        .iter()
+        .map(|(file, calls, _)| ((*file).to_owned(), *calls))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "each open_dialog call needs a test running support/dialog_contract.rs, listed here"
+    );
+    let tests = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let all_tests: String = std::fs::read_dir(&tests)
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            (path.extension().is_some_and(|extension| extension == "rs"))
+                .then(|| std::fs::read_to_string(path).unwrap())
+        })
+        .collect();
+    for (file, _, names) in covered {
+        for name in *names {
+            let at = all_tests
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("{file}: missing test {name}"));
+            assert!(
+                all_tests[at..]
+                    .split("\n}\n")
+                    .next()
+                    .is_some_and(|body| body.contains("assert_dialog_dismissal")),
+                "{name} runs the dialog contract"
+            );
+        }
+    }
+}

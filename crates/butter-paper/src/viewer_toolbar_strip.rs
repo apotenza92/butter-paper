@@ -6,7 +6,7 @@ use gpui::{
     Styled as _, Window, div, prelude::FluentBuilder as _, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, ElementExt as _, Icon, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, ElementExt as _, Icon, Selectable as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
     switch::Switch,
@@ -15,10 +15,11 @@ use gpui_component::{
 use crate::accessible_button::accessible_icon_button;
 use crate::cad_view_control::{CadViewControl, CadViewControlEvent};
 use crate::continuous_view_control::ContinuousViewControl;
+use crate::page_navigator::{PageNavigator, PageNavigatorFit};
 use crate::page_view_control::{
     PageViewControl, PageViewControlEvent, PageViewMode, WheelBehavior,
 };
-use crate::pdf_signatures::Verdict;
+use crate::pdf_signatures::{SignatureStatus, Verdict};
 use crate::viewer_icons::{fit_page_icon, fit_width_icon};
 use crate::zoom_control::ZoomControl;
 
@@ -29,21 +30,66 @@ pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
 pub const EDIT_PDF_ID: &str = "viewer-edit-pdf";
+/// A signed document's signatures button, at the trailing edge.
 pub const VIEWER_SIGNATURES_ID: &str = "viewer-signatures";
 /// The zoom, fit and page-view controls, centred in the toolbar.
 pub const VIEWER_TOOLBAR_CONTROLS_ID: &str = "viewer-toolbar-controls";
-/// The least width of the Edit PDF switch's slot, and of the matching slot
-/// opposite it that holds the signatures button, in rems.
-pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 9.;
-/// The least toolbar width, in rems, that shows the Edit PDF switch, the
-/// centred view controls and a matching slot opposite: below it the strip
-/// scrolls sideways. Thumbnails yield to it, and the document window's least
-/// size holds it beside both rails.
-pub const VIEWER_TOOLBAR_MIN_REMS: f32 = 43.5;
-/// The least toolbar width, in rems, at which the signatures button shows
-/// its label; narrower, it shows only its icon, so the view controls stay
-/// centred and in view.
-pub const SIGNATURES_LABEL_MIN_REMS: f32 = 53.;
+/// The least width of the Edit PDF switch's slot, in rems. The view
+/// controls stay centred while the space opposite is as wide; in a narrower
+/// toolbar that space gives way first, and the controls move right.
+pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 8.125;
+/// The slot of the compact Edit PDF switch, an icon in place of its label,
+/// in rems.
+pub const EDIT_PDF_COMPACT_SLOT_REMS: f32 = 4.25;
+/// The slot of the signatures button, a shield alone, in rems.
+pub const TOOLBAR_ICON_SLOT_REMS: f32 = 2.5;
+/// The zoom, fit and page-view controls other than the page navigator.
+const VIEW_CONTROLS_REMS: f32 = 24.75;
+
+/// What a toolbar of a given width has room for. The whole toolbar turns
+/// compact at once: the Edit PDF switch shows an icon in place of its
+/// label, and the page navigator only its page field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewerToolbarFit {
+    Full,
+    Compact,
+}
+
+impl ViewerToolbarFit {
+    fn navigator(self) -> PageNavigatorFit {
+        match self {
+            Self::Full => PageNavigatorFit::Full,
+            Self::Compact => PageNavigatorFit::Indicator,
+        }
+    }
+}
+
+/// The toolbar width, in rems, that shows the toolbar as `fit` says, with
+/// the signatures button for a signed document, for a document of `digits`
+/// page-count digits.
+pub const fn viewer_toolbar_rems(fit: ViewerToolbarFit, signed: bool, digits: u32) -> f32 {
+    use crate::page_navigator::{PAGE_NAVIGATOR_BUTTON_PAIR_REMS, indicator_room_rems};
+    let (edit_pdf, pairs) = match fit {
+        ViewerToolbarFit::Full => (EDIT_PDF_SLOT_MIN_REMS, 2.),
+        ViewerToolbarFit::Compact => (EDIT_PDF_COMPACT_SLOT_REMS, 0.),
+    };
+    let signatures = if signed { TOOLBAR_ICON_SLOT_REMS } else { 0. };
+    edit_pdf
+        + VIEW_CONTROLS_REMS
+        + indicator_room_rems(digits)
+        + pairs * PAGE_NAVIGATOR_BUTTON_PAIR_REMS
+        + signatures
+}
+
+/// The least toolbar width, in rems: compact Edit PDF, the view controls,
+/// the page field of a document of up to four-digit page counts and the
+/// signatures button. Below it the strip scrolls sideways. Thumbnails yield
+/// to it, and the document window's least size holds it beside both rails.
+pub const VIEWER_TOOLBAR_MIN_REMS: f32 = viewer_toolbar_rems(
+    ViewerToolbarFit::Compact,
+    true,
+    crate::page_navigator::PAGE_NAVIGATOR_MAX_DIGITS,
+);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FitPreset {
@@ -60,19 +106,17 @@ pub enum ViewerToolbarStripEvent {
     SignaturesRequested,
 }
 
-/// What the signatures button shows for a digitally signed document.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SignatureStatus {
-    Checking,
-    Checked(Verdict),
-}
-
 /// Owns the representative viewer-toolbar feature state while GPUI Component
 /// owns the presentation and interaction behavior of each control.
 pub struct ViewerToolbarStrip {
     continuous_control: Entity<ContinuousViewControl>,
     single_page_control: Option<Entity<PageViewControl>>,
     zoom_control: Option<Entity<ZoomControl>>,
+    /// The page navigator, right of the zoom percentage.
+    page_navigator: Option<Entity<PageNavigator>>,
+    /// The digits of the active document's page count, which size the page
+    /// field.
+    page_digits: u32,
     cad_view_control: Option<Entity<CadViewControl>>,
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
@@ -84,6 +128,7 @@ pub struct ViewerToolbarStrip {
     /// The Edit PDF switch, at the strip's leading edge, and whether it is
     /// on; `None` hides it.
     edit_pdf: Option<bool>,
+    /// A signed document's signatures, which show the signatures button.
     signatures: Option<SignatureStatus>,
     /// The toolbar's width as last laid out.
     width: Rc<Cell<Pixels>>,
@@ -95,6 +140,8 @@ impl ViewerToolbarStrip {
             continuous_control,
             single_page_control: None,
             zoom_control: None,
+            page_navigator: None,
+            page_digits: 1,
             cad_view_control: None,
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
@@ -171,6 +218,8 @@ impl ViewerToolbarStrip {
             continuous_control,
             single_page_control: Some(single_page_control),
             zoom_control: None,
+            page_navigator: None,
+            page_digits: 1,
             cad_view_control: None,
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
@@ -256,6 +305,29 @@ impl ViewerToolbarStrip {
         toolbar
     }
 
+    /// Shows `navigator` right of the zoom percentage.
+    pub fn set_page_navigator(&mut self, navigator: Entity<PageNavigator>, cx: &mut Context<Self>) {
+        navigator.update(cx, |navigator, cx| {
+            navigator.set_disabled(self.disabled, cx)
+        });
+        self.page_navigator = Some(navigator);
+        cx.notify();
+    }
+
+    /// Follows the active document's page and page count.
+    pub fn sync_pages(&mut self, current_page: u32, page_count: u32, cx: &mut Context<Self>) {
+        let digits = crate::page_navigator::page_count_digits(page_count);
+        if self.page_digits != digits {
+            self.page_digits = digits;
+            cx.notify();
+        }
+        if let Some(navigator) = &self.page_navigator {
+            navigator.update(cx, |navigator, cx| {
+                navigator.set_pages(current_page, page_count, cx);
+            });
+        }
+    }
+
     pub fn fit_preset(&self) -> FitPreset {
         self.fit_preset
     }
@@ -334,6 +406,9 @@ impl ViewerToolbarStrip {
             cad_view_control.update(cx, |control, cx| {
                 control.set_disabled(disabled, cx);
             });
+        }
+        if let Some(navigator) = &self.page_navigator {
+            navigator.update(cx, |navigator, cx| navigator.set_disabled(disabled, cx));
         }
         if !disabled {
             let cad_view_active = self
@@ -447,6 +522,21 @@ impl ViewerToolbarStrip {
     }
 }
 
+/// What a toolbar `width` wide has room for.
+pub fn viewer_toolbar_fit(
+    width: Pixels,
+    rem: Pixels,
+    signed: bool,
+    digits: u32,
+) -> ViewerToolbarFit {
+    let full = ViewerToolbarFit::Full;
+    if width >= rem * viewer_toolbar_rems(full, signed, digits) {
+        full
+    } else {
+        ViewerToolbarFit::Compact
+    }
+}
+
 impl EventEmitter<ViewerToolbarStripEvent> for ViewerToolbarStrip {}
 
 impl Render for ViewerToolbarStrip {
@@ -495,20 +585,81 @@ impl Render for ViewerToolbarStrip {
                 "Fit Page",
             ));
 
-        // The Edit PDF switch sits at the leading edge; a matching flexible
-        // space after the view controls keeps them centred. Both scroll with
-        // the controls when the strip is narrow.
+        let signed = self.signatures.is_some();
+        let fit = viewer_toolbar_fit(
+            self.width.get(),
+            window.rem_size(),
+            signed,
+            self.page_digits,
+        );
+        if let Some(navigator) = &self.page_navigator {
+            navigator.update(cx, |navigator, cx| navigator.set_fit(fit.navigator(), cx));
+        }
+
+        // The Edit PDF switch sits at the leading edge, and the signatures
+        // button at the trailing edge; matching flexible spaces keep the
+        // view controls centred. All scroll with the controls when the strip
+        // is narrow.
         let edit_pdf = self.edit_pdf.map(|on| {
+            let tooltip = if on {
+                "Stop editing the PDF's text, drawings and images (Shift+T)"
+            } else {
+                "Edit the PDF's text, drawings and images (Shift+T)"
+            };
+            let switch = Switch::new("viewer-edit-pdf-switch")
+                .checked(on)
+                .disabled(disabled)
+                .tooltip(tooltip)
+                .on_click(cx.listener(|_, _: &bool, _, cx| {
+                    cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
+                }));
+            let control = match fit {
+                ViewerToolbarFit::Full => switch.label("Edit PDF").into_any_element(),
+                // Narrow, the same switch with an icon where its label was;
+                // the icon toggles it as the label does, and the group
+                // carries the name.
+                ViewerToolbarFit::Compact => h_flex()
+                    .id("viewer-edit-pdf-compact")
+                    .role(gpui::Role::Group)
+                    .aria_label("Edit PDF")
+                    .gap_2()
+                    .items_center()
+                    .child(switch)
+                    .child(
+                        div()
+                            .id("viewer-edit-pdf-icon")
+                            .when(!disabled, |icon| {
+                                icon.cursor_pointer().on_click(cx.listener(
+                                    |_, _: &ClickEvent, _, cx| {
+                                        cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
+                                    },
+                                ))
+                            })
+                            .child(
+                                Icon::default()
+                                    .path(crate::application_assets::EDIT_PDF_ICON)
+                                    .text_color(if disabled {
+                                        cx.theme().muted_foreground
+                                    } else {
+                                        cx.theme().foreground
+                                    }),
+                            ),
+                    )
+                    .into_any_element(),
+            };
             // Padded inside: the slot and the trailing space grow alike. The
-            // slot's least width is stated, so it always holds the switch,
-            // its label and padding.
+            // slot's least width is stated, so it always holds the control
+            // and its padding.
             h_flex()
                 .flex_1()
                 .flex_shrink_0()
-                .min_w(rems(EDIT_PDF_SLOT_MIN_REMS))
+                .min_w(rems(match fit {
+                    ViewerToolbarFit::Full => EDIT_PDF_SLOT_MIN_REMS,
+                    ViewerToolbarFit::Compact => EDIT_PDF_COMPACT_SLOT_REMS,
+                }))
                 .child(
                     h_flex()
-                        .px_2()
+                        .px_1()
                         .flex_shrink_0()
                         .whitespace_nowrap()
                         .items_center()
@@ -516,98 +667,65 @@ impl Render for ViewerToolbarStrip {
                             div()
                                 .id(EDIT_PDF_ID)
                                 .debug_selector(|| EDIT_PDF_ID.into())
-                                .child(
-                                Switch::new("viewer-edit-pdf-switch")
-                                    .label("Edit PDF")
-                                    .checked(on)
-                                    .disabled(disabled)
-                                    .tooltip(if on {
-                                        "Stop editing the PDF's text, drawings and images (Shift+T)"
-                                    } else {
-                                        "Edit the PDF's text, drawings and images (Shift+T)"
-                                    })
-                                    .on_click(cx.listener(|_, _: &bool, _, cx| {
-                                        cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
-                                    })),
-                            ),
+                                .child(control),
                         ),
                 )
         });
         let has_edit_pdf = edit_pdf.is_some();
-        // At the trailing edge, opposite the Edit PDF slot. It stays on
-        // screen when a narrow toolbar scrolls: the button floats over the
-        // strip's end, while a hidden copy keeps its room in the layout, so
-        // the centred controls do not move.
-        let labelled = self.width.get() >= window.rem_size() * SIGNATURES_LABEL_MIN_REMS;
-        let signature_button = |pinned: bool, cx: &mut Context<Self>| {
-            let status = self.signatures?;
+
+        // The shield alone, coloured by the verdict; its tooltip says what
+        // it means, and a click lists the signatures.
+        let signatures = self.signatures.map(|status| {
             let theme = cx.theme();
-            let (icon, color, label, tooltip) = match status {
+            let (icon, color, label) = match status {
                 SignatureStatus::Checking => (
                     crate::application_assets::SIGNATURE_UNVERIFIED_ICON,
                     theme.muted_foreground,
                     "Checking signatures…",
-                    "Checking this PDF's digital signatures",
                 ),
                 SignatureStatus::Checked(Verdict::Valid) => (
                     crate::application_assets::SIGNATURE_VALID_ICON,
                     theme.success,
-                    "Signed",
-                    "Digitally signed, and the signatures are valid",
+                    "Signed: the signatures are valid. Click for details.",
                 ),
                 SignatureStatus::Checked(Verdict::Unverified) => (
                     crate::application_assets::SIGNATURE_UNVERIFIED_ICON,
                     theme.warning,
-                    "Signer not verified",
-                    "Digitally signed, but a signer's identity can't be verified",
+                    "Signer not verified: a signer's identity can't be verified. Click for details.",
                 ),
                 SignatureStatus::Checked(Verdict::Invalid) => (
                     crate::application_assets::SIGNATURE_INVALID_ICON,
                     theme.danger,
-                    "Signature invalid",
-                    "Digitally signed, but the PDF changed after signing",
+                    "Signature invalid: the PDF changed after signing. Click for details.",
                 ),
             };
-            let button = Button::new(if pinned {
-                VIEWER_SIGNATURES_ID
-            } else {
-                "viewer-signatures-room"
-            })
-            .ghost()
-            .small()
-            .icon(Icon::default().path(icon).text_color(color));
-            let button = if labelled {
-                button.label(label)
-            } else {
-                accessible_icon_button(button, label)
-            };
-            Some(h_flex().px_2().flex_shrink_0().child(if pinned {
-                button
+            h_flex().px_1().flex_shrink_0().child(accessible_icon_button(
+                Button::new(VIEWER_SIGNATURES_ID)
                     .debug_selector(|| VIEWER_SIGNATURES_ID.into())
-                    .tooltip(tooltip)
+                    .accessibility_id(VIEWER_SIGNATURES_ID)
+                    .ghost()
+                    .icon(Icon::default().path(icon).text_color(color))
+                    .tooltip(label)
                     .disabled(disabled)
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
                         cx.emit(ViewerToolbarStripEvent::SignaturesRequested);
-                    }))
-                    .into_any_element()
-            } else {
-                div()
-                    .invisible()
-                    .child(button.tab_stop(false))
-                    .into_any_element()
-            }))
-        };
-        let signatures_room = signature_button(false, cx).filter(|_| has_edit_pdf);
-        let signatures = signature_button(true, cx).filter(|_| has_edit_pdf);
-        let background = cx.theme().background;
+                    })),
+                label,
+            ))
+        });
         let width = self.width.clone();
+        let page_digits = self.page_digits;
         let toolbar = cx.entity().downgrade();
 
         h_flex()
             .on_prepaint(move |bounds, window, cx| {
-                let rem = window.rem_size() * SIGNATURES_LABEL_MIN_REMS;
-                let was_labelled = width.replace(bounds.size.width) >= rem;
-                if was_labelled != (bounds.size.width >= rem) {
+                // Whether the toolbar is compact follows the width laid
+                // out.
+                let band = |width: Pixels| {
+                    viewer_toolbar_fit(width, window.rem_size(), signed, page_digits)
+                };
+                let previous = band(width.replace(bounds.size.width));
+                if previous != band(bounds.size.width) {
                     let toolbar = toolbar.clone();
                     window.defer(cx, move |_, cx| {
                         toolbar.update(cx, |_, cx| cx.notify()).ok();
@@ -651,13 +769,16 @@ impl Render for ViewerToolbarStrip {
                                     .flex_shrink_0()
                                     .justify_center()
                                     .items_center()
-                                    .gap_2()
+                                    .gap_1p5()
                                     // Match the shell's standard edge inset; controls keep
                                     // their intrinsic sizes and scroll rather than shrink.
                                     .px_1()
                                     .py_1()
                                     .when_some(self.zoom_control.clone(), |toolbar, control| {
                                         toolbar.child(h_flex().flex_shrink_0().child(control))
+                                    })
+                                    .when_some(self.page_navigator.clone(), |toolbar, navigator| {
+                                        toolbar.child(h_flex().flex_shrink_0().child(navigator))
                                     })
                                     .child(h_flex().flex_shrink_0().child(fit_controls))
                                     .child(
@@ -678,42 +799,23 @@ impl Render for ViewerToolbarStrip {
                                         },
                                     ),
                             )
-                            .when(has_edit_pdf, |content| {
+                            .when(has_edit_pdf || signed, |content| {
+                                // Grows as the Edit PDF slot does, so the
+                                // controls are centred, but gives way first
+                                // when narrow, down to the signatures
+                                // button it holds.
                                 content.child(
                                     h_flex()
                                         .flex_1()
                                         .flex_shrink_0()
-                                        .min_w(rems(EDIT_PDF_SLOT_MIN_REMS))
                                         .justify_end()
-                                        .children(signatures_room),
+                                        .when(signed, |slot| {
+                                            slot.min_w(rems(TOOLBAR_ICON_SLOT_REMS))
+                                        })
+                                        .children(signatures),
                                 )
                             }),
                     ),
             )
-            .children(signatures.map(|signatures| {
-                h_flex()
-                    .absolute()
-                    .right_0()
-                    .top_0()
-                    .bottom_0()
-                    .items_center()
-                    // Controls scrolled beneath it fade out rather than
-                    // being cut off.
-                    .child(div().w_4().h_full().bg(gpui::linear_gradient(
-                        90.,
-                        gpui::linear_color_stop(background.opacity(0.), 0.),
-                        gpui::linear_color_stop(background, 1.),
-                    )))
-                    // Presses on it never reach controls scrolled beneath.
-                    .child(
-                        h_flex()
-                            .id("viewer-signatures-pinned")
-                            .occlude()
-                            .h_full()
-                            .items_center()
-                            .bg(background)
-                            .child(signatures),
-                    )
-            }))
     }
 }
