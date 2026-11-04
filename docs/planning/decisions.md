@@ -166,6 +166,15 @@ changes it; history is in git.
   unsaved edits use a centred asterisk in a small circle before the tab title,
   plus the close/save decision, not a banner
   or notification. Reviewing a historical warning explicitly clears it.
+- Save replaces a PDF only with a complete, verified copy written beside it
+  and renamed into place, so a crash never leaves it half-written. When the
+  system refuses that copy (macOS protects Downloads, Documents and the
+  Desktop until the app is allowed them; Windows' Controlled folder access;
+  a read-only folder), Save leaves the PDF untouched and its Recovery item
+  says why, with Retry, Save As… and, on macOS and Windows, a button to the
+  settings that allow the folder. Save never rewrites the PDF in place
+  instead. The Mac app states why it saves in those folders, so macOS can
+  ask the first time.
 - New from template and Manage templates split list and preview 50/50.
 - Transient panels and dialogs close with an icon-only top-right X inside the
   content; the word Cancel is reserved for a decision prompt beside a commit or

@@ -5093,9 +5093,9 @@ mod review_driver {
                         }));
                     }
                     "frames" => {
-                        // frames W wheel LINES|key KEYSTROKE|drag X,Y,DX,DY COUNT GAP_MS AFTER_MS NAME:
+                        // frames W wheel LINES|key KEYSTROKE|drag X,Y,DX,DY|click X,Y COUNT GAP_MS AFTER_MS NAME:
                         // COUNT wheel notches (at the viewport, negative turns
-                        // down) or key presses GAP_MS apart, saving every frame
+                        // down), key presses or clicks GAP_MS apart, saving every frame
                         // drawn until AFTER_MS after the last. Times are from
                         // the script's start, for a video at true speed.
                         let index = number(1) as usize;
@@ -5105,13 +5105,20 @@ mod review_driver {
                         let name = words[7];
                         // drag X,Y,DX,DY: each step moves the held pointer
                         // DX,DY on from X,Y.
-                        let drag = (words[2] == "drag").then(|| {
+                        let drag = matches!(words[2], "drag" | "click").then(|| {
                             words[3]
                                 .split(',')
                                 .map(|value| value.parse::<f32>().unwrap())
                                 .collect::<Vec<_>>()
                         });
                         let input = |step: usize| match (words[2], &drag) {
+                            ("click", Some(at)) => PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position: point(px(at[0]), px(at[1])),
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            }),
                             ("drag", Some(drag)) => PlatformInput::MouseMove(MouseMoveEvent {
                                 position: point(
                                     px(drag[0] + drag[2] * (step + 1) as f32),
@@ -5135,6 +5142,18 @@ mod review_driver {
                         for step in 0..count {
                             writeln!(log, "input {name} {} {} at={}", words[2], words[3], script_started.elapsed().as_millis()).unwrap();
                             dispatch(cx, index, input(step));
+                            if let ("click", Some(at)) = (words[2], &drag) {
+                                dispatch(
+                                    cx,
+                                    index,
+                                    PlatformInput::MouseUp(MouseUpEvent {
+                                        button: MouseButton::Left,
+                                        position: point(px(at[0]), px(at[1])),
+                                        modifiers: Modifiers::default(),
+                                        click_count: 1,
+                                    }),
+                                );
+                            }
                             let until = std::time::Instant::now() + if step + 1 == count { after } else { gap };
                             while std::time::Instant::now() < until {
                                 cx.update(|cx| {

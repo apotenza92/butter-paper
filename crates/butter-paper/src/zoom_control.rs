@@ -24,7 +24,8 @@ pub const ZOOM_MENU_ID: &str = "viewer-zoom-menu";
 pub const MIN_VIEWER_ZOOM: f64 = 0.0625;
 pub const MAX_VIEWER_ZOOM: f64 = 64.;
 pub const DEFAULT_VIEWER_ZOOM: f64 = 1.;
-pub const ZOOM_STEP_FACTOR: f64 = 1.1;
+/// Zoom In and Zoom Out step to the next whole step of this much zoom.
+pub const ZOOM_STEP: f64 = 0.1;
 pub const ZOOM_PRESETS: [f64; 14] = [
     0.0625, 0.1, 0.25, 0.5, 0.75, 1., 1.25, 1.5, 2., 4., 8., 16., 32., 64.,
 ];
@@ -117,14 +118,14 @@ impl ZoomControl {
         if self.disabled {
             return;
         }
-        self.request_zoom(self.zoom / ZOOM_STEP_FACTOR, cx);
+        self.request_zoom(stepped_zoom(self.zoom, false), cx);
     }
 
     pub fn zoom_in(&mut self, cx: &mut Context<Self>) {
         if self.disabled {
             return;
         }
-        self.request_zoom(self.zoom * ZOOM_STEP_FACTOR, cx);
+        self.request_zoom(stepped_zoom(self.zoom, true), cx);
     }
 
     pub fn reset(&mut self, cx: &mut Context<Self>) {
@@ -155,6 +156,20 @@ impl Default for ZoomControl {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The zoom Zoom In (`in_`) or Zoom Out goes to from `zoom`: the next
+/// whole 10% up or down, so 136% goes to 140% or 130%, and 140% to 150% or
+/// 130%. Callers clamp it to the zoom range, as they do every zoom.
+pub fn stepped_zoom(zoom: f64, in_: bool) -> f64 {
+    // To a thousandth of a step, so 140% is a whole step, not just short.
+    let steps = ((zoom / ZOOM_STEP) * 1_000.).round() / 1_000.;
+    let next = if in_ {
+        steps.floor() + 1.
+    } else {
+        steps.ceil() - 1.
+    };
+    next * ZOOM_STEP
 }
 
 pub fn clamp_viewer_zoom(zoom: f64) -> f64 {
@@ -307,5 +322,31 @@ impl Render for ZoomControl {
             .child(zoom_out)
             .child(zoom_in)
             .child(percentage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_steps_go_to_the_next_whole_ten_percent() {
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        for (from, up, down) in [
+            (1.36, 1.4, 1.3),
+            (1.4, 1.5, 1.3),
+            (1., 1.1, 0.9),
+            (1.459, 1.5, 1.4),
+            // A zoom read back through `f32` is still a whole step.
+            (f64::from(140_f32) / 100., 1.5, 1.3),
+        ] {
+            assert!(close(stepped_zoom(from, true), up), "{from} up");
+            assert!(close(stepped_zoom(from, false), down), "{from} down");
+        }
+        // Clamped, the ends hold.
+        let clamped = |zoom, in_| clamp_viewer_zoom(stepped_zoom(zoom, in_));
+        assert!(close(clamped(MIN_VIEWER_ZOOM, true), 0.1));
+        assert!(close(clamped(0.1, false), MIN_VIEWER_ZOOM));
+        assert!(close(clamped(MAX_VIEWER_ZOOM, true), MAX_VIEWER_ZOOM));
     }
 }

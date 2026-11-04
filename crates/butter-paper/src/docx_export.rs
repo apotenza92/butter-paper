@@ -62,10 +62,49 @@ pub fn unused_docx_path_for(pdf: &Path) -> PathBuf {
         .expect("an unused name exists")
 }
 
+/// The PDF's name without `.pdf`, and without a `.docx` before it: a PDF
+/// saved from `Name.docx` as `Name.docx.pdf` converts to `Name.docx`, not
+/// `Name.docx.docx`.
 fn stem(pdf: &Path) -> String {
-    pdf.file_stem()
+    let stem = pdf
+        .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Document".to_owned())
+        .unwrap_or_else(|| "Document".to_owned());
+    match stem.len().checked_sub(".docx".len()) {
+        Some(cut)
+            if cut > 0
+                && stem.is_char_boundary(cut)
+                && stem[cut..].eq_ignore_ascii_case(".docx") =>
+        {
+            stem[..cut].to_owned()
+        }
+        _ => stem,
+    }
+}
+
+/// Why a conversion failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConvertError {
+    /// The system did not let the app save in the Word document's folder
+    /// (macOS privacy protection of Downloads, Documents or Desktop,
+    /// Windows' Controlled Folder Access, or a folder without write
+    /// permission). Saving somewhere chosen in a Save panel works.
+    NotPermitted(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for ConvertError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotPermitted(message) | Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for ConvertError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
 }
 
 /// How far a conversion has got, for its progress bar.
@@ -82,13 +121,15 @@ pub enum ConvertStep {
 /// Converts the PDF at `pdf` into a Word document at `docx`, replacing a
 /// file there, telling `progress` each step. The document is written beside
 /// it first and moved into place, so a failed conversion leaves any earlier
-/// one as it was. When `progress` returns `false` the conversion stops
-/// before its next page and saves nothing: `Ok(false)`.
+/// one as it was. Where the folder refuses a new file but `docx` itself may
+/// be written (one chosen in a macOS Save panel), it is written in place.
+/// When `progress` returns `false` the conversion stops before its next
+/// page and saves nothing: `Ok(false)`.
 pub fn convert(
     pdf: &Path,
     docx: &Path,
     progress: &mut dyn FnMut(ConvertStep) -> bool,
-) -> Result<bool, String> {
+) -> Result<bool, ConvertError> {
     if !progress(ConvertStep::Reading) {
         return Ok(false);
     }
@@ -108,8 +149,13 @@ pub fn convert(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Document.docx".to_owned());
     let partial = docx.with_file_name(format!(".{name}.part"));
-    std::fs::write(&partial, &converted)
-        .map_err(|error| format!("The Word document could not be saved: {error}"))?;
+    if let Err(error) = std::fs::write(&partial, &converted) {
+        if error.kind() != std::io::ErrorKind::PermissionDenied {
+            return Err(format!("The Word document could not be saved: {error}").into());
+        }
+        let _ = std::fs::remove_file(&partial);
+        return write_in_place(docx, &converted).map(|()| true);
+    }
     std::fs::rename(&partial, docx).map_err(|error| {
         let _ = std::fs::remove_file(&partial);
         format!(
@@ -118,6 +164,20 @@ pub fn convert(
         )
     })?;
     Ok(true)
+}
+
+/// Writes `bytes` straight to `docx`, removing what it wrote if that fails.
+fn write_in_place(docx: &Path, bytes: &[u8]) -> Result<(), ConvertError> {
+    std::fs::write(docx, bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            ConvertError::NotPermitted(format!(
+                "The Word document could not be saved in this folder: {error}"
+            ))
+        } else {
+            let _ = std::fs::remove_file(docx);
+            ConvertError::Failed(format!("The Word document could not be saved: {error}"))
+        }
+    })
 }
 
 /// The Word document for PDF `pdf`.

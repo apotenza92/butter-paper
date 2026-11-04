@@ -166,6 +166,25 @@ pub enum DocumentSaveFailureOperation {
 pub enum DocumentSaveFailureKind {
     Retriable,
     ExternalSourceChanged,
+    /// The system did not let Butter Paper save in the PDF's folder (macOS
+    /// protects Downloads, Documents and the Desktop; Windows' Controlled
+    /// folder access; a folder without write permission). Save saves only
+    /// by replacing the PDF with a complete copy written beside it, so it
+    /// needs the folder; once it is allowed, a retry saves.
+    FolderRefused,
+}
+
+/// Whether a save failed because the system refused a new file in the
+/// folder, from the error it reported.
+fn refused_by_folder(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    if cfg!(windows) {
+        message.contains("access is denied")
+    } else {
+        // EACCES and, for macOS privacy protection, EPERM.
+        message.contains("permission denied (os error 13)")
+            || message.contains("operation not permitted (os error 1)")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -188,6 +207,8 @@ impl DocumentSaveFailure {
             || message.contains("source PDF directory changed")
         {
             DocumentSaveFailureKind::ExternalSourceChanged
+        } else if refused_by_folder(&message) {
+            DocumentSaveFailureKind::FolderRefused
         } else {
             DocumentSaveFailureKind::Retriable
         };
@@ -200,7 +221,10 @@ impl DocumentSaveFailure {
     }
 
     pub fn can_retry(&self) -> bool {
-        self.kind == DocumentSaveFailureKind::Retriable
+        matches!(
+            self.kind,
+            DocumentSaveFailureKind::Retriable | DocumentSaveFailureKind::FolderRefused
+        )
     }
 
     pub fn presentation_message(&self) -> &str {
@@ -209,7 +233,21 @@ impl DocumentSaveFailure {
             DocumentSaveFailureKind::ExternalSourceChanged => {
                 "The source PDF changed outside Butter Paper. Use Save As to preserve this document's edits without replacing the newer source."
             }
+            DocumentSaveFailureKind::FolderRefused => {
+                if cfg!(target_os = "macos") {
+                    "macOS didn't let Butter Paper save in this folder. Allow Butter Paper to use it in Privacy & Security, then retry, or use Save As to save a copy somewhere else."
+                } else if cfg!(windows) {
+                    "Windows didn't let Butter Paper save in this folder; Controlled folder access may protect it. Allow Butter Paper in Windows Security, then retry, or use Save As to save a copy somewhere else."
+                } else {
+                    "This folder doesn't let Butter Paper save in it. Allow it, then retry, or use Save As to save a copy somewhere else."
+                }
+            }
         }
+    }
+
+    /// Whether the system refused the save's folder.
+    pub fn folder_refused(&self) -> bool {
+        self.kind == DocumentSaveFailureKind::FolderRefused
     }
 }
 

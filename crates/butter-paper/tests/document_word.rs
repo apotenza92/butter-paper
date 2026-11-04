@@ -385,3 +385,66 @@ fn the_word_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) 
         reopen,
     );
 }
+
+/// A folder the app may not save in (macOS protects Downloads, Documents
+/// and the Desktop; here, one without write permission): Convert says so,
+/// and a place chosen in the Save panel takes the Word document.
+#[cfg(unix)]
+#[gpui::test]
+fn a_folder_that_refuses_the_word_document_offers_a_save_panel(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_WORD_CHOOSE_ID;
+    use std::os::unix::fs::PermissionsExt as _;
+    let (workspace, scratch, cx) = open(cx, "not-permitted");
+    let protected = std::fs::Permissions::from_mode(0o555);
+    std::fs::set_permissions(&scratch, protected).unwrap();
+    click(cx, DOCUMENT_WORD_CONVERT_ID);
+    std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        stage_is(&workspace, cx, |stage| matches!(
+            stage,
+            WordDialogStage::NotPermitted
+        )),
+        "the refusal is told apart from a failed conversion"
+    );
+    assert!(!scratch.join("report.docx").exists());
+    assert!(
+        std::fs::read_dir(&scratch).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".part")),
+        "nothing is left behind"
+    );
+
+    let elsewhere = scratch.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let chosen = elsewhere.join("report.docx");
+    let answer = chosen.clone();
+    // The Save panel starts in the PDF's folder.
+    let folder = scratch.clone();
+    click(cx, DOCUMENT_WORD_CHOOSE_ID);
+    cx.simulate_new_path_selection(move |directory| {
+        assert_eq!(directory, folder);
+        Some(answer)
+    });
+    redraw(cx);
+    assert_eq!(converted(&workspace, cx), chosen);
+    assert!(chosen.exists());
+}
+
+#[test]
+fn a_pdf_saved_from_a_word_document_converts_to_its_name() {
+    use butter_paper::docx_export::docx_path_for;
+    assert_eq!(
+        docx_path_for(std::path::Path::new("/d/CV_Sep2026.docx.pdf")),
+        PathBuf::from("/d/CV_Sep2026.docx")
+    );
+    assert_eq!(
+        docx_path_for(std::path::Path::new("/d/report.pdf")),
+        PathBuf::from("/d/report.docx")
+    );
+    assert_eq!(
+        docx_path_for(std::path::Path::new("/d/.docx.pdf")),
+        PathBuf::from("/d/.docx.docx")
+    );
+}

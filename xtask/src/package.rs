@@ -659,6 +659,16 @@ pub fn info_plist(channel: Channel, version: Version) -> String {
   <true/>
   <key>NSCameraUsageDescription</key>
   <string>Butter Paper uses the camera only when you choose to take a signature photo.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs in Downloads.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs in Documents.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs on the Desktop.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs on removable drives.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs on network drives.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Butter Paper uses your local network only when you choose to transfer a signature from your phone.</string>
 </dict>

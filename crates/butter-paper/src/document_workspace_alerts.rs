@@ -115,6 +115,26 @@ impl DocumentWorkspace {
                             )
                         },
                     )
+                    .when(failure.folder_refused() && (cfg!(target_os = "macos") || cfg!(windows)), |actions| {
+                        actions.child(
+                            Button::new(DOCUMENT_SAVE_ERROR_SETTINGS_ID)
+                                .debug_selector(|| DOCUMENT_SAVE_ERROR_SETTINGS_ID.into())
+                                .accessibility_id(DOCUMENT_SAVE_ERROR_SETTINGS_ID)
+                                .outline()
+                                .label(if cfg!(windows) {
+                                    "Open Windows Security"
+                                } else {
+                                    "Open Privacy Settings"
+                                })
+                                .on_click(|_, _, cx| {
+                                    cx.open_url(if cfg!(windows) {
+                                        "windowsdefender://ransomwareprotection"
+                                    } else {
+                                        "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+                                    });
+                                }),
+                        )
+                    })
                     .child(
                         Button::new(DOCUMENT_SAVE_ERROR_SAVE_AS_ID)
                             .debug_selector(|| DOCUMENT_SAVE_ERROR_SAVE_AS_ID.into())

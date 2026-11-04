@@ -4,6 +4,41 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.3]
+
+### Edit PDF
+
+- The box round a paragraph you are editing matches the box shown when you
+  hover it: it ends at the last letter, not at spaces or a tab the PDF has
+  after it.
+
+### Word documents
+
+- Convert to Word no longer fails with "Operation not permitted" for a PDF
+  in Downloads, Documents or the Desktop on macOS. Butter Paper now tells
+  macOS why it saves in those folders, and when the system refuses (or
+  Windows' Controlled folder access does, or the folder is read-only), the
+  dialog says so and lets you choose where to save the Word document. On
+  macOS it also opens the privacy settings that allow the folder.
+- A PDF named `Name.docx.pdf` converts to `Name.docx`, not
+  `Name.docx.docx`.
+
+### Saving
+
+- When the system doesn't let Butter Paper save in a PDF's folder (macOS
+  Downloads, Documents or Desktop without access, Windows' Controlled folder
+  access, or a read-only folder), the Recovery panel now says so in plain
+  words instead of "Permission denied", with Retry, Save As… and a button
+  to the settings that allow the folder. The PDF is left as it was.
+
+### Viewing
+
+- Zooming with the zoom buttons, the fit buttons or the view menu no longer
+  flashes a blurry page before the sharp one: the page stays sharp,
+  scaled, until its new render is ready.
+- Zoom In and Zoom Out step to the next whole 10% (136% to 140%), not by
+  a tenth of the current zoom.
+
 ## [0.4.2]
 
 ### Pages

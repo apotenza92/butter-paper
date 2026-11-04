@@ -515,7 +515,8 @@ impl DocumentViewerState {
         }
     }
 
-    /// Releases the zoom fallback of each page whose tiles are all shown.
+    /// Releases the zoom fallback of each page whose tiles are all shown,
+    /// none of them a preview.
     fn release_covered_zoom_fallback(&mut self) {
         let Some(plan) = self.plan.as_ref() else {
             return;
@@ -777,7 +778,9 @@ impl DocumentViewerState {
             // A heavy page takes nearly as long to draw at preview size as
             // at full size: a page just clicked in the sidebar, or already
             // shown by a whole-page image as sharp as a preview would be,
-            // goes straight to full.
+            // goes straight to full. So does a page just zoomed: its old
+            // tiles, scaled, are sharper than a preview, which would blur
+            // it until the full render arrives.
             let preview_width = page_sizes.get(request.page).map_or(f32::MAX, |size| {
                 size.0 * preview.raster.zoom_tenths as f32 / 1_000.
                     * preview.raster.device_scale_millis as f32
@@ -791,6 +794,7 @@ impl DocumentViewerState {
             } else if preview.raster == full.raster
                 || covered
                 || self.thumbnail_navigation_target == Some(request.page)
+                || self.zoom_fallback.contains_key(&request.page)
                 || self
                     .content_fallback
                     .contains_key(&TileGeometry::of(request))
@@ -1078,7 +1082,10 @@ impl DocumentViewerState {
         }
     }
 
+    /// The tiles drawn for `page`. A page just zoomed draws no preview over
+    /// its old tiles, scaled beneath, as they are sharper.
     pub fn visible_tiles(&self, page: usize) -> Vec<(TileRequest, Arc<RenderImage>)> {
+        let previews = !self.zoom_fallback.contains_key(&page);
         self.plan
             .as_ref()
             .into_iter()
@@ -1092,7 +1099,11 @@ impl DocumentViewerState {
                     .peek(detail.raster)
                     .or_else(|| self.cache.peek(full.raster))
                     .or_else(|| self.content_fallback.get(&TileGeometry::of(request)))
-                    .or_else(|| self.preview_cache.peek(preview.raster))
+                    .or_else(|| {
+                        previews
+                            .then(|| self.preview_cache.peek(preview.raster))
+                            .flatten()
+                    })
                     .cloned()
                     .map(|image| (request, image))
             })
@@ -1864,6 +1875,18 @@ mod tests {
             .unwrap();
         let fallback = viewer.zoom_fallback_tiles(0);
         assert_eq!(fallback.len(), before.tiles.len());
+        // The zoomed page goes straight to full renders: a preview would
+        // blur it until they arrived.
+        let jobs = viewer.claim_jobs();
+        assert!(!jobs.is_empty());
+        assert!(
+            jobs.iter()
+                .all(|job| job.quality == ViewerRenderQuality::Full),
+            "{jobs:?}"
+        );
+        for job in jobs {
+            assert!(viewer.finish_at(job, Ok((test_image(), 16)), now));
+        }
         let ratio =
             after.page_layouts[0].logical_rect.width / before.page_layouts[0].logical_rect.width;
         assert!((ratio - 2.).abs() < 0.01);

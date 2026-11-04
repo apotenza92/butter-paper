@@ -67,10 +67,10 @@ use page_text::{PageTextDocumentState, PageTextEditing, PageTextHover, PageTextO
 pub use signature_checks::{DOCUMENT_SIGNATURES_DIALOG_ID, DOCUMENT_SIGNATURES_LIST_ID};
 use thumbnail_sidebar::{ThumbnailRowsShown, ThumbnailSidebarInputs};
 pub use word::{
-    ConvertedWordDocument, DOCUMENT_WORD_CANCEL_ID, DOCUMENT_WORD_CONVERT_ID,
-    DOCUMENT_WORD_DIALOG_ID, DOCUMENT_WORD_KEEP_BOTH_ID, DOCUMENT_WORD_OPEN_ID,
-    DOCUMENT_WORD_PROGRESS_ID, DOCUMENT_WORD_REPLACE_ID, DOCUMENT_WORD_SHOW_ID, WordDialog,
-    WordDialogStage,
+    ConvertedWordDocument, DOCUMENT_WORD_CANCEL_ID, DOCUMENT_WORD_CHOOSE_ID,
+    DOCUMENT_WORD_CONVERT_ID, DOCUMENT_WORD_DIALOG_ID, DOCUMENT_WORD_KEEP_BOTH_ID,
+    DOCUMENT_WORD_OPEN_ID, DOCUMENT_WORD_PRIVACY_ID, DOCUMENT_WORD_PROGRESS_ID,
+    DOCUMENT_WORD_REPLACE_ID, DOCUMENT_WORD_SHOW_ID, WordDialog, WordDialogStage,
 };
 #[path = "document_workspace_empty.rs"]
 mod empty;
@@ -183,8 +183,7 @@ use crate::{
     },
     viewer_toolbar_strip::{FitPreset, ViewerToolbarStrip, ViewerToolbarStripEvent},
     zoom_control::{
-        DEFAULT_VIEWER_ZOOM, MAX_VIEWER_ZOOM, MIN_VIEWER_ZOOM, ZOOM_STEP_FACTOR, ZoomControl,
-        ZoomControlEvent,
+        DEFAULT_VIEWER_ZOOM, MAX_VIEWER_ZOOM, MIN_VIEWER_ZOOM, ZoomControl, ZoomControlEvent,
     },
 };
 use crate::{
@@ -725,6 +724,9 @@ pub const DOCUMENT_STRAIGHT_LINE_OPACITY_50_ID: &str =
 pub const DOCUMENT_SAVE_ERROR_ALERT_ID: &str = "document-workspace-save-error-alert";
 pub const DOCUMENT_SAVE_ERROR_RETRY_ID: &str = "document-workspace-save-error-retry";
 pub const DOCUMENT_SAVE_ERROR_SAVE_AS_ID: &str = "document-workspace-save-error-save-as";
+/// After the system refused a save's folder: the settings that allow it
+/// (Privacy & Security on macOS, Windows Security on Windows).
+pub const DOCUMENT_SAVE_ERROR_SETTINGS_ID: &str = "document-workspace-save-error-settings";
 pub const DOCUMENT_SAVE_ERROR_DISMISS_ID: &str = "document-workspace-save-error-dismiss";
 pub const DOCUMENT_RECOVERY_PREPARATION_ALERT_ID: &str =
     "document-workspace-recovery-preparation-alert";
@@ -11401,7 +11403,8 @@ impl DocumentWorkspace {
         self.sync_active_viewer_toolbar(cx);
     }
 
-    fn zoom_active_document(&mut self, factor: f64, cx: &mut Context<Self>) {
+    /// Zoom In (`in_`) or Zoom Out: to the next whole 10%.
+    fn zoom_active_document(&mut self, in_: bool, cx: &mut Context<Self>) {
         let Some(document_id) = self.active_ready_document_id(cx) else {
             return;
         };
@@ -11411,7 +11414,7 @@ impl DocumentWorkspace {
         else {
             return;
         };
-        self.set_active_manual_zoom(zoom * factor, cx);
+        self.set_active_manual_zoom(crate::zoom_control::stepped_zoom(zoom, in_), cx);
     }
 
     fn set_active_fit_preset(&mut self, preset: ViewerFitPreset, cx: &mut Context<Self>) {

@@ -67,6 +67,9 @@ pub enum SaveTargetErrorKind {
     SourceChanged,
     AlreadyConsumed,
     UnsupportedPlatform,
+    /// The system refused a new file in the folder (Windows' Controlled
+    /// folder access, or a folder whose permissions forbid it).
+    AccessDenied,
     Io,
 }
 
@@ -1349,6 +1352,15 @@ fn rename_windows_handle_relative(
 
 #[cfg(windows)]
 fn windows_nt_error(path: &Path, operation: &str, status: i32) -> SaveTargetError {
+    /// STATUS_ACCESS_DENIED.
+    const ACCESS_DENIED: i32 = 0xC000_0022_u32 as i32;
+    if status == ACCESS_DENIED {
+        return SaveTargetError::new(
+            SaveTargetErrorKind::AccessDenied,
+            path.to_path_buf(),
+            format!("could not {operation}: access is denied"),
+        );
+    }
     if status == STATUS_OBJECT_NAME_COLLISION {
         return SaveTargetError::new(
             SaveTargetErrorKind::TargetExists,

@@ -181,7 +181,14 @@ file manager's name) and Open in the system's app for Word documents, named
 when the system says which (plain Open otherwise); Open is the default
 button. If it could not convert (an unreadable or password-protected PDF,
 or a `Name.docx` another app holds open), or the save before it failed,
-the dialog says why and the unsaved changes stay.
+the dialog says why and the unsaved changes stay. A PDF saved from a Word
+document as `Name.docx.pdf` converts to `Name.docx`. When the system will
+not let it save in the PDF's folder (macOS protects Downloads, Documents
+and the Desktop; Windows' Controlled folder access; a read-only folder),
+the dialog says so and offers Choose where to save…, a Save panel starting
+in that folder, and on macOS Open Privacy Settings (Files and Folders),
+and nothing is left in the folder. A signed copy saved where a Save panel
+allows only that file is written in place the same way.
 
 The converter writes what Edit PDF reads (see
 [decisions.md](decisions.md#interface)): paragraphs in reading order, top to
@@ -674,6 +681,12 @@ with it.
   document scrolls; after a pan it may scroll back towards the pages but no
   further out.
 - Zoom In, Zoom Out, Actual Size and the zoom menu zoom about the view centre.
+  Zoom In and Zoom Out (buttons and shortcuts) step to the next whole 10%:
+  136% goes to 140% or 130%.
+  When these or the fit buttons change the zoom, each page shows
+  its old render scaled to the new size until its new render is complete; a
+  zoomed page skips the low-resolution preview pass, so it never turns
+  blurry in between.
 - Switching Continuous and Single Page keeps the current page, and the point
   at the view centre when it is on that page.
 - The viewport meets the toolbar and rails with no frame, and the pages meet

@@ -129,10 +129,10 @@ impl DocumentWorkspace {
                 workspace.rotate_active_page_from_action(PageRotationDirection::Right, cx);
             }))
             .on_action(cx.listener(|workspace, _: &ZoomIn, _, cx| {
-                workspace.zoom_active_document(ZOOM_STEP_FACTOR, cx);
+                workspace.zoom_active_document(true, cx);
             }))
             .on_action(cx.listener(|workspace, _: &ZoomOut, _, cx| {
-                workspace.zoom_active_document(1. / ZOOM_STEP_FACTOR, cx);
+                workspace.zoom_active_document(false, cx);
             }))
             .on_action(cx.listener(|workspace, _: &ActualSize, _, cx| {
                 workspace.set_active_manual_zoom(DEFAULT_VIEWER_ZOOM, cx);

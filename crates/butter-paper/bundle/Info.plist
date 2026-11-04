@@ -32,15 +32,25 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.4.2</string>
+  <string>0.4.3</string>
   <key>CFBundleVersion</key>
-  <string>0.4.2</string>
+  <string>0.4.3</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSCameraUsageDescription</key>
   <string>Capture a signature from paper to place in your PDF.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs in Downloads.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs in Documents.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs on the Desktop.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs on removable drives.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Butter Paper saves the files you make, such as Word documents and signed copies, beside your PDFs on network drives.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Butter Paper asks Microsoft Word to convert a PDF only when you choose Convert and Open in Word.</string>
 </dict>

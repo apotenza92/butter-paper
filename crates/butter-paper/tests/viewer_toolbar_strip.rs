@@ -824,7 +824,7 @@ fn zoom_group_traces_steps_presets_bounds_keyboard_escape_and_disabled(cx: &mut 
         .read_with(cx, |control, _| control.wheel_behavior());
 
     click_target(cx, ZOOM_OUT_ID);
-    assert_eq!(entities.zoom.read_with(cx, |zoom, _| zoom.zoom()), 0.909);
+    assert_eq!(entities.zoom.read_with(cx, |zoom, _| zoom.zoom()), 0.9);
     click_target(cx, ZOOM_IN_ID);
     assert_eq!(
         entities.zoom.read_with(cx, |zoom, _| zoom.zoom()),
@@ -840,7 +840,7 @@ fn zoom_group_traces_steps_presets_bounds_keyboard_escape_and_disabled(cx: &mut 
     });
     press_button_key(cx, "enter");
     cx.run_until_parked();
-    assert_eq!(entities.zoom.read_with(cx, |zoom, _| zoom.zoom()), 0.909);
+    assert_eq!(entities.zoom.read_with(cx, |zoom, _| zoom.zoom()), 0.9);
     cx.update(|window, cx| {
         window.focus_next(cx);
         assert!(window.focused(cx).is_some());

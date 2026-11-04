@@ -805,7 +805,22 @@ fn sign_file(
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let partial = destination.with_file_name(format!(".{name}.signing"));
-    std::fs::write(&partial, &signed)
+    let written = match std::fs::write(&partial, &signed) {
+        // A file chosen in a macOS Save panel may be written while its
+        // folder (Downloads, Documents, the Desktop) refuses a new file
+        // beside it: write the signed copy in place instead.
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let _ = std::fs::remove_file(&partial);
+            return std::fs::write(destination, &signed).map_err(|error| {
+                if error.kind() != std::io::ErrorKind::PermissionDenied {
+                    let _ = std::fs::remove_file(destination);
+                }
+                format!("The signed PDF could not be saved: {error}.")
+            });
+        }
+        written => written,
+    };
+    written
         .and_then(|()| std::fs::rename(&partial, destination))
         .map_err(|error| {
             let _ = std::fs::remove_file(&partial);

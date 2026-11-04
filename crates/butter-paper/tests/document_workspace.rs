@@ -10752,6 +10752,138 @@ fn save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place_on_native_s
     );
 }
 
+/// A folder that refuses Save's copy beside the PDF (macOS privacy
+/// protection of Downloads, Documents and the Desktop; Windows' Controlled
+/// folder access; here, a folder without write permission): Save says so,
+/// leaves the PDF as it was, and once the folder allows it, Retry saves.
+#[cfg(unix)]
+#[test]
+fn a_folder_that_refuses_the_save_says_so_and_retry_saves_once_allowed() {
+    run_gpui_test_with_native_main_stack(
+        "a_folder_that_refuses_the_save_says_so_and_retry_saves_once_allowed",
+        a_folder_that_refuses_the_save_says_so_and_retry_saves_once_allowed_on_native_stack,
+    );
+}
+
+#[cfg(unix)]
+fn a_folder_that_refuses_the_save_says_so_and_retry_saves_once_allowed_on_native_stack(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::document_workspace::DOCUMENT_SAVE_ERROR_SETTINGS_ID;
+    use std::os::unix::fs::PermissionsExt as _;
+    cx.update(gpui_component::init);
+    let scratch = std::env::temp_dir().join(format!(
+        "bp-workspace-folder-refused-save-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    std::fs::create_dir_all(scratch.join("documents")).unwrap();
+    std::fs::create_dir_all(scratch.join("recovery")).unwrap();
+    let root = scratch.canonicalize().unwrap();
+    let _scratch = ScratchDirectories(vec![root.clone()]);
+    let folder = root.join("documents");
+    struct Writable(PathBuf);
+    impl Drop for Writable {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let _writable = Writable(folder.clone());
+    let source = folder.join("source.pdf");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bp-multi-page-v1.pdf"),
+        &source,
+    )
+    .unwrap();
+    let source = source.canonicalize().unwrap();
+    let original = std::fs::read(&source).unwrap();
+    let store = Arc::new(DocumentRecoveryStore::open(root.join("recovery")).unwrap());
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        let store = store.clone();
+        move |window, cx| {
+            let workspace =
+                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(FileDigestOpener), cx));
+            workspace.update(cx, |workspace, _| {
+                workspace.bind_document_recovery_store(store)
+            });
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(source.clone(), cx));
+    cx.run_until_parked();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_rectangle(
+                document_id,
+                0,
+                MarkupId::new("workspace:rectangle:folder-refused").unwrap(),
+                PdfPoint::new(72., 96.).unwrap(),
+                PdfPoint::new(216., 192.).unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    native_save_command(cx, &workspace, false);
+    cx.run_until_parked();
+    let failure = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.document_save_failure(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(failure.kind, DocumentSaveFailureKind::FolderRefused);
+    assert!(failure.can_retry());
+    assert!(
+        failure
+            .presentation_message()
+            .to_lowercase()
+            .contains("this folder"),
+        "{}",
+        failure.presentation_message()
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(
+        std::fs::read_dir(&folder).unwrap().count(),
+        1,
+        "nothing is left beside the PDF"
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    open_recovery_notifications(cx);
+    assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).is_some());
+    assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).is_some());
+    assert_eq!(
+        cx.debug_bounds(DOCUMENT_SAVE_ERROR_SETTINGS_ID).is_some(),
+        cfg!(target_os = "macos"),
+        "the settings that allow the folder, where the system has them"
+    );
+
+    // Allowed, as when the folder is allowed in Privacy & Security.
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let retry = cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).unwrap();
+    cx.simulate_click(retry.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.document_save_failure(document_id, cx).is_none()
+    }));
+    assert_ne!(std::fs::read(&source).unwrap(), original);
+    let persisted = PdfPersistenceSession::open(&source).unwrap();
+    assert!(
+        persisted
+            .rectangles()
+            .iter()
+            .any(|rectangle| rectangle.id.as_str() == "workspace:rectangle:folder-refused")
+    );
+}
+
 #[test]
 fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without_retry() {
     run_gpui_test_with_native_main_stack(
