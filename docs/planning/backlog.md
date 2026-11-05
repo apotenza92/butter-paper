@@ -178,9 +178,18 @@ tables and images. Not handled yet, so their text flows as plain paragraphs
   loads every page in PDFium to check its boxes against the parsed page
   dictionary (0.45 s for 66 heavy pages), and thumbnails are drawn again on
   every open rather than cached.
-- Snapshot cuts from the whole-page image of the page last navigated to; on
-  another page (Continuous view after scrolling) it now reports the image
-  unavailable instead of cutting the wrong page, and should render one.
+- Signature ▸ From the page cuts from the whole-page image of the page last
+  navigated to; on another page (Continuous view after scrolling) it reports
+  the page not shown yet, and should render the box as Snapshot does.
+- Snapshots put a PDF on the Windows clipboard as "Portable Document
+  Format", which Butter Paper reads but few Windows apps do; vector pastes
+  into Office or Revu would need EMF as well. Edit ▸ Paste is enabled by
+  Butter Paper's own copies only: a PDF copied elsewhere pastes from the
+  keyboard, but does not enable the menu item. Under X11 a very large
+  Snapshot PDF may not paste, as GPUI's X11 clipboard sends each format in
+  one piece (no INCR transfers). A Snapshot also copies the page's whole
+  content however small its box; dropping what lies outside it would shrink
+  heavy drawings' copies.
 
 ## Product requests
 

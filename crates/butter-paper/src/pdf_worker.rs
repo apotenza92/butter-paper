@@ -410,6 +410,25 @@ pub enum WorkerRequest {
         #[serde(flatten)]
         render: RenderRequest,
     },
+    /// A box of a page of the displayed document as a one-page vector PDF
+    /// (`pdf_page_base::region_pdf`): what a Snapshot copies.
+    RegionPdf {
+        request_id: RequestId,
+        session_id: SessionId,
+        page_index: u32,
+        /// The box in the page's user space: x, y, width, height.
+        rect: [f64; 4],
+    },
+    /// Draws the first page of a standalone PDF (a Snapshot's region PDF)
+    /// on a transparent ground; `transform` maps its page, as PDFium shows
+    /// it, to the surface.
+    RenderPdf {
+        request_id: RequestId,
+        job_id: JobId,
+        pdf_base64: String,
+        transform: [f32; 6],
+        surface: SurfaceDescriptor,
+    },
     Cancel {
         request_id: RequestId,
         job_id: JobId,
@@ -430,6 +449,8 @@ impl WorkerRequest {
             | Self::AddPageBase { request_id, .. }
             | Self::SetDocumentEdits { request_id, .. }
             | Self::RenderCrop { request_id, .. }
+            | Self::RegionPdf { request_id, .. }
+            | Self::RenderPdf { request_id, .. }
             | Self::Cancel { request_id, .. }
             | Self::Close { request_id, .. } => *request_id,
         }
@@ -469,6 +490,11 @@ pub enum WorkerResponse {
         request_id: RequestId,
         session_id: SessionId,
     },
+    RegionPdf {
+        request_id: RequestId,
+        session_id: SessionId,
+        pdf_base64: String,
+    },
     Rendered {
         request_id: RequestId,
         job_id: JobId,
@@ -499,6 +525,7 @@ impl WorkerResponse {
             | Self::PageText { request_id, .. }
             | Self::DocumentEditsSet { request_id, .. }
             | Self::PageBaseAdded { request_id, .. }
+            | Self::RegionPdf { request_id, .. }
             | Self::Rendered { request_id, .. }
             | Self::Cancelled { request_id, .. }
             | Self::Closed { request_id, .. }
@@ -571,6 +598,27 @@ pub trait PdfBackend {
         output: &mut [u8],
         cancelled: &AtomicBool,
     ) -> Result<(), WorkerError>;
+
+    /// See [`WorkerRequest::RegionPdf`].
+    fn region_pdf(
+        &mut self,
+        _document: &mut Self::Document,
+        _page_index: u32,
+        _rect: crate::page_geometry::PdfRect,
+    ) -> Result<Vec<u8>, WorkerError> {
+        Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
+
+    /// See [`WorkerRequest::RenderPdf`].
+    fn render_pdf(
+        &mut self,
+        _pdf: Vec<u8>,
+        _transform: [f32; 6],
+        _surface: &SurfaceDescriptor,
+        _output: &mut [u8],
+    ) -> Result<(), WorkerError> {
+        Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
 
     fn close(&mut self, document: Self::Document);
 }
@@ -985,6 +1033,91 @@ where
                     backend.render_crop(document, &render, output, &token)
                 });
                 self.cancellation.finish(job_id);
+                match result {
+                    Ok(()) => WorkerResponse::Rendered {
+                        request_id,
+                        job_id,
+                        surface_id,
+                    },
+                    Err(error) => failed(request_id, Some(job_id), error),
+                }
+            }
+            WorkerRequest::RegionPdf {
+                session_id,
+                page_index,
+                rect,
+                ..
+            } => {
+                let Some(document) = self.documents.get_mut(&session_id) else {
+                    return failed(
+                        request_id,
+                        None,
+                        WorkerError::with_detail(
+                            WorkerErrorCode::InvalidRequest,
+                            "session identifier is not open",
+                        ),
+                    );
+                };
+                let Ok(rect) =
+                    crate::page_geometry::PdfRect::new(rect[0], rect[1], rect[2], rect[3])
+                else {
+                    return failed(
+                        request_id,
+                        None,
+                        WorkerError::with_detail(
+                            WorkerErrorCode::InvalidRequest,
+                            "the Snapshot box is invalid",
+                        ),
+                    );
+                };
+                match self.backend.region_pdf(document, page_index, rect) {
+                    Ok(pdf) => {
+                        use base64::Engine as _;
+                        WorkerResponse::RegionPdf {
+                            request_id,
+                            session_id,
+                            pdf_base64: base64::engine::general_purpose::STANDARD.encode(pdf),
+                        }
+                    }
+                    Err(error) => failed(request_id, None, error),
+                }
+            }
+            WorkerRequest::RenderPdf {
+                job_id,
+                pdf_base64,
+                transform,
+                surface,
+                ..
+            } => {
+                if let Err(error) = surface.validate(self.limits) {
+                    return failed(request_id, Some(job_id), error);
+                }
+                if transform.iter().any(|value| !value.is_finite()) {
+                    return failed(
+                        request_id,
+                        Some(job_id),
+                        WorkerError::new(WorkerErrorCode::InvalidRequest),
+                    );
+                }
+                use base64::Engine as _;
+                let pdf = match base64::engine::general_purpose::STANDARD.decode(&pdf_base64) {
+                    Ok(pdf) if pdf.len() <= crate::pdf_page_base::MAX_PAGE_BASE_BYTES => pdf,
+                    _ => {
+                        return failed(
+                            request_id,
+                            Some(job_id),
+                            WorkerError::with_detail(
+                                WorkerErrorCode::InvalidRequest,
+                                "the PDF to draw is invalid",
+                            ),
+                        );
+                    }
+                };
+                let surface_id = surface.surface_id;
+                let backend = &mut self.backend;
+                let result = self.surfaces.with_surface(&surface, |output| {
+                    backend.render_pdf(pdf, transform, &surface, output)
+                });
                 match result {
                     Ok(()) => WorkerResponse::Rendered {
                         request_id,

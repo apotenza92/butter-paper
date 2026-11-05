@@ -186,8 +186,66 @@ impl RasterSurface {
         self.cropped(x, y, width, height)?.to_rgba_asset()
     }
 
+    /// The surface on white paper as a PNG, for other apps: a transparent
+    /// picture of dark lines is lost on a dark background.
+    pub(crate) fn to_png_on_white(&self) -> Result<Vec<u8>, String> {
+        let mut rgb = Vec::with_capacity((self.width * self.height * 3) as usize);
+        for pixel in self.pixels_bgra.chunks_exact(4) {
+            // Premultiplied: the colour over white is c + (255 - alpha).
+            let paper = 255 - pixel[3];
+            rgb.extend_from_slice(&[
+                pixel[2].saturating_add(paper),
+                pixel[1].saturating_add(paper),
+                pixel[0].saturating_add(paper),
+            ]);
+        }
+        let image = image::RgbImage::from_raw(self.width, self.height, rgb)
+            .ok_or_else(|| "the Snapshot picture cannot be encoded".to_owned())?;
+        let mut png = Vec::new();
+        image
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err(|error| format!("the Snapshot picture cannot be encoded: {error}"))?;
+        Ok(png)
+    }
+
+    /// Draws `top` over this surface, both premultiplied and the same size;
+    /// a different size leaves it as it was.
+    pub(crate) fn draw_over(&mut self, top: &RasterSurface) {
+        if (top.width, top.height) != (self.width, self.height) {
+            return;
+        }
+        for (base, top) in self
+            .pixels_bgra
+            .chunks_exact_mut(4)
+            .zip(top.pixels_bgra.chunks_exact(4))
+        {
+            let clear = 255 - u32::from(top[3]);
+            for channel in 0..4 {
+                base[channel] = (u32::from(top[channel])
+                    + (u32::from(base[channel]) * clear + 127) / 255)
+                    .min(255) as u8;
+            }
+        }
+    }
+
+    /// A straight-alpha RGBA picture as a surface.
+    pub(crate) fn from_rgba_asset(asset: &DecodedRgbaAsset) -> Result<Self, String> {
+        let mut bgra = Vec::with_capacity(asset.rgba().len());
+        for pixel in asset.rgba().chunks_exact(4) {
+            let alpha = u32::from(pixel[3]);
+            let premultiply = |component: u8| ((u32::from(component) * alpha + 127) / 255) as u8;
+            bgra.extend_from_slice(&[
+                premultiply(pixel[2]),
+                premultiply(pixel[1]),
+                premultiply(pixel[0]),
+                pixel[3],
+            ]);
+        }
+        Self::new(asset.width_px(), asset.height_px(), bgra)
+    }
+
     /// The whole surface as straight-alpha RGBA.
-    fn to_rgba_asset(&self) -> Result<DecodedRgbaAsset, String> {
+    pub(crate) fn to_rgba_asset(&self) -> Result<DecodedRgbaAsset, String> {
         let crop = self;
         let (width, height) = (self.width, self.height);
         let mut rgba = Vec::with_capacity(crop.pixels_bgra.len());
@@ -308,6 +366,18 @@ impl RasterSurface {
     }
 }
 
+/// A Snapshot picture's pixel size: `size_pt` at `pixels_per_point`.
+fn region_pixel_size(size_pt: (f64, f64), pixels_per_point: f64) -> Result<(u32, u32), String> {
+    let pixels = |points: f64| (points * pixels_per_point).round().clamp(1., 8_192.) as u32;
+    if !(size_pt.0 > 0. && size_pt.1 > 0. && pixels_per_point > 0.)
+        || !(size_pt.0 * pixels_per_point).is_finite()
+        || !(size_pt.1 * pixels_per_point).is_finite()
+    {
+        return Err("the Snapshot picture size is invalid".into());
+    }
+    Ok((pixels(size_pt.0), pixels(size_pt.1)))
+}
+
 /// The border of repeated edge pixels around each viewer tile image.
 pub const TILE_IMAGE_PADDING: u32 = 1;
 
@@ -368,6 +438,33 @@ pub trait NativeDocumentResource: Send + Sync {
     /// The editable text of a page of the unedited document.
     fn page_text(&self, _page_index: u32) -> Result<PageTextLayer, String> {
         Err("page text editing is unavailable for this document".into())
+    }
+    /// A box of a page, in its user space, as a one-page vector PDF
+    /// (`pdf_page_base::region_pdf`): what a Snapshot copies.
+    fn region_pdf(&self, _page_index: u32, _rect: PdfRect) -> Result<Vec<u8>, String> {
+        Err("vector Snapshots are unavailable for this document".into())
+    }
+    /// A region PDF of `size_pt` drawn at `pixels_per_point` on a
+    /// transparent ground, turned as a page shown at `rotation` is.
+    fn render_region_pdf(
+        &self,
+        _pdf: &[u8],
+        _size_pt: (f64, f64),
+        _pixels_per_point: f64,
+        _rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        Err("vector Snapshots are unavailable for this document".into())
+    }
+    /// A box of a page (in its user space) as drawn on it, at
+    /// `pixels_per_point`, turned as the page is shown at `rotation`.
+    fn render_page_region(
+        &self,
+        _page_index: u32,
+        _rect: PdfRect,
+        _pixels_per_point: f64,
+        _rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        Err("drawing part of a page is unavailable for this document".into())
     }
     /// The editable text of page `page_index` as the kept page `base` has
     /// it.
@@ -1477,6 +1574,178 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
             response => Err(unexpected_response("page snap geometry", response)),
         }
+    }
+
+    fn region_pdf(&self, page_index: u32, rect: PdfRect) -> Result<Vec<u8>, String> {
+        if page_index as usize >= self.shown_pages().sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        match client
+            .exchange(&WorkerRequest::RegionPdf {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+                rect: [rect.x, rect.y, rect.width, rect.height],
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::RegionPdf { pdf_base64, .. } => {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(pdf_base64)
+                    .map_err(|_| "the PDF worker sent an unreadable Snapshot".to_owned())
+            }
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("Snapshot copy", response)),
+        }
+    }
+
+    fn render_region_pdf(
+        &self,
+        pdf: &[u8],
+        size_pt: (f64, f64),
+        pixels_per_point: f64,
+        rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        let (width, height) = region_pixel_size(size_pt, pixels_per_point)?;
+        let surface_id = SurfaceId(self.next_surface.fetch_add(1, Ordering::Relaxed));
+        let descriptor = SurfaceDescriptor {
+            surface_id,
+            width,
+            height,
+            stride: width * 4,
+            byte_len: u64::from(width) * u64::from(height) * 4,
+            format: SurfaceFormat::Bgra8Premultiplied,
+        };
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        let surface = client.create_surface(&descriptor).map_err(worker_error)?;
+        let job_id = JobId(self.next_job.fetch_add(1, Ordering::Relaxed));
+        use base64::Engine as _;
+        let response = client
+            .exchange(&WorkerRequest::RenderPdf {
+                request_id: self.request_id(),
+                job_id,
+                pdf_base64: base64::engine::general_purpose::STANDARD.encode(pdf),
+                transform: [
+                    (f64::from(width) / size_pt.0) as f32,
+                    0.,
+                    0.,
+                    (f64::from(height) / size_pt.1) as f32,
+                    0.,
+                    0.,
+                ],
+                surface: descriptor,
+            })
+            .map_err(worker_error)?;
+        match response {
+            WorkerResponse::Rendered {
+                job_id: actual_job,
+                surface_id: actual_surface,
+                ..
+            } if actual_job == job_id && actual_surface == surface_id => {}
+            WorkerResponse::Failed { error, .. } => return Err(worker_error(error)),
+            response => return Err(unexpected_response("Snapshot render", response)),
+        }
+        RasterSurface::new(width, height, surface.pixels().to_vec())?.rotated(rotation)
+    }
+
+    fn render_page_region(
+        &self,
+        page_index: u32,
+        rect: PdfRect,
+        pixels_per_point: f64,
+        rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        let pages = self.shown_pages();
+        let coordinate_space = pages
+            .spaces
+            .get(page_index as usize)
+            .copied()
+            .ok_or_else(|| "PDF page coordinate space is unavailable".to_owned())?;
+        let file_rotation = *pages
+            .rotations
+            .get(page_index as usize)
+            .ok_or_else(|| "PDF page is outside the document".to_owned())?;
+        // The box as the file shows the page, one pixel to the point.
+        let local = PageTransform::from_page_coordinate_space(coordinate_space, 1.)
+            .map_err(|error| error.to_string())?
+            .rect_to_local_pixels(rect);
+        let (width, height) = region_pixel_size((local.width, local.height), pixels_per_point)?;
+        let scale_x = f64::from(width) / local.width;
+        let scale_y = f64::from(height) / local.height;
+        let user_unit = coordinate_space.user_unit();
+        let surface_id = SurfaceId(self.next_surface.fetch_add(1, Ordering::Relaxed));
+        let descriptor = SurfaceDescriptor {
+            surface_id,
+            width,
+            height,
+            stride: width * 4,
+            byte_len: u64::from(width) * u64::from(height) * 4,
+            format: SurfaceFormat::Bgra8Premultiplied,
+        };
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        let surface = client.create_surface(&descriptor).map_err(worker_error)?;
+        let job_id = JobId(self.next_job.fetch_add(1, Ordering::Relaxed));
+        let response = client
+            .exchange(&WorkerRequest::RenderCrop {
+                request_id: self.request_id(),
+                render: RenderRequest {
+                    job_id,
+                    session_id: self.session_id,
+                    page_index,
+                    annotation_mode: AnnotationRenderMode::None,
+                    transform: [
+                        (scale_x * user_unit) as f32,
+                        0.,
+                        0.,
+                        (scale_y * user_unit) as f32,
+                        -(scale_x * local.x) as f32,
+                        -(scale_y * local.y) as f32,
+                    ],
+                    clip: ClipRect {
+                        x: 0,
+                        y: 0,
+                        width,
+                        height,
+                    },
+                    surface: descriptor,
+                    draft: false,
+                },
+            })
+            .map_err(worker_error)?;
+        match response {
+            WorkerResponse::Rendered {
+                job_id: actual_job,
+                surface_id: actual_surface,
+                ..
+            } if actual_job == job_id && actual_surface == surface_id => {}
+            WorkerResponse::Failed { error, .. } => return Err(worker_error(error)),
+            response => return Err(unexpected_response("page region render", response)),
+        }
+        RasterSurface::new(width, height, surface.pixels().to_vec())?
+            .rotated(rotation.delta_from(file_rotation))
     }
 
     fn page_text(&self, page_index: u32) -> Result<PageTextLayer, String> {

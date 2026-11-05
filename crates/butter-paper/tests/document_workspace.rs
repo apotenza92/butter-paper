@@ -87,7 +87,7 @@ use butter_paper::document_workspace::{
     DocumentTabTransferEvent, DocumentWorkspace, FitPage, FitWidth,
     GeneratedTemplateRequestDisposition, NativeDocumentOpener, NativeDocumentResource,
     NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus, NavigateNextPage,
-    NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, PdfDocumentSaver,
+    NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, PasteHere, PdfDocumentSaver,
     PdfiumWorkerBackend, RAIL_OVERFLOW_TOOLTIP, RasterSurface, RotatePageRight, Save, SaveAs,
     SaveDestination, SaveDocumentRequest, SavedNativeDocument, SetPageScale, SinglePageView,
     StartupRecoveryAvailability, StartupRecoveryItem, ThumbnailSurface, VIEWPORT_OPEN_DOCUMENT_ID,
@@ -231,6 +231,10 @@ use sha2::{Digest as _, Sha256};
 const EDIT_SELECT_ALL: &str = "cmd-a";
 #[cfg(not(target_os = "macos"))]
 const EDIT_SELECT_ALL: &str = "ctrl-a";
+#[cfg(target_os = "macos")]
+const EDIT_COPY: &str = "cmd-c";
+#[cfg(not(target_os = "macos"))]
+const EDIT_COPY: &str = "ctrl-c";
 #[cfg(target_os = "macos")]
 const EDIT_PASTE: &str = "cmd-v";
 #[cfg(not(target_os = "macos"))]
@@ -2844,6 +2848,20 @@ fn qpdf_assert_snapshot_native(
     }
     let gs = &form["/Resources"]["/ExtGState"]["/GS0"];
     assert!((number(&gs["/CA"]) - expected.opacity()).abs() < 0.001);
+    if expected.vector().is_some() {
+        // A vector Snapshot draws its box of the page, as a Form, as Revu's do.
+        let drawn_ref = form["/Resources"]["/XObject"]["/Snapshot"]
+            .as_str()
+            .expect("a vector Snapshot's appearance must draw its Form")
+            .to_owned();
+        let drawn_key = format!("obj:{drawn_ref}");
+        let drawn = &json["qpdf"][1][drawn_key.as_str()]["stream"]["dict"];
+        assert_eq!(drawn["/Subtype"], "/Form");
+        assert!(drawn["/Resources"].is_object());
+        let bbox = drawn["/BBox"].as_array().unwrap();
+        assert!(number(&bbox[2]) > number(&bbox[0]) && number(&bbox[3]) > number(&bbox[1]));
+        return vec![appearance_ref, drawn_ref];
+    }
     let image_ref = form["/Resources"]["/XObject"]["/Image"]
         .as_str()
         .unwrap()
@@ -14973,6 +14991,9 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
         moved.straight_lines,
     );
 
+    // Off the page, a paste steps away from the copies rather than landing
+    // on the pointer.
+    cx.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| focus.focus(window, cx));
@@ -27320,9 +27341,7 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
 }
 
 #[gpui::test]
-fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capture(
-    cx: &mut TestAppContext,
-) {
+fn snapshot_tool_copies_a_two_click_box_that_pastes_as_a_snapshot(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
@@ -27398,7 +27417,37 @@ fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capt
         SceneInteractionFeedback::Creation
     );
 
+    // The box is copied, as Revu's Snapshot does: nothing is placed.
     cx.simulate_click(second_corner, Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let unchanged = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert!(unchanged.snapshots.is_empty());
+    assert!(!unchanged.dirty);
+    assert_eq!((unchanged.undo_depth, unchanged.redo_depth), (0, 0));
+    assert!(!workspace.read_with(cx, |workspace, cx| {
+        workspace.snapshot_placement_pending(request.document_id, cx)
+    }));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(request.document_id, cx)),
+        Some(AnnotationTool::Select),
+    );
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace.document_edit_capabilities(cx).can_paste
+    }));
+
+    // Pasted, it is a Snapshot of the box: this fake page's white picture,
+    // stepped away from where it was taken.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(request.document_id, 0, cx)
+        })
+        .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let snapshot = workspace
         .read_with(cx, |workspace, cx| {
@@ -27406,7 +27455,20 @@ fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capt
         })
         .unwrap();
     assert_eq!(snapshot.snapshots.len(), 1);
-    assert_eq!(snapshot.snapshots[0].id.as_str(), "workspace:snapshot:1");
+    assert!(
+        snapshot.snapshots[0]
+            .id
+            .as_str()
+            .starts_with("workspace:paste:snapshot:")
+    );
+    for (actual, expected) in [
+        (snapshot.snapshots[0].rect.x, 144. + 12.),
+        (snapshot.snapshots[0].rect.y, 216. - 12.),
+        (snapshot.snapshots[0].rect.width, 180.),
+        (snapshot.snapshots[0].rect.height, 72.),
+    ] {
+        assert!((actual - expected).abs() < 0.5, "{actual} vs {expected}");
+    }
     assert_eq!(snapshot.snapshots[0].opacity(), 1.);
     assert_eq!(snapshot.snapshots[0].rotation_degrees(), 0.);
     assert!(
@@ -27418,9 +27480,6 @@ fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capt
     );
     assert!(snapshot.dirty);
     assert_eq!((snapshot.undo_depth, snapshot.redo_depth), (1, 0));
-    assert!(!workspace.read_with(cx, |workspace, cx| {
-        workspace.snapshot_placement_pending(request.document_id, cx)
-    }));
 
     let page_scene = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
@@ -27453,6 +27512,247 @@ fn snapshot_workspace_renders_real_component_tool_and_two_click_base_raster_capt
             "selected Snapshot part {id} must remain addressable"
         );
     }
+}
+
+/// A one-page PDF of `width` × `height` points, as another app copies one.
+fn copied_pdf(width: i64, height: i64) -> Vec<u8> {
+    let mut document = lopdf::Document::with_version("1.7");
+    let pages = document.new_object_id();
+    let content = document.add_object(lopdf::Stream::new(
+        lopdf::dictionary! {},
+        b"0 0 1 RG 2 w 10 10 m 190 90 l S".to_vec(),
+    ));
+    let page = document.add_object(lopdf::dictionary! {
+        "Type" => "Page",
+        "Parent" => pages,
+        "MediaBox" => vec![0.into(), 0.into(), width.into(), height.into()],
+        "Contents" => content,
+    });
+    document.objects.insert(
+        pages,
+        lopdf::Object::Dictionary(lopdf::dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page.into()],
+            "Count" => 1,
+        }),
+    );
+    let catalog = document.add_object(lopdf::dictionary! { "Type" => "Catalog", "Pages" => pages });
+    document.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    bytes
+}
+
+#[gpui::test]
+fn paste_lands_centred_on_the_pointer_or_where_the_page_menu_opened(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("target.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let id = MarkupId::new("source:text:pointer").unwrap();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_text_box(
+                request.document_id,
+                TextBoxAnnotation::new(
+                    id.clone(),
+                    0,
+                    PdfRect::new(72., 600., 120., 40.).unwrap(),
+                    "Pasted here",
+                    TextBoxStyle::new("Helvetica", 12., "#111827", 1.).unwrap(),
+                )
+                .unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &id,
+            cx
+        ))
+    );
+    workspace_edit_shortcut(cx, &workspace, EDIT_COPY);
+
+    let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    let centre_of_last = |workspace: &gpui::Entity<DocumentWorkspace>,
+                          cx: &mut gpui::VisualTestContext| {
+        let text_boxes = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .text_boxes;
+        let rect = text_boxes.last().unwrap().layout_rect;
+        (
+            text_boxes.len(),
+            rect.x + rect.width / 2.,
+            rect.y + rect.height / 2.,
+        )
+    };
+
+    // Cmd/Ctrl+V with the pointer over the page: centred on the pointer.
+    cx.simulate_mouse_move(project(300., 300.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    workspace_edit_shortcut(cx, &workspace, EDIT_PASTE);
+    let (count, x, y) = centre_of_last(&workspace, cx);
+    assert_eq!(count, 2);
+    let tolerance = 1.5 / f64::from(scale);
+    assert!(
+        (x - 300.).abs() < tolerance && (y - 300.).abs() < tolerance,
+        "{x} {y}"
+    );
+
+    // The page menu's Paste: where the page was right-clicked.
+    cx.simulate_mouse_down(
+        project(450., 150.),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        project(450., 150.),
+        MouseButton::Right,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(project(100., 700.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| {
+        focus.focus(window, cx);
+        window.dispatch_action(Box::new(PasteHere), cx);
+    });
+    let (count, x, y) = centre_of_last(&workspace, cx);
+    assert_eq!(count, 3);
+    assert!(
+        (x - 450.).abs() < tolerance && (y - 150.).abs() < tolerance,
+        "{x} {y}"
+    );
+}
+
+#[gpui::test]
+fn a_pdf_copied_elsewhere_pastes_as_a_vector_snapshot_and_a_copy_here_wins_after(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("target.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let snapshots = |workspace: &gpui::Entity<DocumentWorkspace>,
+                     cx: &mut gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+            .snapshots
+    };
+
+    // Another app, or another Butter Paper, copied a 200 × 100 PDF.
+    let pdf = copied_pdf(200, 100);
+    cx.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem {
+            entries: vec![gpui::ClipboardEntry::Pdf(pdf.clone())],
+        })
+    });
+    workspace_edit_shortcut(cx, &workspace, EDIT_PASTE);
+    cx.run_until_parked();
+    let pasted = snapshots(&workspace, cx);
+    assert_eq!(pasted.len(), 1);
+    assert!(pasted[0].vector().is_some(), "the PDF pastes as vector");
+    // Centred on the 612 × 792 page.
+    for (actual, expected) in [
+        (pasted[0].rect.x, 206.),
+        (pasted[0].rect.y, 346.),
+        (pasted[0].rect.width, 200.),
+        (pasted[0].rect.height, 100.),
+    ] {
+        assert!((actual - expected).abs() < 0.01, "{actual} vs {expected}");
+    }
+
+    // Copied here, the Snapshot is what pastes next, though its PDF is on
+    // the system clipboard too: a step away from the first.
+    let id = pasted[0].id.clone();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            request.document_id,
+            &id,
+            cx
+        ))
+    );
+    workspace_edit_shortcut(cx, &workspace, EDIT_COPY);
+    cx.run_until_parked();
+    workspace_edit_shortcut(cx, &workspace, EDIT_PASTE);
+    cx.run_until_parked();
+    let pasted = snapshots(&workspace, cx);
+    assert_eq!(pasted.len(), 2);
+    assert!(
+        (pasted[1].rect.x - (206. + 12.)).abs() < 0.01,
+        "{:?}",
+        pasted[1].rect
+    );
+    assert!(
+        (pasted[1].rect.y - (346. - 12.)).abs() < 0.01,
+        "{:?}",
+        pasted[1].rect
+    );
+
+    // Copying text elsewhere afterwards leaves the Snapshot to paste.
+    cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("a note".into())));
+    workspace_edit_shortcut(cx, &workspace, EDIT_PASTE);
+    cx.run_until_parked();
+    assert_eq!(snapshots(&workspace, cx).len(), 3);
 }
 
 #[gpui::test]
@@ -27566,14 +27866,59 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
             origin.y + px((792. - pdf_y as f32) * render_scale),
         )
     };
-    let create_start = to_view(72., 72.);
-    let create_end = to_view(540., 720.);
+    // The box is copied; pasted, it steps 12 points right and down, onto
+    // 72, 72 → 540, 720.
+    let create_start = to_view(60., 84.);
+    let create_end = to_view(528., 732.);
     cx.simulate_click(create_start, Modifiers::default());
     assert!(workspace.read_with(cx, |workspace, cx| {
         workspace.snapshot_placement_pending(document_id, cx)
     }));
     cx.simulate_mouse_move(create_end, None, Modifiers::default());
     cx.simulate_click(create_end, Modifiers::default());
+    cx.run_until_parked();
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
+            .unwrap()
+            .snapshots
+            .is_empty(),
+        "a Snapshot box places no markup",
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Snapshot copied. Paste it into any PDF or app.".into()),
+    );
+    let picture = cx
+        .read_from_clipboard()
+        .and_then(|item| {
+            item.entries().iter().find_map(|entry| match entry {
+                gpui::ClipboardEntry::Image(image) => Some(image.clone()),
+                _ => None,
+            })
+        })
+        .expect("other apps get a picture of the box");
+    let pdf = cx
+        .read_from_clipboard()
+        .and_then(|item| {
+            item.entries().iter().find_map(|entry| match entry {
+                gpui::ClipboardEntry::Pdf(pdf) => Some(pdf.clone()),
+                _ => None,
+            })
+        })
+        .expect("apps that read PDF get the box as vector");
+    let pdf = lopdf::Document::load_mem(&pdf).unwrap();
+    assert_eq!(pdf.get_pages().len(), 1);
+    assert_eq!(picture.format, gpui::ImageFormat::Png);
+    let picture = image::load_from_memory(&picture.bytes).unwrap();
+    // 300 dpi: 468 × 648 points.
+    assert_eq!((picture.width(), picture.height()), (1_950, 2_700));
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(document_id, 0, cx)
+        })
+        .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
     let created = workspace
@@ -27583,7 +27928,10 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .expect("real Snapshot creation must update the retained session");
     assert_eq!(created.snapshots.len(), 1);
     let snapshot_id = created.snapshots[0].id.clone();
-    assert_eq!(snapshot_id.as_str(), "workspace:snapshot:1");
+    assert!(
+        created.snapshots[0].vector().is_some(),
+        "the fixture page copies as vector"
+    );
     assert!(
         created.snapshots[0]
             .asset()
@@ -27942,7 +28290,11 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .iter()
         .find(|snapshot| snapshot.id == snapshot_id)
         .expect("the stable Snapshot identity must survive Save As");
-    assert!(persisted.same_persisted_state_as(&expected_snapshot));
+    assert!(expected_snapshot.saved_as(persisted));
+    assert_eq!(
+        independent.vector_snapshot_ids(),
+        std::slice::from_ref(&snapshot_id)
+    );
     assert!(independent.snapshot_has_canonical_native_identity(&snapshot_id));
     let saved_pixel_proof = backend
         .open(&OpenDocumentRequest {
@@ -27974,8 +28326,11 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         80.,
     )
     .unwrap();
+    // A picture Snapshot covers its box; a vector one is transparent, as
+    // Revu's are, and the qpdf /Rotation and /Matrix checks prove its turn.
     assert!(
-        raster_region_difference_count(&annotated_page, &source_page, rotated_only_band) > 0,
+        expected_snapshot.vector().is_some()
+            || raster_region_difference_count(&annotated_page, &source_page, rotated_only_band) > 0,
         "PDFium pixels outside the nominal rect must prove the persisted Snapshot rotation",
     );
     let pixel_worker_pid = saved_pixel_proof.worker_pid().unwrap();
@@ -28001,7 +28356,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .unwrap();
     assert_eq!(reopened.snapshots.len(), 1);
     assert_eq!(reopened.snapshots[0].id, snapshot_id);
-    assert!(reopened.snapshots[0].same_persisted_state_as(&expected_snapshot));
+    assert!(expected_snapshot.saved_as(&reopened.snapshots[0]));
     assert!(!reopened.dirty);
     assert!(fresh_workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(reopened_document, &snapshot_id, cx)
@@ -46188,8 +46543,17 @@ fn tool_creates_with(
             }
         }
     }
+    cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let created = annotation_count(&workspace, document_id, cx) > before;
+    // A Snapshot box is copied, ready to paste, and places nothing.
+    let created = if tool == AnnotationTool::Snapshot {
+        annotation_count(&workspace, document_id, cx) == before
+            && workspace
+                .read_with(cx, |workspace, _| workspace.annotation_status())
+                .is_some_and(|status| status.starts_with("Snapshot copied"))
+    } else {
+        annotation_count(&workspace, document_id, cx) > before
+    };
     (
         created,
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
@@ -47340,6 +47704,74 @@ fn closing_a_dirty_tab_from_its_prompt_leaves_no_overlay_open(cx: &mut TestAppCo
         !cx.update(|_, cx| butter_paper::overlay_state::any_overlay_open(cx)),
         "a closed tab's prompt must not stay recorded as open, or every canvas press is ignored"
     );
+}
+
+#[gpui::test]
+fn a_copy_that_would_paste_off_the_page_is_moved_onto_it(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let (workspace, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
+    let open = |name: &str, cx: &mut gpui::VisualTestContext| {
+        let request = workspace.update(cx, |workspace, cx| {
+            workspace.begin_open(PathBuf::from(name), cx)
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(
+                &request,
+                Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+                cx,
+            )
+        });
+        request.document_id
+    };
+    let source = open("source.pdf", cx);
+    let target = open("target.pdf", cx);
+    let id = MarkupId::new("source:text:edge").unwrap();
+    // Past the right edge of the 612 × 792 page, as a box copied from a
+    // larger sheet would be.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_text_box(
+                source,
+                TextBoxAnnotation::new(
+                    id.clone(),
+                    0,
+                    PdfRect::new(500., 700., 240., 72.).unwrap(),
+                    "Edge note",
+                    TextBoxStyle::new("Helvetica", 12., "#111827", 1.).unwrap(),
+                )
+                .unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    assert!(workspace.update(cx, |workspace, cx| {
+        workspace.select_annotation(source, &id, cx)
+    }));
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace
+            .copy_selected_annotations(source, cx)),
+        1
+    );
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(target, 0, cx)
+        })
+        .unwrap();
+    let pasted = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(target, cx)
+        })
+        .unwrap()
+        .text_boxes;
+    assert_eq!(pasted.len(), 1);
+    let [x0, y0, x1, y1] = Annotation::TextBox(pasted[0].clone())
+        .page_bounds()
+        .unwrap();
+    assert!(
+        x0 >= 0. && y0 >= 0. && x1 <= 612. + 1e-6 && y1 <= 792. + 1e-6,
+        "{x0} {y0} {x1} {y1}"
+    );
+    assert!((x1 - 612.).abs() < 1e-6, "it moves only as far as it must");
 }
 
 #[gpui::test]

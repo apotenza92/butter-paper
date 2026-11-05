@@ -6,13 +6,14 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use butter_paper::annotation_model::{
-    ArcAnnotation, CalloutAnnotation, CalloutAppearance, CloudAnnotation, CloudPlusAnnotation,
-    CloudPlusAppearance, DecodedRgbaAsset, DimensionAnnotation, DimensionAppearance,
-    EllipseAnnotation, ImageAnnotation, LengthAnnotation, LengthCalibration, LineKind, MarkupId,
-    MeasurementPathAnnotation, MeasurementPathKind, PageScale, PdfPoint, PdfRect, PenAnnotation,
-    PenAppearance, RectangleAnnotation, RectangleAppearance, ScalePrecision, ScaleSource,
-    ScaleUnit, SnapshotAnnotation, StraightLineAnnotation, StraightLineAppearance, StrokeStyle,
-    TextAlignment, TextBoxAnnotation, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
+    Annotation, ArcAnnotation, CalloutAnnotation, CalloutAppearance, CloudAnnotation,
+    CloudPlusAnnotation, CloudPlusAppearance, DecodedRgbaAsset, DimensionAnnotation,
+    DimensionAppearance, EllipseAnnotation, ImageAnnotation, LengthAnnotation, LengthCalibration,
+    LineKind, MarkupId, MeasurementPathAnnotation, MeasurementPathKind, PageScale, PdfPoint,
+    PdfRect, PenAnnotation, PenAppearance, RectangleAnnotation, RectangleAppearance,
+    ScalePrecision, ScaleSource, ScaleUnit, SnapshotAnnotation, SnapshotVector,
+    StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
+    TextBoxStyle, VertexPathAnnotation, VertexPathKind,
 };
 use butter_paper::pdf_engine::PdfPersistenceSession;
 use butter_paper::pdf_file_authority::SaveAsTargetAuthority;
@@ -1080,6 +1081,246 @@ fn edited_revu_vector_snapshot_keeps_its_form() {
         edited.get_object(drawn).unwrap(),
         original_document.get_object(original_form).unwrap()
     );
+}
+
+/// The Form a saved Snapshot's appearance draws, decompressed.
+fn snapshot_form_content(document: &lopdf::Document, nm: &str) -> (Vec<u8>, Vec<f32>) {
+    let dictionary = document
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .find(|dictionary| dictionary.get(b"NM").ok().map(string_of).as_deref() == Some(nm))
+        .unwrap();
+    let wrapper = dictionary
+        .get(b"AP")
+        .and_then(lopdf::Object::as_dict)
+        .and_then(|ap| ap.get(b"N"))
+        .and_then(lopdf::Object::as_reference)
+        .unwrap();
+    let wrapper = document.get_object(wrapper).unwrap().as_stream().unwrap();
+    let form = wrapper
+        .dict
+        .get(b"Resources")
+        .and_then(lopdf::Object::as_dict)
+        .and_then(|resources| resources.get(b"XObject"))
+        .and_then(lopdf::Object::as_dict)
+        .and_then(|xobjects| xobjects.get(b"Snapshot"))
+        .and_then(lopdf::Object::as_reference)
+        .unwrap();
+    let form = document.get_object(form).unwrap().as_stream().unwrap();
+    let bbox = form
+        .dict
+        .get(b"BBox")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_float().unwrap())
+        .collect();
+    (form.decompressed_content().unwrap(), bbox)
+}
+
+#[test]
+fn a_revu_vector_snapshot_pastes_into_another_pdf_as_vector() {
+    let directory = scratch_dir("vector-snapshot-paste");
+    let source = fixture("revu-measure-text-media.pdf");
+    let blank = directory.join("blank.pdf");
+    let target = directory.join("pasted.pdf");
+    blank_letter_pdf(&blank);
+
+    let copied = PdfPersistenceSession::open(&source).unwrap().snapshots()[0].clone();
+    assert!(
+        copied.vector().is_some(),
+        "an imported Revu Snapshot carries its Form"
+    );
+    let pasted = copied.clone().with_rotation_degrees(0.).unwrap();
+    let pasted = SnapshotAnnotation::new(
+        id("pasted-snapshot"),
+        0,
+        rect(
+            100.,
+            100.,
+            100. + pasted.rect.width,
+            100. + pasted.rect.height,
+        ),
+        pasted.asset().clone(),
+        1.,
+    )
+    .unwrap()
+    .with_vector(copied.vector().cloned());
+
+    let mut session = PdfPersistenceSession::open(&blank).unwrap();
+    session.add_snapshot(pasted.clone()).unwrap();
+    save_as(&session, &blank, &target);
+
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    assert_eq!(
+        reopened.vector_snapshot_ids(),
+        std::slice::from_ref(&pasted.id)
+    );
+    assert!(reopened.snapshots()[0].vector().is_some());
+    // The same drawing as Revu's Form, not a picture of it.
+    let original = lopdf::Document::load(&source).unwrap();
+    let original_form = original
+        .objects
+        .values()
+        .filter_map(|object| object.as_dict().ok())
+        .find(|dictionary| {
+            dictionary.get(b"IT").ok().map(name_of).as_deref() == Some("StampSnapshot")
+        })
+        .and_then(|dictionary| dictionary.get(b"AP").ok()?.as_dict().ok()?.get(b"N").ok())
+        .and_then(|form| form.as_reference().ok())
+        .unwrap();
+    let original_form = original
+        .get_object(original_form)
+        .unwrap()
+        .as_stream()
+        .unwrap();
+    let saved = lopdf::Document::load(&target).unwrap();
+    assert_eq!(
+        snapshot_form_content(&saved, "pasted-snapshot").0,
+        original_form
+            .decompressed_content()
+            .unwrap_or(original_form.content.clone())
+    );
+}
+
+#[test]
+fn a_box_of_a_page_saves_as_a_vector_snapshot_of_that_box() {
+    let directory = scratch_dir("region-snapshot");
+    let source = fixture("revu-shapes.pdf");
+    let blank = directory.join("blank.pdf");
+    let target = directory.join("snapshot.pdf");
+    blank_letter_pdf(&blank);
+    let page = lopdf::Document::load(&source).unwrap();
+    let page_id = *page.get_pages().get(&1).unwrap();
+    let page_content = page.get_page_content(page_id);
+    let box_rect = rect(72., 72., 300., 400.);
+    let pdf = butter_paper::pdf_page_base::region_pdf(
+        &page,
+        0,
+        butter_paper::page_geometry::PdfRect::new(72., 72., 228., 328.).unwrap(),
+    )
+    .unwrap();
+    let snapshot = SnapshotAnnotation::new(
+        id("region-snapshot"),
+        0,
+        box_rect,
+        DecodedRgbaAsset::new(1, 1, vec![0, 0, 0, 0]).unwrap(),
+        1.,
+    )
+    .unwrap()
+    .with_vector(Some(SnapshotVector::new(std::sync::Arc::new(pdf))));
+
+    let mut session = PdfPersistenceSession::open(&blank).unwrap();
+    session.add_snapshot(snapshot.clone()).unwrap();
+    save_as(&session, &blank, &target);
+
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    assert_eq!(
+        reopened.vector_snapshot_ids(),
+        std::slice::from_ref(&snapshot.id)
+    );
+    let saved = lopdf::Document::load(&target).unwrap();
+    let (content, bbox) = snapshot_form_content(&saved, "region-snapshot");
+    // The page's own drawing, clipped to the box.
+    assert_eq!(content.trim_ascii(), page_content.trim_ascii());
+    assert_eq!(bbox, [72., 72., 300., 400.]);
+}
+
+#[test]
+fn a_snapshot_draws_the_markups_on_its_box_into_its_form() {
+    let directory = scratch_dir("region-snapshot-markups");
+    let source = fixture("revu-shapes.pdf");
+    let blank = directory.join("blank.pdf");
+    let target = directory.join("snapshot.pdf");
+    blank_letter_pdf(&blank);
+    let page = lopdf::Document::load(&source).unwrap();
+    let region = butter_paper::pdf_page_base::region_pdf(
+        &page,
+        0,
+        butter_paper::page_geometry::PdfRect::new(72., 72., 228., 328.).unwrap(),
+    )
+    .unwrap();
+    let markup = Annotation::Rectangle(RectangleAnnotation {
+        id: id("on-the-box"),
+        page_index: 3,
+        rect: rect(100., 100., 200., 160.),
+        rotation_degrees: 0.,
+        appearance: RectangleAppearance::new("#ff0000", 2., None::<String>, 0.5).unwrap(),
+        locked: false,
+    });
+    let flattened = butter_paper::pdf_engine::region_pdf_with_markups(
+        &region,
+        rect(0., 0., 612., 792.),
+        0,
+        std::slice::from_ref(&markup),
+    )
+    .unwrap();
+    let snapshot = SnapshotAnnotation::new(
+        id("region-snapshot"),
+        0,
+        rect(72., 72., 300., 400.),
+        DecodedRgbaAsset::new(1, 1, vec![0, 0, 0, 0]).unwrap(),
+        1.,
+    )
+    .unwrap()
+    .with_vector(Some(SnapshotVector::new(std::sync::Arc::new(flattened))));
+    let mut session = PdfPersistenceSession::open(&blank).unwrap();
+    session.add_snapshot(snapshot.clone()).unwrap();
+    save_as(&session, &blank, &target);
+
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    assert_eq!(
+        reopened.vector_snapshot_ids(),
+        std::slice::from_ref(&snapshot.id)
+    );
+    // The markup is not pasted as a markup of its own: it is part of the
+    // Snapshot, drawn over the page at half opacity.
+    assert_eq!(reopened.annotations_in_document_order().len(), 1);
+    let saved = lopdf::Document::load(&target).unwrap();
+    let (content, bbox) = snapshot_form_content(&saved, "region-snapshot");
+    assert_eq!(bbox, [72., 72., 300., 400.]);
+    let content = String::from_utf8(content).unwrap();
+    assert!(content.starts_with("q /Page Do Q"), "{content}");
+    assert!(
+        content.contains("/G0 gs") && content.contains("/M0 Do"),
+        "{content}"
+    );
+    // M0 is the rectangle's own appearance: a Form stroking its box.
+    let markup_form = saved
+        .objects
+        .values()
+        .filter_map(|object| object.as_stream().ok())
+        .find_map(|stream| {
+            let m0 = stream
+                .dict
+                .get(b"Resources")
+                .ok()?
+                .as_dict()
+                .ok()?
+                .get(b"XObject")
+                .ok()?
+                .as_dict()
+                .ok()?
+                .get(b"M0")
+                .ok()?
+                .as_reference()
+                .ok()?;
+            saved.get_object(m0).ok()?.as_stream().ok()
+        })
+        .expect("the Snapshot's Form names the markup's appearance");
+    assert_eq!(
+        markup_form.dict.get(b"Subtype").map(name_of).unwrap(),
+        "Form"
+    );
+    let markup_content = String::from_utf8(
+        markup_form
+            .decompressed_content()
+            .unwrap_or_else(|_| markup_form.content.clone()),
+    )
+    .unwrap();
+    assert!(markup_content.contains("RG"), "{markup_content}");
 }
 
 /// Run with `BP_REVIEW_SPECIMEN_OUT=/abs/out.pdf cargo test --test

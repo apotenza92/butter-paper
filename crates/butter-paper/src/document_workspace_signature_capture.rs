@@ -21,8 +21,6 @@ pub(super) enum BoxPurpose {
 pub(super) struct BoxCapture {
     pub(super) document_id: DocumentId,
     pub(super) purpose: BoxPurpose,
-    /// The snapshots the document already had.
-    known: HashSet<MarkupId>,
 }
 
 impl DocumentWorkspace {
@@ -34,16 +32,6 @@ impl DocumentWorkspace {
         purpose: BoxPurpose,
         cx: &mut Context<Self>,
     ) {
-        let known: HashSet<MarkupId> = self
-            .annotation_snapshot(document_id, cx)
-            .map(|snapshot| {
-                snapshot
-                    .snapshots
-                    .iter()
-                    .map(|snapshot| snapshot.id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
         if self
             .set_annotation_tool(document_id, AnnotationTool::Snapshot, cx)
             .is_err()
@@ -53,7 +41,6 @@ impl DocumentWorkspace {
         self.signature_box = Some(BoxCapture {
             document_id,
             purpose,
-            known,
         });
         cx.notify();
     }
@@ -170,53 +157,67 @@ impl DocumentWorkspace {
         cx.notify();
     }
 
-    /// Takes the box once the Snapshot tool has drawn it; stops waiting
-    /// when another tool is chosen.
+    /// Stops waiting for a box when another tool is chosen.
     pub(super) fn poll_signature_capture(&mut self, cx: &mut Context<Self>) {
         let Some(capture) = self.signature_box.as_ref() else {
             return;
         };
         let document_id = capture.document_id;
-        let purpose = capture.purpose;
-        let drawn = self
-            .annotation_snapshot(document_id, cx)
-            .and_then(|snapshot| {
-                snapshot
-                    .snapshots
-                    .iter()
-                    .find(|snapshot| !capture.known.contains(&snapshot.id))
-                    .map(|snapshot| (snapshot.page_index, snapshot.rect, snapshot.asset().clone()))
-            });
-        let Some((page, rect, asset)) = drawn else {
-            if self.annotation_tool(document_id, cx) != Some(AnnotationTool::Snapshot) {
-                self.signature_box = None;
-            }
-            return;
+        if self.annotation_tool(document_id, cx) != Some(AnnotationTool::Snapshot)
+            && !self.snapshot_placement_pending(document_id, cx)
+        {
+            self.signature_box = None;
+        }
+    }
+
+    /// Takes a box the Snapshot tool drew on `page` for the signature that
+    /// asked for it; false when no signature was waiting for one.
+    pub(super) fn take_signature_box(
+        &mut self,
+        document_id: DocumentId,
+        page: u32,
+        rect: PdfRect,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(capture) = self
+            .signature_box
+            .take_if(|capture| capture.document_id == document_id)
+        else {
+            return false;
         };
-        self.signature_box = None;
-        // The box was for a signature, not a snapshot markup.
-        let _ = self.undo_annotations(document_id, cx);
+        self.signature_box_prompt_bounds.set(None);
         let _ = self.set_annotation_tool(document_id, AnnotationTool::Select, cx);
-        match purpose {
+        match capture.purpose {
             BoxPurpose::TakeSignature => {
-                let result = sanitize_signature_rgba_pixels(
-                    asset.width_px(),
-                    asset.height_px(),
-                    asset.rgba().to_vec(),
-                )
-                .map_err(|error| match error {
-                    crate::image_asset_decode::SignatureImageError::NoInk => {
-                        "That box has no signature in it. Choose From the page again and draw \
-                         the box round the signature."
-                            .to_owned()
-                    }
-                    crate::image_asset_decode::SignatureImageError::ExcessiveCoverage => {
-                        "That box holds more than a signature. Choose From the page again and \
-                         draw the box closer round it."
-                            .to_owned()
-                    }
-                    error => error.to_string(),
+                let asset = self.session(document_id, cx).and_then(|session| {
+                    let session = session.read(cx);
+                    let space = session.annotation_page_coordinate_space(page)?;
+                    session
+                        .base_raster_of(page)?
+                        .snapshot_asset(rect, space)
+                        .ok()
                 });
+                let result = match asset {
+                    None => Err("That page is not shown yet. Choose From the page again.".into()),
+                    Some(asset) => sanitize_signature_rgba_pixels(
+                        asset.width_px(),
+                        asset.height_px(),
+                        asset.rgba().to_vec(),
+                    )
+                    .map_err(|error| match error {
+                        crate::image_asset_decode::SignatureImageError::NoInk => {
+                            "That box has no signature in it. Choose From the page again and draw \
+                             the box round the signature."
+                                .to_owned()
+                        }
+                        crate::image_asset_decode::SignatureImageError::ExcessiveCoverage => {
+                            "That box holds more than a signature. Choose From the page again and \
+                             draw the box closer round it."
+                                .to_owned()
+                        }
+                        error => error.to_string(),
+                    }),
+                };
                 self.show_captured_signature(result, cx);
             }
             BoxPurpose::PlaceDigitalSignature => {
@@ -228,6 +229,7 @@ impl DocumentWorkspace {
                 );
             }
         }
+        true
     }
 
     /// Paste: the picture on the clipboard, such as a screenshot.

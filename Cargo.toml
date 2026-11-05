@@ -15,26 +15,26 @@ type_complexity = "allow"
 [patch."https://github.com/zed-industries/zed"]
 # Zed's tracing facade is GPL; this Apache shim replaces it.
 ztracing = { path = "crates/ztracing-shim" }
-collections = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-derive_refineable = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui = { version = "=0.2.2", git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_apple = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_linux = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_macos = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_macros = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_platform = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_shared_string = { version = "=0.1.0", git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_util = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_web = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_wgpu = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-gpui_windows = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-http_client = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-media = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-perf = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-refineable = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-scheduler = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-sum_tree = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
-util_macros = { git = "https://github.com/apotenza92/zed", rev = "07e3503712f4165d37c8f943e2ef00add4d9465c" }
+collections = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+derive_refineable = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui = { version = "=0.2.2", git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_apple = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_linux = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_macos = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_macros = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_platform = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_shared_string = { version = "=0.1.0", git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_util = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_web = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_wgpu = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+gpui_windows = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+http_client = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+media = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+perf = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+refineable = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+scheduler = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+sum_tree = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
+util_macros = { git = "https://github.com/apotenza92/zed", rev = "e80e77586fdbfe856d29a8e93a95f20d9c312dba" }
 
 # The fork's own crates name ztracing within its workspace; replace it there too.
 [patch."https://github.com/apotenza92/zed"]

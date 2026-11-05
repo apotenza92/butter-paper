@@ -42,6 +42,8 @@ mod recovery_notifications;
 mod signature_capture;
 #[path = "document_workspace_signatures.rs"]
 mod signature_checks;
+#[path = "document_workspace_snapshot.rs"]
+mod snapshot_copy;
 pub use certificate_signing::{
     DOCUMENT_SIGN_APPEARANCE_ID, DOCUMENT_SIGN_CANCEL_ID, DOCUMENT_SIGN_CHOOSE_ID,
     DOCUMENT_SIGN_CONFIRM_ID, DOCUMENT_SIGN_DIALOG_ID, DOCUMENT_SIGN_INVISIBLE_ID,
@@ -320,7 +322,8 @@ gpui::actions!(
         SelectSnapshotTool,
         ToggleEditPdf,
         SelectLengthTool,
-        FinishVertexPath
+        FinishVertexPath,
+        PasteHere
     ]
 );
 
@@ -2598,7 +2601,7 @@ impl PdfDocumentSaver {
             else {
                 return Err(format!("saved PDF is missing Snapshot {}", expected.id));
             };
-            if !actual.same_persisted_state_as(expected)
+            if !expected.saved_as(actual)
                 || !reopened.snapshot_has_canonical_native_identity(&expected.id)
             {
                 return Err(format!(
@@ -2795,6 +2798,8 @@ pub struct DocumentWorkspace {
     next_pointer_id: u64,
     next_painted_state_sequence: u64,
     page_interactions: HashMap<(DocumentId, u32), PageInteraction>,
+    /// Where the page menu was last opened: its Paste pastes there.
+    page_menu_point: Option<(DocumentId, u32, PdfPoint)>,
     last_painted_page_evidence: HashMap<(DocumentId, u32), PaintedPageEvidence>,
     /// Visible viewport bounds in window coordinates, independent of scroll.
     viewport_bounds: HashMap<DocumentId, Bounds<Pixels>>,
@@ -4028,9 +4033,29 @@ struct MarkupClipboard {
     source: Option<(gpui::EntityId, DocumentId)>,
     /// Pastes since, which step each copy away from the last.
     pastes: u64,
+    /// The id (`pdf_page_base::page_base_id`) of the PDF on the system
+    /// clipboard when these were copied. A different PDF there since was
+    /// copied after them, by another app or another Butter Paper, and Paste
+    /// takes it instead.
+    system_pdf: Option<String>,
 }
 
 impl gpui::Global for MarkupClipboard {}
+
+/// The PDF on the system clipboard, as Snapshots put it there.
+fn system_clipboard_pdf(cx: &App) -> Option<Vec<u8>> {
+    cx.read_from_clipboard()?
+        .entries()
+        .iter()
+        .find_map(|entry| match entry {
+            gpui::ClipboardEntry::Pdf(pdf) => Some(pdf.clone()),
+            _ => None,
+        })
+}
+
+fn system_clipboard_pdf_id(cx: &App) -> Option<String> {
+    system_clipboard_pdf(cx).map(|pdf| crate::pdf_page_base::page_base_id(&pdf))
+}
 
 fn markup_clipboard(cx: &App) -> &MarkupClipboard {
     static EMPTY: std::sync::LazyLock<MarkupClipboard> =
@@ -4527,6 +4552,7 @@ impl DocumentWorkspace {
             next_pointer_id: 1,
             next_painted_state_sequence: 1,
             page_interactions: HashMap::new(),
+            page_menu_point: None,
             last_painted_page_evidence: HashMap::new(),
             viewport_bounds: HashMap::new(),
             viewport_hitboxes: HashMap::new(),
@@ -15480,11 +15506,17 @@ impl DocumentWorkspace {
             .unwrap_or_default();
         let count = copied.len();
         if count > 0 {
+            // Other apps take a copied Snapshot as a picture.
+            if let [Annotation::Snapshot(snapshot)] = copied.as_slice() {
+                self.copy_snapshot_picture(document_id, snapshot, cx);
+            }
             let source = (cx.entity_id(), document_id);
+            let system_pdf = system_clipboard_pdf_id(cx);
             cx.set_global(MarkupClipboard {
                 annotations: copied,
                 source: Some(source),
                 pastes: 0,
+                system_pdf,
             });
             self.annotation_statuses.insert(
                 document_id,
@@ -15531,12 +15563,14 @@ impl DocumentWorkspace {
         })?;
         let count = copied.len();
         let source = (cx.entity_id(), document_id);
+        let system_pdf = system_clipboard_pdf_id(cx);
         cx.set_global(MarkupClipboard {
             annotations: copied,
             source: Some(source),
             // A cut leaves no original to step away from: the first paste
             // goes back where it was.
             pastes: u64::MAX,
+            system_pdf,
         });
         self.annotation_statuses.insert(
             document_id,
@@ -15562,6 +15596,19 @@ impl DocumentWorkspace {
         page_index: u32,
         cx: &mut Context<Self>,
     ) -> Result<Vec<MarkupId>, String> {
+        self.paste_annotations_at(document_id, page_index, None, cx)
+    }
+
+    /// Pastes the clipboard on page `page_index`, centred on `at` when given
+    /// (where the pointer is), else as copies land: where they were in
+    /// another document, a step away in their own.
+    pub fn paste_annotations_at(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        at: Option<PdfPoint>,
+        cx: &mut Context<Self>,
+    ) -> Result<Vec<MarkupId>, String> {
         let clipboard = markup_clipboard(cx).clone();
         if clipboard.annotations.is_empty() {
             return Err("annotation clipboard is empty".into());
@@ -15581,7 +15628,7 @@ impl DocumentWorkspace {
         } else {
             0
         };
-        let offset = if same_document {
+        let offset = if same_document && at.is_none() {
             12. * pastes as f64
         } else {
             0.
@@ -15635,6 +15682,87 @@ impl DocumentWorkspace {
                 }
             }
         }
+        // Centred on the pointer, together, when pasted there.
+        if let Some(at) = at
+            && let Some([x0, y0, x1, y1]) = pasted
+                .iter()
+                .filter_map(Annotation::page_bounds)
+                .reduce(|a, b| {
+                    [
+                        a[0].min(b[0]),
+                        a[1].min(b[1]),
+                        a[2].max(b[2]),
+                        a[3].max(b[3]),
+                    ]
+                })
+        {
+            let (dx, dy) = (at.x - (x0 + x1) / 2., at.y - (y0 + y1) / 2.);
+            pasted = match pasted
+                .iter()
+                .map(|annotation| {
+                    annotation.translated_copy(annotation.id().clone(), page_index, dx, dy)
+                })
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(moved) => moved,
+                Err(error) => {
+                    self.next_annotation_sequence = previous_annotation_sequence;
+                    return Err(error.to_string());
+                }
+            };
+        }
+        // Copies from a larger page, or from further down another one, are
+        // moved onto this page, together, rather than pasted out of sight.
+        let view_box = session
+            .read(cx)
+            .source_page_coordinate_space(page_index)
+            .map(|space| space.view_box());
+        if let Some(view_box) = view_box
+            && let Some([x0, y0, x1, y1]) = pasted
+                .iter()
+                .filter_map(Annotation::page_bounds)
+                .reduce(|a, b| {
+                    [
+                        a[0].min(b[0]),
+                        a[1].min(b[1]),
+                        a[2].max(b[2]),
+                        a[3].max(b[3]),
+                    ]
+                })
+        {
+            let onto = |low: f64, high: f64, start: f64, length: f64| {
+                if high - low > length || low < start {
+                    // Too big for the page: its top or left edge shows.
+                    start - low
+                } else if high > start + length {
+                    start + length - high
+                } else {
+                    0.
+                }
+            };
+            let dx = onto(x0, x1, view_box.x, view_box.width);
+            // Taller than the page, its top stays on it.
+            let dy = if y1 - y0 > view_box.height {
+                view_box.y + view_box.height - y1
+            } else {
+                onto(y0, y1, view_box.y, view_box.height)
+            };
+            if dx != 0. || dy != 0. {
+                pasted = match pasted
+                    .iter()
+                    .map(|annotation| {
+                        annotation.translated_copy(annotation.id().clone(), page_index, dx, dy)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(moved) => moved,
+                    Err(error) => {
+                        self.next_annotation_sequence = previous_annotation_sequence;
+                        return Err(error.to_string());
+                    }
+                };
+            }
+        }
         let inserted = self.update_annotation_history_with_result(
             document_id,
             cx,
@@ -15653,6 +15781,7 @@ impl DocumentWorkspace {
             annotations: clipboard.annotations,
             source: Some((workspace_id, document_id)),
             pastes: if same_document { pastes } else { 0 },
+            system_pdf: clipboard.system_pdf,
         });
         self.annotation_statuses.insert(
             document_id,
@@ -17951,6 +18080,56 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Pasted where the pointer is, when it is over a page.
+        let overlay_open = crate::overlay_state::press_owned_by_overlay(window, cx);
+        let target = self.page_point_under(window.mouse_position(), overlay_open);
+        self.paste_at(target, window, cx);
+    }
+
+    /// The page menu's Paste: where the menu was opened.
+    fn paste_here_from_action(
+        &mut self,
+        _: &PasteHere,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.page_menu_point.take();
+        self.paste_at(target, window, cx);
+    }
+
+    /// The point of the active document's page under `position`, when it is
+    /// shown there: inside the viewport and not under a popup or menu.
+    fn page_point_under(
+        &self,
+        position: gpui::Point<Pixels>,
+        overlay_open: bool,
+    ) -> Option<(DocumentId, u32, PdfPoint)> {
+        let document_id = self.active_document_id?;
+        if !self
+            .viewport_bounds
+            .get(&document_id)
+            .is_some_and(|bounds| bounds.contains(&position))
+            || overlay_open
+        {
+            return None;
+        }
+        self.page_interactions
+            .values()
+            .filter(|interaction| interaction.document_id == document_id)
+            .find_map(|interaction| {
+                Self::interaction_point(*interaction, position, true)
+                    .map(|point| (document_id, interaction.page_index, point))
+            })
+    }
+
+    /// Pastes the clipboard centred on `target`, a point of a page of the
+    /// active document; without one, on the current page as copies land.
+    fn paste_at(
+        &mut self,
+        target: Option<(DocumentId, u32, PdfPoint)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if window.has_focused_input(cx) {
             return;
         }
@@ -17965,13 +18144,23 @@ impl DocumentWorkspace {
         let Some(document_id) = self.active_document_id else {
             return;
         };
-        let Some(page_index) = self
-            .session(document_id, cx)
-            .map(|session| session.read(cx).current_page())
-        else {
+        let target = target.filter(|(target_document, _, _)| *target_document == document_id);
+        let Some(page_index) = target.map(|(_, page_index, _)| page_index).or_else(|| {
+            self.session(document_id, cx)
+                .map(|session| session.read(cx).current_page())
+        }) else {
             return;
         };
-        if let Err(error) = self.paste_annotations(document_id, page_index, cx) {
+        let at = target.map(|(_, _, point)| point);
+        // A PDF copied since, by another app or another Butter Paper,
+        // pastes as a Snapshot of it.
+        if let Some(pdf) = system_clipboard_pdf(cx).filter(|pdf| {
+            Some(crate::pdf_page_base::page_base_id(pdf)) != markup_clipboard(cx).system_pdf
+        }) {
+            self.paste_pdf_as_snapshot(document_id, page_index, at, pdf, cx);
+            return;
+        }
+        if let Err(error) = self.paste_annotations_at(document_id, page_index, at, cx) {
             self.annotation_statuses.insert(document_id, error);
             cx.notify();
         }
@@ -18988,40 +19177,23 @@ impl DocumentWorkspace {
         } else {
             None
         };
-        let snapshot_capture = if tool == AnnotationTool::Snapshot {
-            let session = session.read(cx);
-            session
-                .annotations
-                .snapshot_pending_rect_to(
+        // A finished Snapshot box places no markup: it is copied, or taken
+        // for a signature.
+        if tool == AnnotationTool::Snapshot {
+            let taken = session.update(cx, |session, _| {
+                session.annotations.take_snapshot_box(
                     interaction.document_id.value(),
                     interaction.page_index,
                     point,
                 )
-                .filter(|rect| rect.width > 2. && rect.height > 2.)
-                .map(|rect| {
-                    let coordinate_space = session
-                        .annotation_page_coordinate_space(interaction.page_index)
-                        .ok_or_else(|| {
-                            "Snapshot page coordinate space is unavailable".to_owned()
-                        })?;
-                    session
-                        .base_raster_of(interaction.page_index)
-                        .ok_or_else(|| "Snapshot base raster is unavailable".to_owned())?
-                        .snapshot_asset(rect, coordinate_space)
-                })
-                .transpose()
-        } else {
-            Ok(None)
-        };
-        let snapshot_capture = match snapshot_capture {
-            Ok(capture) => capture,
-            Err(error) => {
-                self.annotation_statuses
-                    .insert(interaction.document_id, error);
+            });
+            if let Some(rect) = taken {
+                self.active_annotation_pointer = None;
+                self.finish_snapshot_box(interaction.document_id, interaction.page_index, rect, cx);
                 cx.notify();
                 return true;
             }
-        };
+        }
         let image_select_after_placement = tool == AnnotationTool::Image
             && session.read(cx).annotations.image_select_after_placement();
         let selection_supplement = self.annotation_caption_selection_paths(
@@ -19090,9 +19262,6 @@ impl DocumentWorkspace {
                         }
                         if let Some(id) = next_annotation_id {
                             session.annotations.queue_next_annotation_id(id);
-                        }
-                        if let Some(asset) = snapshot_capture {
-                            session.annotations.set_snapshot_capture_asset(asset);
                         }
                         let outcome = session
                             .annotations
@@ -23829,6 +23998,14 @@ fn annotation_layer(
             if let Some(workspace) = row_target.as_ref().and_then(WeakEntity::upgrade) {
                 workspace.update(cx, |workspace, cx| {
                     workspace.note_table_menu_target(document_id, page_index, event.position, cx);
+                    workspace.page_menu_point = workspace
+                        .page_interactions
+                        .get(&(document_id, page_index))
+                        .copied()
+                        .and_then(|interaction| {
+                            DocumentWorkspace::interaction_point(interaction, event.position, true)
+                        })
+                        .map(|point| (document_id, page_index, point));
                     workspace.select_hovered_markup_for_menu(document_id, page_index, cx);
                 });
             }
@@ -23876,7 +24053,7 @@ fn annotation_layer(
             // The selection's clipboard commands, as in the Edit menu.
             menu.menu_with_disabled("Cut", Box::new(Cut), !edit.can_cut)
                 .menu_with_disabled("Copy", Box::new(Copy), !edit.can_copy)
-                .menu_with_disabled("Paste", Box::new(Paste), !edit.can_paste)
+                .menu_with_disabled("Paste", Box::new(PasteHere), !edit.can_paste)
                 .menu_with_disabled("Delete", Box::new(Delete), !edit.can_delete)
                 .separator()
                 .menu("Select tool", Box::new(SelectTool))

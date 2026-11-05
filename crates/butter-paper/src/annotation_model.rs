@@ -4070,12 +4070,48 @@ pub struct ImageAnnotation {
     pub locked: bool,
 }
 
+/// A Snapshot's box of page content in vector form: a one-page PDF made by
+/// `pdf_page_base::region_pdf`, named by its SHA-256. Saved, it becomes the
+/// Snapshot's Form appearance, as Revu keeps its vector Snapshots.
+#[derive(Clone, Debug)]
+pub struct SnapshotVector {
+    id: String,
+    pdf: Arc<Vec<u8>>,
+}
+
+impl SnapshotVector {
+    pub fn new(pdf: Arc<Vec<u8>>) -> Self {
+        Self {
+            id: crate::pdf_page_base::page_base_id(&pdf),
+            pdf,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn pdf(&self) -> &Arc<Vec<u8>> {
+        &self.pdf
+    }
+}
+
+impl PartialEq for SnapshotVector {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SnapshotAnnotation {
     pub id: MarkupId,
     pub page_index: u32,
     pub rect: PdfRect,
+    /// The picture the canvas shows.
     asset: DecodedRgbaAsset,
+    /// The box's content as vector, when it has it; `asset` is then only
+    /// its canvas picture.
+    vector: Option<SnapshotVector>,
     opacity: f64,
     rotation_degrees: f64,
     pub locked: bool,
@@ -4096,6 +4132,7 @@ impl SnapshotAnnotation {
             page_index,
             rect,
             asset,
+            vector: None,
             opacity: canonical_float(opacity),
             rotation_degrees: 0.,
             locked: false,
@@ -4104,6 +4141,15 @@ impl SnapshotAnnotation {
 
     pub fn asset(&self) -> &DecodedRgbaAsset {
         &self.asset
+    }
+
+    pub fn vector(&self) -> Option<&SnapshotVector> {
+        self.vector.as_ref()
+    }
+
+    pub fn with_vector(mut self, vector: Option<SnapshotVector>) -> Self {
+        self.vector = vector;
+        self
     }
 
     pub fn opacity(&self) -> f64 {
@@ -4115,7 +4161,19 @@ impl SnapshotAnnotation {
     }
 
     pub fn same_persisted_state_as(&self, other: &Self) -> bool {
-        self.same_placement_as(other) && self.asset == other.asset
+        self.same_placement_as(other) && self.asset == other.asset && self.vector == other.vector
+    }
+
+    /// Whether `saved`, read back from a saved file, is this Snapshot. A
+    /// vector Snapshot is read back as its Form, whose picture and one-page
+    /// PDF are made again: its placement and being vector are what show it
+    /// was saved. A picture Snapshot is its placement and picture.
+    pub fn saved_as(&self, saved: &Self) -> bool {
+        match (&self.vector, &saved.vector) {
+            (Some(_), Some(_)) => self.same_placement_as(saved),
+            (None, None) => self.same_persisted_state_as(saved),
+            _ => false,
+        }
     }
 
     /// Everything but the picture: id, page, box, rotation, opacity, lock.
@@ -4446,6 +4504,11 @@ impl Annotation {
         }
     }
 
+    /// Its bounds in page space, from its selection outline: x0, y0, x1, y1.
+    pub fn page_bounds(&self) -> Option<[f64; 4]> {
+        annotation_bounds(self)
+    }
+
     pub fn translated_copy(
         &self,
         id: MarkupId,
@@ -4727,7 +4790,8 @@ impl Annotation {
                     source.opacity,
                 )?
                 .with_rotation_degrees(source.rotation_degrees)?
-                .with_locked(source.locked),
+                .with_locked(source.locked)
+                .with_vector(source.vector.clone()),
             ),
         })
     }
@@ -5856,6 +5920,9 @@ struct RecoverySnapshotAnnotation {
     page_index: u32,
     rect: PdfRect,
     asset_ref: String,
+    /// Its vector PDF, kept with the kept pages by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vector_ref: Option<String>,
     opacity: f64,
     rotation_degrees: f64,
     locked: bool,
@@ -5966,6 +6033,7 @@ impl RecoveryDocumentState {
                     page_index: annotation.page_index,
                     rect: annotation.rect,
                     asset_ref: register_recovery_asset(&annotation.asset, assets)?,
+                    vector_ref: annotation.vector.as_ref().map(|vector| vector.id.clone()),
                     opacity: annotation.opacity,
                     rotation_degrees: annotation.rotation_degrees,
                     locked: annotation.locked,
@@ -6009,6 +6077,8 @@ impl RecoveryDocumentState {
         assets: &BTreeMap<String, DecodedRgbaAsset>,
         referenced: &mut BTreeSet<String>,
         reference_count: &mut usize,
+        pdfs: &BTreeMap<String, Arc<Vec<u8>>>,
+        used_pdfs: &mut BTreeSet<String>,
     ) -> Result<DocumentState, AnnotationError> {
         let resolve = |id: &str,
                        referenced: &mut BTreeSet<String>,
@@ -6051,6 +6121,16 @@ impl RecoveryDocumentState {
             .into_iter()
             .map(|wire| {
                 let asset = resolve(&wire.asset_ref, referenced, reference_count)?;
+                let vector = wire
+                    .vector_ref
+                    .map(|id| {
+                        let pdf = pdfs
+                            .get(&id)
+                            .ok_or_else(|| recovery_error(format!("missing Snapshot PDF {id}")))?;
+                        used_pdfs.insert(id);
+                        Ok::<_, AnnotationError>(SnapshotVector::new(pdf.clone()))
+                    })
+                    .transpose()?;
                 let mut annotation = SnapshotAnnotation::new(
                     wire.id,
                     wire.page_index,
@@ -6058,7 +6138,8 @@ impl RecoveryDocumentState {
                     asset,
                     wire.opacity,
                 )?
-                .with_rotation_degrees(wire.rotation_degrees)?;
+                .with_rotation_degrees(wire.rotation_degrees)?
+                .with_vector(vector);
                 annotation.locked = wire.locked;
                 Ok(annotation)
             })
@@ -6836,6 +6917,21 @@ impl AnnotationDocument {
                     pdf_base64: BASE64.encode(pdf.as_slice()),
                 });
         }
+        for vector in self
+            .past
+            .iter()
+            .chain(std::iter::once(&self.state))
+            .chain(self.future.iter())
+            .flat_map(|state| &state.snapshots)
+            .filter_map(|snapshot| snapshot.vector.as_ref())
+        {
+            page_bases
+                .entry(vector.id.clone())
+                .or_insert_with(|| PageBaseWire {
+                    id: vector.id.clone(),
+                    pdf_base64: BASE64.encode(vector.pdf.as_slice()),
+                });
+        }
         serialize_recovery_wire(
             &RecoveryTimelineWire {
                 schema_version: RECOVERY_TIMELINE_SCHEMA_VERSION,
@@ -6946,16 +7042,30 @@ impl AnnotationDocument {
         };
         let mut referenced = BTreeSet::new();
         let mut reference_count = 0usize;
+        // Snapshots' vector PDFs are kept with the kept pages.
+        let mut used_pdfs = BTreeSet::new();
         let mut state = wire
             .current
-            .decode(&assets, &mut referenced, &mut reference_count)
+            .decode(
+                &assets,
+                &mut referenced,
+                &mut reference_count,
+                &page_bases,
+                &mut used_pdfs,
+            )
             .map_err(|error| recovery_error(error.to_string()))?;
         let past = wire
             .past
             .into_iter()
             .map(|state| {
                 state
-                    .decode(&assets, &mut referenced, &mut reference_count)
+                    .decode(
+                        &assets,
+                        &mut referenced,
+                        &mut reference_count,
+                        &page_bases,
+                        &mut used_pdfs,
+                    )
                     .map_err(|error| recovery_error(error.to_string()))
             })
             .collect::<Result<VecDeque<_>, _>>()?;
@@ -6964,7 +7074,13 @@ impl AnnotationDocument {
             .into_iter()
             .map(|state| {
                 state
-                    .decode(&assets, &mut referenced, &mut reference_count)
+                    .decode(
+                        &assets,
+                        &mut referenced,
+                        &mut reference_count,
+                        &page_bases,
+                        &mut used_pdfs,
+                    )
                     .map_err(|error| recovery_error(error.to_string()))
             })
             .collect::<Result<VecDeque<_>, _>>()?;
@@ -6980,6 +7096,7 @@ impl AnnotationDocument {
         {
             resolve_bases(state)?;
         }
+        used_bases.extend(used_pdfs);
         if used_bases.len() != page_bases.len() {
             return Err(recovery_error("kept pages contain unreachable entries"));
         }
@@ -9227,6 +9344,16 @@ impl AnnotationDocument {
             .iter()
             .filter(|id| self.selected_ids.contains(id))
             .filter_map(|id| self.annotation_owned(id))
+            .collect()
+    }
+
+    /// The markups on page `page_index`, bottom first.
+    pub fn annotations_on_page(&self, page_index: u32) -> Vec<Annotation> {
+        self.state
+            .annotation_order
+            .iter()
+            .filter_map(|id| self.annotation_owned(id))
+            .filter(|annotation| annotation.page_index() == page_index)
             .collect()
     }
 
@@ -14463,7 +14590,7 @@ fn canonical_image(annotation: &ImageAnnotation) -> Value {
 }
 
 fn canonical_snapshot(annotation: &SnapshotAnnotation) -> Value {
-    json!({
+    let mut value = json!({
         "asset": {
             "heightPx": annotation.asset.height_px,
             "id": annotation.asset.id.as_str(),
@@ -14481,7 +14608,11 @@ fn canonical_snapshot(annotation: &SnapshotAnnotation) -> Value {
             "y": annotation.rect.y,
         },
         "rotationDegrees": annotation.rotation_degrees,
-    })
+    });
+    if let Some(vector) = &annotation.vector {
+        value["vectorId"] = json!(vector.id);
+    }
+    value
 }
 
 fn canonicalize_json(value: Value) -> Value {
@@ -15917,6 +16048,48 @@ mod tests {
             ..rounded
         };
         assert!(!expected.same_persisted_state_as(&materially_rotated));
+    }
+
+    #[test]
+    fn a_vector_snapshot_keeps_its_pdf_through_copies_and_recovery() {
+        let pdf = Arc::new(b"%PDF a box of a page".to_vec());
+        let snapshot = SnapshotAnnotation::new(
+            id("workspace:paste:snapshot:1"),
+            0,
+            PdfRect::new(72., 72., 100., 50.).unwrap(),
+            DecodedRgbaAsset::new(1, 1, vec![10, 20, 30, 255]).unwrap(),
+            1.,
+        )
+        .unwrap()
+        .with_vector(Some(SnapshotVector::new(pdf.clone())));
+        // A picture alone is not the same saved Snapshot.
+        assert!(!snapshot.same_persisted_state_as(&snapshot.clone().with_vector(None)));
+        let Annotation::Snapshot(copy) = Annotation::Snapshot(snapshot.clone())
+            .translated_copy(id("workspace:paste:snapshot:2"), 1, 12., -12.)
+            .unwrap()
+        else {
+            unreachable!("a Snapshot copies as a Snapshot");
+        };
+        assert_eq!(copy.vector(), snapshot.vector());
+
+        let mut document = AnnotationDocument::default();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Snapshot(
+                snapshot,
+            )))
+            .unwrap();
+        document
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Snapshot(
+                copy,
+            )))
+            .unwrap();
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        let snapshots = restored.snapshot().snapshots;
+        assert_eq!(snapshots.len(), 2);
+        for snapshot in &snapshots {
+            assert_eq!(snapshot.vector().map(|vector| vector.pdf()), Some(&pdf));
+        }
     }
 
     #[test]

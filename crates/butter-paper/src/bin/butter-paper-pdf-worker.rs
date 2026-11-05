@@ -12,8 +12,9 @@ use butter_paper::pdf_text_edit::{
 };
 use butter_paper::pdf_worker::{
     AnnotationRenderMode, CancellationRegistry, DocumentEdits, DocumentInfo, FileSurfaceStore,
-    PageGeometry, PdfBackend, RenderRequest, Rotation, SourceHandleId, SurfaceLimits, WorkerError,
-    WorkerErrorCode, WorkerLifecycleReporter, WorkerState, run_worker_protocol,
+    PageGeometry, PdfBackend, RenderRequest, Rotation, SourceHandleId, SurfaceDescriptor,
+    SurfaceLimits, WorkerError, WorkerErrorCode, WorkerLifecycleReporter, WorkerState,
+    run_worker_protocol,
 };
 use pdfium_render::prelude::*;
 use std::env;
@@ -613,6 +614,48 @@ impl PdfBackend for PdfiumBackend {
             return Err(WorkerError::new(WorkerErrorCode::Cancelled));
         }
         Ok(())
+    }
+
+    fn region_pdf(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+        rect: butter_paper::page_geometry::PdfRect,
+    ) -> Result<Vec<u8>, WorkerError> {
+        butter_paper::pdf_page_base::region_pdf(&document.metadata, page_index, rect)
+            .map_err(|error| WorkerError::with_detail(WorkerErrorCode::PageError, error))
+    }
+
+    fn render_pdf(
+        &mut self,
+        pdf: Vec<u8>,
+        transform: [f32; 6],
+        surface: &SurfaceDescriptor,
+        output: &mut [u8],
+    ) -> Result<(), WorkerError> {
+        let document = self
+            .pdfium
+            .load_pdf_from_byte_vec(pdf, None)
+            .map_err(map_pdfium_error)?;
+        let page = document.pages().get(0).map_err(map_pdfium_error)?;
+        let width = i32::try_from(surface.width)
+            .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
+        let height = i32::try_from(surface.height)
+            .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
+        let mut bitmap = PdfBitmap::from_bytes(width, height, PdfBitmapFormat::BGRA, output)
+            .map_err(map_pdfium_error)?;
+        let [a, b, c, d, e, f] = transform;
+        let config = PdfRenderConfig::new()
+            .set_reverse_byte_order(false)
+            .set_fixed_size(width, height)
+            .render_form_data(false)
+            .render_annotations(false)
+            .reset_matrix(PdfMatrix::new(a, b, c, d, e, f))
+            .map_err(map_pdfium_error)?
+            .clip(0, 0, width, height)
+            .set_clear_color(PdfColor::new(255, 255, 255, 0));
+        page.render_into_bitmap_with_config(&mut bitmap, &config)
+            .map_err(map_pdfium_error)
     }
 
     fn close(&mut self, document: Self::Document) {

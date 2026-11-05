@@ -3945,6 +3945,33 @@ impl AnnotationAdapter {
         self.snapshot_capture_asset = Some(asset);
     }
 
+    /// Finishes the pending Snapshot box at `second_click` (the second
+    /// click, or a drag's release) without placing a markup: the box goes
+    /// to whatever drew it (the clipboard, or a signature). The tool returns
+    /// to Select. A box too small to take leaves the draft pending.
+    pub fn take_snapshot_box(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        second_click: PdfPoint,
+    ) -> Option<PdfRect> {
+        let draft = self.snapshot_draft.as_ref()?;
+        if (draft.document_id, draft.page_index) != (document_id, page_index) {
+            return None;
+        }
+        let point =
+            self.resolve_semantic_creation_point(document_id, page_index, second_click, false);
+        let draft = self.snapshot_draft.as_ref()?;
+        let rect = PdfRect::from_corners(draft.start, point);
+        if rect.width <= 2. || rect.height <= 2. {
+            return None;
+        }
+        self.snapshot_draft = None;
+        self.snapshot_capture_asset = None;
+        self.tool = AnnotationTool::Select;
+        Some(rect)
+    }
+
     pub fn snapshot_placement_pending(&self, document_id: u64) -> bool {
         self.snapshot_draft
             .as_ref()
@@ -11472,6 +11499,13 @@ impl AnnotationAdapter {
             locked,
         })?;
         Ok(())
+    }
+
+    pub fn annotations_on_page(&self, document_id: u64, page_index: u32) -> Vec<Annotation> {
+        self.documents
+            .get(&document_id)
+            .map(|document| document.annotations_on_page(page_index))
+            .unwrap_or_default()
     }
 
     pub fn selected_annotations_in_document_order(&self, document_id: u64) -> Vec<Annotation> {

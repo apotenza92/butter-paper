@@ -23,7 +23,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 #[cfg(unix)]
 use std::{
@@ -47,10 +50,10 @@ use crate::annotation_model::{
     MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageScale, PdfPoint, PdfRect,
     PenAnnotation, PenAppearance, RectangleAnnotation, RectangleAppearance, RedactAnnotation,
     RetainedAnnotationObstacle, ScalePrecision, ScalePrecisionMode, ScaleSource, ScaleUnit,
-    SnapshotAnnotation, StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment,
-    TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle, VertexPathAnnotation, VertexPathKind,
-    cloud_curl_radius, ellipse_cubic_bezier_points, measurement_line_layout,
-    rectangle_world_corners, sample_cloud_appearance_path,
+    SnapshotAnnotation, SnapshotVector, StraightLineAnnotation, StraightLineAppearance,
+    StrokeStyle, TextAlignment, TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle,
+    VertexPathAnnotation, VertexPathKind, cloud_curl_radius, ellipse_cubic_bezier_points,
+    measurement_line_layout, rectangle_world_corners, sample_cloud_appearance_path,
 };
 use crate::image_asset_decode::MAX_ENCODED_IMAGE_BYTES;
 #[cfg(any(unix, windows))]
@@ -3919,7 +3922,12 @@ impl PdfPersistenceSession {
         annotation: SnapshotAnnotation,
     ) -> Result<(), PdfPersistenceError> {
         self.require_unique_name(&annotation.id)?;
-        let appearance_id = add_snapshot_appearance(&mut self.document, &annotation);
+        let appearance_id = match self.import_snapshot_vector(&annotation) {
+            Some(source) => {
+                add_vector_snapshot_appearance(&mut self.document, &annotation, &source)
+            }
+            None => add_snapshot_appearance(&mut self.document, &annotation),
+        };
         let dictionary = snapshot_dictionary(&annotation, appearance_id, &Dictionary::new());
         append_markup_annotation(&mut self.document, annotation.page_index, dictionary)?;
         self.snapshot_native_names.insert(
@@ -3929,6 +3937,27 @@ impl PdfPersistenceSession {
         self.annotation_order.push(annotation.id.clone());
         self.snapshots.push(annotation);
         Ok(())
+    }
+
+    /// Copies a Snapshot's vector Form into the document, for its
+    /// appearance to draw. A Snapshot without one, or whose PDF cannot be
+    /// read, is saved as its picture.
+    fn import_snapshot_vector(
+        &mut self,
+        annotation: &SnapshotAnnotation,
+    ) -> Option<VectorSnapshotSource> {
+        let vector = annotation.vector()?;
+        let form_id =
+            crate::pdf_page_base::import_region_form(&mut self.document, vector.pdf()).ok()?;
+        let Some(source) = vector_snapshot_form_source(&self.document, form_id) else {
+            remove_object_if_unreferenced(&mut self.document, form_id);
+            return None;
+        };
+        self.vector_snapshot_sources
+            .retain(|(id, _)| id != &annotation.id);
+        self.vector_snapshot_sources
+            .push((annotation.id.clone(), source));
+        Some(source)
     }
 
     pub fn replace_snapshot(
@@ -3971,6 +4000,10 @@ impl PdfPersistenceSession {
             self.document.get_object(object_id)?.as_dict()?,
         );
         let old_appearance_ids = image_appearance_object_ids(&self.document, &original);
+        let vector_source = match vector_source {
+            Some(source) => Some(source),
+            None => self.import_snapshot_vector(&annotation),
+        };
         let appearance_id = if let Some(source) = vector_source {
             add_vector_snapshot_appearance(&mut self.document, &annotation, &source)
         } else if self.snapshots[index].asset() == annotation.asset() {
@@ -13736,7 +13769,13 @@ fn vector_snapshot_source(
     document: &Document,
     annotation: &Dictionary,
 ) -> Option<VectorSnapshotSource> {
-    let form_id = normal_appearance_object_id(annotation)?;
+    vector_snapshot_form_source(document, normal_appearance_object_id(annotation)?)
+}
+
+fn vector_snapshot_form_source(
+    document: &Document,
+    form_id: ObjectId,
+) -> Option<VectorSnapshotSource> {
     let stream = document.get_object(form_id).ok()?.as_stream().ok()?;
     if dictionary_name(&stream.dict, b"Subtype").as_deref() != Some("Form") {
         return None;
@@ -13779,6 +13818,21 @@ fn import_vector_snapshot(
         PdfPersistenceError::InvalidDocument("Snapshot appearance is neither image nor Form".into())
     })?;
     let (rect, rotation_degrees) = import_padded_rotated_box(document, annotation)?;
+    // Its Form as a one-page PDF, which copies of it take along. Too large a
+    // Form is copied as its picture.
+    let vector = PdfRect::new(0., 0., rect.width, rect.height)
+        .ok()
+        .and_then(|size| {
+            crate::pdf_page_base::form_region_pdf(
+                document,
+                source.form_id,
+                &vector_snapshot_placement_content(&source, size),
+                size.width,
+                size.height,
+            )
+            .ok()
+        })
+        .map(|pdf| SnapshotVector::new(Arc::new(pdf)));
     let mut imported = SnapshotAnnotation::new(
         MarkupId::new(name)?,
         page_index,
@@ -13786,7 +13840,8 @@ fn import_vector_snapshot(
         vector_snapshot_placeholder()?,
         import_opacity(annotation),
     )?
-    .with_rotation_degrees(rotation_degrees)?;
+    .with_rotation_degrees(rotation_degrees)?
+    .with_vector(vector);
     imported.locked = annotation_locked(annotation);
     Ok((imported, source))
 }
@@ -13832,6 +13887,12 @@ fn vector_snapshot_placement(source: &VectorSnapshotSource, target: PdfRect) -> 
     multiply_affine(invert_affine(source.matrix), fit)
 }
 
+/// Content drawing the Form, named `/Snapshot`, onto `target`.
+fn vector_snapshot_placement_content(source: &VectorSnapshotSource, target: PdfRect) -> String {
+    let [a, b, c, d, e, f] = vector_snapshot_placement(source, target);
+    format!("q {a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6} cm /Snapshot Do Q")
+}
+
 fn add_vector_snapshot_appearance(
     document: &mut Document,
     annotation: &SnapshotAnnotation,
@@ -13871,6 +13932,214 @@ fn add_vector_snapshot_appearance(
     ))
 }
 
+/// Draws `markups` (of a page whose `/MediaBox` is `media_box`, turned by
+/// `rotation_degrees`) into the Form of the region PDF `region_pdf`, as
+/// their saved appearances draw them, so that a Snapshot of a box carries
+/// the markups on it, flattened, as Revu's do. Redactions, which mark
+/// content to remove rather than draw, are left out, as is any markup whose
+/// appearance cannot be made.
+pub fn region_pdf_with_markups(
+    region_pdf: &[u8],
+    media_box: PdfRect,
+    rotation_degrees: i64,
+    markups: &[Annotation],
+) -> Result<Vec<u8>, PdfPersistenceError> {
+    let invalid = |message: String| PdfPersistenceError::InvalidDocument(message);
+    // A page like the markups' own, on which saving draws their appearances.
+    let mut carrier = Document::with_version("1.7");
+    let pages_id = carrier.new_object_id();
+    let contents = carrier.add_object(Stream::new(Dictionary::new(), Vec::new()));
+    let page_id = carrier.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => pdf_rect(media_box),
+        "Rotate" => rotation_degrees,
+        "Resources" => Dictionary::new(),
+        "Contents" => contents,
+    });
+    carrier.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page_id.into()],
+            "Count" => 1,
+        }),
+    );
+    let catalog = carrier.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    carrier.trailer.set("Root", catalog);
+    let mut session = PdfPersistenceSession::from_document(PathBuf::new(), carrier, None)?;
+    for markup in markups {
+        let Ok(markup) = markup.translated_copy(markup.id().clone(), 0, 0., 0.) else {
+            continue;
+        };
+        let _ = match markup {
+            Annotation::Redact(_) => continue,
+            Annotation::Rectangle(value) => session.add_rectangle(value),
+            Annotation::Ellipse(value) => session.add_ellipse(value),
+            Annotation::Arc(value) => session.add_arc(value),
+            Annotation::StraightLine(value) => session.add_straight_line(value),
+            Annotation::VertexPath(value) => session.add_vertex_path(value),
+            Annotation::MeasurementPath(value) => session.add_measurement_path(value).map(|_| ()),
+            Annotation::Cloud(value) => session.add_cloud(value),
+            Annotation::CloudPlus(value) => session.add_cloud_plus(value),
+            Annotation::Callout(value) => session.add_callout(value),
+            Annotation::Pen(value) => session.add_pen(value),
+            Annotation::TextBox(value) => session.add_text_box(value),
+            Annotation::Length(value) => session.add_length(value).map(|_| ()),
+            Annotation::Dimension(value) => session.add_dimension(value),
+            Annotation::Image(value) => session.add_image(value),
+            Annotation::Snapshot(value) => session.add_snapshot(value),
+        };
+    }
+    let carrier = session.document;
+
+    let (mut region, base_form) = crate::pdf_page_base::region_form(region_pdf).map_err(invalid)?;
+    let base_bbox = region
+        .get_object(base_form)
+        .and_then(Object::as_stream)
+        .and_then(|form| form.dict.get(b"BBox"))
+        .cloned()
+        .map_err(|_| invalid("a Snapshot's Form has no box".into()))?;
+    let annotations = carrier
+        .get_dictionary(page_id)
+        .ok()
+        .and_then(|page| page.get(b"Annots").ok())
+        .and_then(|annots| carrier.dereference(annots).ok())
+        .and_then(|(_, annots)| annots.as_array().ok())
+        .cloned()
+        .unwrap_or_default();
+    let mut copier = crate::pdf_page_base::Copier::new(&carrier);
+    let mut xobjects = dictionary! { "Page" => base_form };
+    let mut states = Dictionary::new();
+    let mut content = String::from("q /Page Do Q\n");
+    for (index, annotation) in annotations.iter().enumerate() {
+        let Ok((_, Object::Dictionary(annotation))) = carrier.dereference(annotation) else {
+            continue;
+        };
+        // Hidden (bit 2) and NoView (bit 6) markups draw nothing.
+        let flags = annotation.get(b"F").and_then(Object::as_i64).unwrap_or(0);
+        if flags & (2 | 32) != 0 {
+            continue;
+        }
+        let Some(appearance_id) = normal_appearance_object_id(annotation) else {
+            continue;
+        };
+        let Ok(appearance) = carrier
+            .get_object(appearance_id)
+            .and_then(Object::as_stream)
+        else {
+            continue;
+        };
+        let Some(placement) = flattened_appearance_placement(annotation, &appearance.dict) else {
+            continue;
+        };
+        let name = format!("M{index}");
+        xobjects.set(
+            name.as_bytes().to_vec(),
+            copier.copy(&mut region, &Object::Reference(appearance_id), 0),
+        );
+        let opacity = annotation
+            .get(b"CA")
+            .and_then(Object::as_float)
+            .map_or(1., f64::from);
+        let blend = annotation.get(b"BM").ok().cloned();
+        let state = if opacity < 1. || blend.is_some() {
+            let mut state = dictionary! {
+                "Type" => "ExtGState",
+                "CA" => Object::Real(opacity as f32),
+                "ca" => Object::Real(opacity as f32),
+            };
+            if let Some(blend) = blend {
+                state.set("BM", blend);
+            }
+            let state_name = format!("G{index}");
+            states.set(state_name.as_bytes().to_vec(), state);
+            format!("/{state_name} gs ")
+        } else {
+            String::new()
+        };
+        let [a, b, c, d, e, f] = placement;
+        content.push_str(&format!(
+            "q {state}{a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6} cm /{name} Do Q\n"
+        ));
+    }
+    let mut resources = dictionary! { "XObject" => xobjects };
+    if !states.is_empty() {
+        resources.set("ExtGState", states);
+    }
+    let mut form = Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "FormType" => 1,
+            "BBox" => base_bbox,
+            "Resources" => resources,
+        },
+        content.into_bytes(),
+    );
+    let _ = form.compress();
+    let form = region.add_object(form);
+    crate::pdf_page_base::replace_region_form(region, form).map_err(invalid)
+}
+
+/// The `cm` that draws an appearance Form onto its annotation's `/Rect`,
+/// as a viewer does (ISO 32000-1, 12.5.5): the Form's `/BBox`, turned by its
+/// `/Matrix`, fitted to the rectangle.
+fn flattened_appearance_placement(annotation: &Dictionary, form: &Dictionary) -> Option<[f64; 6]> {
+    let numbers = |object: &Object| -> Option<Vec<f64>> {
+        object
+            .as_array()
+            .ok()?
+            .iter()
+            .map(|value| value.as_float().ok().map(f64::from))
+            .collect()
+    };
+    let rect = numbers(annotation.get(b"Rect").ok()?)?;
+    let bbox = numbers(form.get(b"BBox").ok()?)?;
+    let matrix = form
+        .get(b"Matrix")
+        .ok()
+        .and_then(numbers)
+        .and_then(|matrix| <[f64; 6]>::try_from(matrix).ok())
+        .unwrap_or([1., 0., 0., 1., 0., 0.]);
+    if rect.len() != 4 || bbox.len() != 4 {
+        return None;
+    }
+    let [a, b, c, d, e, f] = matrix;
+    let corners = [
+        (bbox[0], bbox[1]),
+        (bbox[2], bbox[1]),
+        (bbox[0], bbox[3]),
+        (bbox[2], bbox[3]),
+    ]
+    .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
+    let (x0, x1) = corners
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(low, high), (x, _)| {
+            (low.min(*x), high.max(*x))
+        });
+    let (y0, y1) = corners
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(low, high), (_, y)| {
+            (low.min(*y), high.max(*y))
+        });
+    let (rx0, rx1) = (rect[0].min(rect[2]), rect[0].max(rect[2]));
+    let (ry0, ry1) = (rect[1].min(rect[3]), rect[1].max(rect[3]));
+    if x1 - x0 <= f64::EPSILON || y1 - y0 <= f64::EPSILON {
+        return None;
+    }
+    let scale_x = (rx1 - rx0) / (x1 - x0);
+    let scale_y = (ry1 - ry0) / (y1 - y0);
+    Some([
+        scale_x,
+        0.,
+        0.,
+        scale_y,
+        rx0 - x0 * scale_x,
+        ry0 - y0 * scale_y,
+    ])
+}
+
 /// A render-only PDF with one page per Revu vector Snapshot, in import
 /// order, each the Snapshot's unrotated box with its Form drawn on it. The PDF
 /// worker rasterises these pages for the canvas.
@@ -13897,10 +14166,9 @@ pub fn vector_snapshot_layer(document: &Document) -> Result<Option<Vec<u8>>, Pdf
             .find(|snapshot| &snapshot.id == id)
             .expect("every vector Snapshot source was imported as a Snapshot");
         let size = PdfRect::new(0., 0., snapshot.rect.width, snapshot.rect.height)?;
-        let [a, b, c, d, e, f] = vector_snapshot_placement(source, size);
         let content_id = layer.add_object(Stream::new(
             Dictionary::new(),
-            format!("q {a:.6} {b:.6} {c:.6} {d:.6} {e:.6} {f:.6} cm /Snapshot Do Q").into_bytes(),
+            vector_snapshot_placement_content(source, size).into_bytes(),
         ));
         let page_id = layer.add_object(dictionary! {
             "Type" => "Page",

@@ -38,7 +38,7 @@ reference; entries marked *native* are deliberate departures from it.
 | Text box | Drag its box, or click then click | Type in place; the box grows to fit its text. Click away or Escape commits, empty text discards |
 | Pen, Highlight | Drag | Release |
 | Image (and signatures) | Drag its box, or click then click | Release or second click; it fills the box at its own proportions |
-| Snapshot | Drag a box, or click then click | Release or second click |
+| Snapshot | Drag a box, or click then click | Release or second click copies the box; nothing is placed |
 
 Every tool that draws a box or a line between two points takes either
 gesture: a drag, or a click on each end. A click never places a markup on its
@@ -83,9 +83,24 @@ tooltip expands the instructions when the window truncates them.
 - Cut, Copy and Paste work on selected markups from the keyboard, the Edit
   menu and the page's right-click menu (which first selects an unselected
   markup under the pointer). The clipboard is shared by every window, so
-  markups paste into any open document: in another document they land where
-  they were, in the same one each paste steps 12 points right and down. A
-  cut pastes back where it was.
+  markups paste into any open document. They land centred on the pointer
+  when it is over a page (the page menu's Paste: where it was opened);
+  otherwise, in another document they land where they were, in the same
+  one each paste steps 12 points right and down, and a cut pastes back
+  where it was. Pasted markups that would fall off the page (copied from a
+  larger page) move onto it together, as little as they must.
+- As in Revu, a Snapshot box is copied, not placed, and the tool returns to
+  Select. The copy is the page's content in the box with the markups on it
+  (all but redactions) drawn in, as vector where the page's content fits in
+  16 MB and as a picture otherwise; it pastes as one Snapshot markup, as a
+  copied markup does. Other apps get a 300 dpi PNG of it on white (and a
+  bitmap on Windows) and, when it is vector, a PDF beside it on every
+  platform, which apps that read PDF paste as vector. Copying a selected
+  Snapshot gives other apps the same.
+- Paste takes a PDF copied since Butter Paper last copied, by another app or
+  another Butter Paper (on another machine, through a shared clipboard), as
+  a vector Snapshot of its first page, centred on the pointer (or on the
+  page); otherwise it pastes Butter Paper's own copy.
 - *Native:* the band that moves a markup is a box turned to it: along a
   line for Lines, Arrows, Lengths and Dimensions, at the rotation for boxes,
   else upright. A Length or Dimension's box holds everything it draws: the

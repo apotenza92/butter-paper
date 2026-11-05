@@ -134,6 +134,13 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
   writes a new appearance with Butter Paper's rotated-box placement that draws
   Revu's original Form fitted to the new box; untouched Snapshots stay
   byte-exact.
+- [x] Snapshots taken in Butter Paper are vector Snapshots too: the page's
+  content and resources as a Form whose `/BBox` is the box, drawn by the same
+  appearance, so they reopen as Revu's do. Markups on the box are flattened
+  into that Form: each one's saved appearance drawn on its `/Rect` (ISO
+  32000-1 12.5.5) with its `/CA` and `/BM`, over the page. A copied vector Snapshot carries
+  its Form as a one-page PDF (`pdf_page_base::region_pdf`) into whichever PDF
+  it is pasted in. Pages whose content exceeds 16 MB are kept as a picture.
 
 ## Edited page text
 

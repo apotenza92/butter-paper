@@ -211,6 +211,7 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::copy_annotations_from_action))
             .on_action(cx.listener(Self::cut_annotations_from_action))
             .on_action(cx.listener(Self::paste_annotations_from_action))
+            .on_action(cx.listener(Self::paste_here_from_action))
             .on_action(cx.listener(Self::delete_annotations_from_action))
             .on_action(cx.listener(Self::undo_annotations_from_action))
             .on_action(cx.listener(Self::redo_annotations_from_action))
