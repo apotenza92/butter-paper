@@ -667,7 +667,8 @@ impl DocumentWorkspace {
             (Some(place), Some(downloads)) if place.moves_new_files() => downloads.clone(),
             _ => beside,
         };
-        let label = if downloads.as_ref() == Some(&folder) {
+        let is_downloads = |path: &Path| crate::save_places::same_place(path, &folder);
+        let label = if downloads.as_deref().is_some_and(is_downloads) {
             "Downloads".to_owned()
         } else if self.save_places.is_app_copy(pdf) && pdf.parent() == Some(folder.as_path()) {
             "this PDF’s folder".to_owned()
@@ -677,7 +678,7 @@ impl DocumentWorkspace {
                 .map(|name| format!("“{}”", name.to_string_lossy()))
                 .unwrap_or_else(|| "this folder".to_owned())
         };
-        let downloads = downloads.filter(|downloads| *downloads != folder);
+        let downloads = downloads.filter(|downloads| !is_downloads(downloads));
         (folder, label, downloads)
     }
 

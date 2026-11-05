@@ -147,7 +147,9 @@ impl DocumentWorkspace {
                             && self.downloads_folder().is_some_and(|downloads| {
                                 // Not Downloads again when it refused.
                                 self.session(document_id, cx).is_some_and(|session| {
-                                    session.read(cx).path.parent() != Some(downloads)
+                                    !session.read(cx).path.parent().is_some_and(|folder| {
+                                        crate::save_places::same_place(folder, downloads)
+                                    })
                                 })
                             }),
                         |actions| {
