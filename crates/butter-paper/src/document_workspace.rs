@@ -4800,7 +4800,11 @@ impl DocumentWorkspace {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let folder = if saved.parent() == self.downloads_folder() {
+        let in_downloads = saved
+            .parent()
+            .zip(self.downloads_folder())
+            .is_some_and(|(folder, downloads)| crate::save_places::same_place(folder, downloads));
+        let folder = if in_downloads {
             "Downloads".to_owned()
         } else {
             saved

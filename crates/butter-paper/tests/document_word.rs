@@ -151,8 +151,8 @@ fn open_in<'a>(
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).unwrap();
-    // Resolved and without Windows' `\\?\` prefix, as opened documents'
-    // paths are.
+    // Resolved, but without Windows' `\\?\` prefix, as the system gives
+    // its Downloads and other apps' copy folders.
     let scratch = dunce::canonicalize(&scratch).unwrap();
     let copies = scratch.join("Mail Downloads");
     let folder = if places.app_copy {

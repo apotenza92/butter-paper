@@ -127,8 +127,8 @@ fn scratch(name: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(scratch.join("Downloads")).unwrap();
-    // Resolved and without Windows' `\\?\` prefix, as opened documents'
-    // paths are.
+    // Resolved, but without Windows' `\\?\` prefix, as the system gives
+    // its Downloads and other apps' copy folders.
     dunce::canonicalize(&scratch).unwrap()
 }
 
@@ -215,18 +215,30 @@ fn edit(workspace: &gpui::Entity<DocumentWorkspace>, cx: &mut gpui::VisualTestCo
     redraw(cx);
 }
 
+/// The active document's path as people read it: an opened document's
+/// path is resolved, which on Windows adds a `\\?\` prefix.
 fn active_path(
     workspace: &gpui::Entity<DocumentWorkspace>,
     cx: &mut gpui::VisualTestContext,
 ) -> PathBuf {
     workspace.update(cx, |workspace, cx| {
         let document_id = workspace.active_document_id().unwrap();
-        workspace
-            .session(document_id, cx)
-            .unwrap()
-            .read(cx)
-            .path()
-            .to_path_buf()
+        let session = workspace.session(document_id, cx).unwrap();
+        dunce::simplified(session.read(cx).path()).to_path_buf()
+    })
+}
+
+/// Open Recent's paths as people read them, as [`active_path`].
+fn recent_paths(
+    recent: &gpui::Entity<RecentDocuments>,
+    cx: &mut gpui::VisualTestContext,
+) -> Vec<PathBuf> {
+    recent.read_with(cx, |recent, _| {
+        recent
+            .paths()
+            .iter()
+            .map(|path| dunce::simplified(path).to_path_buf())
+            .collect()
     })
 }
 
@@ -279,7 +291,7 @@ fn mails_copy_asks_for_a_place_once_changed_and_saves_to_downloads(cx: &mut Test
         assert!(!workspace.document_requires_save_as(document_id, cx));
     });
     assert_eq!(
-        recent.read_with(cx, |recent, _| recent.paths().to_vec()),
+        recent_paths(&recent, cx),
         vec![saved],
         "the saved PDF is the one to reopen"
     );
@@ -409,10 +421,7 @@ fn a_pdf_in_the_persons_own_folder_saves_in_place(cx: &mut TestAppContext) {
         assert_eq!(workspace.document_source_place(document_id, cx), None);
         assert!(!workspace.document_requires_save_as(document_id, cx));
     });
-    assert_eq!(
-        recent.read_with(cx, |recent, _| recent.paths().to_vec()),
-        vec![pdf]
-    );
+    assert_eq!(recent_paths(&recent, cx), vec![pdf]);
 }
 
 #[cfg(unix)]
@@ -439,9 +448,6 @@ fn a_read_only_pdf_asks_for_a_place_once_changed(cx: &mut TestAppContext) {
         );
     });
     // The person's own file, which stays in Open Recent.
-    assert_eq!(
-        recent.read_with(cx, |recent, _| recent.paths().to_vec()),
-        vec![pdf.clone()]
-    );
+    assert_eq!(recent_paths(&recent, cx), vec![pdf.clone()]);
     std::fs::set_permissions(&pdf, std::fs::Permissions::from_mode(0o644)).unwrap();
 }

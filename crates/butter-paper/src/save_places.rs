@@ -114,6 +114,13 @@ pub fn is_app_copy(pdf: &Path) -> bool {
     app_copy_owner(pdf, &CopyRoots::system()).is_some()
 }
 
+/// Whether `a` and `b` are the same folder or file, whichever form each
+/// takes: opened documents' paths are resolved, which on Windows gives them
+/// a `\\?\` prefix that the system's Downloads folder doesn't have.
+pub fn same_place(a: &Path, b: &Path) -> bool {
+    dunce::simplified(a) == dunce::simplified(b)
+}
+
 /// The system's Downloads folder: XDG's on Linux, the Downloads known folder
 /// on Windows (wherever it was moved), `~/Downloads` on macOS.
 pub fn downloads_folder() -> Option<PathBuf> {
@@ -569,6 +576,18 @@ mod tests {
             assert_eq!(source_place(&pdf), Some(SourcePlace::ReadOnlyFile));
         }
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn the_same_place_is_the_same_with_or_without_the_windows_prefix() {
+        let downloads = Path::new("/Users/me/Downloads");
+        assert!(same_place(downloads, downloads));
+        assert!(!same_place(downloads, Path::new("/Users/me/Documents")));
+        #[cfg(windows)]
+        assert!(same_place(
+            Path::new(r"\\?\C:\Users\me\Downloads"),
+            Path::new(r"C:\Users\me\Downloads")
+        ));
     }
 
     #[test]
