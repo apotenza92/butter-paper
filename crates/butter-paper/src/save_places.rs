@@ -572,6 +572,21 @@ mod tests {
     }
 
     #[test]
+    fn only_privacy_protection_counts_as_a_privacy_refusal() {
+        let eperm = "Operation not permitted (os error 1)";
+        let eacces = "Permission denied (os error 13)";
+        let windows = "Access is denied. (os error 5)";
+        assert_eq!(
+            refused_by_privacy(eperm),
+            cfg!(any(target_os = "macos", windows))
+        );
+        // A folder the account can't write to is its own permissions.
+        assert_eq!(refused_by_privacy(eacces), cfg!(windows));
+        // Controlled folder access looks like any other "access is denied".
+        assert_eq!(refused_by_privacy(windows), cfg!(windows));
+    }
+
+    #[test]
     fn a_refused_mac_folder_names_its_switch() {
         let home = Path::new("/Users/me");
         let switch = |folder: &str, local| mac_folder_switch(Path::new(folder), home, local);

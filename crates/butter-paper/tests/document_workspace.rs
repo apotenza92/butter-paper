@@ -10868,13 +10868,20 @@ fn a_folder_that_refuses_the_save_says_so_and_retry_saves_once_allowed_on_native
     open_recovery_notifications(cx);
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).is_some());
     assert!(cx.debug_bounds(DOCUMENT_SAVE_ERROR_SAVE_AS_ID).is_some());
-    assert_eq!(
-        cx.debug_bounds(DOCUMENT_SAVE_ERROR_SETTINGS_ID).is_some(),
-        cfg!(target_os = "macos"),
-        "the settings that allow the folder, where the system has them"
+    // The folder's own permissions refused it (EACCES), not the system's
+    // privacy protection, so no privacy setting can allow it.
+    assert!(!failure.refused_by_privacy());
+    assert!(
+        failure.presentation_message().contains("Your account"),
+        "{}",
+        failure.presentation_message()
+    );
+    assert!(
+        cx.debug_bounds(DOCUMENT_SAVE_ERROR_SETTINGS_ID).is_none(),
+        "no privacy settings for a folder the account can't write to"
     );
 
-    // Allowed, as when the folder is allowed in Privacy & Security.
+    // Allowed, as when the folder's permissions are changed.
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
     let retry = cx.debug_bounds(DOCUMENT_SAVE_ERROR_RETRY_ID).unwrap();
     cx.simulate_click(retry.center(), Modifiers::default());

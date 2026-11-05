@@ -127,7 +127,9 @@ fn scratch(name: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(scratch.join("Downloads")).unwrap();
-    scratch.canonicalize().unwrap()
+    // Resolved and without Windows' `\\?\` prefix, as opened documents'
+    // paths are.
+    dunce::canonicalize(&scratch).unwrap()
 }
 
 /// The fixture copied to `pdf` and opened there, with Mail's copies in
