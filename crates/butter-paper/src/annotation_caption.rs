@@ -175,6 +175,10 @@ pub(crate) fn length_caption(
         0.,
     )?
     .caption_center;
+    let caption_center = PdfPoint {
+        x: caption_center.x + annotation.caption_offset.x,
+        y: caption_center.y + annotation.caption_offset.y,
+    };
     layout(
         &annotation.caption,
         annotation.appearance.text(),
@@ -183,7 +187,27 @@ pub(crate) fn length_caption(
         transform,
         text_system,
     )
-    .map(|caption| caption.following(annotation.start, annotation.end, transform))
+    // A caption moved off its line is drawn upright, as Revu draws it.
+    .map(|caption| {
+        if annotation.caption_offset.is_zero() {
+            caption.following(annotation.start, annotation.end, transform)
+        } else {
+            caption
+        }
+    })
+}
+
+/// Where a Polylength's or Area's caption sits until it is moved.
+pub(crate) fn measurement_caption_home(annotation: &SceneMeasurementPath) -> Option<PdfPoint> {
+    if annotation.kind == MeasurementPathKind::Area && annotation.points.len() >= 3 {
+        let count = annotation.points.len() as f64;
+        Some(PdfPoint {
+            x: annotation.points.iter().map(|p| p.x).sum::<f64>() / count,
+            y: annotation.points.iter().map(|p| p.y).sum::<f64>() / count,
+        })
+    } else {
+        path_midpoint(&annotation.points)
+    }
 }
 
 pub(crate) fn measurement_caption(
@@ -202,6 +226,10 @@ pub(crate) fn measurement_caption(
         }
     } else {
         path_midpoint(&annotation.points)?
+    };
+    let anchor = PdfPoint {
+        x: anchor.x + annotation.caption_offset.x,
+        y: anchor.y + annotation.caption_offset.y,
     };
     // Revu centres an Area caption inside the area.
     layout(
@@ -224,8 +252,8 @@ pub(crate) fn dimension_caption(
     let length = dx.hypot(dy);
     let center = midpoint(annotation.start, annotation.end);
     let anchor = PdfPoint {
-        x: center.x - dy / length * annotation.dimension_line_offset,
-        y: center.y + dx / length * annotation.dimension_line_offset,
+        x: center.x - dy / length * annotation.dimension_line_offset + annotation.caption_offset.x,
+        y: center.y + dx / length * annotation.dimension_line_offset + annotation.caption_offset.y,
     };
     layout(
         &annotation.content,
@@ -235,7 +263,14 @@ pub(crate) fn dimension_caption(
         transform,
         text_system,
     )
-    .map(|caption| caption.following(annotation.start, annotation.end, transform))
+    // A caption moved off its line is drawn upright, as Revu draws it.
+    .map(|caption| {
+        if annotation.caption_offset.is_zero() {
+            caption.following(annotation.start, annotation.end, transform)
+        } else {
+            caption
+        }
+    })
 }
 
 fn layout(
@@ -565,6 +600,7 @@ mod tests {
             let text_system = WindowTextSystem::new(cx.text_system().clone());
             let mut length = SceneLength {
                 id: MarkupId::new("caption:hidden").unwrap(),
+                caption_offset: Default::default(),
                 start: PdfPoint { x: 10., y: 20. },
                 end: PdfPoint { x: 110., y: 20. },
                 caption: "100 m".into(),

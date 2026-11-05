@@ -1732,6 +1732,9 @@ pub struct MeasurementPathAnnotation {
     pub appearance: RectangleAppearance,
     text_style: TextBoxStyle,
     pub locked: bool,
+    /// Where the caption was moved to from where it is drawn by default.
+    #[serde(default, skip_serializing_if = "CaptionOffset::is_zero")]
+    pub caption_offset: CaptionOffset,
 }
 
 impl MeasurementPathAnnotation {
@@ -1774,6 +1777,7 @@ impl MeasurementPathAnnotation {
             appearance,
             text_style,
             locked: false,
+            caption_offset: CaptionOffset::default(),
         })
     }
 
@@ -1845,6 +1849,8 @@ impl MeasurementPathAnnotation {
             && self.appearance == other.appearance
             && self.text_style == other.text_style
             && self.locked == other.locked
+            && (self.caption_offset.x - other.caption_offset.x).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.caption_offset.y - other.caption_offset.y).abs() <= PDF_NUMBER_TOLERANCE
             && self.points.len() == other.points.len()
             && self.points.iter().zip(&other.points).all(|(left, right)| {
                 (left.x - right.x).abs() <= PDF_NUMBER_TOLERANCE
@@ -3196,7 +3202,7 @@ impl ScalePrecision {
         (-self.value.log10()).round().clamp(0., 12.) as u8
     }
 
-    fn format(self, value: f64) -> String {
+    pub fn format(self, value: f64) -> String {
         match self.mode {
             ScalePrecisionMode::Decimal => {
                 let rounded = (value / self.value).round() * self.value;
@@ -3503,6 +3509,111 @@ fn format_scale_number(value: f64) -> String {
     }
 }
 
+/// How far a measurement's caption was moved from where it is drawn by
+/// default, across and up the page in points. Revu saves it as `/CO`: as is
+/// for a Polylength or Area, with both signs turned for a Length or
+/// Dimension. A moved caption stays where it was put as its markup turns.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptionOffset {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl CaptionOffset {
+    pub fn new(x: f64, y: f64) -> Result<Self, AnnotationError> {
+        require_finite("caption_offset.x", x)?;
+        require_finite("caption_offset.y", y)?;
+        // Within a page of any size.
+        if x.abs() > 14_400. || y.abs() > 14_400. {
+            return Err(AnnotationError::InvalidGeometry(
+                "caption offset is off the page".into(),
+            ));
+        }
+        Ok(Self {
+            x: canonical_float(x),
+            y: canonical_float(y),
+        })
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.x == 0. && self.y == 0.
+    }
+}
+
+/// The leader from where a moved caption usually sits (`home`) to the
+/// nearest point of its box, Revu's caption leader. `None` while the box
+/// still covers its home.
+pub fn caption_leader(
+    home: PdfPoint,
+    caption_corners: &[PdfPoint],
+) -> Option<(PdfPoint, PdfPoint)> {
+    if caption_corners.len() < 3 {
+        return None;
+    }
+    let inside = {
+        let mut inside = false;
+        let mut previous = caption_corners[caption_corners.len() - 1];
+        for corner in caption_corners {
+            if (corner.y > home.y) != (previous.y > home.y)
+                && home.x
+                    < (previous.x - corner.x) * (home.y - corner.y) / (previous.y - corner.y)
+                        + corner.x
+            {
+                inside = !inside;
+            }
+            previous = *corner;
+        }
+        inside
+    };
+    if inside {
+        return None;
+    }
+    let mut nearest: Option<(f64, PdfPoint)> = None;
+    for index in 0..caption_corners.len() {
+        let from = caption_corners[index];
+        let to = caption_corners[(index + 1) % caption_corners.len()];
+        let (dx, dy) = (to.x - from.x, to.y - from.y);
+        let length_squared = dx * dx + dy * dy;
+        let t = if length_squared == 0. {
+            0.
+        } else {
+            (((home.x - from.x) * dx + (home.y - from.y) * dy) / length_squared).clamp(0., 1.)
+        };
+        let point = PdfPoint {
+            x: from.x + dx * t,
+            y: from.y + dy * t,
+        };
+        let distance = (point.x - home.x).hypot(point.y - home.y);
+        if nearest.is_none_or(|(best, _)| distance < best) {
+            nearest = Some((distance, point));
+        }
+    }
+    nearest.map(|(_, point)| (home, point))
+}
+
+/// The length units a measurement can be shown in, metric then imperial.
+pub const MEASUREMENT_LENGTH_UNITS: [&str; 8] = ["mm", "cm", "m", "km", "in", "ft", "yd", "mi"];
+
+/// A length unit's size in metres.
+pub fn length_unit_metres(unit: &str) -> Option<f64> {
+    Some(match unit {
+        "mm" => 0.001,
+        "cm" => 0.01,
+        "m" => 1.,
+        "km" => 1000.,
+        "in" => 0.0254,
+        "ft" => 0.3048,
+        "yd" => 0.9144,
+        "mi" => 1609.344,
+        _ => return None,
+    })
+}
+
+pub fn length_unit_is_imperial(unit: &str) -> bool {
+    matches!(unit, "in" | "ft" | "yd" | "mi")
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LengthCalibration {
@@ -3675,6 +3786,53 @@ impl LengthCalibration {
         Ok(replacement)
     }
 
+    /// The same scale shown in another length unit: what it measures stays
+    /// the same, only the unit it is written in changes.
+    pub fn with_unit(&self, unit: &str) -> Result<Self, AnnotationError> {
+        if unit == self.unit {
+            return Ok(self.clone());
+        }
+        let (Some(from), Some(to)) = (length_unit_metres(&self.unit), length_unit_metres(unit))
+        else {
+            return Err(AnnotationError::InvalidGeometry(format!(
+                "a measurement in {} cannot be shown in {unit}",
+                self.unit
+            )));
+        };
+        let factor = from / to;
+        let mut converted = self.clone();
+        converted.units_per_point = self.units_per_point * factor;
+        converted.scale_x = self.scale_x * factor;
+        converted.scale_y = self.scale_y * factor;
+        converted.real_world_value = self.real_world_value * factor;
+        converted.unit = unit.to_owned();
+        // Fractions of a millimetre are not a precision anyone draws to.
+        if converted.scale_precision.mode == ScalePrecisionMode::Fraction
+            && !length_unit_is_imperial(unit)
+        {
+            converted.precision = 2;
+            converted.scale_precision =
+                ScalePrecision::decimal(0.01).expect("a positive precision is valid");
+        }
+        Ok(converted)
+    }
+
+    /// This measurement at a page's new scale. It follows the page's unit
+    /// unless it was shown in a unit of its own (Revu 20 and later keep a
+    /// measurement's unit independent of the page scale's).
+    fn rescaled(
+        &self,
+        page: &LengthCalibration,
+        keep_own_unit: bool,
+    ) -> Result<Self, AnnotationError> {
+        let rescaled = self.with_scale_from(page)?;
+        if keep_own_unit && self.unit != page.unit {
+            Ok(rescaled.with_unit(&self.unit).unwrap_or(rescaled))
+        } else {
+            Ok(rescaled)
+        }
+    }
+
     /// Whether two calibrations agree as a PDF `/Measure` stores them: the
     /// f32 scale ratio, unit and precision.
     pub fn same_persisted_scale_as(&self, other: &LengthCalibration) -> bool {
@@ -3752,6 +3910,9 @@ pub struct DimensionAnnotation {
     content: String,
     pub appearance: DimensionAppearance,
     pub locked: bool,
+    /// Where the caption was moved to from where it is drawn by default.
+    #[serde(default, skip_serializing_if = "CaptionOffset::is_zero")]
+    pub caption_offset: CaptionOffset,
 }
 
 impl DimensionAnnotation {
@@ -3792,6 +3953,7 @@ impl DimensionAnnotation {
             content,
             appearance,
             locked: false,
+            caption_offset: CaptionOffset::default(),
         })
     }
 
@@ -3852,6 +4014,8 @@ impl DimensionAnnotation {
             && self.content == other.content
             && self.appearance == other.appearance
             && self.locked == other.locked
+            && (self.caption_offset.x - other.caption_offset.x).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.caption_offset.y - other.caption_offset.y).abs() <= PDF_NUMBER_TOLERANCE
     }
 }
 
@@ -3865,6 +4029,9 @@ pub struct LengthAnnotation {
     calibration: LengthCalibration,
     pub appearance: DimensionAppearance,
     pub locked: bool,
+    /// Where the caption was moved to from where it is drawn by default.
+    #[serde(default, skip_serializing_if = "CaptionOffset::is_zero")]
+    pub caption_offset: CaptionOffset,
 }
 
 impl LengthAnnotation {
@@ -3917,6 +4084,7 @@ impl LengthAnnotation {
             calibration,
             appearance,
             locked: false,
+            caption_offset: CaptionOffset::default(),
         })
     }
 
@@ -3959,6 +4127,8 @@ impl LengthAnnotation {
             && self.calibration.same_persisted_state_as(&other.calibration)
             && self.appearance == other.appearance
             && self.locked == other.locked
+            && (self.caption_offset.x - other.caption_offset.x).abs() <= PDF_NUMBER_TOLERANCE
+            && (self.caption_offset.y - other.caption_offset.y).abs() <= PDF_NUMBER_TOLERANCE
     }
 }
 
@@ -4799,6 +4969,8 @@ impl Annotation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AnnotationEdit {
+    /// Moves a Length's, Dimension's, Polylength's or Area's caption.
+    SetCaptionOffset(CaptionOffset),
     SetRectangleRect(PdfRect),
     SetRectangleRotation(f64),
     SetRedactRect(PdfRect),
@@ -5629,6 +5801,7 @@ pub struct SceneCallout {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneMeasurementPath {
     pub id: MarkupId,
+    pub caption_offset: CaptionOffset,
     pub points: Vec<PdfPoint>,
     pub kind: MeasurementPathKind,
     pub appearance: RectangleAppearance,
@@ -5671,6 +5844,7 @@ pub struct SceneTextBox {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneDimension {
     pub id: MarkupId,
+    pub caption_offset: CaptionOffset,
     pub start: PdfPoint,
     pub end: PdfPoint,
     pub dimension_line_offset: f64,
@@ -5685,6 +5859,7 @@ pub struct SceneDimension {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneLength {
     pub id: MarkupId,
+    pub caption_offset: CaptionOffset,
     pub start: PdfPoint,
     pub end: PdfPoint,
     pub caption: String,
@@ -7343,12 +7518,12 @@ impl AnnotationDocument {
         let page_rotations = page_rotations.into_iter().collect::<BTreeMap<_, _>>();
         for length in &mut lengths {
             if let Some(scale) = page_length_calibrations.get(&length.page_index) {
-                length.calibration = length.calibration.with_scale_from(scale)?;
+                length.calibration = length.calibration.rescaled(scale, true)?;
             }
         }
         for measurement in &mut measurement_paths {
             if let Some(scale) = page_length_calibrations.get(&measurement.page_index) {
-                measurement.calibration = measurement.calibration.with_scale_from(scale)?;
+                measurement.calibration = measurement.calibration.rescaled(scale, true)?;
             }
         }
         self.state = DocumentState {
@@ -8368,55 +8543,59 @@ impl AnnotationDocument {
         let page_indices = page_scale_target_pages(target, page_count)?;
         let replacements = page_indices
             .into_iter()
-            .map(|page_index| (page_index, scale.with_page_index(page_index)))
-            .collect::<BTreeMap<_, _>>();
-        let scales_changed = replacements.iter().any(|(page_index, replacement)| {
+            .map(|page_index| {
+                let replacement = scale.with_page_index(page_index);
+                let calibration = replacement.length_calibration()?;
+                Ok((page_index, (replacement, calibration)))
+            })
+            .collect::<Result<BTreeMap<_, _>, AnnotationError>>()?;
+        // A measurement shown in the page's unit follows the page to its new
+        // unit; one shown in a unit of its own keeps it.
+        let rescale = |state: &DocumentState,
+                       page_index: u32,
+                       own: &LengthCalibration|
+         -> Result<Option<LengthCalibration>, AnnotationError> {
+            let Some((_, page)) = replacements.get(&page_index) else {
+                return Ok(None);
+            };
+            let keep_own_unit = state
+                .page_length_calibrations
+                .get(&page_index)
+                .is_some_and(|previous| previous.unit() != own.unit());
+            let rescaled = own.rescaled(page, keep_own_unit)?;
+            Ok((&rescaled != own).then_some(rescaled))
+        };
+        let mut length_updates = Vec::new();
+        for (index, length) in self.state.lengths.iter().enumerate() {
+            if let Some(calibration) = rescale(&self.state, length.page_index, &length.calibration)?
+            {
+                length_updates.push((index, calibration));
+            }
+        }
+        let mut path_updates = Vec::new();
+        for (index, path) in self.state.measurement_paths.iter().enumerate() {
+            if let Some(calibration) = rescale(&self.state, path.page_index, &path.calibration)? {
+                path_updates.push((index, calibration));
+            }
+        }
+        let scales_changed = replacements.iter().any(|(page_index, (replacement, _))| {
             self.state.page_scales.get(page_index) != Some(replacement)
         });
-        let lengths_changed = self.state.lengths.iter().any(|length| {
-            replacements
-                .get(&length.page_index)
-                .and_then(|scale| scale.length_calibration().ok())
-                .is_some_and(|calibration| !length.calibration.same_scale_as(&calibration))
-        });
-        let measurement_paths_changed = self.state.measurement_paths.iter().any(|measurement| {
-            replacements
-                .get(&measurement.page_index)
-                .and_then(|scale| scale.length_calibration().ok())
-                .is_some_and(|calibration| !measurement.calibration.same_scale_as(&calibration))
-        });
-        if !scales_changed && !lengths_changed && !measurement_paths_changed {
+        if !scales_changed && length_updates.is_empty() && path_updates.is_empty() {
             return Ok(false);
         }
         self.commit_state_change(move |state| {
-            for (page_index, replacement) in replacements {
-                let calibration = replacement
-                    .length_calibration()
-                    .expect("a validated page scale must produce a valid length calibration");
+            for (page_index, (replacement, calibration)) in replacements {
                 state.page_scales.insert(page_index, replacement);
                 state
                     .page_length_calibrations
-                    .insert(page_index, calibration.clone());
-                for length in state
-                    .lengths
-                    .iter_mut()
-                    .filter(|length| length.page_index == page_index)
-                {
-                    length.calibration = length
-                        .calibration
-                        .with_scale_from(&calibration)
-                        .expect("validated page and length calibration values must compose");
-                }
-                for measurement in state
-                    .measurement_paths
-                    .iter_mut()
-                    .filter(|measurement| measurement.page_index == page_index)
-                {
-                    measurement.calibration = measurement
-                        .calibration
-                        .with_scale_from(&calibration)
-                        .expect("validated page and measurement calibration values must compose");
-                }
+                    .insert(page_index, calibration);
+            }
+            for (index, calibration) in length_updates {
+                state.lengths[index].calibration = calibration;
+            }
+            for (index, calibration) in path_updates {
+                state.measurement_paths[index].calibration = calibration;
             }
         });
         Ok(true)
@@ -10892,6 +11071,51 @@ impl AnnotationDocument {
     ) -> Result<(AnnotationKind, bool), AnnotationError> {
         self.require_no_gesture()?;
         match edit {
+            AnnotationEdit::SetCaptionOffset(offset) => {
+                let (kind, current, locked) = if let Some(annotation) = self.length(id) {
+                    (
+                        AnnotationKind::Length,
+                        annotation.caption_offset,
+                        annotation.locked,
+                    )
+                } else if let Some(annotation) = self.dimension(id) {
+                    (
+                        AnnotationKind::Dimension,
+                        annotation.caption_offset,
+                        annotation.locked,
+                    )
+                } else if let Some(annotation) = self.measurement_path(id) {
+                    (
+                        annotation.kind.into(),
+                        annotation.caption_offset,
+                        annotation.locked,
+                    )
+                } else {
+                    return Err(AnnotationError::NoSelection);
+                };
+                if locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                let offset = CaptionOffset::new(offset.x, offset.y)?;
+                if current == offset {
+                    return Ok((kind, false));
+                }
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    if let Some(annotation) = state.lengths.iter_mut().find(|a| a.id == id) {
+                        annotation.caption_offset = offset;
+                    } else if let Some(annotation) =
+                        state.dimensions.iter_mut().find(|a| a.id == id)
+                    {
+                        annotation.caption_offset = offset;
+                    } else if let Some(annotation) =
+                        state.measurement_paths.iter_mut().find(|a| a.id == id)
+                    {
+                        annotation.caption_offset = offset;
+                    }
+                });
+                Ok((kind, true))
+            }
             AnnotationEdit::SetRectangleRect(rect) => {
                 let annotation = self.annotation(id).ok_or(AnnotationError::NoSelection)?;
                 if annotation.locked {
@@ -12513,6 +12737,7 @@ impl AnnotationDocument {
             .filter(|annotation| annotation.page_index == page_index)
             .map(|annotation| SceneDimension {
                 id: annotation.id.clone(),
+                caption_offset: annotation.caption_offset,
                 start: annotation.start,
                 end: annotation.end,
                 dimension_line_offset: annotation.dimension_line_offset,
@@ -12559,6 +12784,7 @@ impl AnnotationDocument {
             .filter(|annotation| annotation.page_index == page_index)
             .map(|annotation| SceneMeasurementPath {
                 id: annotation.id.clone(),
+                caption_offset: annotation.caption_offset,
                 points: annotation.points.clone(),
                 kind: annotation.kind,
                 appearance: annotation.appearance.clone(),
@@ -12598,6 +12824,7 @@ impl AnnotationDocument {
             .filter(|annotation| annotation.page_index == page_index)
             .map(|annotation| SceneLength {
                 id: annotation.id.clone(),
+                caption_offset: annotation.caption_offset,
                 start: annotation.start,
                 end: annotation.end,
                 caption: annotation.caption(),
@@ -17872,6 +18099,90 @@ mod tests {
         );
         document.undo().unwrap();
         assert_eq!(document.snapshot().page_scales.len(), 2);
+    }
+
+    #[test]
+    fn a_measurement_shown_in_its_own_unit_keeps_it_through_page_scale_changes() {
+        // 1:100 in metres: a 72 pt line is 2.54 m.
+        let metric = PageScale::from_factors(
+            0,
+            ScaleSource::Preset,
+            "1:100",
+            ScaleUnit::Cm,
+            ScaleUnit::M,
+            100. * 0.0254 / 72.,
+            100. * 0.0254 / 72.,
+            ScalePrecision::decimal(0.01).unwrap(),
+        )
+        .unwrap();
+        let page = LengthCalibration::from_page_scale(&metric).unwrap();
+        let in_mm = page.with_unit("mm").unwrap();
+        assert!((in_mm.units_per_point() - page.units_per_point() * 1000.).abs() < 1e-12);
+        assert!(page.with_unit("furlong").is_err());
+        let fraction = LengthCalibration::from_page_scale(
+            &PageScale::from_factors(
+                0,
+                ScaleSource::Preset,
+                "1/4\" = 1'-0\"",
+                ScaleUnit::In,
+                ScaleUnit::Ft,
+                4. / 72.,
+                4. / 72.,
+                ScalePrecision::fraction(16).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            fraction.with_unit("m").unwrap().scale_precision(),
+            ScalePrecision::decimal(0.01).unwrap(),
+            "metric lengths are not shown in sixteenths"
+        );
+        let length = |name: &str, calibration: LengthCalibration| {
+            Annotation::Length(
+                LengthAnnotation::new(id(name), 0, point(0., 0.), point(72., 0.), calibration)
+                    .unwrap(),
+            )
+        };
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_page_scale_state(
+                vec![
+                    length("follows-page", page.clone()),
+                    length("own-unit", in_mm),
+                ],
+                vec![(0, metric.clone())],
+                Vec::new(),
+            )
+            .unwrap();
+        let captions = |document: &AnnotationDocument| {
+            document
+                .snapshot()
+                .lengths
+                .iter()
+                .map(LengthAnnotation::caption)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(captions(&document), ["2.54 m", "2,540.00 mm"]);
+        // Now 1:50 in feet: the page's own measurement follows it to feet,
+        // the one in millimetres stays in millimetres at the new scale.
+        let imperial = PageScale::from_factors(
+            0,
+            ScaleSource::Preset,
+            "1:50",
+            ScaleUnit::In,
+            ScaleUnit::Ft,
+            50. / 12. / 72.,
+            50. / 12. / 72.,
+            ScalePrecision::decimal(0.01).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            document
+                .apply_page_scale(imperial, PageScaleApplyTarget::Current(0), 1)
+                .unwrap()
+        );
+        assert_eq!(captions(&document), ["4.17 ft", "1,270.00 mm"]);
     }
 
     #[test]

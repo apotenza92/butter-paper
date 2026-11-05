@@ -116,6 +116,15 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
   largest size. The metrics are the written font's: the embedded bundled
   font's, else Helvetica's standard ones.
 - [x] Area captions are centred on the area, as Revu centres them.
+- [x] A caption moved off its measurement is Revu's `/CO` (Revu 21
+  Shift+drag, `revu-moved-captions.pdf`): the move from where the caption
+  sits, across and up the page in points, on Line (Length, Dimension) with
+  both signs turned, on PolyLine and Polygon (Polylength, Area) as is.
+  Written only when moved. Revu then draws a Length's caption upright over
+  an unbroken line with a leader to its middle; Butter Paper does the same,
+  and also draws a 0.75 pt leader from a moved Polylength's or Area's
+  caption, which Revu does not. Revu's yellow caption handle on a Length
+  changes `LL`, not `/CO`.
 - [x] A callout or Cloud+ without text writes no text object in its appearance.
 
 - [x] Clouds use Revu's (Adobe's) cloudy border, measured from Revu 21
@@ -422,6 +431,8 @@ fill XFA forms.
 
 ## Known differences (follow-ups)
 
+- A Dimension's moved caption is written as a Length's; Revu's own has not
+  been captured (the specimen's Dimension has no text).
 - Polylength: Revu also labels each segment along the line; Butter Paper
   shows the total only.
 - Length `LL` is fixed at 10 pt; a Revu Length with another offset is redrawn

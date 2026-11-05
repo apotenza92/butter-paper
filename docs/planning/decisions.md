@@ -101,6 +101,25 @@ changes it; history is in git.
   precision and pages. Saved scale presets were dropped: they lived only in
   the open document and were lost on closing it, and applying to several
   pages covers reuse.
+- Drawing to scale is part of the ordinary drawing tools (Rectangle,
+  Ellipse, Line, Arrow, Polyline, Polygon, Arc), not a second set of tools
+  as Revu's Sketch to Scale is. On a page with a scale, a shape being drawn
+  shows its size beside the pointer with the page's scale
+  (`3.214 m · 32° | 1:100`), and typing fixes it, AutoCAD-style: Tab moves
+  between a rectangle's width and height or a line's length and angle, a
+  typed size may carry its unit (`3.2m`, `36'6"`), Enter places. The markup
+  saved is the same ordinary markup, as Sketch to Scale's is. A page without
+  a scale shows no size and takes no typed size. Properties show and edit a
+  shape's size in the page's real units.
+- Measurements stay their own tools: they are quantities, with captions,
+  listed by Revu as measurements. A line drawn to scale is not a Length.
+  As in Revu 20 and later, each measurement shows its own unit, independent
+  of the page scale's; the page keeps the precision. Geometry is stored
+  exactly; units and precision only round what is shown and typed.
+- Every feature is free for now. Scale and measurement features (setting a
+  scale, measurement tools, typed sizes) may later be a paid tier; that is
+  why they hang off the page scale and the Measure section rather than off
+  duplicate tools. No licensing code until that is decided.
 
 - A window filling half a 1920-pixel screen shows the whole interface with
   its sidebars collapsed: Edit PDF, every view control, the whole page

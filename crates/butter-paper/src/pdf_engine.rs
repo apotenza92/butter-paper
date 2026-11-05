@@ -43,14 +43,14 @@ use sha2::{Digest as _, Sha256};
 
 use crate::annotation_model::{
     Annotation, AnnotationError, ArcAnnotation, BlendMode, CalloutAnnotation, CalloutAppearance,
-    CalloutDiskGeometry, CloudAnnotation, CloudAppearancePathCommand, CloudPlusAnnotation,
-    CloudPlusAppearance, DIMENSION_LEADER_EXTENSION_PT, DecodedRgbaAsset, DimensionAnnotation,
-    DimensionAppearance, EllipseAnnotation, ImageAnnotation, InkTool, LENGTH_LEADER_LENGTH_PT,
-    LengthAnnotation, LengthCalibration, LineKind, MarkupId, MeasurementLineLayout,
-    MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageScale, PdfPoint, PdfRect,
-    PenAnnotation, PenAppearance, RectangleAnnotation, RectangleAppearance, RedactAnnotation,
-    RetainedAnnotationObstacle, ScalePrecision, ScalePrecisionMode, ScaleSource, ScaleUnit,
-    SnapshotAnnotation, SnapshotVector, StraightLineAnnotation, StraightLineAppearance,
+    CalloutDiskGeometry, CaptionOffset, CloudAnnotation, CloudAppearancePathCommand,
+    CloudPlusAnnotation, CloudPlusAppearance, DIMENSION_LEADER_EXTENSION_PT, DecodedRgbaAsset,
+    DimensionAnnotation, DimensionAppearance, EllipseAnnotation, ImageAnnotation, InkTool,
+    LENGTH_LEADER_LENGTH_PT, LengthAnnotation, LengthCalibration, LineKind, MarkupId,
+    MeasurementLineLayout, MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageScale,
+    PdfPoint, PdfRect, PenAnnotation, PenAppearance, RectangleAnnotation, RectangleAppearance,
+    RedactAnnotation, RetainedAnnotationObstacle, ScalePrecision, ScalePrecisionMode, ScaleSource,
+    ScaleUnit, SnapshotAnnotation, SnapshotVector, StraightLineAnnotation, StraightLineAppearance,
     StrokeStyle, TextAlignment, TextBoxAnnotation, TextBoxRichTextRun, TextBoxStyle,
     VertexPathAnnotation, VertexPathKind, cloud_curl_radius, ellipse_cubic_bezier_points,
     measurement_line_layout, rectangle_world_corners, sample_cloud_appearance_path,
@@ -7663,7 +7663,8 @@ fn length_bounds(annotation: &LengthAnnotation) -> PdfRect {
         .map(|rect| {
             rotated_rect_bounds(
                 rect,
-                measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
+                line_caption_angle(annotation.start, annotation.end, annotation.caption_offset)
+                    .to_degrees(),
             )
         });
     measurement_line_bounds(
@@ -8269,6 +8270,19 @@ fn cloud_plus_text_dictionary(
     Ok(replacement)
 }
 
+/// Where a Polylength's or Area's caption is centred: the middle of the
+/// path, or of the area, moved by the caption's offset.
+fn measurement_path_caption_anchor(annotation: &MeasurementPathAnnotation) -> PdfPoint {
+    let anchor = match annotation.kind {
+        MeasurementPathKind::Polylength => measurement_path_midpoint(annotation.points()),
+        MeasurementPathKind::Area => measurement_vertex_mean(annotation.points()),
+    };
+    PdfPoint {
+        x: anchor.x + annotation.caption_offset.x,
+        y: anchor.y + annotation.caption_offset.y,
+    }
+}
+
 fn measurement_path_bounds(annotation: &MeasurementPathAnnotation) -> PdfRect {
     let bounds = measurement_points_bounds(
         annotation.points(),
@@ -8277,10 +8291,7 @@ fn measurement_path_bounds(annotation: &MeasurementPathAnnotation) -> PdfRect {
     if !annotation.calibration().show_caption() {
         return bounds;
     }
-    let anchor = match annotation.kind {
-        MeasurementPathKind::Polylength => measurement_path_midpoint(annotation.points()),
-        MeasurementPathKind::Area => measurement_vertex_mean(annotation.points()),
-    };
+    let anchor = measurement_path_caption_anchor(annotation);
     // Revu centres an Area caption inside the area.
     let caption = measurement_caption_layout(
         anchor,
@@ -8349,10 +8360,7 @@ fn add_measurement_path_appearance(
     let mut content = content.into_bytes();
     if annotation.calibration().show_caption() {
         let (text_red, text_green, text_blue) = color_components(text.color());
-        let anchor = match annotation.kind {
-            MeasurementPathKind::Polylength => measurement_path_midpoint(annotation.points()),
-            MeasurementPathKind::Area => measurement_vertex_mean(annotation.points()),
-        };
+        let anchor = measurement_path_caption_anchor(annotation);
         let caption_text = caption_text
             .as_deref()
             .expect("visible measurement caption must have text");
@@ -8364,6 +8372,28 @@ fn add_measurement_path_appearance(
         );
         let caption_x = caption.text_origin.x - bounds.x;
         let caption_y = caption.text_origin.y - bounds.y;
+        // A caption moved off its markup keeps a leader to it. Revu draws
+        // none for a Polylength or Area; without one, a moved total can
+        // read as another markup's.
+        if !annotation.caption_offset.is_zero() {
+            let mut centred = annotation.clone();
+            centred.caption_offset = CaptionOffset::default();
+            if let Some((home, end)) = crate::annotation_model::caption_leader(
+                measurement_path_caption_anchor(&centred),
+                &rect_corners(caption.rect),
+            ) {
+                content.extend_from_slice(
+                    format!(
+                        "q\n/GSPath gs\n{stroke_red:.6} {stroke_green:.6} {stroke_blue:.6} RG 0.75 w\n{:.6} {:.6} m {:.6} {:.6} l S\nQ\n",
+                        home.x - bounds.x,
+                        home.y - bounds.y,
+                        end.x - bounds.x,
+                        end.y - bounds.y,
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
         if uses_helvetica_winansi_fast_path(caption_text, text.font_family()) {
             let encoded = text_appearance_line_bytes(caption_text);
             content.extend_from_slice(format!(
@@ -8907,6 +8937,7 @@ fn measurement_path_dictionary(
         "Label" => pdf_literal(calibration.label()),
         "AP" => dictionary! { "N" => appearance_id },
     };
+    set_caption_offset(&mut replacement, annotation.caption_offset, false);
     set_measurement_caption(&mut replacement, text, &annotation.caption());
     set_shape_border(&mut replacement, appearance);
     match annotation.kind {
@@ -8972,6 +9003,15 @@ fn add_length_appearance(
         line.stroke_width_pt()
     );
     append_measurement_line(&mut lines, &layout, local);
+    if let Some(caption_text) = caption_text.as_deref()
+        && let Some((home, end)) = line_caption_leader(
+            &layout,
+            annotation.caption_offset,
+            measurement_caption_layout(layout.caption_center, caption_text, text, true).rect,
+        )
+    {
+        append_leader(&mut lines, local(home), local(end));
+    }
     let mut content = lines.into_bytes();
     if annotation.calibration().show_caption() {
         let caption_text = caption_text
@@ -8982,7 +9022,7 @@ fn add_length_appearance(
             caption_rotation_operator(
                 caption.rect,
                 bounds,
-                measurement_caption_angle(annotation.start, annotation.end),
+                line_caption_angle(annotation.start, annotation.end, annotation.caption_offset),
             )
             .as_bytes(),
         );
@@ -9074,6 +9114,7 @@ fn length_dictionary(
     if text.font_family() != "Helvetica" {
         dictionary.set("DR", dictionary! { "Font" => font_resources });
     }
+    set_caption_offset(&mut dictionary, annotation.caption_offset, true);
     set_markup_opacity(&mut dictionary, line.opacity());
     if let Ok(subject) = original.get(b"Subj") {
         dictionary.set("Subj", subject.clone());
@@ -9095,14 +9136,84 @@ fn dimension_caption_text_width(annotation: &DimensionAnnotation) -> f64 {
 }
 
 fn dimension_line_layout(annotation: &DimensionAnnotation) -> MeasurementLineLayout {
-    measurement_line_layout(
+    let layout = measurement_line_layout(
         annotation.start,
         annotation.end,
         annotation.dimension_line_offset(),
         annotation.appearance.line().stroke_width_pt(),
-        dimension_caption_text_width(annotation),
+        if annotation.caption_offset.is_zero() {
+            dimension_caption_text_width(annotation)
+        } else {
+            0.
+        },
     )
-    .expect("validated Dimension endpoints are distinct")
+    .expect("validated Dimension endpoints are distinct");
+    with_moved_caption(layout, annotation.caption_offset)
+}
+
+/// A measurement line whose caption was moved: the caption is centred where
+/// it was moved to, and the line, which leaves no gap for it, is unbroken.
+fn with_moved_caption(
+    mut layout: MeasurementLineLayout,
+    offset: CaptionOffset,
+) -> MeasurementLineLayout {
+    layout.caption_center.x += offset.x;
+    layout.caption_center.y += offset.y;
+    layout
+}
+
+/// A Length's or Dimension's caption angle: along its line, or upright
+/// once moved off it (as Revu draws it).
+fn line_caption_angle(start: PdfPoint, end: PdfPoint, offset: CaptionOffset) -> f64 {
+    if offset.is_zero() {
+        measurement_caption_angle(start, end)
+    } else {
+        0.
+    }
+}
+
+/// The leader from a moved Length's or Dimension's dimension line, at its
+/// middle, to the caption's box, as Revu draws one.
+fn line_caption_leader(
+    layout: &MeasurementLineLayout,
+    offset: CaptionOffset,
+    caption: PdfRect,
+) -> Option<(PdfPoint, PdfPoint)> {
+    if offset.is_zero() {
+        return None;
+    }
+    let home = PdfPoint {
+        x: layout.caption_center.x - offset.x,
+        y: layout.caption_center.y - offset.y,
+    };
+    crate::annotation_model::caption_leader(home, &rect_corners(caption))
+}
+
+fn append_leader(content: &mut String, (from_x, from_y): (f64, f64), (to_x, to_y): (f64, f64)) {
+    content.push_str(&format!(
+        "{from_x:.6} {from_y:.6} m {to_x:.6} {to_y:.6} l S\n"
+    ));
+}
+
+fn rect_corners(rect: PdfRect) -> [PdfPoint; 4] {
+    [
+        PdfPoint {
+            x: rect.x,
+            y: rect.y,
+        },
+        PdfPoint {
+            x: rect.x + rect.width,
+            y: rect.y,
+        },
+        PdfPoint {
+            x: rect.x + rect.width,
+            y: rect.y + rect.height,
+        },
+        PdfPoint {
+            x: rect.x,
+            y: rect.y + rect.height,
+        },
+    ]
 }
 
 fn length_caption_text(annotation: &LengthAnnotation) -> Option<String> {
@@ -9117,14 +9228,19 @@ fn length_line_layout(annotation: &LengthAnnotation) -> MeasurementLineLayout {
     let caption_width = length_caption_text(annotation).map_or(0., |caption| {
         appearance_text_width_pt(&caption, text.font_size_pt(), text.font_family())
     });
-    measurement_line_layout(
+    let layout = measurement_line_layout(
         annotation.start,
         annotation.end,
         LENGTH_LEADER_LENGTH_PT,
         annotation.appearance.line().stroke_width_pt(),
-        caption_width,
+        if annotation.caption_offset.is_zero() {
+            caption_width
+        } else {
+            0.
+        },
     )
-    .expect("validated Length endpoints are distinct")
+    .expect("validated Length endpoints are distinct");
+    with_moved_caption(layout, annotation.caption_offset)
 }
 
 fn measurement_line_bounds(
@@ -9187,7 +9303,8 @@ fn dimension_bounds(annotation: &DimensionAnnotation) -> PdfRect {
         .map(|rect| {
             rotated_rect_bounds(
                 rect,
-                measurement_caption_angle(annotation.start, annotation.end).to_degrees(),
+                line_caption_angle(annotation.start, annotation.end, annotation.caption_offset)
+                    .to_degrees(),
             )
         });
     measurement_line_bounds(
@@ -9254,6 +9371,12 @@ fn add_dimension_appearance(
     append_measurement_line(&mut content, &layout, local);
     let caption =
         measurement_caption_layout(layout.caption_center, annotation.content(), text, true);
+    if !annotation.content().is_empty()
+        && let Some((home, end)) =
+            line_caption_leader(&layout, annotation.caption_offset, caption.rect)
+    {
+        append_leader(&mut content, local(home), local(end));
+    }
     let (caption_x, caption_y) = local(caption.text_origin);
     let mut content = content.into_bytes();
     if !annotation.content().is_empty() {
@@ -9261,7 +9384,7 @@ fn add_dimension_appearance(
             caption_rotation_operator(
                 caption.rect,
                 bounds,
-                measurement_caption_angle(annotation.start, annotation.end),
+                line_caption_angle(annotation.start, annotation.end, annotation.caption_offset),
             )
             .as_bytes(),
         );
@@ -9348,6 +9471,7 @@ fn dimension_dictionary(
         "SlopeType" => 0,
         "AP" => dictionary! { "N" => appearance_id },
     };
+    set_caption_offset(&mut replacement, annotation.caption_offset, true);
     if annotation.content().is_empty() {
         // Revu's Dimension carries only its text style, no label.
         replacement.set("DS", pdf_literal(&revu_default_style(text, None)));
@@ -13255,6 +13379,36 @@ fn import_cloud_plus_pair(
     Ok(imported)
 }
 
+/// A measurement caption's move, from Revu's `/CO` (see `set_caption_offset`).
+fn import_caption_offset(annotation: &Dictionary, line: bool) -> CaptionOffset {
+    let sign = if line { -1. } else { 1. };
+    annotation
+        .get(b"CO")
+        .and_then(Object::as_array)
+        .ok()
+        .and_then(|offset| match offset.as_slice() {
+            [along, across] => Some((along.as_float().ok()?, across.as_float().ok()?)),
+            _ => None,
+        })
+        .and_then(|(x, y)| CaptionOffset::new(sign * f64::from(x), sign * f64::from(y)).ok())
+        .unwrap_or_default()
+}
+
+/// Revu's `/CO` for a moved measurement caption: the move across and up
+/// the page, with both signs turned on a Line (Length, Dimension).
+fn set_caption_offset(dictionary: &mut Dictionary, offset: CaptionOffset, line: bool) {
+    if !offset.is_zero() {
+        let sign = if line { -1. } else { 1. };
+        dictionary.set(
+            "CO",
+            vec![
+                Object::Real((sign * offset.x) as f32),
+                Object::Real((sign * offset.y) as f32),
+            ],
+        );
+    }
+}
+
 fn import_length(
     document: &Document,
     annotation: &Dictionary,
@@ -13318,6 +13472,7 @@ fn import_length(
         )?,
     )?;
     imported.locked = annotation_locked(annotation);
+    imported.caption_offset = import_caption_offset(annotation, true);
     Ok(imported)
 }
 
@@ -13359,6 +13514,7 @@ fn import_dimension(
         appearance,
     )?;
     imported.locked = annotation_locked(annotation);
+    imported.caption_offset = import_caption_offset(annotation, true);
     Ok(imported)
 }
 
@@ -13537,6 +13693,7 @@ fn import_measurement_path(
         import_measurement_text_style(document, annotation, text_opacity)?,
     )?;
     imported.locked = annotation_locked(annotation);
+    imported.caption_offset = import_caption_offset(annotation, false);
     Ok(imported)
 }
 
@@ -19616,6 +19773,111 @@ mod tests {
         assert!(reopened.lengths()[0].caption().contains(unicode));
         assert_eq!(reopened.measurement_paths()[0].caption(), "160 m");
         assert_eq!(reopened.measurement_paths()[1].caption(), "3,000 sq m");
+    }
+
+    #[test]
+    fn moved_measurement_captions_save_where_they_were_moved_and_reopen_there() {
+        use super::*;
+        let calibration = LengthCalibration::from_scale(1., 1., "m", 0, true).unwrap();
+        let text = TextBoxStyle::new("Helvetica", 12., "#172b4d", 1.).unwrap();
+        let line = StraightLineAppearance::new("#ff0000", 1., 1., StrokeStyle::Solid).unwrap();
+        let mut length = LengthAnnotation::new_with_appearance(
+            MarkupId::new("moved-length").unwrap(),
+            0,
+            PdfPoint::new(20., 100.).unwrap(),
+            PdfPoint::new(180., 100.).unwrap(),
+            calibration.clone(),
+            DimensionAppearance::new(line.clone(), text.clone()).unwrap(),
+        )
+        .unwrap();
+        length.caption_offset = CaptionOffset::new(30., 18.).unwrap();
+        let mut dimension = DimensionAnnotation::new(
+            MarkupId::new("moved-dimension").unwrap(),
+            0,
+            PdfPoint::new(20., 200.).unwrap(),
+            PdfPoint::new(180., 200.).unwrap(),
+            24.,
+            "4 m",
+            DimensionAppearance::new(line, text.clone()).unwrap(),
+        )
+        .unwrap();
+        dimension.caption_offset = CaptionOffset::new(-25., 12.).unwrap();
+        let points = vec![
+            PdfPoint::new(20., 300.).unwrap(),
+            PdfPoint::new(220., 300.).unwrap(),
+            PdfPoint::new(220., 420.).unwrap(),
+        ];
+        let path = |id: &str, kind, offset: CaptionOffset| {
+            let mut path = MeasurementPathAnnotation::new_with_text_style(
+                MarkupId::new(id).unwrap(),
+                0,
+                points.clone(),
+                kind,
+                calibration.clone(),
+                RectangleAppearance::new("#ff0000", 1., None::<String>, 1.).unwrap(),
+                text.clone(),
+            )
+            .unwrap();
+            path.caption_offset = offset;
+            path
+        };
+        let polylength = path(
+            "moved-polylength",
+            MeasurementPathKind::Polylength,
+            CaptionOffset::new(40., -30.).unwrap(),
+        );
+        let area = path(
+            "moved-area",
+            MeasurementPathKind::Area,
+            CaptionOffset::new(-60., 45.5).unwrap(),
+        );
+        // However little it moved.
+        let nudged = path(
+            "nudged-area",
+            MeasurementPathKind::Area,
+            CaptionOffset::new(3., 2.).unwrap(),
+        );
+
+        let mut session = PdfPersistenceSession::from_document(
+            PathBuf::new(),
+            retained_render_test_document(),
+            None,
+        )
+        .unwrap();
+        session.add_length(length).unwrap();
+        session.add_dimension(dimension).unwrap();
+        session.add_measurement_path(polylength).unwrap();
+        session.add_measurement_path(area).unwrap();
+        session.add_measurement_path(nudged).unwrap();
+        let mut bytes = Vec::new();
+        session.document.save_to(&mut bytes).unwrap();
+        let reopened = PdfPersistenceSession::from_document(
+            PathBuf::new(),
+            Document::load_mem(&bytes).unwrap(),
+            None,
+        )
+        .unwrap();
+        let close = |actual: CaptionOffset, x: f64, y: f64| {
+            assert!(
+                (actual.x - x).abs() < 0.01 && (actual.y - y).abs() < 0.01,
+                "{actual:?} is not ({x}, {y})"
+            );
+        };
+        close(reopened.lengths()[0].caption_offset, 30., 18.);
+        close(reopened.dimensions()[0].caption_offset, -25., 12.);
+        let paths = reopened.measurement_paths();
+        close(paths[0].caption_offset, 40., -30.);
+        close(paths[1].caption_offset, -60., 45.5);
+        close(paths[2].caption_offset, 3., 2.);
+        // Every moved caption is a Revu `/CO`.
+        let saved = Document::load_mem(&bytes).unwrap();
+        let caption_offsets = saved
+            .objects
+            .values()
+            .filter_map(|object| object.as_dict().ok())
+            .filter(|dictionary| dictionary.has(b"CO"))
+            .count();
+        assert_eq!(caption_offsets, 5);
     }
 
     #[test]

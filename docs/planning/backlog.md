@@ -36,6 +36,16 @@ alone do not establish these behaviours.
 - Properties the reference had but native lacks: separate fill opacity,
   hatch fill, text vertical alignment and auto-size, image borders, editing
   imported appearances.
+- Drawing to scale ([decisions](decisions.md#interface)), still to do: Set
+  as Default for a measurement's unit (as Revu), and a unit for typed sizes
+  other than the page's; typed sizes for Arc and Cloud; real-unit size in
+  shape Properties; feet-and-inches display. Measurement tools armed on a
+  page without a scale should ask for one instead of measuring at
+  1 in = 1 in. Revu has not yet opened a measurement whose unit was changed
+  here. Revu's own Length tool also takes a typed angle and segment length
+  while drawing (seen in Revu 21); compare before extending typed sizes.
+- Revu measurement tools not yet here, by usefulness: Perimeter, Area
+  Cutout, Count, Diameter, Radius, Angle, Volume.
 - Scale regions: a sheet with views at several scales (a 1/8" plan beside
   1/4" details) needs Revu's viewports, a scale per region. Page scale is
   page-wide, and a PDF's partial viewports are read as page-wide.

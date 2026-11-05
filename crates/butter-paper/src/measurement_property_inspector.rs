@@ -4,16 +4,23 @@
 //! selection identity, page-scale authority, validation, history, and save.
 
 use crate::annotation_model::{
-    AnnotationKind, MarkupId, PageScale, ScalePrecision, ScalePrecisionMode,
+    AnnotationKind, MEASUREMENT_LENGTH_UNITS, MarkupId, PageScale, ScalePrecision,
+    ScalePrecisionMode, length_unit_metres,
 };
 use crate::property_controls::PropertyInspectorPanel;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Context, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, div,
+    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, button::Button, form::Field, h_flex,
-    switch::Switch, v_flex,
+    ActiveTheme as _, Disableable as _, IndexPath, Sizable as _,
+    button::Button,
+    form::Field,
+    h_flex,
+    select::{Select, SelectEvent, SelectState},
+    switch::Switch,
+    v_flex,
 };
 
 use crate::document_workspace::DocumentId;
@@ -25,6 +32,7 @@ pub const MEASUREMENT_INSPECTOR_UNIT_ID: &str = "measurement-property-unit";
 pub const MEASUREMENT_INSPECTOR_PRECISION_ID: &str = "measurement-property-precision";
 pub const MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID: &str = "measurement-property-show-caption";
 pub const MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID: &str = "measurement-property-set-page-scale";
+pub const MEASUREMENT_INSPECTOR_RESET_CAPTION_ID: &str = "measurement-property-reset-caption";
 const MEASUREMENT_INSPECTOR_HEADER_ID: &str = "measurement-property-inspector-header";
 const MEASUREMENT_INSPECTOR_SCROLL_ID: &str = "measurement-property-inspector-scroll";
 
@@ -40,6 +48,8 @@ pub struct MeasurementPropertySnapshot {
     pub unit: String,
     pub precision: ScalePrecision,
     pub show_caption: bool,
+    /// The caption was moved from where it usually sits.
+    pub caption_moved: bool,
     pub locked: bool,
     pub mutation_disabled: bool,
 }
@@ -47,6 +57,10 @@ pub struct MeasurementPropertySnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MeasurementPropertyAction {
     ShowCaption(bool),
+    /// Show the measurement in this unit (one of `MEASUREMENT_LENGTH_UNITS`).
+    Unit(&'static str),
+    /// Puts a moved caption back where it usually sits.
+    ResetCaptionPosition,
     OpenPageScale,
 }
 
@@ -64,20 +78,59 @@ pub struct MeasurementPropertyInspector {
     snapshot: Option<MeasurementPropertySnapshot>,
     open: bool,
     embedded: bool,
+    unit_select: Entity<SelectState<Vec<SharedString>>>,
+    _subscriptions: Vec<Subscription>,
 }
 
-impl Default for MeasurementPropertyInspector {
-    fn default() -> Self {
-        Self::new()
+/// A length unit's name as the unit menus show it.
+pub fn length_unit_title(unit: &str) -> &'static str {
+    match unit {
+        "mm" => "Millimetres",
+        "cm" => "Centimetres",
+        "m" => "Metres",
+        "km" => "Kilometres",
+        "in" => "Inches",
+        "ft" => "Feet",
+        "yd" => "Yards",
+        "mi" => "Miles",
+        _ => "Other",
     }
 }
 
 impl MeasurementPropertyInspector {
-    pub fn new() -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let unit_select = cx.new(|cx| {
+            SelectState::new(
+                MEASUREMENT_LENGTH_UNITS
+                    .iter()
+                    .map(|unit| SharedString::from(length_unit_title(unit)))
+                    .collect::<Vec<_>>(),
+                None,
+                window,
+                cx,
+            )
+        });
+        let subscription = cx.subscribe_in(
+            &unit_select,
+            window,
+            |this, _, event: &SelectEvent<Vec<SharedString>>, _, cx| {
+                let SelectEvent::Confirm(Some(title)) = event else {
+                    return;
+                };
+                if let Some(unit) = MEASUREMENT_LENGTH_UNITS
+                    .iter()
+                    .find(|unit| length_unit_title(unit) == title.as_ref())
+                {
+                    this.emit_action(MeasurementPropertyAction::Unit(unit), cx);
+                }
+            },
+        );
         Self {
             snapshot: None,
             open: false,
             embedded: false,
+            unit_select,
+            _subscriptions: vec![subscription],
         }
     }
 
@@ -106,8 +159,19 @@ impl MeasurementPropertyInspector {
         }
     }
 
-    pub fn sync(&mut self, snapshot: MeasurementPropertySnapshot, cx: &mut Context<Self>) {
+    pub fn sync(
+        &mut self,
+        snapshot: MeasurementPropertySnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.snapshot.as_ref() != Some(&snapshot) {
+            let index = MEASUREMENT_LENGTH_UNITS
+                .iter()
+                .position(|unit| *unit == snapshot.unit);
+            self.unit_select.update(cx, |select, cx| {
+                select.set_selected_index(index.map(IndexPath::new), window, cx);
+            });
             self.snapshot = Some(snapshot);
             cx.notify();
         }
@@ -119,8 +183,14 @@ impl MeasurementPropertyInspector {
         };
         if !(self.open || self.embedded)
             || snapshot.mutation_disabled
-            || matches!(action, MeasurementPropertyAction::ShowCaption(_)) && snapshot.locked
+            || matches!(
+                action,
+                MeasurementPropertyAction::ShowCaption(_)
+                    | MeasurementPropertyAction::Unit(_)
+                    | MeasurementPropertyAction::ResetCaptionPosition
+            ) && snapshot.locked
             || matches!(action, MeasurementPropertyAction::ShowCaption(value) if value == snapshot.show_caption)
+            || matches!(action, MeasurementPropertyAction::Unit(unit) if unit == snapshot.unit)
         {
             return;
         }
@@ -147,6 +217,7 @@ impl Render for MeasurementPropertyInspector {
         };
         let show_caption = cx.entity().downgrade();
         let page_scale = cx.entity().downgrade();
+        let reset_caption = cx.entity().downgrade();
         let read_only = |id: &'static str, label: &'static str, value: String| {
             Field::new().label(label).child(
                 div()
@@ -211,11 +282,29 @@ impl Render for MeasurementPropertyInspector {
                     "Measured value",
                     snapshot.caption,
                 ))
-                .child(read_only(
-                    MEASUREMENT_INSPECTOR_UNIT_ID,
-                    "Unit",
-                    snapshot.unit,
-                ))
+                .child(
+                    Field::new().label("Unit").child(
+                        div()
+                            .id(MEASUREMENT_INSPECTOR_UNIT_ID)
+                            .debug_selector(|| MEASUREMENT_INSPECTOR_UNIT_ID.into())
+                            .w_full()
+                            .when(length_unit_metres(&snapshot.unit).is_none(), |unit| {
+                                // A unit from another app that cannot be converted.
+                                unit.px_2()
+                                    .py_1()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .child(snapshot.unit.clone())
+                            })
+                            .when(length_unit_metres(&snapshot.unit).is_some(), |unit| {
+                                unit.child(
+                                    Select::new(&self.unit_select)
+                                        .small()
+                                        .disabled(snapshot.mutation_disabled || snapshot.locked),
+                                )
+                            }),
+                    ),
+                )
                 .child(read_only(
                     MEASUREMENT_INSPECTOR_PRECISION_ID,
                     "Precision",
@@ -241,7 +330,27 @@ impl Render for MeasurementPropertyInspector {
                                     }),
                             ),
                     ),
-                ),
+                )
+                .when(snapshot.caption_moved && snapshot.show_caption, |panel| {
+                    panel.child(
+                        Field::new().child(
+                            Button::new(MEASUREMENT_INSPECTOR_RESET_CAPTION_ID)
+                                .debug_selector(|| MEASUREMENT_INSPECTOR_RESET_CAPTION_ID.into())
+                                .label("Reset caption position")
+                                .small()
+                                .outline()
+                                .disabled(snapshot.mutation_disabled || snapshot.locked)
+                                .on_click(move |_, _, cx| {
+                                    let _ = reset_caption.update(cx, |inspector, cx| {
+                                        inspector.emit_action(
+                                            MeasurementPropertyAction::ResetCaptionPosition,
+                                            cx,
+                                        )
+                                    });
+                                }),
+                        ),
+                    )
+                }),
         )
         .into_any_element()
     }

@@ -1410,3 +1410,86 @@ fn export_visual_review_specimen() {
         .unwrap();
     save_as(&session, &source, &target);
 }
+
+/// Revu 21 Shift-dragged captions off a horizontal Length, a sloped Length,
+/// a Polylength and an Area (`revu-moved-captions.pdf`, from
+/// `revu-measure-text-media.pdf`). Revu saves the move as `/CO`: across and
+/// up the page for a Polylength or Area, with both signs turned on a Line.
+#[test]
+fn revu_moved_measurement_captions_read_and_write_as_revu_does() {
+    use butter_paper::annotation_model::CaptionOffset;
+    let source = fixture("revu-moved-captions.pdf");
+    let mut session = PdfPersistenceSession::open(&source).unwrap();
+    let close = |actual: CaptionOffset, x: f64, y: f64| {
+        assert!(
+            (actual.x - x).abs() < 0.01 && (actual.y - y).abs() < 0.01,
+            "{actual:?} is not ({x}, {y})"
+        );
+    };
+    let length = |id_value: &str| {
+        session
+            .lengths()
+            .iter()
+            .find(|length| length.id == id(id_value))
+            .unwrap()
+            .clone()
+    };
+    // Moved right and up on screen; Revu wrote /CO [-87.04596 -22.76587].
+    close(
+        length("WMXGYWNUVXSIXZRY").caption_offset,
+        87.04596,
+        22.76587,
+    );
+    // Moved straight up the page off a sloped Length: [0 -40.17505].
+    close(length("EZRFPICZACKGGVGP").caption_offset, 0., 40.17505);
+    // Its leader-handle drag changed only `LL`: the caption is not moved.
+    close(length("OCJTWECYIATNAZQO").caption_offset, 0., 0.);
+    let path = |id_value: &str| {
+        session
+            .measurement_paths()
+            .iter()
+            .find(|path| path.id == id(id_value))
+            .unwrap()
+            .clone()
+    };
+    close(path("BTXIYOSDDSOFVSPN").caption_offset, 73.65427, -40.17508);
+    close(path("CBOTHFYHFNEPONGL").caption_offset, 83.698, -71.64551);
+
+    // Rewritten natively, each keeps Revu's /CO.
+    let mut edited_length = length("WMXGYWNUVXSIXZRY");
+    edited_length.caption_offset = CaptionOffset::new(20., 10.).unwrap();
+    let mut edited_area = path("CBOTHFYHFNEPONGL");
+    edited_area.caption_offset = CaptionOffset::new(-30., 15.).unwrap();
+    session.replace_length(edited_length).unwrap();
+    session.replace_measurement_path(edited_area).unwrap();
+    let directory = scratch_dir("revu-moved-captions");
+    let target = directory.join("edited.pdf");
+    save_as(&session, &source, &target);
+    let (_, dictionaries) = annotation_dictionaries(&target);
+    let caption_offset = |id_value: &str| {
+        let dictionary = dictionaries
+            .iter()
+            .find(|dictionary| {
+                dictionary.get(b"NM").and_then(lopdf::Object::as_str).ok()
+                    == Some(id_value.as_bytes())
+            })
+            .unwrap();
+        dictionary
+            .get(b"CO")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_float().unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(caption_offset("WMXGYWNUVXSIXZRY"), [-20., -10.]);
+    assert_eq!(caption_offset("CBOTHFYHFNEPONGL"), [-30., 15.]);
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    let reopened_length = reopened
+        .lengths()
+        .iter()
+        .find(|length| length.id == id("WMXGYWNUVXSIXZRY"))
+        .unwrap();
+    close(reopened_length.caption_offset, 20., 10.);
+}

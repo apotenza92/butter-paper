@@ -40,6 +40,8 @@ const DIMENSION_INSPECTOR_HEADER_ID: &str = "dimension-property-inspector-header
 const DIMENSION_INSPECTOR_SCROLL_ID: &str = "dimension-property-inspector-scroll";
 const DIMENSION_INSPECTOR_OPACITY_INPUT_ID: &str = "dimension-property-opacity-input";
 
+pub const DIMENSION_INSPECTOR_RESET_CAPTION_ID: &str = "dimension-property-reset-caption";
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DimensionPropertySnapshot {
     pub document_id: DocumentId,
@@ -51,6 +53,8 @@ pub struct DimensionPropertySnapshot {
     /// shows its lock, line and opacity.
     pub text_only: bool,
     pub appearance: DimensionAppearance,
+    /// A Dimension's caption was moved from where it usually sits.
+    pub caption_moved: bool,
     pub locked: bool,
     pub mutation_disabled: bool,
 }
@@ -60,6 +64,7 @@ pub enum DimensionPropertyPatch {
     Locked(bool),
     OffsetPt(f64),
     Appearance(DimensionAppearance),
+    ResetCaptionPosition,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -406,6 +411,26 @@ impl Render for DimensionPropertyInspector {
                     .disabled(disabled),
                 ),
             );
+            if snapshot.caption_moved {
+                let reset = cx.entity().downgrade();
+                appearance = appearance.child(
+                    Field::new().child(
+                        Button::new(DIMENSION_INSPECTOR_RESET_CAPTION_ID)
+                            .debug_selector(|| DIMENSION_INSPECTOR_RESET_CAPTION_ID.into())
+                            .label("Reset caption position")
+                            .outline()
+                            .disabled(disabled)
+                            .on_click(move |_, _, cx| {
+                                let _ = reset.update(cx, |this, cx| {
+                                    this.emit_patch(
+                                        DimensionPropertyPatch::ResetCaptionPosition,
+                                        cx,
+                                    )
+                                });
+                            }),
+                    ),
+                );
+            }
         }
         let appearance = appearance
             .child(color_field(
@@ -652,6 +677,7 @@ fn patch_matches(patch: &DimensionPropertyPatch, snapshot: &DimensionPropertySna
         DimensionPropertyPatch::Locked(value) => *value == snapshot.locked,
         DimensionPropertyPatch::OffsetPt(value) => *value == snapshot.offset_pt,
         DimensionPropertyPatch::Appearance(value) => value == &snapshot.appearance,
+        DimensionPropertyPatch::ResetCaptionPosition => !snapshot.caption_moved,
     }
 }
 fn rgb_hex(color: gpui::Hsla) -> String {

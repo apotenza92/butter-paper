@@ -42,6 +42,8 @@ mod recovery_notifications;
 mod signature_capture;
 #[path = "document_workspace_signatures.rs"]
 mod signature_checks;
+#[path = "document_workspace_size_entry.rs"]
+mod size_entry_ui;
 #[path = "document_workspace_snapshot.rs"]
 mod snapshot_copy;
 pub use certificate_signing::{
@@ -323,13 +325,16 @@ gpui::actions!(
         ToggleEditPdf,
         SelectLengthTool,
         FinishVertexPath,
-        PasteHere
+        PasteHere,
+        SizeEntryNextField,
+        SizeEntryPreviousField
     ]
 );
 
 const DOCUMENT_WORKSPACE_CONTEXT: &str = "DocumentWorkspace";
 // Tool letters must reach focused text fields rather than matching their workspace ancestor.
-const DOCUMENT_TOOL_SHORTCUT_CONTEXT: &str = "DocumentWorkspace && !Input && !PageTextEditor";
+const DOCUMENT_TOOL_SHORTCUT_CONTEXT: &str =
+    "DocumentWorkspace && !Input && !PageTextEditor && !SizeEntry";
 
 pub fn init_document_workspace_actions(cx: &mut App) {
     // Tool shortcuts change the pointer's meaning even while it is stationary.
@@ -502,6 +507,16 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         KeyBinding::new("backspace", Delete, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("delete", Delete, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("enter", FinishVertexPath, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new(
+            "tab",
+            SizeEntryNextField,
+            Some("DocumentWorkspace && SizeReadout && !Input"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            SizeEntryPreviousField,
+            Some("DocumentWorkspace && SizeReadout && !Input"),
+        ),
         KeyBinding::new("escape", Escape, Some(DOCUMENT_WORKSPACE_CONTEXT)),
     ]);
     crate::page_text_editor::init_page_text_editor_actions(cx);
@@ -2893,6 +2908,10 @@ pub struct DocumentWorkspace {
     /// The rail overflow cue under the pointer, which names what it does.
     right_rail_overflow_hover: Option<RailOverflowEdge>,
     pan_tool_active: bool,
+    /// Sizes typed for the markup being drawn (`size_entry_ui`).
+    size_entry: Option<crate::size_entry::SizeEntry>,
+    /// Where the pointer last was over the pages, for typed sizes to place at.
+    drawing_pointer: Option<(gpui::Point<Pixels>, Modifiers)>,
     pan_drag: Option<(DocumentId, Point<Pixels>, Point<Pixels>)>,
     space_pan_hold: space_pan::SpacePanHold,
     /// The middle button is held: Pan is active until it is released.
@@ -4627,6 +4646,8 @@ impl DocumentWorkspace {
             content_clipboard: None,
             content_marquee: None,
             pan_tool_active: false,
+            size_entry: None,
+            drawing_pointer: None,
             pan_drag: None,
             space_pan_hold: space_pan::SpacePanHold::default(),
             middle_pan_held: false,
@@ -7941,8 +7962,8 @@ impl DocumentWorkspace {
         if let Some(inspector) = &self.measurement_property_inspector {
             return inspector.clone();
         }
-        let inspector = cx.new(|_| {
-            let mut inspector = MeasurementPropertyInspector::new();
+        let inspector = cx.new(|cx| {
+            let mut inspector = MeasurementPropertyInspector::new(window, cx);
             inspector.set_embedded();
             inspector
         });
@@ -8055,6 +8076,41 @@ impl DocumentWorkspace {
                 let annotation_id = event.annotation_id.clone();
                 self.update_annotation_history(event.document_id, cx, move |annotations, id| {
                     annotations.edit_primary_selected_annotation(id, &annotation_id, edit)
+                })?;
+            }
+            MeasurementPropertyAction::Unit(unit) => {
+                if unit == calibration.unit() {
+                    return Ok(false);
+                }
+                if locked {
+                    return Err(format!("markup {} is locked", event.annotation_id));
+                }
+                let calibration = calibration
+                    .with_unit(unit)
+                    .map_err(|error| error.to_string())?;
+                let edit = match current_kind {
+                    AnnotationKind::Length => AnnotationEdit::SetLengthCalibration(calibration),
+                    AnnotationKind::Polylength | AnnotationKind::Area => {
+                        AnnotationEdit::SetMeasurementPathCalibration(calibration)
+                    }
+                    _ => return Ok(false),
+                };
+                let annotation_id = event.annotation_id.clone();
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.edit_primary_selected_annotation(id, &annotation_id, edit)
+                })?;
+            }
+            MeasurementPropertyAction::ResetCaptionPosition => {
+                if locked {
+                    return Err(format!("markup {} is locked", event.annotation_id));
+                }
+                let annotation_id = event.annotation_id.clone();
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.edit_primary_selected_annotation(
+                        id,
+                        &annotation_id,
+                        AnnotationEdit::SetCaptionOffset(Default::default()),
+                    )
                 })?;
             }
             MeasurementPropertyAction::OpenPageScale => {
@@ -16169,7 +16225,8 @@ impl DocumentWorkspace {
                     || annotation.id != event.annotation_id
                     || match &event.patch {
                         DimensionPropertyPatch::Locked(value) => *value == annotation.locked,
-                        DimensionPropertyPatch::OffsetPt(_) => true,
+                        DimensionPropertyPatch::OffsetPt(_)
+                        | DimensionPropertyPatch::ResetCaptionPosition => true,
                         DimensionPropertyPatch::Appearance(value) => value == &appearance,
                     }
                 {
@@ -16191,6 +16248,10 @@ impl DocumentWorkspace {
                         || matches!(&current, Annotation::Dimension(annotation) if *value == annotation.dimension_line_offset())
                 }
                 DimensionPropertyPatch::Appearance(value) => value == current_appearance,
+                DimensionPropertyPatch::ResetCaptionPosition => {
+                    !is_dimension
+                        || matches!(&current, Annotation::Dimension(annotation) if annotation.caption_offset.is_zero())
+                }
             }
         {
             return Ok(false);
@@ -16213,6 +16274,16 @@ impl DocumentWorkspace {
                         id,
                         &annotation_id,
                         AnnotationEdit::SetDimensionOffset(value),
+                    )
+                })?;
+            }
+            DimensionPropertyPatch::ResetCaptionPosition => {
+                let annotation_id = event.annotation_id.clone();
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.edit_primary_selected_annotation(
+                        id,
+                        &annotation_id,
+                        AnnotationEdit::SetCaptionOffset(Default::default()),
                     )
                 })?;
             }
@@ -16271,7 +16342,9 @@ impl DocumentWorkspace {
                     )
                 })?;
             }
-            DimensionPropertyPatch::OffsetPt(_) => return Ok(false),
+            DimensionPropertyPatch::OffsetPt(_) | DimensionPropertyPatch::ResetCaptionPosition => {
+                return Ok(false);
+            }
         }
         Ok(true)
     }
@@ -17861,6 +17934,10 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter places a markup at the size typed for it.
+        if self.size_entry_enter(window, cx) {
+            return;
+        }
         // Enter edits the selected paragraph in Edit PDF mode.
         if self.edit_selected_paragraph(window, cx) {
             return;
@@ -18173,6 +18250,9 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) {
         if window.has_focused_input(cx) {
+            return;
+        }
+        if self.size_entry_backspace(cx) {
             return;
         }
         if self.page_thumbnails_focused(window, cx) {
@@ -19376,6 +19456,7 @@ impl DocumentWorkspace {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.note_drawing_pointer(position, modifiers);
         let Some(interaction) = self
             .page_interactions
             .values()
@@ -19708,6 +19789,7 @@ impl DocumentWorkspace {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.note_drawing_pointer(position, modifiers);
         if let Some((document_id, origin, offset)) = self.pan_drag {
             if self.active_document_id != Some(document_id) {
                 self.pan_drag = None;
@@ -20971,6 +21053,21 @@ fn paint_cloud_plus_annotation(
     }
 }
 
+fn paint_caption_leader(
+    from: Point<Pixels>,
+    to: Point<Pixels>,
+    width: Pixels,
+    color: gpui::Hsla,
+    window: &mut Window,
+) {
+    let mut leader = PathBuilder::stroke(width);
+    leader.move_to(from);
+    leader.line_to(to);
+    if let Ok(path) = leader.build() {
+        window.paint_path(path, color);
+    }
+}
+
 /// Paints a Dimension or Length line as Revu draws it.
 fn paint_measurement_line(
     layout: &crate::annotation_model::MeasurementLineLayout,
@@ -21069,13 +21166,14 @@ fn paint_dimension_annotation(
         .opacity(line.opacity() as f32);
     let caption_layout =
         crate::annotation_caption::dimension_caption(&annotation, *transform, window.text_system());
-    let caption_text_width_pt = if annotation.content.is_empty() {
-        0.
-    } else {
-        caption_layout.as_ref().map_or(0., |layout| {
-            (layout.width_pt - annotation.appearance.text().inset_pt() * 2.).max(0.)
-        })
-    };
+    let caption_text_width_pt =
+        if annotation.content.is_empty() || !annotation.caption_offset.is_zero() {
+            0.
+        } else {
+            caption_layout.as_ref().map_or(0., |layout| {
+                (layout.width_pt - annotation.appearance.text().inset_pt() * 2.).max(0.)
+            })
+        };
     let Some(measurement_layout) = crate::annotation_model::measurement_line_layout(
         annotation.start,
         annotation.end,
@@ -21093,6 +21191,23 @@ fn paint_dimension_annotation(
         stroke_color,
         window,
     );
+    // A caption moved off its line keeps a leader to the line's middle.
+    if !annotation.caption_offset.is_zero()
+        && let Some((home, end)) = caption_layout.as_ref().and_then(|caption| {
+            crate::annotation_model::caption_leader(
+                measurement_layout.caption_center,
+                &caption.pdf_corners,
+            )
+        })
+    {
+        paint_caption_leader(
+            project(home),
+            project(end),
+            stroke_width,
+            stroke_color,
+            window,
+        );
+    }
 
     if let Some(layout) = &caption_layout {
         layout.paint(page_bounds.origin, window, cx);
@@ -23307,6 +23422,18 @@ fn annotation_layer(
                                 window.paint_path(path, stroke_color);
                             }
                             if let Some(layout) = crate::annotation_caption::measurement_caption(&annotation, transform, window.text_system()) {
+                                // A caption moved off its markup keeps a leader to it.
+                                if !annotation.caption_offset.is_zero()
+                                    && let Some((home, end)) = crate::annotation_caption::measurement_caption_home(&annotation)
+                                        .and_then(|home| crate::annotation_model::caption_leader(home, &layout.pdf_corners))
+                                {
+                                    let mut leader = PathBuilder::stroke(px((0.75 * scale).max(1.)));
+                                    leader.move_to(project(home));
+                                    leader.line_to(project(end));
+                                    if let Ok(path) = leader.build() {
+                                        window.paint_path(path, stroke_color);
+                                    }
+                                }
                                 layout.paint(page_bounds.origin, window, cx);
                             }
                             let transform_hovered = hot_handle
@@ -23610,10 +23737,15 @@ fn annotation_layer(
                                 transform,
                                 window.text_system(),
                             );
-                            let caption_text_width_pt = caption_layout.as_ref().map_or(0., |layout| {
-                                (layout.width_pt - annotation.appearance.text().inset_pt() * 2.)
-                                    .max(0.)
-                            });
+                            // A moved caption leaves its line unbroken.
+                            let caption_text_width_pt = caption_layout
+                                .as_ref()
+                                .filter(|_| annotation.caption_offset.is_zero())
+                                .map_or(0., |layout| {
+                                    (layout.width_pt
+                                        - annotation.appearance.text().inset_pt() * 2.)
+                                        .max(0.)
+                                });
                             if let Some(measurement_layout) =
                                 crate::annotation_model::measurement_line_layout(
                                     annotation.start,
@@ -23631,6 +23763,22 @@ fn annotation_layer(
                                     color,
                                     window,
                                 );
+                                if !annotation.caption_offset.is_zero()
+                                    && let Some((home, end)) = caption_layout.as_ref().and_then(|caption| {
+                                        crate::annotation_model::caption_leader(
+                                            measurement_layout.caption_center,
+                                            &caption.pdf_corners,
+                                        )
+                                    })
+                                {
+                                    paint_caption_leader(
+                                        project(home),
+                                        project(end),
+                                        px((line.stroke_width_pt() as f32 * scale).max(1.)),
+                                        color,
+                                        window,
+                                    );
+                                }
                             }
                             if let Some(layout) = caption_layout {
                                 layout.paint(page_bounds.origin, window, cx);
@@ -26008,7 +26156,7 @@ impl Render for DocumentWorkspace {
                     annotation.page_index,
                     annotation.caption(),
                     annotation.calibration().clone(),
-                    annotation.locked,
+                    (annotation.locked, !annotation.caption_offset.is_zero()),
                     session
                         .annotations
                         .document_page_scale(document_id.value(), annotation.page_index)
@@ -26020,7 +26168,7 @@ impl Render for DocumentWorkspace {
                     annotation.page_index,
                     annotation.caption(),
                     annotation.calibration().clone(),
-                    annotation.locked,
+                    (annotation.locked, !annotation.caption_offset.is_zero()),
                     session
                         .annotations
                         .document_page_scale(document_id.value(), annotation.page_index)
@@ -26034,14 +26182,14 @@ impl Render for DocumentWorkspace {
                     annotation.dimension_line_offset(),
                     true,
                     annotation.appearance.clone(),
-                    annotation.locked,
+                    (annotation.locked, !annotation.caption_offset.is_zero()),
                 )),
                 [Annotation::Length(annotation)] => Some((
                     annotation.id.clone(),
                     0.,
                     false,
                     annotation.appearance.clone(),
-                    annotation.locked,
+                    (annotation.locked, false),
                 )),
                 [Annotation::MeasurementPath(annotation)] => Some((
                     annotation.id.clone(),
@@ -26076,7 +26224,7 @@ impl Render for DocumentWorkspace {
                         .expect("stored measurement text style is valid"),
                     )
                     .expect("measurement path line and text share opacity"),
-                    annotation.locked,
+                    (annotation.locked, false),
                 )),
                 _ => None,
             };
@@ -26447,7 +26595,9 @@ impl Render for DocumentWorkspace {
             select_hover_cursor,
         );
         self.viewport_cursor = viewport_cursor_style;
-        if let Some((id, offset, show_offset, appearance, locked)) = selected_dimension.as_ref() {
+        if let Some((id, offset, show_offset, appearance, (locked, caption_moved))) =
+            selected_dimension.as_ref()
+        {
             let snapshot = DimensionPropertySnapshot {
                 document_id,
                 annotation_id: id.clone(),
@@ -26456,6 +26606,7 @@ impl Render for DocumentWorkspace {
                 show_offset: *show_offset,
                 text_only: selected_vertex_path.is_some(),
                 appearance: appearance.clone(),
+                caption_moved: *caption_moved,
                 locked: *locked,
                 mutation_disabled: save_busy,
             };
@@ -26675,8 +26826,15 @@ impl Render for DocumentWorkspace {
             self.text_box_property_inspector_open = false;
             text_box_property_inspector.update(cx, |inspector, cx| inspector.clear(cx));
         }
-        if let Some((id, kind, page_index, caption, calibration, locked, page_scale)) =
-            selected_measurement.as_ref()
+        if let Some((
+            id,
+            kind,
+            page_index,
+            caption,
+            calibration,
+            (locked, caption_moved),
+            page_scale,
+        )) = selected_measurement.as_ref()
         {
             let snapshot = MeasurementPropertySnapshot {
                 document_id,
@@ -26689,6 +26847,7 @@ impl Render for DocumentWorkspace {
                 unit: calibration.unit().to_owned(),
                 precision: calibration.scale_precision(),
                 show_caption: calibration.show_caption(),
+                caption_moved: *caption_moved,
                 locked: *locked,
                 mutation_disabled: ink_mutation_disabled,
             };
@@ -26698,7 +26857,7 @@ impl Render for DocumentWorkspace {
                 .is_none_or(|current| current != &snapshot);
             if needs_sync {
                 measurement_property_inspector.update(cx, |inspector, cx| {
-                    inspector.sync(snapshot, cx);
+                    inspector.sync(snapshot, window, cx);
                 });
             }
         } else if measurement_property_inspector.read(cx).snapshot().is_some() {

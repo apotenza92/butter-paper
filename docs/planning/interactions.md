@@ -57,6 +57,22 @@ Shift constrains while drawing (lines and points horizontal or vertical from
 the last point, ellipse to a circle) and applies mid-drag. Length, Polylength
 and Area measure at 1 in = 1 in on a page without a scale.
 
+On a page with a scale, once a markup's first point is placed a box beside
+the pointer shows its size in the page's real unit and the page's scale:
+Length and Angle for Line, Arrow, Length, Dimension and each segment of
+Polyline, Polygon, Polylength and Area; Width and Height for Rectangle and
+Ellipse (across and up the screen, on a turned page too). Typing a number
+fixes the size in the highlighted field, AutoCAD-style; what is not typed
+still follows the pointer, a box on the side of its first corner the pointer
+is on. A bare number is in the page's unit (`3.2`), or names its own
+(`3200mm`, `36'-6"`); an angle is in degrees anticlockwise from the right.
+Tab and Shift+Tab move between the two fields, Enter places the point as a
+click there would (Enter with nothing typed still finishes a path),
+Backspace edits, and Escape clears what was typed before it cancels. Once a
+number is typed, letters type units rather than switch tools. A typed size
+overrides snapping. A page without a scale shows no box and takes no typed
+size.
+
 Creation previews follow every pointer move during drags and between clicks,
 without committing history. Cloud drags preview the rectangular scalloped
 outline that will be committed; polygon drafts preview their next point
@@ -108,6 +124,14 @@ tooltip expands the instructions when the window truncates them.
 - *Native:* a Length or Dimension end is dragged from anywhere along its
   extension line, out to the arrow; the measured point follows the pointer
   from where it was grabbed, without jumping to it.
+- A Length's, Dimension's, Polylength's or Area's caption is dragged on its
+  own, selected or not (Revu: Shift+drag); dragging the rest of the markup
+  moves it all, caption included. A moved Length or Dimension caption is
+  drawn upright, as Revu draws it, over an unbroken line, with a leader to
+  the line's middle; a moved Polylength or Area caption keeps a thin leader
+  to its usual place (*native*: Revu draws none). A selected measurement's
+  Properties offer Reset caption position while its caption is moved.
+  One undoable change.
 - *Native:* Rectangle outlines use three equal 20px bands from outside to
   inside: Move / Resize / Move. Resize straddles the line by 10px each way;
   the adjacent move bands reach from 10px to 30px outside and inside it.
@@ -556,7 +580,13 @@ page without one measures paper size (1 in = 1 in).
   with its own unit (`3600 mm`). Within 3% of a standard scale, it offers
   that scale.
 - Measure in sets the unit and precision measurements show; changing the
-  unit keeps the scale, converting typed lengths.
+  unit keeps the scale, converting typed lengths. Applying a scale moves
+  measurements shown in the page's old unit to the new one; one shown in a
+  unit of its own keeps it, as in Revu 20 and later.
+- A selected measurement's Unit (mm, cm, m, km, in, ft, yd, mi) changes the
+  unit that measurement shows, as one undoable change; what it measures and
+  the page's scale stay the same. A unit Butter Paper cannot convert, from
+  another app, is shown and kept.
 - Apply to, in documents of more than one page: this page, all pages, or
   pages like `1-3, 5` (typed straight away).
 - Apply is one undoable change, and remeasures the measurements on those

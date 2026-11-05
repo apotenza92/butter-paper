@@ -95,6 +95,7 @@ pub mod semantic_snapping;
 pub mod session_manifest;
 pub mod signature_settings;
 pub mod signature_trust;
+pub mod size_entry;
 pub mod store_package;
 pub mod straight_line_property_inspector;
 pub mod system_apps;

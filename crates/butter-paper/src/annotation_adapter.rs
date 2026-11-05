@@ -17,8 +17,8 @@ pub use tool_properties::{
 use crate::annotation_model::{
     Annotation, AnnotationCommand, AnnotationDocument, AnnotationEdit, AnnotationError,
     AnnotationKind, AnnotationScene, AnnotationSelectionSupplement, AnnotationSnapshot,
-    ArcAnnotation, ArcControlPoint, CalloutAnnotation, CalloutAppearance, CloudAnnotation,
-    CloudPlusAnnotation, CloudPlusAppearance, CommandOutcome, DecodedRgbaAsset,
+    ArcAnnotation, ArcControlPoint, CalloutAnnotation, CalloutAppearance, CaptionOffset,
+    CloudAnnotation, CloudPlusAnnotation, CloudPlusAppearance, CommandOutcome, DecodedRgbaAsset,
     DimensionAnnotation, DimensionAppearance, EllipseAnnotation, GestureKind, HitTarget,
     ImageAnnotation, InkTool, LengthAnnotation, LengthCalibration, LengthEndpoint, LineEndpoint,
     LineKind, MarkupId, MeasurementPathAnnotation, MeasurementPathKind, PageRotation,
@@ -595,6 +595,16 @@ pub struct PointerInputModifiers {
 
 #[derive(Clone, Debug)]
 enum ActivePointer {
+    /// A measurement's caption dragged on its own.
+    CaptionMove {
+        document_id: u64,
+        page_index: u32,
+        pointer_id: u64,
+        id: MarkupId,
+        start: PdfPoint,
+        current: PdfPoint,
+        original: CaptionOffset,
+    },
     Marquee {
         document_id: u64,
         page_index: u32,
@@ -1218,6 +1228,87 @@ pub struct AnnotationAdapter {
     /// Annotation snap data for the page under an active gesture; see
     /// `annotation_snap_cache`.
     annotation_snap: Option<AnnotationSnapCache>,
+    /// Sizes typed for the markup being drawn, with the point they measure
+    /// from: once that point moves on (a path's next vertex), they lapse.
+    typed_size: Option<(TypedSize, PdfPoint)>,
+    /// Where the last creation point resolved to, for a box whose gesture
+    /// keeps no current corner of its own.
+    typed_size_pointer: Option<PdfPoint>,
+}
+
+/// Sizes typed while drawing, in the page's PDF frame: lengths in points,
+/// angles in radians anticlockwise from +x.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TypedSize {
+    pub length: Option<f64>,
+    pub angle: Option<f64>,
+    /// A box's side along x, and along y.
+    pub extent_x: Option<f64>,
+    pub extent_y: Option<f64>,
+}
+
+impl TypedSize {
+    pub fn is_empty(&self) -> bool {
+        self.length.is_none()
+            && self.angle.is_none()
+            && self.extent_x.is_none()
+            && self.extent_y.is_none()
+    }
+
+    /// The point `pointer` stands for once held to these sizes from `anchor`:
+    /// a line keeps the pointer's direction or length where they are not
+    /// typed, a box keeps the side of the anchor the pointer is on.
+    pub fn resolve(&self, anchor: PdfPoint, pointer: PdfPoint, shape: TypedSizeShape) -> PdfPoint {
+        let dx = pointer.x - anchor.x;
+        let dy = pointer.y - anchor.y;
+        match shape {
+            TypedSizeShape::Line => {
+                let angle = self.angle.unwrap_or_else(|| {
+                    if dx == 0. && dy == 0. {
+                        0.
+                    } else {
+                        dy.atan2(dx)
+                    }
+                });
+                let length = self.length.unwrap_or_else(|| {
+                    if self.angle.is_some() {
+                        (dx * angle.cos() + dy * angle.sin()).max(0.)
+                    } else {
+                        dx.hypot(dy)
+                    }
+                });
+                PdfPoint {
+                    x: anchor.x + length * angle.cos(),
+                    y: anchor.y + length * angle.sin(),
+                }
+            }
+            TypedSizeShape::Box => {
+                let side = |delta: f64, typed: Option<f64>| {
+                    typed.map_or(delta, |typed| if delta < 0. { -typed } else { typed })
+                };
+                PdfPoint {
+                    x: anchor.x + side(dx, self.extent_x),
+                    y: anchor.y + side(dy, self.extent_y),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TypedSizeShape {
+    /// Length and angle from the anchor.
+    Line,
+    /// Sides from a corner.
+    Box,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TypedSizeAnchor {
+    pub page_index: u32,
+    pub anchor: PdfPoint,
+    pub current: PdfPoint,
+    pub shape: TypedSizeShape,
 }
 
 type AnnotationSnapKey = (u64, u32, u64, Vec<MarkupId>, AnnotationSelectionSupplement);
@@ -2909,7 +3000,148 @@ impl AnnotationAdapter {
         resolved
     }
 
+    /// A creation point snapped as usual, then held to any size typed for
+    /// the markup being drawn.
     fn resolve_semantic_creation_point(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        point: PdfPoint,
+        constrain_orthogonal: bool,
+    ) -> PdfPoint {
+        let snapped = self.resolve_snapped_creation_point(
+            document_id,
+            page_index,
+            point,
+            constrain_orthogonal,
+        );
+        let resolved = self.apply_typed_size(document_id, page_index, snapped);
+        if resolved != snapped {
+            // A typed size overrides the snap that pulled the pointer.
+            self.semantic_snap_decision = None;
+            self.object_snap_tracking_result = None;
+            self.relationship_snap_guides.clear();
+        }
+        resolved
+    }
+
+    /// Sizes typed for the markup being drawn; `None` clears them.
+    pub fn set_typed_size(&mut self, document_id: u64, size: Option<TypedSize>) {
+        self.typed_size = size.filter(|size| !size.is_empty()).zip(
+            self.typed_size_anchor(document_id)
+                .map(|anchor| anchor.anchor),
+        );
+    }
+
+    /// The sizes typed for the markup being drawn, while they still apply.
+    pub fn typed_size(&self, document_id: u64) -> Option<TypedSize> {
+        let (size, anchor) = self.typed_size?;
+        (self.typed_size_anchor(document_id)?.anchor == anchor).then_some(size)
+    }
+
+    /// The fixed point of the markup being drawn that typed sizes measure
+    /// from, with the point the pointer has taken it to: a line's start and
+    /// end, a box's first and opposite corners, a path's last point and the
+    /// next. `None` until the first point is placed.
+    pub fn typed_size_anchor(&self, document_id: u64) -> Option<TypedSizeAnchor> {
+        let anchor = |page_index, anchor, current, shape| {
+            Some(TypedSizeAnchor {
+                page_index,
+                anchor,
+                current,
+                shape,
+            })
+        };
+        match self.active.as_ref() {
+            Some(ActivePointer::StraightLineCreate {
+                document_id: active,
+                page_index,
+                start,
+                current,
+                ..
+            })
+            | Some(ActivePointer::LengthCreate {
+                document_id: active,
+                page_index,
+                start,
+                current,
+                ..
+            })
+            | Some(ActivePointer::DimensionCreate {
+                document_id: active,
+                page_index,
+                start,
+                current,
+                ..
+            }) if *active == document_id => {
+                return anchor(*page_index, *start, *current, TypedSizeShape::Line);
+            }
+            Some(ActivePointer::EllipseCreate {
+                document_id: active,
+                page_index,
+                start,
+                current,
+                ..
+            }) if *active == document_id => {
+                return anchor(*page_index, *start, *current, TypedSizeShape::Box);
+            }
+            Some(ActivePointer::Domain {
+                document_id: active,
+                page_index,
+                rectangle_create_start: Some(start),
+                ink: false,
+                ..
+            }) if *active == document_id => {
+                let current = self.typed_size_pointer.unwrap_or(*start);
+                return anchor(*page_index, *start, current, TypedSizeShape::Box);
+            }
+            _ => {}
+        }
+        if let Some(draft) = self
+            .vertex_path_draft
+            .as_ref()
+            .filter(|draft| draft.document_id == document_id)
+        {
+            return anchor(
+                draft.page_index,
+                *draft.points.last()?,
+                draft.hover,
+                TypedSizeShape::Line,
+            );
+        }
+        if let Some(draft) = self
+            .measurement_path_draft
+            .as_ref()
+            .filter(|draft| draft.document_id == document_id)
+        {
+            return anchor(
+                draft.page_index,
+                *draft.points.last()?,
+                draft.hover,
+                TypedSizeShape::Line,
+            );
+        }
+        None
+    }
+
+    fn apply_typed_size(&mut self, document_id: u64, page_index: u32, point: PdfPoint) -> PdfPoint {
+        let resolved = match (self.typed_size, self.typed_size_anchor(document_id)) {
+            (Some((size, from)), Some(anchor))
+                if anchor.page_index == page_index && anchor.anchor == from =>
+            {
+                size.resolve(anchor.anchor, point, anchor.shape)
+            }
+            (Some(_), _) => {
+                self.typed_size = None;
+                point
+            }
+            _ => point,
+        };
+        self.typed_size_pointer = Some(resolved);
+        resolved
+    }
+
+    fn resolve_snapped_creation_point(
         &mut self,
         document_id: u64,
         page_index: u32,
@@ -3786,6 +4018,10 @@ impl AnnotationAdapter {
         point: PdfPoint,
         constrain_orthogonal: bool,
     ) -> PdfPoint {
+        if self.typed_size.is_some() {
+            // A typed size is exact; matching another markup's would undo it.
+            return point;
+        }
         let placement = match self.active.as_ref() {
             Some(ActivePointer::Domain {
                 document_id,
@@ -5233,7 +5469,12 @@ impl AnnotationAdapter {
             return Some((draft.document_id, draft.page_index));
         }
         match self.active.as_ref()? {
-            ActivePointer::Marquee {
+            ActivePointer::CaptionMove {
+                document_id,
+                page_index,
+                ..
+            }
+            | ActivePointer::Marquee {
                 document_id,
                 page_index,
                 ..
@@ -8069,6 +8310,25 @@ impl AnnotationAdapter {
                     supplement,
                     self.observed_pixels_per_point.0,
                 ) {
+                    // A measurement's caption moves on its own.
+                    if let Some(caption) =
+                        measurement_caption_under(document, &id, point, supplement)
+                    {
+                        document.select(&id);
+                        if caption.locked {
+                            return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                        }
+                        self.active = Some(ActivePointer::CaptionMove {
+                            document_id,
+                            page_index,
+                            pointer_id,
+                            id,
+                            start: point,
+                            current: point,
+                            original: caption.offset,
+                        });
+                        return Ok(PointerPhaseOutcome::GestureStarted);
+                    }
                     if let Some(annotation) = document
                         .rectangles()
                         .iter()
@@ -9012,6 +9272,15 @@ impl AnnotationAdapter {
             return self.update_pending_path_preview(point, constrain_orthogonal);
         };
         match active {
+            ActivePointer::CaptionMove {
+                pointer_id: active_pointer,
+                current,
+                ..
+            } => {
+                require_pointer(*active_pointer, pointer_id)?;
+                *current = raw_point;
+                Ok(PointerPhaseOutcome::GestureStarted)
+            }
             ActivePointer::Marquee {
                 pointer_id: active_pointer,
                 marquee,
@@ -9457,6 +9726,31 @@ impl AnnotationAdapter {
                 Ok(PointerPhaseOutcome::SelectionChanged(
                     document.selected_id().cloned(),
                 ))
+            }
+            ActivePointer::CaptionMove {
+                document_id,
+                pointer_id: active_pointer,
+                id,
+                start,
+                original,
+                ..
+            } => {
+                require_pointer(active_pointer, pointer_id)?;
+                if point_distance_css_px(start, raw_point, self.observed_pixels_per_point.0)
+                    < POINTER_DRAG_THRESHOLD_CSS_PX
+                {
+                    return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
+                }
+                let offset = moved_caption_offset(original, start, raw_point)?;
+                let document = self
+                    .documents
+                    .get_mut(&document_id)
+                    .ok_or(AnnotationError::NoActiveGesture)?;
+                document.apply_command(AnnotationCommand::EditAnnotation {
+                    id: id.clone(),
+                    edit: AnnotationEdit::SetCaptionOffset(offset),
+                })?;
+                Ok(PointerPhaseOutcome::AnnotationEdited(id))
             }
             ActivePointer::GroupMove {
                 document_id,
@@ -10804,6 +11098,8 @@ impl AnnotationAdapter {
         self.arc_draft = None;
         self.snapshot_draft = None;
         self.snapshot_capture_asset = None;
+        self.typed_size = None;
+        self.typed_size_pointer = None;
         let Some(active) = self.active.take() else {
             return Ok(());
         };
@@ -12496,6 +12792,30 @@ impl AnnotationAdapter {
                 feedback: SceneInteractionFeedback::Creation,
             });
         }
+        if let Some(ActivePointer::CaptionMove {
+            document_id: active_document_id,
+            page_index: active_page_index,
+            id,
+            start,
+            current,
+            original,
+            ..
+        }) = &self.active
+            && (*active_document_id, *active_page_index) == (document_id, page_index)
+            && let Ok(offset) = moved_caption_offset(*original, *start, *current)
+        {
+            for annotation in scene.lengths.iter_mut().filter(|a| &a.id == id) {
+                annotation.caption_offset = offset;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
+            }
+            for annotation in scene.dimensions.iter_mut().filter(|a| &a.id == id) {
+                annotation.caption_offset = offset;
+                annotation.feedback = SceneInteractionFeedback::Move { chrome_visible };
+            }
+            for annotation in scene.measurement_paths.iter_mut().filter(|a| &a.id == id) {
+                annotation.caption_offset = offset;
+            }
+        }
         if let Some(ActivePointer::GroupMove {
             document_id: active_document_id,
             page_index: active_page_index,
@@ -13190,6 +13510,7 @@ impl AnnotationAdapter {
             .ok();
             scene.measurement_paths.push(SceneMeasurementPath {
                 id: draft.id.clone(),
+                caption_offset: CaptionOffset::default(),
                 points,
                 kind: draft.kind,
                 appearance,
@@ -13878,6 +14199,7 @@ impl AnnotationAdapter {
             ) {
                 scene.dimensions.push(SceneDimension {
                     id: annotation.id.clone(),
+                    caption_offset: annotation.caption_offset,
                     start: annotation.start,
                     end: annotation.end,
                     dimension_line_offset: annotation.dimension_line_offset(),
@@ -13913,6 +14235,7 @@ impl AnnotationAdapter {
             let caption = annotation.caption();
             let show_caption = annotation.calibration().show_caption();
             scene.lengths.push(SceneLength {
+                caption_offset: annotation.caption_offset,
                 id: annotation.id,
                 start: annotation.start,
                 end: annotation.end,
@@ -14129,7 +14452,8 @@ impl AnnotationAdapter {
 
 fn active_pointer_document_id(active: &ActivePointer) -> u64 {
     match active {
-        ActivePointer::Marquee { document_id, .. }
+        ActivePointer::CaptionMove { document_id, .. }
+        | ActivePointer::Marquee { document_id, .. }
         | ActivePointer::GroupMove { document_id, .. }
         | ActivePointer::Domain { document_id, .. }
         | ActivePointer::EllipseCreate { document_id, .. }
@@ -16317,6 +16641,56 @@ fn cloud_plus_text_layout(
         routing_context,
     )?;
     Ok((text_box, leader.points))
+}
+
+/// A measurement whose caption is under `point`, with where its caption is.
+struct CaptionUnder {
+    offset: CaptionOffset,
+    locked: bool,
+}
+
+fn measurement_caption_under(
+    document: &AnnotationDocument,
+    id: &MarkupId,
+    point: PdfPoint,
+    supplement: &AnnotationSelectionSupplement,
+) -> Option<CaptionUnder> {
+    let caption = supplement.get(id)?;
+    if caption.len() < 3 || !point_in_polygon(point, caption) {
+        return None;
+    }
+    if let Some(annotation) = document.lengths().iter().find(|a| &a.id == id) {
+        return Some(CaptionUnder {
+            offset: annotation.caption_offset,
+            locked: annotation.locked,
+        });
+    }
+    if let Some(annotation) = document.dimensions().iter().find(|a| &a.id == id) {
+        return Some(CaptionUnder {
+            offset: annotation.caption_offset,
+            locked: annotation.locked,
+        });
+    }
+    document
+        .measurement_paths()
+        .iter()
+        .find(|a| &a.id == id)
+        .map(|annotation| CaptionUnder {
+            offset: annotation.caption_offset,
+            locked: annotation.locked,
+        })
+}
+
+/// A caption's offset once dragged from `start` to `current`.
+fn moved_caption_offset(
+    original: CaptionOffset,
+    start: PdfPoint,
+    current: PdfPoint,
+) -> Result<CaptionOffset, AnnotationError> {
+    CaptionOffset::new(
+        original.x + current.x - start.x,
+        original.y + current.y - start.y,
+    )
 }
 
 fn point_in_polygon(point: PdfPoint, vertices: &[PdfPoint]) -> bool {
@@ -19560,6 +19934,78 @@ mod tests {
     }
 
     #[test]
+    fn typed_sizes_place_lines_boxes_and_path_segments_exactly_where_typed() {
+        let close = |actual: PdfPoint, x: f64, y: f64| {
+            assert!(
+                (actual.x - x).abs() < 1e-6 && (actual.y - y).abs() < 1e-6,
+                "{actual:?} is not ({x}, {y})"
+            );
+        };
+        // A line: the typed length along the pointer's direction.
+        let mut line = AnnotationAdapter::default();
+        line.set_tool(AnnotationTool::Line).unwrap();
+        line.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        line.pointer_up(1, point(20., 20.)).unwrap();
+        line.set_typed_size(
+            7,
+            Some(TypedSize {
+                length: Some(50.),
+                ..TypedSize::default()
+            }),
+        );
+        assert!(line.typed_size(7).is_some());
+        line.pointer_down(7, 0, 1, point(83., 20.4), 4.).unwrap();
+        line.pointer_up(1, point(83., 20.4)).unwrap();
+        let created = &line.snapshot(7).unwrap().straight_lines[0];
+        close(created.start, 20., 20.);
+        assert!(((created.end.x - 20.).hypot(created.end.y - 20.) - 50.).abs() < 1e-6);
+
+        // A box: both sides typed, on the side of the corner the pointer is.
+        let mut rectangle = AnnotationAdapter::default();
+        rectangle.set_tool(AnnotationTool::Rectangle).unwrap();
+        rectangle
+            .pointer_down(7, 0, 1, point(10., 10.), 4.)
+            .unwrap();
+        rectangle.pointer_up(1, point(10., 10.)).unwrap();
+        rectangle.set_typed_size(
+            7,
+            Some(TypedSize {
+                extent_x: Some(40.),
+                extent_y: Some(30.),
+                ..TypedSize::default()
+            }),
+        );
+        rectangle
+            .pointer_down(7, 0, 1, point(100., 100.), 4.)
+            .unwrap();
+        rectangle.pointer_up(1, point(100., 100.)).unwrap();
+        let rect = rectangle.snapshot(7).unwrap().rectangles[0].rect;
+        assert!((rect.width - 40.).abs() < 1e-6 && (rect.height - 30.).abs() < 1e-6);
+        close(point(rect.x, rect.y), 10., 10.);
+
+        // A polyline: the typed segment, then the next one free again.
+        let mut path = AnnotationAdapter::default();
+        path.set_tool(AnnotationTool::Polyline).unwrap();
+        path.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        path.set_typed_size(
+            7,
+            Some(TypedSize {
+                length: Some(100.),
+                angle: Some(std::f64::consts::FRAC_PI_2),
+                ..TypedSize::default()
+            }),
+        );
+        path.pointer_down(7, 0, 2, point(60., 30.), 4.).unwrap();
+        assert_eq!(path.typed_size(7), None, "the next segment starts untyped");
+        path.pointer_down(7, 0, 3, point(200., 120.), 4.).unwrap();
+        path.finish_vertex_path(7).unwrap();
+        let snapshot = path.snapshot(7).unwrap();
+        let points = snapshot.vertex_paths[0].points();
+        close(points[1], 20., 120.);
+        close(points[2], 200., 120.);
+    }
+
+    #[test]
     fn tool_defaults_drive_vertex_cloud_and_measurement_path_creation() {
         for tool in [AnnotationTool::Polyline, AnnotationTool::Polygon] {
             let mut adapter = AnnotationAdapter::default();
@@ -20795,8 +21241,8 @@ mod tests {
     }
 
     #[test]
-    fn length_caption_anchor_snaps_body_move_without_self_target_or_preview_history() {
-        use crate::semantic_snapping::{SemanticSnapRole, SemanticSnapSource};
+    fn length_caption_moves_alone_and_group_moves_keep_caption_anchors() {
+        use crate::semantic_snapping::SemanticSnapSource;
 
         let mut adapter = AnnotationAdapter::default();
         let length_id = MarkupId::new("length:caption-snap-primary").unwrap();
@@ -20852,8 +21298,9 @@ mod tests {
         .collect::<AnnotationSelectionSupplement>();
         let before = adapter.snapshot(7).unwrap();
         let history_before = adapter.history_depths(7);
+        // A press on the caption moves the caption alone, as the pointer
+        // goes, without snapping or history until it is let go.
         let caption_center = point(210., 45.);
-
         assert_eq!(
             adapter
                 .pointer_down_with_viewport_input_and_selection_paths(
@@ -20877,19 +21324,23 @@ mod tests {
             .iter()
             .find(|annotation| annotation.id == length_id)
             .unwrap();
-        assert_eq!(preview_length.start, point(40., 80.));
-        assert_eq!(preview_length.end, point(130., 80.));
+        assert_eq!(preview_length.start, point(10., 50.));
+        assert_eq!(
+            preview_length.caption_offset,
+            CaptionOffset::new(29., 29.).unwrap()
+        );
         assert_eq!(adapter.snapshot(7).unwrap(), before);
         assert_eq!(adapter.history_depths(7), history_before);
-        assert_snap_evidence_references(&adapter, &target_id, SemanticSnapRole::Endpoint);
-
         assert_eq!(
             adapter.pointer_up(81, point(239., 74.)).unwrap(),
             PointerPhaseOutcome::AnnotationEdited(length_id.clone())
         );
         let committed = adapter.snapshot(7).unwrap();
-        assert_eq!(committed.lengths[0].start, point(40., 80.));
-        assert_eq!(committed.lengths[0].end, point(130., 80.));
+        assert_eq!(committed.lengths[0].start, point(10., 50.));
+        assert_eq!(
+            committed.lengths[0].caption_offset,
+            CaptionOffset::new(29., 29.).unwrap()
+        );
         assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
         adapter.undo(7).unwrap();
         assert_eq!(adapter.snapshot(7).unwrap().lengths, before.lengths);
@@ -22329,6 +22780,41 @@ mod tests {
             let committed = adapter.snapshot(7).unwrap();
             assert!(committed.revision > before.revision);
             assert_eq!(committed.undo_depth, before.undo_depth + 1);
+            // Only the caption moved: along and across a line, or across and
+            // up the page for a path.
+            let moved_offset = committed
+                .lengths
+                .iter()
+                .map(|a| (&a.id, a.caption_offset))
+                .chain(
+                    committed
+                        .dimensions
+                        .iter()
+                        .map(|a| (&a.id, a.caption_offset)),
+                )
+                .chain(
+                    committed
+                        .measurement_paths
+                        .iter()
+                        .map(|a| (&a.id, a.caption_offset)),
+                )
+                .find(|(candidate, _)| *candidate == id)
+                .map(|(_, offset)| offset)
+                .unwrap();
+            assert_eq!(moved_offset, CaptionOffset::new(12., 7.).unwrap());
+            for (moved, original) in committed.lengths.iter().zip(&before.lengths) {
+                assert_eq!((moved.start, moved.end), (original.start, original.end));
+            }
+            for (moved, original) in committed.dimensions.iter().zip(&before.dimensions) {
+                assert_eq!((moved.start, moved.end), (original.start, original.end));
+            }
+            for (moved, original) in committed
+                .measurement_paths
+                .iter()
+                .zip(&before.measurement_paths)
+            {
+                assert_eq!(moved.points(), original.points());
+            }
             adapter.undo(7).unwrap();
             let undone = adapter.snapshot(7).unwrap();
             assert_eq!(undone.lengths, before.lengths);

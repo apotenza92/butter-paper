@@ -16,10 +16,25 @@ impl DocumentWorkspace {
             .size_full()
             .min_h_0()
             .track_focus(&self.workspace_focus)
-            .key_context(DOCUMENT_WORKSPACE_CONTEXT)
+            .key_context(self.size_entry_key_context(cx))
             .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                if !window.has_focused_input(cx) && workspace.handle_size_entry_key(event, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 workspace.handle_space_pan_down(event, window, cx);
             }))
+            .on_action(cx.listener(|workspace, _: &SizeEntryNextField, _, cx| {
+                if !workspace.size_entry_tab(false, cx) {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|workspace, _: &SizeEntryPreviousField, _, cx| {
+                if !workspace.size_entry_tab(true, cx) {
+                    cx.propagate();
+                }
+            }))
+            .children(self.render_size_entry(cx))
             .on_key_up(cx.listener(|workspace, event: &KeyUpEvent, window, cx| {
                 // Letting go of an arrow ends a move by arrow keys.
                 if matches!(
@@ -225,6 +240,10 @@ impl DocumentWorkspace {
                     || (window.has_focused_input(cx) && !pending_editor_focused)
                 {
                     cx.propagate();
+                    return;
+                }
+                // Escape first clears a size typed for the markup being drawn.
+                if workspace.size_entry_escape(cx) {
                     return;
                 }
                 // Escape ends a content selection in Edit PDF mode.
