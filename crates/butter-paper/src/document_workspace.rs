@@ -257,6 +257,7 @@ use gpui_component::{
         Copy, Cut, Delete, Escape, Input, InputEvent, InputState, Paste, Redo, SelectAll, Textarea,
         TextareaState, Undo,
     },
+    kbd::Kbd,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     popover::Popover,
     progress::Progress,
@@ -24213,7 +24214,22 @@ fn annotation_layer(
             // The selection's clipboard commands, as in the Edit menu.
             menu.menu_with_disabled("Cut", Box::new(Cut), !edit.can_cut)
                 .menu_with_disabled("Copy", Box::new(Copy), !edit.can_copy)
-                .menu_with_disabled("Paste", Box::new(PasteHere), !edit.can_paste)
+                // Pastes where the menu was opened, but shows the shortcut
+                // of Paste, which pastes at the pointer.
+                .menu_element_with_disabled(Box::new(PasteHere), !edit.can_paste, |window, _| {
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .items_center()
+                        .justify_between()
+                        .child("Paste")
+                        .children(Kbd::binding_for_action(&Paste, None, window).map(|kbd| {
+                            kbd.p_0()
+                                .flex_nowrap()
+                                .border_0()
+                                .bg(gpui::transparent_white())
+                        }))
+                })
                 .menu_with_disabled("Delete", Box::new(Delete), !edit.can_delete)
                 .separator()
                 .menu("Select tool", Box::new(SelectTool))

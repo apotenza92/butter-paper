@@ -5590,10 +5590,29 @@ mod review_driver {
                                 let snapshot = id.and_then(|id| workspace.annotation_snapshot(id, cx));
                                 writeln!(
                                     log,
-                                    "markups {} order={:?} rectangles={:?} revision={:?} dirty={:?} tool={:?} status={:?} file_error={:?} sessions={:?}",
+                                    "markups {} order={:?} rectangles={:?} snapshots={:?} revision={:?} dirty={:?} tool={:?} status={:?} file_error={:?} sessions={:?}",
                                     words.get(2).copied().unwrap_or_default(),
                                     snapshot.as_ref().map(|snapshot| snapshot.annotation_order.len()),
                                     snapshot.as_ref().map(|snapshot| snapshot.rectangles.len()),
+                                    // Each Snapshot's page and its box's
+                                    // centre and size, in PDF points.
+                                    snapshot.as_ref().map(|snapshot| {
+                                        snapshot
+                                            .snapshots
+                                            .iter()
+                                            .map(|item| {
+                                                format!(
+                                                    "p{}@({:.1},{:.1}) {:.1}x{:.1} vector={}",
+                                                    item.page_index + 1,
+                                                    item.rect.x + item.rect.width / 2.0,
+                                                    item.rect.y + item.rect.height / 2.0,
+                                                    item.rect.width,
+                                                    item.rect.height,
+                                                    item.vector().is_some(),
+                                                )
+                                            })
+                                            .collect::<Vec<_>>()
+                                    }),
                                     snapshot.as_ref().map(|snapshot| snapshot.revision),
                                     snapshot.as_ref().map(|snapshot| snapshot.dirty),
                                     id.and_then(|id| workspace.annotation_tool(id, cx)),

@@ -87,7 +87,7 @@ use butter_paper::document_workspace::{
     DocumentTabTransferEvent, DocumentWorkspace, FitPage, FitWidth,
     GeneratedTemplateRequestDisposition, NativeDocumentOpener, NativeDocumentResource,
     NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus, NavigateNextPage,
-    NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, PasteHere, PdfDocumentSaver,
+    NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, PdfDocumentSaver,
     PdfiumWorkerBackend, RAIL_OVERFLOW_TOOLTIP, RasterSurface, RotatePageRight, Save, SaveAs,
     SaveDestination, SaveDocumentRequest, SavedNativeDocument, SetPageScale, SinglePageView,
     StartupRecoveryAvailability, StartupRecoveryItem, ThumbnailSurface, VIEWPORT_OPEN_DOCUMENT_ID,
@@ -27652,13 +27652,14 @@ fn paste_lands_centred_on_the_pointer_or_where_the_page_menu_opened(cx: &mut Tes
         MouseButton::Right,
         Modifiers::default(),
     );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
     cx.simulate_mouse_move(project(100., 700.), None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
-    cx.update(|window, cx| {
-        focus.focus(window, cx);
-        window.dispatch_action(Box::new(PasteHere), cx);
-    });
+    // Cut, Copy, then Paste: the pasted text box is still selected.
+    cx.simulate_keystrokes("down down down enter");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
     let (count, x, y) = centre_of_last(&workspace, cx);
     assert_eq!(count, 3);
     assert!(
