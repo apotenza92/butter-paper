@@ -54,8 +54,11 @@ further away than the exact edge, so the exact edge wins until the two are
 visibly apart on screen.
 
 Shift constrains while drawing (lines and points horizontal or vertical from
-the last point, ellipse to a circle) and applies mid-drag. Length, Polylength
-and Area measure at 1 in = 1 in on a page without a scale.
+the last point, ellipse to a circle) and applies mid-drag. On a page without
+a scale, the first click of Length, Polylength or Area opens Page Scale for
+that page instead, saying why; once applied, the next click measures. Cancel
+measures at 1 in = 1 in, and that page does not ask again while the
+document is open.
 
 On a page with a scale, once a markup's first point is placed a box beside
 the pointer shows its size in the page's real unit and the page's scale:

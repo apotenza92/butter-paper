@@ -46406,6 +46406,34 @@ fn tool_creates_with(
     let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
     let at = |dx: f32, dy: f32| point(viewport.origin.x + px(dx), viewport.origin.y + px(dy));
     let before = annotation_count(&workspace, document_id, cx);
+    if matches!(
+        tool,
+        AnnotationTool::Length | AnnotationTool::Polylength | AnnotationTool::Area
+    ) {
+        // A measuring tool's first click on a page without a scale asks for
+        // one; Cancel measures paper size, and that page does not ask again.
+        cx.simulate_click(at(80., 80.), Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        let asked = workspace
+            .read_with(cx, |workspace, _| workspace.page_scale_control())
+            .and_then(|control| {
+                control.read_with(cx, |control, _| {
+                    control
+                        .request()
+                        .map(|request| (request.page_index, request.for_measuring))
+                })
+            });
+        assert_eq!(
+            asked,
+            Some((0, true)),
+            "{tool:?} must ask for this page's scale"
+        );
+        assert_eq!(annotation_count(&workspace, document_id, cx), before);
+        cx.update(|window, cx| window.close_dialog(cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
     match gesture {
         Gesture::Drag => {
             cx.simulate_mouse_down(at(80., 80.), MouseButton::Left, Modifiers::default());

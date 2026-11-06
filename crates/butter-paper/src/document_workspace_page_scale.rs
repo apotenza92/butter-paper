@@ -15,9 +15,23 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(request) = self.page_scale_request(document_id, page_index, cx) else {
+        self.open_page_scale_dialog_for(document_id, page_index, false, window, cx);
+    }
+
+    /// Opens the Page Scale dialog for a page; `for_measuring` when a
+    /// measuring tool's first click on a page without a scale asks for one.
+    fn open_page_scale_dialog_for(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        for_measuring: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut request) = self.page_scale_request(document_id, page_index, cx) else {
             return;
         };
+        request.for_measuring = for_measuring;
         self.ensure_page_scale_control(window, cx)
             .update(cx, |control, cx| control.open(request, window, cx));
         self.feed_page_scale_text(window, cx);
@@ -41,7 +55,45 @@ impl DocumentWorkspace {
                 .annotations
                 .document_page_scale(document_id.value(), page_index)
                 .cloned(),
+            for_measuring: false,
         })
+    }
+
+    /// Asks for a page's scale before a measuring tool's first point on a
+    /// page without one: once per page while the document is open, so
+    /// Cancel then measures paper size. Whether the press was taken.
+    pub(super) fn ask_for_measuring_scale(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        tool: AnnotationTool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(
+            tool,
+            AnnotationTool::Length | AnnotationTool::Polylength | AnnotationTool::Area
+        ) || self
+            .measuring_scale_asked
+            .contains(&(document_id, page_index))
+        {
+            return false;
+        }
+        let Some(session) = self.session(document_id, cx) else {
+            return false;
+        };
+        let annotations = &session.read(cx).annotations;
+        if annotations
+            .document_page_scale(document_id.value(), page_index)
+            .is_some()
+            || annotations.measurement_path_pending(document_id.value())
+            || annotations.length_placement_pending(document_id.value())
+        {
+            return false;
+        }
+        self.measuring_scale_asked.insert((document_id, page_index));
+        self.open_page_scale_dialog_for(document_id, page_index, true, window, cx);
+        true
     }
 
     /// Hands the dialog its page's text once read, to find the scales the

@@ -110,6 +110,8 @@ pub struct PageScaleRequest {
     /// The page as shown, in points.
     pub page_size: (f64, f64),
     pub current: Option<PageScale>,
+    /// Opened by a measuring tool's first click on a page without a scale.
+    pub for_measuring: bool,
 }
 
 /// The calibration line as the page draws it.
@@ -1192,6 +1194,12 @@ fn dialog_content(
                     DialogHeader::new()
                         .child(DialogTitle::new().child("Page scale"))
                         .child(DialogDescription::new().child(description))
+                        .when(request.for_measuring, |header| {
+                            header.child(DialogDescription::new().child(
+                                "This page has no scale yet. Set one to measure in real \
+                                 units, or Cancel to measure paper size.",
+                            ))
+                        })
                         .child(
                             // Inside the content: the stock body clips anything
                             // above it, leaving an outset X half unhoverable.

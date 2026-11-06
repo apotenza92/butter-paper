@@ -3055,6 +3055,8 @@ pub struct DocumentWorkspace {
     pending_save_prompt: Option<SavePromptAuthority>,
     rejected_stale_save_prompts: u64,
     page_scale_control: Option<Entity<PageScaleControl>>,
+    /// Pages a measuring tool has asked for a scale on.
+    measuring_scale_asked: HashSet<(DocumentId, u32)>,
     rectangle_property_inspector: Option<Entity<RectanglePropertyInspector>>,
     rectangle_property_subscription: Option<Subscription>,
     ellipse_property_inspector: Option<Entity<EllipsePropertyInspector>>,
@@ -4712,6 +4714,7 @@ impl DocumentWorkspace {
             pending_save_prompt: None,
             rejected_stale_save_prompts: 0,
             page_scale_control: None,
+            measuring_scale_asked: HashSet::new(),
             rectangle_property_inspector: None,
             rectangle_property_subscription: None,
             ellipse_property_inspector: None,
@@ -18630,6 +18633,15 @@ impl DocumentWorkspace {
             return false;
         }
         let tool = session.read(cx).annotations.tool();
+        if self.ask_for_measuring_scale(
+            interaction.document_id,
+            interaction.page_index,
+            tool,
+            window,
+            cx,
+        ) {
+            return true;
+        }
         // A click that finishes an armed selection box goes to it, and in
         // Edit PDF mode selects the page content in it too.
         let box_armed = self
