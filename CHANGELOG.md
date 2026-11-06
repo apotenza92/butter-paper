@@ -4,6 +4,37 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.5]
+
+### Drawing to scale
+
+- On a page with a scale, Line, Arrow, Polyline, Polygon, Rectangle,
+  Ellipse and the measuring tools show their real size and the page's scale
+  beside the pointer while you draw. Type a number to fix the size, as in
+  AutoCAD: Tab moves between length and angle (or width and height), and
+  Enter places it exactly that size. Units can be typed too (`3.2 m`,
+  `36'-6"`).
+- Each measurement can show its own unit (Properties › Unit), independent
+  of the page scale's, and keeps it when the page scale changes.
+- Length, Polylength and Area on a page without a scale first ask for one
+  in Page Scale; Cancel measures paper size, as before.
+
+### Measurements
+
+- A Length, Dimension, Polylength or Area caption can be dragged on its own,
+  with a leader back to the markup, and saves where Revu reads it.
+  Properties › Reset caption position puts it back.
+
+### Snapshot
+
+- Snapshot copies the box instead of placing it, as in Revu, and keeps
+  it as vector drawing (with the markups on it) rather than a blurry
+  picture, on any page. It pastes as a Snapshot in Butter Paper, in this PDF
+  or another, and as a sharp 300 dpi picture (and a PDF) into other apps.
+- A PDF copied in another app pastes into Butter Paper as a vector Snapshot.
+- Paste lands centred on the pointer when it is over a page; the page's
+  right-click Paste lands where you right-clicked.
+
 ## [0.4.4]
 
 ### Edit PDF
