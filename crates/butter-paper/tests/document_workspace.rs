@@ -12448,6 +12448,13 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     let to_view = projection(cx);
     cx.simulate_mouse_move(to_view(180., 180.), None, Modifiers::default());
     cx.simulate_click(to_view(180., 180.), Modifiers::default());
+    // A Snapshot box is copied, as Revu's is; pasting places it.
+    cx.run_until_parked();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(document_id, 0, cx)
+        })
+        .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let snapshot_id = workspace
         .read_with(cx, |workspace, cx| {
@@ -12584,7 +12591,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         .unwrap();
     assert!(persisted_arc.same_persisted_state_as(&expected_arc));
     assert!(persisted_cloud.same_persisted_state_as(&expected_cloud));
-    assert!(persisted_snapshot.same_persisted_state_as(&expected_snapshot));
+    assert!(expected_snapshot.saved_as(persisted_snapshot));
     assert!(independent.arc_has_canonical_native_identity(&arc_id));
     assert!(independent.cloud_has_canonical_native_identity(&cloud_id));
     assert!(independent.snapshot_has_canonical_native_identity(&snapshot_id));
@@ -12639,7 +12646,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     );
     assert!(reopened.arcs[0].same_persisted_state_as(&expected_arc));
     assert!(reopened.clouds[0].same_persisted_state_as(&expected_cloud));
-    assert!(reopened.snapshots[0].same_persisted_state_as(&expected_snapshot));
+    assert!(expected_snapshot.saved_as(&reopened.snapshots[0]));
     assert_eq!(
         reopened.annotation_order,
         vec![arc_id, cloud_id, snapshot_id]
@@ -40784,13 +40791,20 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     }));
     cx.simulate_mouse_move(snapshot_end, None, Modifiers::default());
     cx.simulate_click(snapshot_end, Modifiers::default());
+    // A Snapshot box is copied, as Revu's is; pasting places it.
+    cx.run_until_parked();
+    let pasted = workspace
+        .update(cx, |workspace, cx| {
+            workspace.paste_annotations(document_id, 0, cx)
+        })
+        .unwrap();
     let with_snapshot = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
         })
         .unwrap();
     assert_eq!(with_snapshot.snapshots.len(), 1);
-    let snapshot_id = MarkupId::new("workspace:snapshot:2").unwrap();
+    let snapshot_id = pasted[0].clone();
     assert_eq!(with_snapshot.snapshots[0].id, snapshot_id);
     let captured = with_snapshot.snapshots[0].asset();
     assert!(captured.width_px() > 0 && captured.height_px() > 0);
@@ -40944,7 +40958,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     }));
     cx.simulate_mouse_move(to_view(length_end), None, Modifiers::default());
     cx.simulate_click(to_view(length_end), Modifiers::default());
-    let length_id = MarkupId::new("workspace:length:3").unwrap();
+    let length_id = MarkupId::new("workspace:length:4").unwrap();
     let length_created = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
