@@ -1355,6 +1355,7 @@ impl ComponentStory {
                 can_paste: edit.can_paste,
                 can_select_all: edit.can_select_all,
                 can_delete: edit.can_delete,
+                can_explode_block: edit.can_explode_block,
                 can_close_document: commands.can_close_document,
                 document_ready: commands.document_ready,
                 can_previous_page: commands.can_previous_page,
@@ -4610,18 +4611,23 @@ mod review_driver {
                             writeln!(log, "FAIL: expected tool {}, found {found}", words[2]).unwrap();
                         }
                     }
-                    "click" => {
-                        // click W X Y [COUNT]: a left click at window coordinates.
+                    "click" | "alt-click" => {
+                        // click W X Y [COUNT]: a left click at window
+                        // coordinates; alt-click holds Alt (Option).
                         let window = number(1) as usize;
                         let position = point(px(number(2)), px(number(3)));
                         let click_count = words.get(4).map(|value| value.parse().unwrap()).unwrap_or(1);
+                        let modifiers = Modifiers {
+                            alt: words[0] == "alt-click",
+                            ..Modifiers::default()
+                        };
                         dispatch(
                             cx,
                             window,
                             PlatformInput::MouseDown(MouseDownEvent {
                                 button: MouseButton::Left,
                                 position,
-                                modifiers: Modifiers::default(),
+                                modifiers,
                                 click_count,
                                 first_mouse: false,
                             }),
@@ -4633,7 +4639,7 @@ mod review_driver {
                             PlatformInput::MouseUp(MouseUpEvent {
                                 button: MouseButton::Left,
                                 position,
-                                modifiers: Modifiers::default(),
+                                modifiers,
                                 click_count,
                             }),
                         );

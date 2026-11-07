@@ -106,9 +106,16 @@ inspected captures. Steps are in priority order.
       into its resources.
     - Paths that touch but share no clip are separate drawings; the lasso
       selects them together.
-    - Selected content has markups' handles but no rotation knob: drawings
-      and images could turn by their matrix; text would need its text
-      matrix rewritten.
+    - Text does not turn: turning it would need its text matrix
+      rewritten. Groups of several pieces, and drawings whose clip holds
+      text, have no rotation knob.
+    - Explode writes one placement of a block; AutoCAD's "explode all
+      copies" (every placement at once) and editing a block's definition
+      for all its placements are not offered. Blocks inside a small clip
+      (a viewport) are part of that clip's drawing and are not exploded.
+    - Lettering drawn as paths is found by how its pieces lie (see
+      [interactions.md](interactions.md#editing-page-content)); AutoCAD's
+      hidden searchable text, where a sheet has it, would name it exactly.
 
 ## Signatures
 

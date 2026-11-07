@@ -332,6 +332,10 @@ pub struct DocumentEdits {
     pub tables: Vec<crate::pdf_tables::PageTableEdit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<crate::pdf_content_moves::ContentMove>,
+    /// Blocks exploded into their pages, which the other content edits
+    /// name the pages as they leave.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explodes: Vec<crate::pdf_content_moves::ContentExplode>,
     /// Pages shown as an earlier file had them, which their text and table
     /// edits apply to. The worker is sent each kept page once
     /// ([`WorkerRequest::AddPageBase`]).
@@ -356,6 +360,7 @@ impl DocumentEdits {
             && self.forms.is_empty()
             && self.tables.is_empty()
             && self.moves.is_empty()
+            && self.explodes.is_empty()
             && self.bases.is_empty()
             && self.pages.is_empty()
     }
@@ -389,6 +394,9 @@ pub enum WorkerRequest {
         page_index: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base: Option<String>,
+        /// Blocks exploded into the page, in order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        explodes: Vec<crate::pdf_content_moves::ContentExplode>,
     },
     /// A kept page (a one-page PDF named by its SHA-256), which edits'
     /// bases and page text requests then name.
@@ -572,6 +580,25 @@ pub trait PdfBackend {
         _base: &str,
     ) -> Result<PageTextLayer, WorkerError> {
         Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
+
+    /// The editable text of page `page_index` of the unedited document, or
+    /// of the kept page `base`, with the blocks `explodes` names exploded
+    /// into it.
+    fn page_text_with(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+        base: Option<&str>,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, WorkerError> {
+        if !explodes.is_empty() {
+            return Err(WorkerError::new(WorkerErrorCode::BackendUnavailable));
+        }
+        match base {
+            Some(base) => self.page_base_text(document, page_index, base),
+            None => self.page_text(document, page_index),
+        }
     }
 
     fn add_page_base(
@@ -962,6 +989,7 @@ where
                 session_id,
                 page_index,
                 base,
+                explodes,
                 ..
             } => {
                 let Some(document) = self.documents.get_mut(&session_id) else {
@@ -974,10 +1002,9 @@ where
                         ),
                     );
                 };
-                let layer = match &base {
-                    Some(base) => self.backend.page_base_text(document, page_index, base),
-                    None => self.backend.page_text(document, page_index),
-                };
+                let layer =
+                    self.backend
+                        .page_text_with(document, page_index, base.as_deref(), &explodes);
                 match layer {
                     Ok(layer) => WorkerResponse::PageText {
                         request_id,

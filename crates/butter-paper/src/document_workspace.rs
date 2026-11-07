@@ -19,6 +19,7 @@ mod links;
 mod merge;
 #[path = "document_workspace_pages.rs"]
 mod pages;
+pub use content::ExplodeBlock;
 pub use merge::{
     DOCUMENT_MERGE_ADD_ID, DOCUMENT_MERGE_CANCEL_ID, DOCUMENT_MERGE_CONFIRM_ID,
     DOCUMENT_MERGE_DIALOG_ID, MergeDialog, MergeDocuments, MergeSource,
@@ -217,8 +218,8 @@ use crate::{
         GeneratedDocumentRequest, GeneratedDocumentStore, OwnedGeneratedDocument,
     },
     image_asset_decode::{
-        DecodedImageFile, SanitizedSignatureFile, decode_image_path, sanitize_signature_path,
-        sanitize_signature_raster,
+        DecodedImageFile, SanitizedSignatureFile, decode_image_bytes, decode_image_path,
+        sanitize_signature_path, sanitize_signature_raster,
     },
     page_geometry::PageCoordinateSpace,
     pdf_engine::{InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome},
@@ -1411,6 +1412,13 @@ impl PdfDocumentSaver {
                     .iter()
                     .map(|item| item.page_index),
             )
+            .chain(
+                request
+                    .annotations
+                    .page_content_explodes
+                    .iter()
+                    .map(|item| item.page_index),
+            )
             .collect::<std::collections::BTreeSet<_>>();
         let mut moved_lines: HashMap<
             (u32, crate::pdf_text_edit::TextLineAnchor),
@@ -1431,7 +1439,7 @@ impl PdfDocumentSaver {
                 .cloned()
                 .collect::<Vec<_>>();
             let layer = persistence
-                .page_text(*page_index)
+                .page_text_with(*page_index, &request.annotations.page_content_explodes)
                 .map_err(|error| format!("could not read page text to save: {error}"))?;
             for edit in request
                 .annotations
@@ -1459,6 +1467,7 @@ impl PdfDocumentSaver {
                 &request.annotations.page_text_edits,
                 &request.annotations.page_table_edits,
                 &request.annotations.page_content_moves,
+                &request.annotations.page_content_explodes,
             )
             .map_err(|error| format!("could not save edited page text: {error}"))?;
         persistence
@@ -2966,7 +2975,7 @@ pub struct DocumentWorkspace {
     /// Page content copied in Edit PDF mode.
     content_clipboard: Option<content::ContentClipboard>,
     /// The selected content's resize handle under the pointer.
-    content_handle_hover: Option<(DocumentId, RectangleResizeHandle)>,
+    content_handle_hover: Option<(DocumentId, content::ContentHandle)>,
     /// Where a press on empty page began in Edit PDF mode: its marquee
     /// selects the content inside it as well as markups.
     content_marquee: Option<(DocumentId, u32, PdfPoint)>,
@@ -3136,6 +3145,8 @@ pub struct DocumentEditCapabilities {
     pub can_paste: bool,
     pub can_select_all: bool,
     pub can_delete: bool,
+    /// A block (Form XObject) is selected alone in Edit PDF, to explode.
+    pub can_explode_block: bool,
 }
 
 impl EventEmitter<DocumentWorkspaceTemplateCommand> for DocumentWorkspace {}
@@ -4060,6 +4071,10 @@ struct MarkupClipboard {
     /// copied after them, by another app or another Butter Paper, and Paste
     /// takes it instead.
     system_pdf: Option<String>,
+    /// The id of the picture on the system clipboard when these were
+    /// copied, as for `system_pdf`: a different one since was copied after
+    /// them, by another app, and Paste places it as an Image.
+    system_image: Option<String>,
 }
 
 impl gpui::Global for MarkupClipboard {}
@@ -4077,6 +4092,29 @@ fn system_clipboard_pdf(cx: &App) -> Option<Vec<u8>> {
 
 fn system_clipboard_pdf_id(cx: &App) -> Option<String> {
     system_clipboard_pdf(cx).map(|pdf| crate::pdf_page_base::page_base_id(&pdf))
+}
+
+/// The PNG or JPEG picture on the system clipboard, as another app (a
+/// screenshot, a browser's Copy Image) or a copied Snapshot puts it there.
+fn system_clipboard_image(cx: &App) -> Option<Vec<u8>> {
+    cx.read_from_clipboard()?
+        .entries()
+        .iter()
+        .find_map(|entry| match entry {
+            gpui::ClipboardEntry::Image(image)
+                if matches!(
+                    image.format,
+                    gpui::ImageFormat::Png | gpui::ImageFormat::Jpeg
+                ) =>
+            {
+                Some(image.bytes.clone())
+            }
+            _ => None,
+        })
+}
+
+fn system_clipboard_image_id(cx: &App) -> Option<String> {
+    system_clipboard_image(cx).map(|image| crate::pdf_page_base::page_base_id(&image))
 }
 
 fn markup_clipboard(cx: &App) -> &MarkupClipboard {
@@ -6188,7 +6226,8 @@ impl DocumentWorkspace {
             can_paste: (!markup_clipboard(cx).annotations.is_empty() || can_paste_content)
                 && !saving,
             can_select_all: page_has_annotations,
-            can_delete: has_unlocked_selection && !saving,
+            can_delete: (has_unlocked_selection || has_content_selection) && !saving,
+            can_explode_block: !saving && self.selected_block(cx).is_some(),
         }
     }
 
@@ -7178,10 +7217,17 @@ impl DocumentWorkspace {
         }
         match &event.patch {
             EngineeringVisualPropertyPatch::AspectLocked(aspect_locked)
-                if event.expected_kind == EngineeringVisualPropertyKind::Image =>
+                if matches!(
+                    event.expected_kind,
+                    EngineeringVisualPropertyKind::Image | EngineeringVisualPropertyKind::Snapshot
+                ) =>
             {
                 let annotation_id = event.annotation_id.clone();
-                let edit = AnnotationEdit::SetImageAspectLocked(*aspect_locked);
+                let edit = if event.expected_kind == EngineeringVisualPropertyKind::Snapshot {
+                    AnnotationEdit::SetSnapshotAspectLocked(*aspect_locked)
+                } else {
+                    AnnotationEdit::SetImageAspectLocked(*aspect_locked)
+                };
                 self.update_annotation_history(event.document_id, cx, move |annotations, id| {
                     annotations.edit_primary_selected_annotation(id, &annotation_id, edit)
                 })?;
@@ -15572,11 +15618,13 @@ impl DocumentWorkspace {
             }
             let source = (cx.entity_id(), document_id);
             let system_pdf = system_clipboard_pdf_id(cx);
+            let system_image = system_clipboard_image_id(cx);
             cx.set_global(MarkupClipboard {
                 annotations: copied,
                 source: Some(source),
                 pastes: 0,
                 system_pdf,
+                system_image,
             });
             self.annotation_statuses.insert(
                 document_id,
@@ -15624,6 +15672,7 @@ impl DocumentWorkspace {
         let count = copied.len();
         let source = (cx.entity_id(), document_id);
         let system_pdf = system_clipboard_pdf_id(cx);
+        let system_image = system_clipboard_image_id(cx);
         cx.set_global(MarkupClipboard {
             annotations: copied,
             source: Some(source),
@@ -15631,6 +15680,7 @@ impl DocumentWorkspace {
             // goes back where it was.
             pastes: u64::MAX,
             system_pdf,
+            system_image,
         });
         self.annotation_statuses.insert(
             document_id,
@@ -15842,6 +15892,7 @@ impl DocumentWorkspace {
             source: Some((workspace_id, document_id)),
             pastes: if same_document { pastes } else { 0 },
             system_pdf: clipboard.system_pdf,
+            system_image: clipboard.system_image,
         });
         self.annotation_statuses.insert(
             document_id,
@@ -18241,6 +18292,14 @@ impl DocumentWorkspace {
             self.paste_pdf_as_snapshot(document_id, page_index, at, pdf, cx);
             return;
         }
+        // A picture copied since, by another app, pastes as an Image, as a
+        // dropped one is placed.
+        if let Some(image) = system_clipboard_image(cx).filter(|image| {
+            Some(crate::pdf_page_base::page_base_id(image)) != markup_clipboard(cx).system_image
+        }) {
+            self.paste_image(document_id, page_index, at, image, cx);
+            return;
+        }
         if let Err(error) = self.paste_annotations_at(document_id, page_index, at, cx) {
             self.annotation_statuses.insert(document_id, error);
             cx.notify();
@@ -19511,7 +19570,7 @@ impl DocumentWorkspace {
             return self.clear_hover_candidate(cx);
         };
         if self.editing_content(interaction.document_id, cx)
-            && self.update_content_hover(interaction, point, cx)
+            && self.update_content_hover(interaction, point, modifiers.alt, cx)
         {
             return true;
         }
@@ -23911,6 +23970,13 @@ fn annotation_layer(
                                     for (index, center) in
                                         geometry.handles.into_iter().enumerate()
                                     {
+                                        // An aspect-locked Snapshot resizes
+                                        // from its corners only.
+                                        if annotation.aspect_locked
+                                            && !RectangleResizeHandle::ALL[index].is_corner()
+                                        {
+                                            continue;
+                                        }
                                         if annotation.feedback.handle_visible(index) {
                                             interaction_chrome::paint_rotated_feedback_handle(
                                                 center,
@@ -24168,16 +24234,23 @@ fn annotation_layer(
                         })
                         .map(|point| (document_id, page_index, point));
                     workspace.select_hovered_markup_for_menu(document_id, page_index, cx);
+                    workspace.select_hovered_content_for_menu(document_id, page_index, cx);
                 });
             }
         })
         .context_menu(move |menu, _, cx| {
             // Edit PDF as the document is now, as its switch shows it.
-            let (editing_pdf, edit_pdf_available, table_row, edit) = context_control
+            let (editing_pdf, edit_pdf_available, table_row, edit, block) = context_control
                 .as_ref()
                 .and_then(WeakEntity::upgrade)
                 .map_or(
-                    (false, false, None, DocumentEditCapabilities::default()),
+                    (
+                        false,
+                        false,
+                        None,
+                        DocumentEditCapabilities::default(),
+                        false,
+                    ),
                     |workspace| {
                         let workspace = workspace.read(cx);
                         (
@@ -24185,6 +24258,7 @@ fn annotation_layer(
                             workspace.content_edit_available(document_id, cx),
                             workspace.table_menu_row(document_id),
                             workspace.document_edit_capabilities(cx),
+                            workspace.selected_block(cx).is_some(),
                         )
                     },
                 );
@@ -24231,6 +24305,11 @@ fn annotation_layer(
                         }))
                 })
                 .menu_with_disabled("Delete", Box::new(Delete), !edit.can_delete)
+                // A block selected in Edit PDF breaks into its parts.
+                .when(block, |menu| {
+                    menu.separator()
+                        .menu("Explode block", Box::new(content::ExplodeBlock))
+                })
                 .separator()
                 .menu("Select tool", Box::new(SelectTool))
                 .menu("Hand tool", Box::new(PanTool))
@@ -24668,6 +24747,7 @@ fn recovered_document_edits(timeline: &[u8]) -> crate::pdf_worker::DocumentEdits
             forms: document.form_field_edits().to_vec(),
             tables: document.page_table_edits().to_vec(),
             moves: document.page_content_moves().to_vec(),
+            explodes: document.page_content_explodes().to_vec(),
             bases: document.page_bases().to_vec(),
             pages: document.page_slots().to_vec(),
         })
@@ -26160,6 +26240,7 @@ impl Render for DocumentWorkspace {
                     annotation.id.clone(),
                     EngineeringVisualPropertyValues::Snapshot {
                         opacity: annotation.opacity(),
+                        aspect_locked: annotation.aspect_locked,
                     },
                     annotation.locked,
                 )),

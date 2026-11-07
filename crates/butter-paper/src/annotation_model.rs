@@ -4284,6 +4284,10 @@ pub struct SnapshotAnnotation {
     vector: Option<SnapshotVector>,
     opacity: f64,
     rotation_degrees: f64,
+    /// Resizing keeps its proportions, from its corners only, as for an
+    /// aspect-locked Image. On for new, pasted and opened Snapshots; an
+    /// editing preference with no PDF field.
+    pub aspect_locked: bool,
     pub locked: bool,
 }
 
@@ -4305,12 +4309,18 @@ impl SnapshotAnnotation {
             vector: None,
             opacity: canonical_float(opacity),
             rotation_degrees: 0.,
+            aspect_locked: true,
             locked: false,
         })
     }
 
     pub fn asset(&self) -> &DecodedRgbaAsset {
         &self.asset
+    }
+
+    pub fn with_aspect_locked(mut self, aspect_locked: bool) -> Self {
+        self.aspect_locked = aspect_locked;
+        self
     }
 
     pub fn vector(&self) -> Option<&SnapshotVector> {
@@ -4961,6 +4971,7 @@ impl Annotation {
                 )?
                 .with_rotation_degrees(source.rotation_degrees)?
                 .with_locked(source.locked)
+                .with_aspect_locked(source.aspect_locked)
                 .with_vector(source.vector.clone()),
             ),
         })
@@ -5108,6 +5119,7 @@ pub enum AnnotationEdit {
     /// returns it to its pixels' shape, keeping its width and centre.
     SetImageAspectLocked(bool),
     SetSnapshotRect(PdfRect),
+    SetSnapshotAspectLocked(bool),
     SetSnapshotRotation(f64),
     SetSnapshotOpacity(f64),
 }
@@ -5198,6 +5210,13 @@ impl RectangleResizeHandle {
 
     pub fn world_point(self, rect: PdfRect, rotation_degrees: f64) -> PdfPoint {
         rotate_point_around_rect_center(self.point(rect), rect, -rotation_degrees)
+    }
+
+    pub fn is_corner(self) -> bool {
+        matches!(
+            self,
+            Self::NorthWest | Self::NorthEast | Self::SouthEast | Self::SouthWest
+        )
     }
 
     pub(crate) fn affects_west(self) -> bool {
@@ -5432,6 +5451,8 @@ pub struct AnnotationSnapshot {
     pub page_table_edits: Vec<PageTableEdit>,
     /// Page content moved in Edit PDF mode, keyed by page and content.
     pub page_content_moves: Vec<ContentMove>,
+    /// Blocks exploded into their pages in Edit PDF mode, in order.
+    pub page_content_explodes: Vec<crate::pdf_content_moves::ContentExplode>,
     /// Pages shown as an earlier file had them, which their page text and
     /// table edits apply to.
     pub page_bases: Vec<PageBase>,
@@ -5896,6 +5917,7 @@ pub struct SceneSnapshot {
     pub height_px: u32,
     pub opacity: f64,
     pub rotation_degrees: f64,
+    pub aspect_locked: bool,
     pub selected: bool,
     pub locked: bool,
     pub draft: bool,
@@ -6010,6 +6032,7 @@ struct DocumentState {
     form_field_edits: Vec<FormFieldEdit>,
     page_table_edits: Vec<PageTableEdit>,
     page_content_moves: Vec<ContentMove>,
+    page_content_explodes: Vec<crate::pdf_content_moves::ContentExplode>,
     /// Pages whose edits apply to the page as an earlier file had it: a
     /// save rewrote them since.
     page_bases: Vec<PageBase>,
@@ -6031,6 +6054,8 @@ impl DocumentState {
         self.page_table_edits
             .retain(|edit| !pages.contains(&edit.page_index));
         self.page_content_moves
+            .retain(|item| !pages.contains(&item.page_index));
+        self.page_content_explodes
             .retain(|item| !pages.contains(&item.page_index));
         self.page_bases
             .retain(|base| !pages.contains(&base.page_index));
@@ -6100,7 +6125,15 @@ struct RecoverySnapshotAnnotation {
     vector_ref: Option<String>,
     opacity: f64,
     rotation_degrees: f64,
+    /// Recovery files written before Snapshots kept their proportions read
+    /// as locked, as new Snapshots are.
+    #[serde(default = "aspect_locked_by_default")]
+    aspect_locked: bool,
     locked: bool,
+}
+
+fn aspect_locked_by_default() -> bool {
+    true
 }
 
 #[derive(Deserialize, Serialize)]
@@ -6138,6 +6171,8 @@ struct RecoveryDocumentState {
     page_table_edits: Vec<PageTableEdit>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     page_content_moves: Vec<ContentMove>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    page_content_explodes: Vec<crate::pdf_content_moves::ContentExplode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     page_bases: Vec<PageBase>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -6211,6 +6246,7 @@ impl RecoveryDocumentState {
                     vector_ref: annotation.vector.as_ref().map(|vector| vector.id.clone()),
                     opacity: annotation.opacity,
                     rotation_degrees: annotation.rotation_degrees,
+                    aspect_locked: annotation.aspect_locked,
                     locked: annotation.locked,
                 })
             })
@@ -6241,6 +6277,7 @@ impl RecoveryDocumentState {
             form_field_edits: state.form_field_edits.clone(),
             page_table_edits: state.page_table_edits.clone(),
             page_content_moves: state.page_content_moves.clone(),
+            page_content_explodes: state.page_content_explodes.clone(),
             page_bases: state.page_bases.clone(),
             page_slots: state.page_slots.clone(),
             revision: state.revision,
@@ -6314,7 +6351,8 @@ impl RecoveryDocumentState {
                     wire.opacity,
                 )?
                 .with_rotation_degrees(wire.rotation_degrees)?
-                .with_vector(vector);
+                .with_vector(vector)
+                .with_aspect_locked(wire.aspect_locked);
                 annotation.locked = wire.locked;
                 Ok(annotation)
             })
@@ -6345,6 +6383,7 @@ impl RecoveryDocumentState {
             form_field_edits: self.form_field_edits,
             page_table_edits: self.page_table_edits,
             page_content_moves: self.page_content_moves,
+            page_content_explodes: self.page_content_explodes,
             page_bases: self.page_bases,
             page_slots: self.page_slots,
             revision: self.revision,
@@ -6521,6 +6560,9 @@ fn validate_recovery_state(state: &DocumentState) -> Result<(), AnnotationError>
         table.validate().map_err(recovery_error)?;
     }
     for item in &state.page_content_moves {
+        item.validate().map_err(recovery_error)?;
+    }
+    for item in &state.page_content_explodes {
         item.validate().map_err(recovery_error)?;
     }
     let family_ids = state
@@ -7003,6 +7045,7 @@ impl AnnotationDocument {
                 form_field_edits: Vec::new(),
                 page_table_edits: Vec::new(),
                 page_content_moves: Vec::new(),
+                page_content_explodes: Vec::new(),
                 page_bases: Vec::new(),
                 page_slots: Vec::new(),
                 revision: 0,
@@ -7552,6 +7595,7 @@ impl AnnotationDocument {
             form_field_edits: Vec::new(),
             page_table_edits: Vec::new(),
             page_content_moves: Vec::new(),
+            page_content_explodes: Vec::new(),
             page_bases: Vec::new(),
             page_slots: Vec::new(),
             revision: 0,
@@ -7662,6 +7706,7 @@ impl AnnotationDocument {
             form_field_edits: self.state.form_field_edits.clone(),
             page_table_edits: self.state.page_table_edits.clone(),
             page_content_moves: self.state.page_content_moves.clone(),
+            page_content_explodes: self.state.page_content_explodes.clone(),
             page_bases: self.state.page_bases.clone(),
             pages_to_keep_when_saved: self.pages_to_keep_when_saved().into_iter().collect(),
             page_slots: self.state.page_slots.clone(),
@@ -7698,6 +7743,39 @@ impl AnnotationDocument {
         &self.state.page_content_moves
     }
 
+    pub fn page_content_explodes(&self) -> &[crate::pdf_content_moves::ContentExplode] {
+        &self.state.page_content_explodes
+    }
+
+    /// Explodes the block (Form XObject) `block` names on `page_index` into
+    /// the page, where it is shown, as one undoable change: its change, and
+    /// its copies, go with it, as what it drew is now page content of its
+    /// own.
+    pub fn explode_page_content(
+        &mut self,
+        page_index: u32,
+        block: &crate::pdf_content_moves::MovedContent,
+    ) -> Result<bool, AnnotationError> {
+        use crate::pdf_content_moves::{ContentExplode, ContentKind};
+        self.require_no_gesture()?;
+        if block.kind != ContentKind::Image || block.copy.is_some() {
+            return Ok(false);
+        }
+        let explode = ContentExplode::new(page_index, block.rect, block.nth, block.from);
+        explode
+            .validate()
+            .map_err(AnnotationError::InvalidGeometry)?;
+        let mut moves = self.state.page_content_moves.clone();
+        moves.retain(|item| {
+            !(item.page_index == page_index && item.names_nth(block.kind, block.rect, block.nth))
+        });
+        self.commit_state_change(|state| {
+            state.page_content_moves = moves;
+            state.page_content_explodes.push(explode);
+        });
+        Ok(true)
+    }
+
     pub fn page_bases(&self) -> &[PageBase] {
         &self.state.page_bases
     }
@@ -7713,6 +7791,12 @@ impl AnnotationDocument {
                 .iter()
                 .map(|edit| edit.page_index)
                 .chain(state.page_content_moves.iter().map(|item| item.page_index))
+                .chain(
+                    state
+                        .page_content_explodes
+                        .iter()
+                        .map(|item| item.page_index),
+                )
                 .collect::<Vec<_>>()
         };
         let mut pages = rewritten(&self.state)
@@ -8028,6 +8112,14 @@ impl AnnotationDocument {
                     return Ok(false);
                 }
             }
+            ContentChange::Rotate { pivot, degrees } => {
+                for value in [pivot.0, pivot.1, degrees] {
+                    require_finite("rotate", value)?;
+                }
+                if crate::pdf_content_moves::normalized_degrees(degrees) == 0. {
+                    return Ok(false);
+                }
+            }
             ContentChange::Remove => {}
         }
         if groups.iter().all(Vec::is_empty) {
@@ -8036,7 +8128,8 @@ impl AnnotationDocument {
         let mut moves = self.state.page_content_moves.clone();
         for item in groups.iter().flatten() {
             moves.retain(|existing| {
-                !(existing.page_index == page_index && existing.is(item.kind, item.rect, item.copy))
+                !(existing.page_index == page_index
+                    && existing.is(item.kind, item.rect, item.nth, item.copy))
             });
             // A deleted copy is gone; deleted content is marked removed.
             if item.copy.is_some() && change == ContentChange::Remove {
@@ -8047,8 +8140,10 @@ impl AnnotationDocument {
                 page_index,
                 kind: item.kind,
                 rect: item.rect,
+                nth: item.nth,
                 offset: placement.offset,
                 scale: placement.scale,
+                rotation: placement.rotation,
                 removed: change == ContentChange::Remove,
                 copy: item.copy,
             };
@@ -8116,8 +8211,10 @@ impl AnnotationDocument {
                     page_index,
                     kind: item.kind,
                     rect: item.rect,
+                    nth: item.nth,
                     offset: placement.offset,
                     scale: placement.scale,
+                    rotation: placement.rotation,
                     removed: false,
                     copy: Some(copy),
                 };
@@ -8461,6 +8558,7 @@ impl AnnotationDocument {
                 page_text_edits,
                 page_table_edits,
                 page_content_moves,
+                page_content_explodes,
                 page_bases
             );
             state
@@ -10743,6 +10841,11 @@ impl AnnotationDocument {
             snapshot["page_content_moves"] = serde_json::to_value(&self.state.page_content_moves)
                 .expect("content moves must serialize");
         }
+        if !self.state.page_content_explodes.is_empty() {
+            snapshot["page_content_explodes"] =
+                serde_json::to_value(&self.state.page_content_explodes)
+                    .expect("exploded blocks must serialize");
+        }
         if !self.state.page_rotations.is_empty() {
             snapshot["page_rotations"] = Value::Array(
                 self.state
@@ -12544,6 +12647,29 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::Snapshot, true))
             }
+            AnnotationEdit::SetSnapshotAspectLocked(aspect_locked) => {
+                let annotation = self
+                    .snapshot_annotation(id)
+                    .ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.aspect_locked == aspect_locked {
+                    return Ok((AnnotationKind::Snapshot, false));
+                }
+                // Locking keeps the box as it is: its proportions now are
+                // the ones it keeps.
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .snapshots
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated Snapshot aspect edit must retain its target")
+                        .aspect_locked = aspect_locked;
+                });
+                Ok((AnnotationKind::Snapshot, true))
+            }
             AnnotationEdit::SetSnapshotRotation(rotation_degrees) => {
                 require_finite("snapshot.rotation", rotation_degrees)?;
                 let rotation_degrees = canonical_float(rotation_degrees.rem_euclid(360.));
@@ -12873,6 +12999,7 @@ impl AnnotationDocument {
                 height_px: annotation.asset.height_px,
                 opacity: annotation.opacity,
                 rotation_degrees: annotation.rotation_degrees,
+                aspect_locked: annotation.aspect_locked,
                 selected: editor_state && self.selected_ids.contains(&annotation.id),
                 locked: annotation.locked,
                 draft: false,
@@ -15268,12 +15395,14 @@ mod tests {
             MovedContent {
                 kind: ContentKind::Text,
                 rect: [72., 610., 200., 620.],
+                nth: 0,
                 from: Placement::UNMOVED,
                 copy: None,
             },
             MovedContent {
                 kind: ContentKind::Text,
                 rect: [72., 596., 180., 606.],
+                nth: 0,
                 from: Placement::UNMOVED,
                 copy: None,
             },
@@ -15364,6 +15493,7 @@ mod tests {
         let image = vec![MovedContent {
             kind: ContentKind::Image,
             rect: [100., 100., 200., 200.],
+            nth: 0,
             from: Placement::UNMOVED,
             copy: None,
         }];
@@ -15418,6 +15548,7 @@ mod tests {
         let image = vec![MovedContent {
             kind: ContentKind::Image,
             rect: [100., 100., 200., 200.],
+            nth: 0,
             from: Placement::UNMOVED,
             copy: None,
         }];
@@ -16298,6 +16429,10 @@ mod tests {
             unreachable!("a Snapshot copies as a Snapshot");
         };
         assert_eq!(copy.vector(), snapshot.vector());
+        // New Snapshots keep their proportions; a freed one stays free in
+        // its copies and through recovery.
+        assert!(snapshot.aspect_locked);
+        let copy = copy.with_aspect_locked(false);
 
         let mut document = AnnotationDocument::default();
         document
@@ -16317,6 +16452,48 @@ mod tests {
         for snapshot in &snapshots {
             assert_eq!(snapshot.vector().map(|vector| vector.pdf()), Some(&pdf));
         }
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|snapshot| snapshot.aspect_locked)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
+    }
+
+    #[test]
+    fn an_exploded_block_replaces_its_move_and_undoes_and_recovers() {
+        use crate::pdf_content_moves::{ContentChange, ContentKind, MovedContent, Placement};
+        let block = MovedContent {
+            kind: ContentKind::Image,
+            rect: [100., 100., 160., 140.],
+            nth: 0,
+            from: Placement::UNMOVED,
+            copy: None,
+        };
+        let mut document = AnnotationDocument::default();
+        document
+            .change_page_content(0, &[vec![block]], &[], ContentChange::Move(10., 0.))
+            .unwrap();
+        let moved = MovedContent {
+            from: document.page_content_moves()[0].placement(),
+            ..block
+        };
+        assert!(document.explode_page_content(0, &moved).unwrap());
+        // The block's move became the explode's placement.
+        assert!(document.page_content_moves().is_empty());
+        let explode = document.page_content_explodes()[0].clone();
+        assert_eq!(explode.offset, [10., 0.]);
+        assert!(explode.names([100., 100., 160., 140.], 0));
+        let encoded = document.encode_recovery_timeline().unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(&encoded).unwrap();
+        assert_eq!(
+            restored.page_content_explodes(),
+            document.page_content_explodes()
+        );
+        document.undo().unwrap();
+        assert!(document.page_content_explodes().is_empty());
+        assert_eq!(document.page_content_moves().len(), 1);
     }
 
     #[test]

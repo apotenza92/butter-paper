@@ -4,6 +4,43 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.6]
+
+### Snapshots and images
+
+- Snapshots keep their proportions when resized, from their corners, as
+  images do. Properties › Lock proportions frees one to stretch from its
+  edges.
+- Paste places a PNG or JPEG picture copied in another app (a screenshot,
+  a browser's Copy Image) as an Image at the pointer.
+
+### Edit PDF
+
+- Drawings on CAD and construction sheets can be selected, moved, resized
+  and deleted one by one: a sheet's border and title block no longer count
+  as a table, a viewport's contents are no longer one object, and a path
+  is picked on its line or fill rather than anywhere in its box.
+- A selected drawing, image or block turns with a rotation knob, as markups
+  do; Shift turns it in 15° steps.
+- Lines a CAD program batches into one path are picked one by one, and a
+  click picks the line nearest the pointer.
+- Lettering drawn as lines (AutoCAD SHX text, outlined text) is picked a
+  line at a time, including dimensions written up a sheet's side;
+  Alt-click (Option-click) picks a single stroke or letter.
+- A line that shares its bounds with another (a brace corner to corner of
+  its frame) moves on its own, and a line drawn twice moves as one.
+- Explode block, in Edit PDF's right-click menu and the Edit menu, breaks a
+  selected block (a CAD block, a flattened markup, a placed drawing) into
+  its parts, as AutoCAD's Explode does.
+- A drawing placed into a PDF as one piece, or flattened into one, opens by
+  itself: its lines are picked one by one. Transparent blocks (highlighter
+  markups) stay whole.
+- Cut, Copy and Delete in the page's right-click menu work on page content
+  selected in Edit PDF.
+- Dragged and turned lines follow the pointer as crisp lines in their own
+  colour, without what they frame; small selections no longer crowd their
+  handles; hovering stays fast on sheets with tens of thousands of lines.
+
 ## [0.4.5]
 
 ### Drawing to scale

@@ -8,7 +8,8 @@ use butter_paper::pdf_engine::{
 };
 use butter_paper::pdf_forms::{apply_form_edits, needs_appearances, regenerate_appearances};
 use butter_paper::pdf_text_edit::{
-    PageTextLayer, TextEditError, TextEditLimits, apply_content_edits, extract_page_text,
+    PageTextLayer, TextEditError, TextEditLimits, apply_content_edits_with, extract_page_text,
+    extract_page_text_with,
 };
 use butter_paper::pdf_worker::{
     AnnotationRenderMode, CancellationRegistry, DocumentEdits, DocumentInfo, FileSurfaceStore,
@@ -122,11 +123,12 @@ fn edited_display(
     }
     butter_paper::pdf_page_base::restore_pages(&mut edited, &edits.bases)
         .map_err(|error| WorkerError::with_detail(WorkerErrorCode::InvalidRequest, error))?;
-    apply_content_edits(
+    apply_content_edits_with(
         &mut edited,
         &edits.text,
         &edits.tables,
         &edits.moves,
+        &edits.explodes,
         &TextEditLimits::for_display(),
     )
     .map_err(map_text_edit_error)?;
@@ -444,6 +446,46 @@ impl PdfBackend for PdfiumBackend {
         })?;
         let mut layer =
             extract_page_text(&kept, 0, &TextEditLimits::default()).map_err(map_text_edit_error)?;
+        layer.page_index = page_index;
+        Ok(layer)
+    }
+
+    fn page_text_with(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+        base: Option<&str>,
+        explodes: &[butter_paper::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, WorkerError> {
+        let Some(base) = base else {
+            return extract_page_text_with(
+                &document.source,
+                page_index,
+                explodes,
+                &TextEditLimits::default(),
+            )
+            .map_err(map_text_edit_error);
+        };
+        let pdf = document.page_bases.get(base).ok_or_else(|| {
+            WorkerError::with_detail(WorkerErrorCode::InvalidRequest, "the kept page is missing")
+        })?;
+        let kept = PdfMetadataDocument::load_mem(pdf).map_err(|error| {
+            WorkerError::with_detail(
+                WorkerErrorCode::MalformedDocument,
+                format!("a kept page cannot be read: {error}"),
+            )
+        })?;
+        // The kept page is page 0 of its PDF: its explodes name it so.
+        let explodes = explodes
+            .iter()
+            .filter(|explode| explode.page_index == page_index)
+            .map(|explode| butter_paper::pdf_content_moves::ContentExplode {
+                page_index: 0,
+                ..explode.clone()
+            })
+            .collect::<Vec<_>>();
+        let mut layer = extract_page_text_with(&kept, 0, &explodes, &TextEditLimits::default())
+            .map_err(map_text_edit_error)?;
         layer.page_index = page_index;
         Ok(layer)
     }
@@ -2275,6 +2317,7 @@ mod tests {
             moves: Vec::new(),
             bases: Vec::new(),
             pages: Vec::new(),
+            explodes: Vec::new(),
         };
         backend.set_document_edits(&mut document, &edits).unwrap();
         let filled = render(&mut backend, &mut document);

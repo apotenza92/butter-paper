@@ -475,6 +475,22 @@ pub trait NativeDocumentResource: Send + Sync {
     ) -> Result<PageTextLayer, String> {
         Err("earlier pages are unavailable for this document".into())
     }
+    /// A page's text (as an earlier file had it, with `base`) with the
+    /// blocks `explodes` names exploded into it.
+    fn page_text_with(
+        &self,
+        page_index: u32,
+        base: Option<&crate::pdf_page_base::PageBase>,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, String> {
+        if !explodes.is_empty() {
+            return Err("exploding blocks is unavailable for this document".into());
+        }
+        match base {
+            Some(base) => self.page_base_text(page_index, base),
+            None => self.page_text(page_index),
+        }
+    }
     /// Whether the document carries digital signatures, which changing its
     /// content invalidates.
     fn digitally_signed(&self) -> bool {
@@ -1766,6 +1782,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 session_id: self.session_id,
                 page_index,
                 base: None,
+                explodes: Vec::new(),
             })
             .map_err(worker_error)?
         {
@@ -1800,6 +1817,51 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 session_id: self.session_id,
                 page_index,
                 base: Some(base.id.clone()),
+                explodes: Vec::new(),
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::PageText {
+                session_id, layer, ..
+            } if session_id == self.session_id && layer.page_index == page_index => Ok(layer),
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("page text", response)),
+        }
+    }
+
+    fn page_text_with(
+        &self,
+        page_index: u32,
+        base: Option<&crate::pdf_page_base::PageBase>,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, String> {
+        if explodes.is_empty() {
+            return match base {
+                Some(base) => self.page_base_text(page_index, base),
+                None => self.page_text(page_index),
+            };
+        }
+        if page_index as usize >= self.shown_pages().sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        if let Some(base) = base {
+            self.send_page_bases(client, std::slice::from_ref(base))?;
+        }
+        match client
+            .exchange(&WorkerRequest::PageText {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+                base: base.map(|base| base.id.clone()),
+                explodes: explodes.to_vec(),
             })
             .map_err(worker_error)?
         {

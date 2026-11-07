@@ -702,6 +702,7 @@ fn the_worker_process_renders_filled_fields() {
             moves: Vec::new(),
             bases: Vec::new(),
             pages: Vec::new(),
+            explodes: Vec::new(),
         })
         .unwrap();
     let after = resource.render_page(0, width).unwrap();

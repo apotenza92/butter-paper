@@ -91,7 +91,7 @@ tooltip expands the instructions when the window truncates them.
   own colour, thickness and style stay visible. A selected or hovered markup
   shows small square handles at the points that can be dragged: line and
   leader ends and knees, vertices, arc controls, box corners and edges (an
-  aspect-locked Image's corners only), turned with the markup. Handles are
+  aspect-locked Image's or Snapshot's corners only), turned with the markup. Handles are
   white with a blue border (the same for the focused markup), light blue
   while hovered or a marquee candidate, filled under the pointer, and inert
   grey on a locked markup. The rotation knob stays, on a thin solid stem. Handles and
@@ -119,7 +119,9 @@ tooltip expands the instructions when the window truncates them.
 - Paste takes a PDF copied since Butter Paper last copied, by another app or
   another Butter Paper (on another machine, through a shared clipboard), as
   a vector Snapshot of its first page, centred on the pointer (or on the
-  page); otherwise it pastes Butter Paper's own copy.
+  page). A PNG or JPEG picture copied since (a screenshot, a browser's Copy
+  Image) pastes as an Image placed as a dropped one is, centred on the
+  pointer (or on the page). Otherwise it pastes Butter Paper's own copy.
 - *Native:* the band that moves a markup is a box turned to it: along a
   line for Lines, Arrows, Lengths and Dimensions, at the rotation for boxes,
   else upright. A Length or Dimension's box holds everything it draws: the
@@ -147,11 +149,16 @@ tooltip expands the instructions when the window truncates them.
   edge, and near a corner from the corner. An Ellipse's band follows its
   curve, takes the handle at the nearest eighth of a turn, and the grabbed
   point follows the pointer; Move bands lie either side of it, as for a
-  Rectangle. Aspect-locked Images resize only from their corners. New
-  Images are aspect-locked unless Settings > Markups > Images turns "Keep
-  proportions when resizing" off; Lock proportions in an Image's
-  properties changes one image, and locking a stretched image returns it
-  to its pixels' shape, keeping its width and centre (one undo step). An
+  Rectangle. Aspect-locked Images and Snapshots resize only from their
+  corners, keeping their shape. New Images are aspect-locked unless
+  Settings > Markups > Images turns "Keep proportions when resizing" off;
+  Lock proportions in an Image's properties changes one image, and locking
+  a stretched image returns it to its pixels' shape, keeping its width and
+  centre (one undo step). Snapshots are aspect-locked when taken, pasted or
+  opened; Lock proportions in a Snapshot's properties frees one to stretch
+  from its edges, and locking it again keeps the shape it has (one undo
+  step). Aspect lock has no PDF field, so a freed Snapshot is locked again
+  when its file reopens. An
   unselected markup's edge takes the press only where the cursor offers to
   resize it. Dragging along the band around a selected markup's outline,
   from outside it to 20px inside, moves it.
@@ -303,6 +310,16 @@ Every page converts to one page of the same size.
   one scales it from the opposite handle (Shift keeps a corner's
   proportions), snapping the handle. Paragraphs take their size from their
   text, set in the properties.
+- A single selected drawing, image, form or label of lettering (with no
+  text in a clip) also shows a markup's rotation knob above its frame:
+  dragging it turns the content about its centre, following the pointer, and
+  Shift turns it to whole 15-degree steps. Its frame and handles stay
+  upright round what it covers; resizing turned content scales it in its
+  own axes, so it never skews: a quarter-turned piece stretches along the
+  page's axes, and one at another angle keeps its proportions. A turned
+  path is written with its points turned (its line width kept), a turned
+  image or form by its matrix. Text is never turned. Markups on turned
+  content move with it as their centres turn; they do not turn.
 - Delete or Backspace deletes the selected content and the markups
   selected with it. Copy, Cut and Paste work on it too: Paste adds copies
   10 points right and down (further each time), selected, on the page the
@@ -311,13 +328,67 @@ Every page converts to one page of the same size.
   own.
 - Enter edits a selected paragraph from its end; Escape ends the edit,
   leaving the paragraph selected.
-- What a small clip (under half the page) clips, such as an SVG or a chart,
-  is one drawing: it moves with its clip and the text inside it, and the
-  band round that text moves the drawing (a press in the text edits it).
-  Otherwise
-  each painted path and each image is its own. A table's rules and fills,
-  and a drawing covering most of the page (a background), are not picked:
-  tables change through their rows' menu and column borders.
+- What a small clip (under half the page, clipping at most 250 paths and
+  images) clips, such as an SVG or a chart, is one drawing: it moves with
+  its clip and the text inside it, and the band round that text moves the
+  drawing (a press in the text edits it). Otherwise each painted path and
+  each image or form is its own, as in a CAD sheet, whose viewports clip
+  more: a path moved there stays clipped to its viewport. A stroked path of
+  several pieces (CAD programs batch lines into one path) is a drawing per
+  piece, each from its `m` or `re` to the next; a filled one stays whole,
+  as its pieces fill together (a letter's counter, a hatch). A table's rules
+  and fills, and a drawing covering most of the page (a background), are
+  not picked: tables change through their rows' menu and column borders.
+- A path is picked where it is drawn, as in a CAD program: on its stroke
+  (within a few pixels beyond half its line width) or inside its fill, not
+  anywhere in its box, so a press inside a room picks nothing rather than
+  its walls. The nearest picked wins, as in a CAD program, so a border
+  beats lettering drawn just inside it; of those about as near (within a
+  pixel), the smallest. Copies of a path drawn exactly over it (CAD sheets
+  often draw a line twice) are picked, moved and deleted with it. Images
+  and forms are picked
+  anywhere in their box. A drawing sheet's border and title block are not
+  a table: a ruled grid one of whose cells covers a quarter of the page
+  and holds a drawing or image is drawing.
+- Lettering drawn as paths rather than text (AutoCAD's SHX fonts, text
+  Bluebeam or Quartz outlined) is picked a label at a time: small paths
+  of the same stroke within half a letter of each other are a word, and
+  words a word's space apart along a line, across or up the page (a
+  dimension's figures written up a sheet's side), are one label, framed,
+  moved, resized and turned whole. A label has at least three pieces. A
+  row of one repeated shape (a dotted line, a pattern) is not
+  lettering, nor a group whose pieces are mostly flat or dots (a dashed
+  line's dashes: letters have bowls, diagonals and curves, so at least a
+  quarter of a label's pieces are a quarter of its letter size across both
+  ways), nor a group spreading wider than 20 letters both ways (hatching);
+  a line that would be is taken a word at a time. Alt-click (Option-click
+  on macOS) picks the one stroke, letter or piece under the pointer
+  instead, out of a selected label too, and passes through the selection's
+  handles to the piece under them; Alt on empty page still starts a lasso
+  that deselects.
+- While content is dragged, turned or resized, a path follows the pointer
+  drawn as the page draws it (its outline, line width and the colour the
+  page shows it in), crisp at any angle; a paragraph or image follows as
+  its picture. Nothing it frames or crosses comes with it.
+- A block (a Form XObject: a CAD block, a flattened markup, a placed
+  drawing) is picked whole, as an image is. Explode block, in the page's
+  right-click menu and the Edit menu while one block is selected (right-
+  clicking one selects it), writes it into the page where it is shown (as
+  moved, resized or turned), so its lines, fills, text and the blocks it
+  draws are each their own, as AutoCAD's Explode breaks a block into its
+  parts; one undo step. Only the copy exploded changes: the block's other
+  placements stay blocks, and copies pasted of it go with it. Its parts
+  are written unclipped unless it drew beyond its bounding box. A block
+  painted as a transparency group (a highlighter's markup) blends as one,
+  so it stays whole: it is not offered for Explode and is not opened as a
+  sheet. The help line says what to do with a selected block.
+- A page drawn by one form covering most of it (a sheet placed into
+  another PDF, or flattened into one form) is opened by itself: its
+  drawings are picked one by one, as if the page drew them, with no
+  command. The page is written opened once it is edited.
+- Handles fit the frame: the middle of a side shows only on a side at
+  least 40 pixels long, and a frame smaller than 24 pixels both ways has
+  none (a press on it moves what it frames); the rotation knob stays.
 
 ### Editing page text
 

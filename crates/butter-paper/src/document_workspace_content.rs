@@ -12,6 +12,15 @@ use crate::pdf_content_moves::{
 };
 use crate::pdf_text_selection::Quad;
 
+gpui::actions!(
+    document_workspace,
+    [
+        /// Writes the block (Form XObject) selected in Edit PDF into its
+        /// page, so its parts are each their own, as AutoCAD's Explode.
+        ExplodeBlock
+    ]
+);
+
 /// Page content selected in Edit PDF mode: one or more groups (a
 /// paragraph's lines, a drawing or an image), moved together.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,7 +56,30 @@ pub enum DragMode {
         handle: RectangleResizeHandle,
         bounds: [f64; 4],
     },
+    /// Turning a drawing or image about its centre `pivot`, from the
+    /// pointer's angle about it when pressed and the content's rotation
+    /// then.
+    Rotate {
+        pivot: (f64, f64),
+        from: f64,
+        rotation: f64,
+    },
 }
+
+/// A control on the selected content's frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContentHandle {
+    Resize(RectangleResizeHandle),
+    /// The knob above the frame that turns a drawing or image.
+    Rotate,
+}
+
+/// How far the rotation knob sits above the frame, in pixels, as above a
+/// markup.
+pub(super) const ROTATION_KNOB_OFFSET_PIXELS: f64 =
+    crate::annotation_adapter::ROTATION_HANDLE_OFFSET_CSS_PX;
+/// The angle Shift turns content in steps of, in degrees.
+const ROTATION_SNAP_DEGREES: f64 = 15.;
 
 /// The picture of content being dragged, cut from the page as shown when
 /// the drag began, each piece painted where the drag puts it while the
@@ -58,8 +90,8 @@ pub(super) struct ContentSprite {
     pub document_id: DocumentId,
     pub page_index: u32,
     pub pieces: Vec<SpritePiece>,
-    /// Where the pieces were dropped: their shown bounds.
-    pub dropped: Option<Vec<[f64; 4]>>,
+    /// Where the pieces were dropped.
+    pub dropped: Option<Vec<SpriteTarget>>,
     /// The edits that show the drop went to the worker, and came back.
     pub sent: bool,
     pub replied: bool,
@@ -74,14 +106,47 @@ pub(super) struct SpritePiece {
     pub group: usize,
     pub item: Option<usize>,
     pub image: std::sync::Arc<gpui::RenderImage>,
+    /// A path's own geometry and look, drawn as a path wherever it goes,
+    /// crisp at any angle, instead of its picture.
+    pub ink: Option<SpriteInk>,
 }
 
-/// A sprite as painted: each piece's bounds now, in page space, and its
-/// picture.
+/// A dragged path as the page draws it: its outline where the base page
+/// draws it (in `rect`), its line width in points, whether it is filled,
+/// and its colour as the page showed it.
+#[derive(Clone)]
+pub(super) struct SpriteInk {
+    pub outline: Vec<Vec<[f64; 2]>>,
+    pub rect: [f64; 4],
+    pub width: f64,
+    pub filled: bool,
+    pub colour: gpui::Rgba,
+}
+
+/// Where a dragged piece goes: its picture's bounds and how far it is
+/// turned about their centre (degrees anticlockwise), or, for a path, how
+/// it is placed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum SpriteTarget {
+    Picture([f64; 4], f64),
+    Placed(Placement),
+}
+
+/// A piece of a sprite as painted, in page space.
+#[derive(Clone)]
+pub(super) enum SpritePaintPiece {
+    /// A picture in its bounds, turned (degrees anticlockwise) about their
+    /// centre.
+    Picture([f64; 4], f64, std::sync::Arc<gpui::RenderImage>),
+    /// A path's subpaths, line width in points, fill and colour.
+    Path(Vec<Vec<(f64, f64)>>, f64, bool, gpui::Rgba),
+}
+
+/// A sprite as painted: each piece where it is now.
 #[derive(Clone)]
 pub(super) struct SpritePaint {
     pub page_index: u32,
-    pub pieces: Vec<([f64; 4], std::sync::Arc<gpui::RenderImage>)>,
+    pub pieces: Vec<SpritePaintPiece>,
 }
 
 impl DocumentWorkspace {
@@ -182,7 +247,8 @@ impl DocumentWorkspace {
         });
         for item in groups.iter().flatten() {
             moves.retain(|existing| {
-                !(existing.page_index == page_index && existing.is(item.kind, item.rect, item.copy))
+                !(existing.page_index == page_index
+                    && existing.is(item.kind, item.rect, item.nth, item.copy))
             });
             // The page shows it gone while its picture follows the drag;
             // without a picture, moved.
@@ -195,8 +261,10 @@ impl DocumentWorkspace {
                 page_index,
                 kind: item.kind,
                 rect: item.rect,
+                nth: item.nth,
                 offset: placement.offset,
                 scale: placement.scale,
+                rotation: placement.rotation,
                 removed: pictured,
                 copy: item.copy,
             });
@@ -314,6 +382,7 @@ impl DocumentWorkspace {
             groups.entry(copy).or_default().push(MovedContent {
                 kind: item.kind,
                 rect: item.rect,
+                nth: item.nth,
                 from: item.placement(),
                 copy: Some(copy),
             });
@@ -340,11 +409,122 @@ impl DocumentWorkspace {
             })
     }
 
-    /// The drawing or image shown under `point`, outside the page's tables.
+    /// The block (Form XObject) selected alone in Edit PDF, if one is: its
+    /// document, page and content.
+    pub(super) fn selected_block(&self, cx: &App) -> Option<(DocumentId, u32, MovedContent)> {
+        let selection = self.content_selection.as_ref()?;
+        if !self.editing_content(selection.document_id, cx) {
+            return None;
+        }
+        let [group] = selection.groups.as_slice() else {
+            return None;
+        };
+        let item = *group.first()?;
+        if item.kind != ContentKind::Image || item.copy.is_some() {
+            return None;
+        }
+        let (layer, _, _) = self.loaded_page_text(selection.document_id, selection.page_index)?;
+        layer
+            .objects
+            .iter()
+            .any(|object| {
+                object.form
+                    && object.kind == item.kind
+                    && object.rect == item.rect
+                    && object.nth == item.nth
+            })
+            .then_some((selection.document_id, selection.page_index, item))
+    }
+
+    /// Explodes the selected block into its page, as one undoable change:
+    /// what it draws is then page content to select on its own.
+    pub(super) fn explode_block_from_action(
+        &mut self,
+        _: &ExplodeBlock,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((document_id, page_index, block)) = self.selected_block(cx) else {
+            return;
+        };
+        self.commit_page_text_editing(cx);
+        let result = self.update_annotation_history_with_result(
+            document_id,
+            cx,
+            move |annotations, document_id| {
+                annotations.explode_document_page_content(document_id, page_index, &block)
+            },
+        );
+        match result {
+            Ok(true) => {
+                self.content_selection = None;
+                self.content_hover = None;
+                self.content_sprite = None;
+                self.annotation_statuses.insert(
+                    document_id,
+                    "Exploded the block: its parts can now be selected on their own".into(),
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.annotation_statuses
+                    .insert(document_id, format!("The block was not exploded: {error}"));
+            }
+        }
+        self.sync_document_edits(document_id, cx);
+        self.refresh_content_snapping(document_id, page_index, cx);
+        cx.notify();
+    }
+
+    /// Selects the drawing or image under the pointer for the page's
+    /// menu, as a right-click on a markup selects it, unless it is
+    /// selected already.
+    pub(super) fn select_hovered_content_for_menu(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.editing_content(document_id, cx) {
+            return;
+        }
+        let Some(hover) = self
+            .content_hover
+            .clone()
+            .filter(|hover| hover.document_id == document_id && hover.page_index == page_index)
+        else {
+            return;
+        };
+        let selected = self.content_selection.as_ref().is_some_and(|selection| {
+            selection.document_id == document_id
+                && selection.page_index == page_index
+                && selection
+                    .groups
+                    .iter()
+                    .flatten()
+                    .any(|item| hover.group.iter().any(|hovered| hovered.same(item)))
+        });
+        if selected {
+            return;
+        }
+        self.clear_markup_selection(document_id, cx);
+        self.content_selection = Some(ContentSelection {
+            document_id,
+            page_index,
+            groups: vec![hover.group],
+            markups: Vec::new(),
+        });
+        cx.notify();
+    }
+
+    /// The drawing or image shown under `point`, outside the page's tables,
+    /// with what moves with it ([`Self::object_content`]); with `part`
+    /// (Alt), the piece alone.
     fn content_object_at(
         &mut self,
         interaction: PageInteraction,
         point: PdfPoint,
+        part: bool,
         cx: &mut Context<Self>,
     ) -> Option<ContentHover> {
         let (document_id, page_index) = (interaction.document_id, interaction.page_index);
@@ -367,77 +547,153 @@ impl DocumentWorkspace {
         let shown_tables = self.shown_page_table_edits(document_id, page_index, cx);
         let refs = shown_tables.iter().collect::<Vec<_>>();
         let moves = self.shown_page_content_moves(document_id, page_index, cx);
-        // Each object where it is shown.
-        let shown = layer
-            .objects
-            .iter()
-            .filter_map(|object| {
-                let placement = crate::pdf_content_moves::placement_of(
+        // Only objects shown near the point are placed and measured: a
+        // drawing sheet has tens of thousands.
+        let tolerance = interaction.transform.tolerance_points(4.).unwrap_or(2.);
+        let mut near = Vec::new();
+        // With nothing on the page changed, content is where the page
+        // draws it.
+        let unchanged = refs.is_empty() && moves.is_empty();
+        for object in &layer.objects {
+            let (placement, [left, bottom, right, top]) = if unchanged {
+                (Placement::UNMOVED, object.rect)
+            } else {
+                let Some(placement) = crate::pdf_content_moves::placement_of_nth(
                     &refs,
                     &moves,
                     object.kind,
                     object.rect,
-                )?;
-                Some((object.clone(), placement))
-            })
-            .collect::<Vec<_>>();
-        let shown_objects = shown
+                    object.nth,
+                ) else {
+                    continue;
+                };
+                (placement, placement.shown(object.rect))
+            };
+            let reach = tolerance + object.reach;
+            if point.x >= left - reach
+                && point.x <= right + reach
+                && point.y >= bottom - reach
+                && point.y <= top + reach
+            {
+                near.push((object, placement));
+            }
+        }
+        let placed = near
             .iter()
-            .map(|(object, placement)| PageObject {
-                rect: placement.shown(object.rect),
-                ..object.clone()
-            })
+            .map(|(object, placement)| object.placed(*placement))
             .collect::<Vec<_>>();
         // Tables are excluded where their base grid is: their parts are
         // edited through the table.
-        let tolerance = interaction.transform.tolerance_points(4.).unwrap_or(2.);
         let picked = crate::pdf_content_moves::object_at(
-            &shown_objects,
+            &placed,
             layer.page_box,
             &excluded,
             (point.x, point.y),
             tolerance,
         )?;
-        let index = shown_objects.iter().position(|object| *object == picked)?;
-        let (object, placement) = shown[index].clone();
-        let group = self.object_content(document_id, page_index, &object, placement, cx);
+        let index = placed.iter().position(|object| *object == picked)?;
+        let (object, placement) = near[index];
+        let object = object.clone();
+        let group = self.object_content(document_id, page_index, &object, placement, part, cx);
+        let bounds = group
+            .iter()
+            .filter(|item| item.kind != ContentKind::Text)
+            .map(MovedContent::shown)
+            .reduce(union)
+            .unwrap_or(picked.rect);
         Some(ContentHover {
             document_id,
             page_index,
             group,
-            bounds: picked.rect,
+            bounds,
         })
     }
 
-    /// A drawing or image as content to move, with the text lines its clip
-    /// clips.
+    /// A drawing or image as content to move: with the text lines its clip
+    /// clips, the copies drawn exactly over it (CAD sheets often draw a
+    /// line twice) and, unless `part` asks for the piece alone, the rest
+    /// of the lettering it is a stroke of.
     fn object_content(
         &mut self,
         document_id: DocumentId,
         page_index: u32,
         object: &PageObject,
         placement: Placement,
+        part: bool,
         cx: &mut Context<Self>,
     ) -> Vec<MovedContent> {
         let shown_tables = self.shown_page_table_edits(document_id, page_index, cx);
         let refs = shown_tables.iter().collect::<Vec<_>>();
         let moves = self.shown_page_content_moves(document_id, page_index, cx);
-        std::iter::once(MovedContent {
+        let mut group = vec![MovedContent {
             kind: object.kind,
             rect: object.rect,
+            nth: object.nth,
             from: placement,
             copy: None,
-        })
-        .chain(object.texts.iter().filter_map(|&rect| {
-            let offset = crate::pdf_content_moves::line_offset(&refs, &moves, rect)?;
-            Some(MovedContent {
-                kind: ContentKind::Text,
-                rect,
-                from: Placement::moved(offset),
-                copy: None,
+        }];
+        if let Some(layer) = self.page_text_layer(document_id, page_index, cx) {
+            let same_rect =
+                |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.01);
+            for other in layer.objects.iter() {
+                if other.kind != object.kind
+                    || (other.rect == object.rect && other.nth == object.nth)
+                {
+                    continue;
+                }
+                let duplicate = same_rect(other.rect, object.rect)
+                    && other.points() == object.points()
+                    && other.filled == object.filled;
+                let lettering = !part && object.cluster != 0 && other.cluster == object.cluster;
+                if !(duplicate || lettering) {
+                    continue;
+                }
+                // Each where it is shown: one moved on its own stays apart.
+                if let Some(from) = crate::pdf_content_moves::placement_of_nth(
+                    &refs, &moves, other.kind, other.rect, other.nth,
+                ) {
+                    group.push(MovedContent {
+                        kind: other.kind,
+                        rect: other.rect,
+                        nth: other.nth,
+                        from,
+                        copy: None,
+                    });
+                }
+            }
+        }
+        group.extend(self.clipped_text(document_id, page_index, object, cx));
+        group
+    }
+
+    /// The text lines `object`'s clip clips, where they are shown.
+    fn clipped_text(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        object: &PageObject,
+        cx: &mut Context<Self>,
+    ) -> Vec<MovedContent> {
+        if object.texts.is_empty() {
+            return Vec::new();
+        }
+        let shown_tables = self.shown_page_table_edits(document_id, page_index, cx);
+        let refs = shown_tables.iter().collect::<Vec<_>>();
+        let moves = self.shown_page_content_moves(document_id, page_index, cx);
+        object
+            .texts
+            .iter()
+            .filter_map(|&rect| {
+                let offset = crate::pdf_content_moves::line_offset(&refs, &moves, rect)?;
+                Some(MovedContent {
+                    kind: ContentKind::Text,
+                    rect,
+                    nth: 0,
+                    from: Placement::moved(offset),
+                    copy: None,
+                })
             })
-        }))
-        .collect()
+            .collect()
     }
 
     /// The drawing whose clip holds a line of `block`, and how far it is
@@ -470,8 +726,13 @@ impl DocumentWorkspace {
         let shown_tables = self.shown_page_table_edits(document_id, page_index, cx);
         let refs = shown_tables.iter().collect::<Vec<_>>();
         let moves = self.shown_page_content_moves(document_id, page_index, cx);
-        let placement =
-            crate::pdf_content_moves::placement_of(&refs, &moves, object.kind, object.rect)?;
+        let placement = crate::pdf_content_moves::placement_of_nth(
+            &refs,
+            &moves,
+            object.kind,
+            object.rect,
+            object.nth,
+        )?;
         Some((object, placement))
     }
 
@@ -496,7 +757,7 @@ impl DocumentWorkspace {
         for block in blocks.iter().filter(|block| block.cell.is_none()) {
             let group = match self.drawing_holding(document_id, page_index, block, cx) {
                 Some((object, placement)) => {
-                    self.object_content(document_id, page_index, &object, placement, cx)
+                    self.object_content(document_id, page_index, &object, placement, false, cx)
                 }
                 None => self.paragraph_content(document_id, page_index, block, cx),
             };
@@ -578,6 +839,7 @@ impl DocumentWorkspace {
                 Some(MovedContent {
                     kind: ContentKind::Text,
                     rect,
+                    nth: 0,
                     from: Placement::moved(offset),
                     copy: None,
                 })
@@ -602,14 +864,33 @@ impl DocumentWorkspace {
     ) -> bool {
         let document_id = interaction.document_id;
         self.settle_content_nudge(cx);
-        // The selection's resize handles are on top of everything.
-        if let Some((handle, bounds)) = self.content_handle_at(&interaction, point) {
+        // The selection's handles are on top of everything, except for Alt,
+        // which picks the piece under them.
+        if let Some((handle, bounds)) = self
+            .content_handle_at(&interaction, point)
+            .filter(|_| !modifiers.alt)
+        {
+            let mode = match handle {
+                ContentHandle::Resize(handle) => DragMode::Resize { handle, bounds },
+                ContentHandle::Rotate => {
+                    let Some((pivot, rotation)) =
+                        self.content_selection.as_ref().and_then(rotatable)
+                    else {
+                        return true;
+                    };
+                    DragMode::Rotate {
+                        pivot,
+                        from: angle_about(pivot, (point.x, point.y)),
+                        rotation,
+                    }
+                }
+            };
             self.content_drag = Some(ContentDrag {
                 document_id,
                 page_index: interaction.page_index,
                 start: (point.x, point.y),
                 change: ContentChange::Move(0., 0.),
-                mode: DragMode::Resize { handle, bounds },
+                mode,
                 moved: false,
                 keyboard: false,
             });
@@ -646,13 +927,13 @@ impl DocumentWorkspace {
         // Copies are drawn over the page's own content.
         if let Some(hover) = self.content_copy_at(interaction, point, cx) {
             self.commit_page_text_editing(cx);
-            self.select_content(interaction, point, hover.group, modifiers.shift, cx);
+            self.select_content(interaction, point, hover.group, modifiers.shift, false, cx);
             self.workspace_focus.focus(window, cx);
             return true;
         }
         if let Some(hover) = self.covered_paragraph_band(interaction, point, cx) {
             self.commit_page_text_editing(cx);
-            self.select_content(interaction, point, hover.group, modifiers.shift, cx);
+            self.select_content(interaction, point, hover.group, modifiers.shift, false, cx);
             self.workspace_focus.focus(window, cx);
             return true;
         }
@@ -671,15 +952,22 @@ impl DocumentWorkspace {
                 cx,
             );
         }
-        if let Some(hover) = self.content_object_at(interaction, point, cx) {
+        if let Some(hover) = self.content_object_at(interaction, point, modifiers.alt, cx) {
             self.commit_page_text_editing(cx);
-            self.select_content(interaction, point, hover.group, modifiers.shift, cx);
+            self.select_content(
+                interaction,
+                point,
+                hover.group,
+                modifiers.shift,
+                modifiers.alt,
+                cx,
+            );
             self.workspace_focus.focus(window, cx);
             return true;
         }
         if let Some(hover) = self.paragraph_band_at(interaction, point, cx) {
             self.commit_page_text_editing(cx);
-            self.select_content(interaction, point, hover.group, modifiers.shift, cx);
+            self.select_content(interaction, point, hover.group, modifiers.shift, false, cx);
             self.workspace_focus.focus(window, cx);
             return true;
         }
@@ -706,6 +994,7 @@ impl DocumentWorkspace {
         point: PdfPoint,
         group: Vec<MovedContent>,
         extend: bool,
+        part: bool,
         cx: &mut Context<Self>,
     ) {
         if group.is_empty()
@@ -718,11 +1007,20 @@ impl DocumentWorkspace {
         let same_page = self.content_selection.clone().filter(|selection| {
             selection.document_id == document_id && selection.page_index == page_index
         });
+        // A piece picked on its own (Alt) out of a selected label is
+        // selected alone: only that very piece is already selected.
         let already = same_page.as_ref().is_some_and(|selection| {
             selection.groups.iter().any(|existing| {
-                existing
-                    .iter()
-                    .any(|item| group.iter().any(|new| new.same(item)))
+                if part {
+                    existing.len() == group.len()
+                        && existing
+                            .iter()
+                            .all(|item| group.iter().any(|new| new.same(item)))
+                } else {
+                    existing
+                        .iter()
+                        .any(|item| group.iter().any(|new| new.same(item)))
+                }
             })
         });
         // A press on content already selected, or with Shift, keeps the
@@ -864,13 +1162,26 @@ impl DocumentWorkspace {
             if in_table || page_area.is_some_and(|page| size >= 0.8 * page) {
                 continue;
             }
-            let Some(placement) =
-                crate::pdf_content_moves::placement_of(&refs, &moves, object.kind, object.rect)
-            else {
+            let Some(placement) = crate::pdf_content_moves::placement_of_nth(
+                &refs,
+                &moves,
+                object.kind,
+                object.rect,
+                object.nth,
+            ) else {
                 continue;
             };
-            let object = object.clone();
-            candidates.push(self.object_content(document_id, page_index, &object, placement, cx));
+            candidates.push(vec![MovedContent {
+                kind: object.kind,
+                rect: object.rect,
+                nth: object.nth,
+                from: placement,
+                copy: None,
+            }]);
+            candidates
+                .last_mut()
+                .expect("just pushed")
+                .extend(self.clipped_text(document_id, page_index, object, cx));
         }
         // Copies, grouped by their number.
         let mut copies: std::collections::BTreeMap<u32, Vec<MovedContent>> = Default::default();
@@ -879,6 +1190,7 @@ impl DocumentWorkspace {
                 copies.entry(copy).or_default().push(MovedContent {
                     kind: item.kind,
                     rect: item.rect,
+                    nth: item.nth,
                     from: item.placement(),
                     copy: Some(copy),
                 });
@@ -1013,6 +1325,11 @@ impl DocumentWorkspace {
                 let point = self.snapped_handle_point(drag, handle, bounds, point, cx);
                 resize_change(handle, bounds, (point.x, point.y), modifiers.shift)
             }
+            DragMode::Rotate {
+                pivot,
+                from,
+                rotation,
+            } => rotate_change(pivot, from, rotation, (point.x, point.y), modifiers.shift),
         };
         if !drag.moved {
             self.take_content_sprite(drag.document_id, drag.page_index, cx);
@@ -1053,8 +1370,26 @@ impl DocumentWorkspace {
         }) else {
             return;
         };
-        // Each piece: its bounds, place, and whether it is ink on paper
-        // (text and drawings, which take the paper away) or an image.
+        let Some(interaction) = self
+            .page_interactions
+            .get(&(document_id, page_index))
+            .copied()
+        else {
+            return;
+        };
+        // Each piece: its bounds, place, whether it is ink on paper (text
+        // and drawings, which take the paper away) or an image, and, for a
+        // path, what it draws, so its picture holds its own ink and not
+        // what it crosses or frames.
+        let layer = self
+            .loaded_page_text(document_id, page_index)
+            .map(|(layer, _, _)| layer);
+        let pixels_per_point = 1.
+            / interaction
+                .transform
+                .tolerance_points(1.)
+                .unwrap_or(1.)
+                .max(f64::EPSILON);
         let mut parts = Vec::new();
         for (group_index, group) in selection.groups.iter().enumerate() {
             if group.iter().all(|item| item.kind == ContentKind::Text) {
@@ -1065,22 +1400,56 @@ impl DocumentWorkspace {
                     ContentChange::Move(0., 0.),
                     cx,
                 ) {
-                    parts.push((from, group_index, None, true));
+                    parts.push((from, group_index, None, true, None, None));
                 }
                 continue;
             }
             for (item_index, item) in group.iter().enumerate() {
                 let ink = item.kind != ContentKind::Image;
-                parts.push((item.shown(), group_index, Some(item_index), ink));
+                let object = layer
+                    .as_ref()
+                    .filter(|_| item.kind == ContentKind::Drawing && item.copy.is_none())
+                    .and_then(|layer| {
+                        layer.objects.iter().find(|object| {
+                            object.kind == item.kind
+                                && object.rect == item.rect
+                                && object.nth == item.nth
+                        })
+                    })
+                    .filter(|object| !object.points().is_empty())
+                    .cloned();
+                let mask = object
+                    .as_ref()
+                    .map(|object| object.placed(item.from))
+                    .map(|placed| PieceMask {
+                        subpaths: placed
+                            .outline
+                            .iter()
+                            .map(|subpath| {
+                                subpath
+                                    .iter()
+                                    .map(|&[x, y]| {
+                                        let local = interaction
+                                            .transform
+                                            .point_to_local_pixels(PdfPoint { x, y });
+                                        (local.x, local.y)
+                                    })
+                                    .collect()
+                            })
+                            .collect(),
+                        reach: placed.reach * pixels_per_point,
+                        filled: placed.filled,
+                    });
+                parts.push((
+                    item.shown(),
+                    group_index,
+                    Some(item_index),
+                    ink,
+                    mask,
+                    object,
+                ));
             }
         }
-        let Some(interaction) = self
-            .page_interactions
-            .get(&(document_id, page_index))
-            .copied()
-        else {
-            return;
-        };
         let Some(session) = self.session(document_id, cx) else {
             return;
         };
@@ -1119,7 +1488,7 @@ impl DocumentWorkspace {
         };
         let pieces = parts
             .into_iter()
-            .filter_map(|(from, group, item, ink)| {
+            .filter_map(|(from, group, item, ink, mask, object)| {
                 let [left, bottom, right, top] = from;
                 let a = interaction
                     .transform
@@ -1133,11 +1502,20 @@ impl DocumentWorkspace {
                     a.x.max(b.x) + 1.,
                     a.y.max(b.y) + 1.,
                 ];
+                let (image, colour) = piece_image(&sources, scale, logical, ink, mask.as_ref())?;
+                let ink = object.zip(colour).map(|(object, colour)| SpriteInk {
+                    outline: object.points(),
+                    rect: object.rect,
+                    width: object.reach * 2.,
+                    filled: object.filled,
+                    colour,
+                });
                 Some(SpritePiece {
                     from,
                     group,
                     item,
-                    image: piece_image(&sources, scale, logical, ink)?,
+                    image,
+                    ink,
                 })
             })
             .collect::<Vec<_>>();
@@ -1154,8 +1532,9 @@ impl DocumentWorkspace {
         });
     }
 
-    /// Where each piece of the dragged selection is shown after `change`.
-    fn sprite_targets(&self, sprite: &ContentSprite, change: ContentChange) -> Vec<[f64; 4]> {
+    /// Where each piece of the dragged selection is shown after `change`,
+    /// and how far its picture is turned there.
+    fn sprite_targets(&self, sprite: &ContentSprite, change: ContentChange) -> Vec<SpriteTarget> {
         let Some(selection) = self.content_selection.as_ref() else {
             return Vec::new();
         };
@@ -1165,9 +1544,29 @@ impl DocumentWorkspace {
             .filter_map(|piece| {
                 let group = selection.groups.get(piece.group)?;
                 Some(match piece.item {
+                    // A path is drawn where its change places it.
+                    Some(item) if piece.ink.is_some() => SpriteTarget::Placed(
+                        crate::pdf_content_moves::changed_placement(group.get(item)?, change),
+                    ),
+                    // A turned picture keeps its size, about its new centre.
+                    Some(item) if matches!(change, ContentChange::Rotate { .. }) => {
+                        let item = group.get(item)?;
+                        let placement = crate::pdf_content_moves::changed_placement(item, change);
+                        let (cx, cy) = placement.centre(item.rect);
+                        let from = piece.from;
+                        let (half_w, half_h) = ((from[2] - from[0]) / 2., (from[3] - from[1]) / 2.);
+                        SpriteTarget::Picture(
+                            [cx - half_w, cy - half_h, cx + half_w, cy + half_h],
+                            placement.rotation - item.from.rotation,
+                        )
+                    }
                     Some(item) => {
                         let item = group.get(item)?;
-                        crate::pdf_content_moves::changed_placement(item, change).shown(item.rect)
+                        SpriteTarget::Picture(
+                            crate::pdf_content_moves::changed_placement(item, change)
+                                .shown(item.rect),
+                            0.,
+                        )
                     }
                     // Text only moves, with its first line.
                     None => {
@@ -1175,7 +1574,10 @@ impl DocumentWorkspace {
                         let to = crate::pdf_content_moves::changed_placement(first, change).offset;
                         let (dx, dy) = (to[0] - first.from.offset[0], to[1] - first.from.offset[1]);
                         let from = piece.from;
-                        [from[0] + dx, from[1] + dy, from[2] + dx, from[3] + dy]
+                        SpriteTarget::Picture(
+                            [from[0] + dx, from[1] + dy, from[2] + dx, from[3] + dy],
+                            0.,
+                        )
                     }
                 })
             })
@@ -1273,23 +1675,70 @@ impl DocumentWorkspace {
             pieces: targets
                 .into_iter()
                 .zip(&sprite.pieces)
-                .map(|(to, piece)| (to, piece.image.clone()))
+                .map(|(target, piece)| match (target, &piece.ink) {
+                    (SpriteTarget::Placed(placement), Some(ink)) => SpritePaintPiece::Path(
+                        ink.outline
+                            .iter()
+                            .map(|subpath| {
+                                subpath
+                                    .iter()
+                                    .map(|&[x, y]| placement.map(ink.rect, (x, y)))
+                                    .collect()
+                            })
+                            .collect(),
+                        ink.width,
+                        ink.filled,
+                        ink.colour,
+                    ),
+                    (SpriteTarget::Picture(to, turned), _) => {
+                        SpritePaintPiece::Picture(to, turned, piece.image.clone())
+                    }
+                    (SpriteTarget::Placed(placement), None) => SpritePaintPiece::Picture(
+                        placement.shown(piece.from),
+                        0.,
+                        piece.image.clone(),
+                    ),
+                })
                 .collect(),
         })
     }
 
-    /// The selection's resize handle at `point`, and the selection's shown
-    /// bounds.
+    /// The selection's handle at `point` (a resize handle, or the knob that
+    /// turns it), and the selection's shown bounds.
     fn content_handle_at(
         &self,
         interaction: &PageInteraction,
         point: PdfPoint,
-    ) -> Option<(RectangleResizeHandle, [f64; 4])> {
+    ) -> Option<(ContentHandle, [f64; 4])> {
         let selection = self.content_selection.as_ref().filter(|selection| {
             selection.document_id == interaction.document_id
                 && selection.page_index == interaction.page_index
         })?;
         let bounds = resizable_bounds(selection, ContentChange::Move(0., 0.))?;
+        // The knob, placed in pixels above the frame as it is painted.
+        if rotatable(selection).is_some() {
+            let transform = interaction.transform;
+            let corners = [
+                (bounds[0], bounds[1]),
+                (bounds[2], bounds[1]),
+                (bounds[2], bounds[3]),
+                (bounds[0], bounds[3]),
+            ]
+            .map(|(x, y)| transform.point_to_local_pixels(PdfPoint { x, y }));
+            let left = corners.iter().map(|c| c.x).fold(f64::INFINITY, f64::min);
+            let right = corners.iter().map(|c| c.x).fold(-f64::INFINITY, f64::max);
+            let top = corners.iter().map(|c| c.y).fold(f64::INFINITY, f64::min);
+            let knob = (
+                (left + right) / 2.,
+                top - f64::from(FRAME_PADDING_PIXELS) - ROTATION_KNOB_OFFSET_PIXELS,
+            );
+            let pointer = transform.point_to_local_pixels(point);
+            if (pointer.x - knob.0).hypot(pointer.y - knob.1)
+                <= f64::from(HANDLE_SIZE_PIXELS) / 2. + 3.
+            {
+                return Some((ContentHandle::Rotate, bounds));
+            }
+        }
         let reach = interaction
             .transform
             .tolerance_points(f64::from(HANDLE_SIZE_PIXELS) / 2. + 2.)
@@ -1299,10 +1748,33 @@ impl DocumentWorkspace {
             .transform
             .tolerance_points(f64::from(FRAME_PADDING_PIXELS))
             .ok()?;
+        // On a small frame its edges' middle handles are left out, as they
+        // are drawn.
+        let size = {
+            let a = interaction.transform.point_to_local_pixels(PdfPoint {
+                x: bounds[0],
+                y: bounds[1],
+            });
+            let b = interaction.transform.point_to_local_pixels(PdfPoint {
+                x: bounds[2],
+                y: bounds[3],
+            });
+            ((a.x - b.x).abs(), (a.y - b.y).abs())
+        };
         handle_points(outset(bounds, padding))
             .iter()
-            .position(|(x, y)| (point.x - x).abs() <= reach && (point.y - y).abs() <= reach)
-            .map(|index| (RectangleResizeHandle::ALL[index], bounds))
+            .enumerate()
+            .position(|(index, (x, y))| {
+                handle_shown(index, size)
+                    && (point.x - x).abs() <= reach
+                    && (point.y - y).abs() <= reach
+            })
+            .map(|index| {
+                (
+                    ContentHandle::Resize(RectangleResizeHandle::ALL[index]),
+                    bounds,
+                )
+            })
     }
 
     /// The pointer at `point` dragging `handle`, snapped as a markup's
@@ -1585,8 +2057,13 @@ impl DocumentWorkspace {
             {
                 return None;
             }
-            let placement =
-                crate::pdf_content_moves::placement_of(&refs, &moves, object.kind, object.rect)?;
+            let placement = crate::pdf_content_moves::placement_of_nth(
+                &refs,
+                &moves,
+                object.kind,
+                object.rect,
+                object.nth,
+            )?;
             Some(placement.shown(object.rect))
         }));
         frames
@@ -1849,6 +2326,7 @@ impl DocumentWorkspace {
         &mut self,
         interaction: PageInteraction,
         point: PdfPoint,
+        part: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.content_handle_at(&interaction, point).is_none()
@@ -1869,6 +2347,7 @@ impl DocumentWorkspace {
         (self.page_text_hover, self.content_hover) = previous;
         let handle = self
             .content_handle_at(&interaction, point)
+            .filter(|_| !part)
             .map(|(handle, _)| (interaction.document_id, handle));
         if self.content_handle_hover != handle {
             self.content_handle_hover = handle;
@@ -1906,7 +2385,7 @@ impl DocumentWorkspace {
         } else if self.page_text_hover.is_some() {
             None
         } else {
-            self.content_object_at(interaction, point, cx)
+            self.content_object_at(interaction, point, part, cx)
                 .or_else(|| self.paragraph_band_at(interaction, point, cx))
         };
         if self.content_hover != object {
@@ -1926,6 +2405,7 @@ impl DocumentWorkspace {
             .map(|drag| match drag.mode {
                 DragMode::Move => crate::canvas_cursors::move_cursor(true),
                 DragMode::Resize { handle, .. } => super::rectangle_resize_cursor_style(handle, 0.),
+                DragMode::Rotate { .. } => crate::canvas_cursors::rotate_cursor(),
             })
             .or_else(|| {
                 self.page_text_editing
@@ -1944,7 +2424,10 @@ impl DocumentWorkspace {
         if let Some((hover_document, handle)) = self.content_handle_hover
             && hover_document == document_id
         {
-            return Some(super::rectangle_resize_cursor_style(handle, 0.));
+            return Some(match handle {
+                ContentHandle::Resize(handle) => super::rectangle_resize_cursor_style(handle, 0.),
+                ContentHandle::Rotate => crate::canvas_cursors::rotate_cursor(),
+            });
         }
         if self
             .content_hover
@@ -2018,7 +2501,7 @@ impl DocumentWorkspace {
         &self,
         document_id: DocumentId,
         cx: &App,
-    ) -> Vec<(u32, Vec<Quad>, Vec<Quad>, Vec<(f64, f64)>)> {
+    ) -> Vec<(u32, Vec<Quad>, Vec<Quad>, Vec<(f64, f64)>, bool)> {
         if !self.editing_content(document_id, cx) {
             return Vec::new();
         }
@@ -2043,7 +2526,8 @@ impl DocumentWorkspace {
                 .map(|bounds| handle_points(bounds).to_vec())
                 .unwrap_or_default();
             let quads = rects.into_iter().map(rect_quad).collect::<Vec<_>>();
-            overlays.push((selection.page_index, quads, Vec::new(), handles));
+            let knob = rotatable(selection).is_some();
+            overlays.push((selection.page_index, quads, Vec::new(), handles, knob));
         }
         if let Some(hover) = self
             .content_hover
@@ -2053,10 +2537,12 @@ impl DocumentWorkspace {
             let quad = rect_quad(hover.bounds);
             match overlays
                 .iter_mut()
-                .find(|(page, _, _, _)| *page == hover.page_index)
+                .find(|(page, ..)| *page == hover.page_index)
             {
-                Some((_, _, hovered, _)) => hovered.push(quad),
-                None => overlays.push((hover.page_index, Vec::new(), vec![quad], Vec::new())),
+                Some((_, _, hovered, ..)) => hovered.push(quad),
+                None => {
+                    overlays.push((hover.page_index, Vec::new(), vec![quad], Vec::new(), false))
+                }
             }
         }
         overlays
@@ -2073,16 +2559,90 @@ fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 }
 
 /// The shown bounds of a selection that resizes from handles: one drawing
-/// or image (with any text its clip holds), changed by `change`.
+/// or image (with any text its clip holds), or one label of lettering,
+/// changed by `change`.
 fn resizable_bounds(selection: &ContentSelection, change: ContentChange) -> Option<[f64; 4]> {
     let [group] = selection.groups.as_slice() else {
         return None;
     };
-    let first = group.first()?;
-    if first.kind == ContentKind::Text {
+    if group.first()?.kind == ContentKind::Text {
         return None;
     }
-    Some(crate::pdf_content_moves::changed_placement(first, change).shown(first.rect))
+    group
+        .iter()
+        .filter(|item| item.kind != ContentKind::Text)
+        .map(|item| crate::pdf_content_moves::changed_placement(item, change).shown(item.rect))
+        .reduce(union)
+}
+
+/// The centre a selection turns about from its knob, and how far it is
+/// turned: one drawing or image, or one label of lettering, with no text
+/// a clip holds (text is never turned).
+fn rotatable(selection: &ContentSelection) -> Option<((f64, f64), f64)> {
+    let [group] = selection.groups.as_slice() else {
+        return None;
+    };
+    if group.iter().any(|item| item.kind == ContentKind::Text) {
+        return None;
+    }
+    let first = group.first()?;
+    if let [item] = group.as_slice() {
+        return Some((item.from.centre(item.rect), item.from.rotation));
+    }
+    let [left, bottom, right, top] = group.iter().map(MovedContent::shown).reduce(union)?;
+    Some((
+        ((left + right) / 2., (bottom + top) / 2.),
+        first.from.rotation,
+    ))
+}
+
+/// The angle of `point` about `pivot`, in degrees anticlockwise.
+fn angle_about(pivot: (f64, f64), point: (f64, f64)) -> f64 {
+    (point.1 - pivot.1).atan2(point.0 - pivot.0).to_degrees()
+}
+
+/// The turn that takes the knob, pressed at angle `from` about `pivot` on
+/// content turned `rotation`, to `point`; Shift turns the content to whole
+/// steps of [`ROTATION_SNAP_DEGREES`].
+fn rotate_change(
+    pivot: (f64, f64),
+    from: f64,
+    rotation: f64,
+    point: (f64, f64),
+    snap: bool,
+) -> ContentChange {
+    let mut degrees = angle_about(pivot, point) - from;
+    if snap {
+        let turned = rotation + degrees;
+        degrees = (turned / ROTATION_SNAP_DEGREES).round() * ROTATION_SNAP_DEGREES - rotation;
+    }
+    ContentChange::Rotate {
+        pivot,
+        degrees: crate::pdf_content_moves::normalized_degrees(degrees),
+    }
+}
+
+/// The least a frame's side is across, in pixels, for the middle handle of
+/// the sides across it to show: on a smaller frame it would crowd the
+/// corners'.
+const MIDDLE_HANDLE_MIN_PIXELS: f64 = 40.;
+/// The largest a frame is across, in pixels, with no resize handles.
+const TINY_FRAME_PIXELS: f64 = 24.;
+
+/// Whether handle `index` (in [`RectangleResizeHandle::ALL`]'s order) of a
+/// frame `size` pixels wide and tall is shown: corners unless the frame is
+/// tiny, the middle of a side when the frame is wide enough along it.
+pub(super) fn handle_shown(index: usize, (width, height): (f64, f64)) -> bool {
+    // A frame smaller than three handles has none: they would cover what
+    // it frames, and a press there moves it.
+    if width.max(height) < TINY_FRAME_PIXELS {
+        return false;
+    }
+    match index {
+        1 | 5 => width >= MIDDLE_HANDLE_MIN_PIXELS,
+        3 | 7 => height >= MIDDLE_HANDLE_MIN_PIXELS,
+        _ => true,
+    }
 }
 
 /// The resize handles of `bounds`, in [`RectangleResizeHandle::ALL`]'s
@@ -2183,7 +2743,54 @@ pub(super) fn content_sprite_element(
                     else {
                         return;
                     };
-                    for ([left, bottom, right, top], image) in &sprite.pieces {
+                    let project = |(x, y): (f64, f64)| {
+                        let local = transform.point_to_local_pixels(PdfPoint { x, y });
+                        point(
+                            page_bounds.origin.x + px(local.x as f32),
+                            page_bounds.origin.y + px(local.y as f32),
+                        )
+                    };
+                    let pixels_per_point = 1.
+                        / transform
+                            .tolerance_points(1.)
+                            .unwrap_or(1.)
+                            .max(f64::EPSILON);
+                    for piece in &sprite.pieces {
+                        let ([left, bottom, right, top], turned, image) = match piece {
+                            SpritePaintPiece::Picture(to, turned, image) => (to, turned, image),
+                            // A path is drawn as the page draws it.
+                            SpritePaintPiece::Path(subpaths, width, filled, colour) => {
+                                let mut builder = if *filled {
+                                    gpui::PathBuilder::fill()
+                                } else {
+                                    gpui::PathBuilder::stroke(px(
+                                        (width * pixels_per_point).max(1.) as f32,
+                                    ))
+                                };
+                                for subpath in subpaths {
+                                    let Some((&first, rest)) = subpath.split_first() else {
+                                        continue;
+                                    };
+                                    builder.move_to(project(first));
+                                    if rest.is_empty() {
+                                        // A dot: a hair's length, to show.
+                                        let mut dot = project(first);
+                                        dot.x += px(0.5);
+                                        builder.line_to(dot);
+                                    }
+                                    for &corner in rest {
+                                        builder.line_to(project(corner));
+                                    }
+                                    if *filled {
+                                        builder.close();
+                                    }
+                                }
+                                if let Ok(path) = builder.build() {
+                                    window.paint_path(path, *colour);
+                                }
+                                continue;
+                            }
+                        };
                         let a = transform.point_to_local_pixels(PdfPoint {
                             x: *left,
                             y: *bottom,
@@ -2200,8 +2807,49 @@ pub(super) fn content_sprite_element(
                                 page_bounds.origin.y + px(a.y.max(b.y) as f32 + 1.),
                             ),
                         );
-                        let _ =
-                            window.paint_image(to, to, Default::default(), image.clone(), 0, false);
+                        if *turned == 0. {
+                            let _ = window.paint_image(
+                                to,
+                                to,
+                                Default::default(),
+                                image.clone(),
+                                0,
+                                false,
+                            );
+                            continue;
+                        }
+                        // The page's turn as the screen shows it: the angle
+                        // between the page's x axis and that axis turned,
+                        // both projected.
+                        let centre = ((left + right) / 2., (bottom + top) / 2.);
+                        let screen_angle = |(dx, dy): (f64, f64)| {
+                            let from = transform.point_to_local_pixels(PdfPoint {
+                                x: centre.0,
+                                y: centre.1,
+                            });
+                            let to = transform.point_to_local_pixels(PdfPoint {
+                                x: centre.0 + dx,
+                                y: centre.1 + dy,
+                            });
+                            (to.y - from.y).atan2(to.x - from.x)
+                        };
+                        let (sin, cos) = turned.to_radians().sin_cos();
+                        let angle = screen_angle((cos, sin)) - screen_angle((1., 0.));
+                        let scale = window.scale_factor();
+                        let middle = to.center();
+                        let matrix = gpui::TransformationMatrix::unit()
+                            .translate(middle.scale(scale))
+                            .rotate(gpui::radians(angle as f32))
+                            .translate(middle.scale(-scale));
+                        let _ = window.paint_image_transformed(
+                            to,
+                            to,
+                            Default::default(),
+                            image.clone(),
+                            0,
+                            false,
+                            matrix,
+                        );
                     }
                 },
             )
@@ -2224,7 +2872,8 @@ fn piece_image(
     scale: f64,
     logical: [f64; 4],
     ink: bool,
-) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    mask: Option<&PieceMask>,
+) -> Option<(std::sync::Arc<gpui::RenderImage>, Option<gpui::Rgba>)> {
     // Image pixels per source pixel: a tile's image may be finer or coarser
     // than the tile (detail and preview renders).
     let fineness = |(crop, image, pad): &(
@@ -2283,6 +2932,15 @@ fn piece_image(
             }
         }
     }
+    // Only the path's own ink: what it frames or crosses stays on the page.
+    if let Some(mask) = mask {
+        let keep = mask.raster(to_pixels, (x0, y0), (width, height));
+        for (pixel, keep) in pixels.chunks_exact_mut(4).zip(keep) {
+            if !keep {
+                pixel.copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+    }
     if ink {
         for pixel in pixels.chunks_exact_mut(4) {
             // BGRA: the least of the colour channels says how much paper
@@ -2299,14 +2957,133 @@ fn piece_image(
             pixel[3] = alpha;
         }
     }
+    // A path's colour: its solid ink's, weighed by how solid (BGRA).
+    let colour = mask.filter(|_| ink).and_then(|_| {
+        let mut sum = [0_u64; 3];
+        let mut weight = 0_u64;
+        for pixel in pixels.chunks_exact(4).filter(|pixel| pixel[3] >= 128) {
+            let alpha = u64::from(pixel[3]);
+            for (total, channel) in sum.iter_mut().zip(&pixel[..3]) {
+                *total += u64::from(*channel) * alpha;
+            }
+            weight += alpha;
+        }
+        (weight > 0).then(|| gpui::Rgba {
+            r: (sum[2] / weight) as f32 / 255.,
+            g: (sum[1] / weight) as f32 / 255.,
+            b: (sum[0] / weight) as f32 / 255.,
+            a: 1.,
+        })
+    });
     let buffer = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
         width as u32,
         height as u32,
         pixels,
     )?;
-    Some(std::sync::Arc::new(gpui::RenderImage::new(
-        smallvec::smallvec![image::Frame::new(buffer)],
-    )))
+    Some((
+        std::sync::Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+            image::Frame::new(buffer)
+        ])),
+        colour,
+    ))
+}
+
+/// What a dragged path draws, in logical pixels from the page's top left:
+/// its subpaths, how far its stroke reaches either side, and whether it is
+/// filled.
+pub(super) struct PieceMask {
+    subpaths: Vec<Vec<(f64, f64)>>,
+    reach: f64,
+    filled: bool,
+}
+
+impl PieceMask {
+    /// Which pixels of a picture `size` pixels large, at `origin` in
+    /// pixels `to_pixels` times finer than logical ones, it draws on: its
+    /// stroke, a pixel and a half wider each side for its smoothed edge,
+    /// and its fill.
+    fn raster(&self, to_pixels: f64, origin: (i64, i64), size: (i64, i64)) -> Vec<bool> {
+        let (width, height) = size;
+        let mut keep = vec![false; (width * height).max(0) as usize];
+        let point = |(x, y): (f64, f64)| {
+            (
+                x * to_pixels - origin.0 as f64,
+                y * to_pixels - origin.1 as f64,
+            )
+        };
+        let reach = self.reach * to_pixels + 1.5 * to_pixels.max(1.);
+        for subpath in &self.subpaths {
+            let points = subpath.iter().copied().map(point).collect::<Vec<_>>();
+            let segments = if points.len() == 1 {
+                vec![(points[0], points[0])]
+            } else {
+                points.windows(2).map(|pair| (pair[0], pair[1])).collect()
+            };
+            for (a, b) in segments {
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let length = dx * dx + dy * dy;
+                let rows = ((a.1.min(b.1) - reach).floor().max(0.) as i64)
+                    ..=((a.1.max(b.1) + reach).ceil().min(height as f64 - 1.) as i64);
+                for row in rows {
+                    let y = row as f64 + 0.5;
+                    // The band's span on this row, for a slanting segment;
+                    // else its box.
+                    let (from, to) = if dy.abs() > 1e-9 && length > 0. {
+                        let t = ((y - a.1) / dy).clamp(0., 1.);
+                        let x = a.0 + t * dx;
+                        let spread = reach * length.sqrt() / dy.abs() + reach;
+                        (x - spread, x + spread)
+                    } else {
+                        (a.0.min(b.0) - reach, a.0.max(b.0) + reach)
+                    };
+                    let from = from.max(a.0.min(b.0) - reach).floor().max(0.) as i64;
+                    let to = to.min(a.0.max(b.0) + reach).ceil().min(width as f64 - 1.) as i64;
+                    for column in from..=to {
+                        let x = column as f64 + 0.5;
+                        let t = if length > 0. {
+                            (((x - a.0) * dx + (y - a.1) * dy) / length).clamp(0., 1.)
+                        } else {
+                            0.
+                        };
+                        if (x - (a.0 + t * dx)).hypot(y - (a.1 + t * dy)) <= reach {
+                            keep[(row * width + column) as usize] = true;
+                        }
+                    }
+                }
+            }
+        }
+        if self.filled {
+            // Even-odd, a row at a time.
+            let polygons = self
+                .subpaths
+                .iter()
+                .map(|subpath| subpath.iter().copied().map(point).collect::<Vec<_>>())
+                .filter(|polygon| polygon.len() > 2)
+                .collect::<Vec<_>>();
+            for row in 0..height {
+                let y = row as f64 + 0.5;
+                let mut crossings = polygons
+                    .iter()
+                    .flat_map(|polygon| {
+                        (0..polygon.len()).filter_map(move |index| {
+                            let (a, b) = (polygon[index], polygon[(index + 1) % polygon.len()]);
+                            ((a.1 > y) != (b.1 > y))
+                                .then(|| a.0 + (y - a.1) / (b.1 - a.1) * (b.0 - a.0))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                crossings.sort_by(f64::total_cmp);
+                for span in crossings.chunks_exact(2) {
+                    let from = span[0].floor().max(0.) as i64;
+                    let to = span[1].ceil().min(width as f64) as i64;
+                    for column in from..to {
+                        keep[(row * width + column) as usize] = true;
+                    }
+                }
+            }
+        }
+        keep
+    }
 }
 
 /// Whether `outer` holds all of `inner` (left, bottom, right, top).
@@ -2317,6 +3094,55 @@ fn contains(outer: [f64; 4], inner: [f64; 4]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dragged_path_keeps_only_its_own_ink_and_small_frames_drop_handles() {
+        // A frame 20 pixels square, 1 pixel thick, round text inside it.
+        let mask = PieceMask {
+            subpaths: vec![vec![(0., 0.), (20., 0.), (20., 20.), (0., 20.), (0., 0.)]],
+            reach: 0.5,
+            filled: false,
+        };
+        let keep = mask.raster(1., (-2, -2), (24, 24));
+        let at = |x: i64, y: i64| keep[((y + 2) * 24 + (x + 2)) as usize];
+        assert!(at(10, 0) && at(0, 10) && at(20, 10));
+        assert!(!at(10, 10), "what it frames stays on the page");
+        // Filled, its inside is its own.
+        let filled = PieceMask {
+            filled: true,
+            ..mask
+        };
+        assert!(filled.raster(1., (-2, -2), (24, 24))[(12 * 24 + 12) as usize]);
+        // A small frame has corners only; a tiny one, no handles.
+        assert!(handle_shown(0, (30., 30.)) && !handle_shown(1, (30., 30.)));
+        assert!(handle_shown(3, (30., 60.)) && !handle_shown(1, (30., 60.)));
+        assert!((0..8).all(|index| !handle_shown(index, (20., 10.))));
+        assert!((0..8).all(|index| handle_shown(index, (60., 60.))));
+    }
+
+    #[test]
+    fn the_knob_turns_content_about_its_centre_and_shift_snaps_it() {
+        let pivot = (100., 100.);
+        // Pressed straight above the centre, dragged to its left: a
+        // quarter turn anticlockwise.
+        let from = angle_about(pivot, (100., 150.));
+        let ContentChange::Rotate { degrees, .. } =
+            rotate_change(pivot, from, 0., (50., 100.), false)
+        else {
+            unreachable!("the knob turns");
+        };
+        assert!((degrees - 90.).abs() < 1e-9);
+        // Shift turns content already turned 10 degrees to a whole 15.
+        let near = (
+            100. + 50. * 37f64.to_radians().sin(),
+            100. + 50. * 37f64.to_radians().cos(),
+        );
+        let ContentChange::Rotate { degrees, .. } = rotate_change(pivot, from, 10., near, true)
+        else {
+            unreachable!("the knob turns");
+        };
+        assert!((10. + degrees - -30.).abs() < 1e-9, "{degrees}");
+    }
 
     #[test]
     fn a_handle_resizes_from_the_opposite_handle() {
@@ -2420,7 +3246,8 @@ mod tests {
         // Tile pixels 1 to 3 across, both rows; a tile drawn twice as fine
         // gives a picture twice as fine.
         for fine in [1, 2] {
-            let image = piece_image(&[tile(values, fine)], 1., [1., 0., 3., 2.], false).unwrap();
+            let (image, _) =
+                piece_image(&[tile(values, fine)], 1., [1., 0., 3., 2.], false, None).unwrap();
             let (width, pixels) = picture(&image);
             assert_eq!(width, 2 * fine as i32);
             let at = |x: usize, y: usize| pixels[y * 2 * fine + x][0];
@@ -2433,11 +3260,12 @@ mod tests {
 
     #[test]
     fn dragged_ink_leaves_the_paper_behind() {
-        let image = piece_image(
+        let (image, _) = piece_image(
             &[tile([[255, 0, 128, 255]; 2], 1)],
             1.,
             [0., 0., 4., 1.],
             true,
+            None,
         )
         .unwrap();
         let (_, pixels) = picture(&image);

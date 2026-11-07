@@ -85,6 +85,51 @@ impl DocumentWorkspace {
         true
     }
 
+    /// Pastes a picture another app put on the clipboard as an Image,
+    /// centred on `at` (the pointer) or else on page `page_index`, as a
+    /// dropped image is placed.
+    pub(super) fn paste_image(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        at: Option<PdfPoint>,
+        encoded: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) {
+        let centre = at.or_else(|| {
+            let view_box = self
+                .session(document_id, cx)?
+                .read(cx)
+                .source_page_coordinate_space(page_index)?
+                .view_box();
+            Some(PdfPoint {
+                x: view_box.x + view_box.width / 2.,
+                y: view_box.y + view_box.height / 2.,
+            })
+        });
+        let Some(point) = centre else {
+            return;
+        };
+        let decoded = cx
+            .background_executor()
+            .spawn(async move { decode_image_bytes(&encoded).map_err(|error| error.to_string()) });
+        cx.spawn(async move |entity, cx| {
+            let decoded = decoded.await;
+            let _ = entity.update(cx, |workspace, cx| {
+                let result = decoded.and_then(|decoded| {
+                    workspace.place_dropped_image(document_id, page_index, decoded, point, cx)
+                });
+                if let Err(error) = result {
+                    workspace
+                        .annotation_statuses
+                        .insert(document_id, format!("The image was not pasted: {error}"));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// The page and point a drop at `position` places on: the page under
     /// it, or the shown page nearest to it, at the nearest point on it.
     fn drop_target(

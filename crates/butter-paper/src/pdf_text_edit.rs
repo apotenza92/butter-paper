@@ -20,7 +20,7 @@
 //! Type3 fonts, vertical writing, CMaps other than Identity-H and invisible
 //! (OCR) text are not editable.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
@@ -3605,6 +3605,9 @@ struct ExtractedPage {
     draws: Vec<DrawOp>,
     /// The matrix in effect at each `q` of the page's own content streams.
     saves: HashMap<usize, Matrix>,
+    /// For each clipping path (by its paint), how many paths and XObjects
+    /// it clips.
+    clip_uses: HashMap<usize, usize>,
 }
 
 impl ExtractedPage {
@@ -3663,8 +3666,48 @@ impl ExtractedPage {
         )
     }
 
+    /// The pieces of a stroked path of several subpaths outside a small
+    /// clip, each a drawing of its own: its bounds, its operators (from
+    /// its `m` or `re` to the next) and its points. `None` for any other
+    /// path, which is one drawing: a fill's subpaths fill together (a
+    /// letter's counter, a hatch), and a clip's are one clip.
+    fn path_parts(&self, paint: &PaintOp, page_box: Option<[f64; 4]>) -> Option<Vec<PathPart>> {
+        if !paint.stroked
+            || paint.filled
+            || paint.clips
+            || self.local_clip(&paint.clip_chain, page_box).is_some()
+        {
+            return None;
+        }
+        let mut ranges: Vec<Vec<usize>> = Vec::new();
+        for &op in &paint.ops {
+            match self.operations[op].operator.as_slice() {
+                b"m" | b"re" => ranges.push(vec![op]),
+                _ => ranges.last_mut()?.push(op),
+            }
+        }
+        let subpaths = path_subpaths(&self.operations, &paint.ops, paint.ctm);
+        if ranges.len() < 2 || ranges.len() != subpaths.len() {
+            return None;
+        }
+        ranges
+            .into_iter()
+            .zip(subpaths)
+            .map(|(ops, subpath)| {
+                Some(PathPart {
+                    rect: points_bounds(subpath.points.iter().map(|point| (point.x, point.y)))?,
+                    ops,
+                    subpath,
+                })
+            })
+            .collect()
+    }
+
     /// The outermost clip in `chain` that clips to a small part of the
-    /// page (`page_box`): what it clips is one drawing, moved with it.
+    /// page (`page_box`) and not too much: what it clips is one drawing
+    /// (an SVG, a chart), moved with it. A clip holding more is a view of a
+    /// drawing, as a CAD sheet's viewports are, whose paths are each their
+    /// own.
     fn local_clip(
         &self,
         chain: &Option<std::sync::Arc<ClipLink>>,
@@ -3680,7 +3723,8 @@ impl ExtractedPage {
                 .and_then(|paint| self.paint_bounds(paint))
                 .is_some_and(|bounds| {
                     page_box.is_some_and(|page| area(bounds) < LOCAL_CLIP_SHARE * area(page))
-                });
+                })
+                && self.clip_uses.get(&clip.paint).copied().unwrap_or(0) <= MAX_GROUP_PARTS;
             if local {
                 outermost = Some(clip.paint);
             }
@@ -3689,71 +3733,632 @@ impl ExtractedPage {
         outermost
     }
 
-    /// The drawings and images the page's own content draws: what a small
-    /// clip clips is one drawing, named by the clip's bounds, with the text
-    /// lines it clips; otherwise each painted path that is not only a clip,
-    /// and each XObject, is one.
-    fn objects(&self, page_box: Option<[f64; 4]>) -> Vec<crate::pdf_content_moves::PageObject> {
-        use crate::pdf_content_moves::{ContentKind, PageObject};
-        let mut objects = Vec::new();
+    /// The pieces of content the page's own content draws that Edit PDF
+    /// moves as drawings and images, in the order [`Self::objects`] lists
+    /// them: each path (or piece of a stroked one) outside a small clip,
+    /// each XObject outside one, then each small clip, with what it clips.
+    fn units(&self, page_box: Option<[f64; 4]>) -> Vec<(ContentUnit, [f64; 4])> {
+        let mut units = Vec::new();
         let mut groups = BTreeSet::new();
-        for paint in &self.paints {
+        for (index, paint) in self.paints.iter().enumerate() {
             if !(paint.stroked || paint.filled) || paint.clips {
                 continue;
             }
-            match self.local_clip(&paint.clip_chain, page_box) {
-                Some(clip) => {
-                    groups.insert(clip);
-                }
-                None => {
-                    if let Some(rect) = self.paint_bounds(paint) {
-                        objects.push(PageObject {
-                            kind: ContentKind::Drawing,
-                            rect,
-                            texts: Vec::new(),
-                        });
-                    }
-                }
+            if let Some(clip) = self.local_clip(&paint.clip_chain, page_box) {
+                groups.insert(clip);
+                continue;
+            }
+            match self.path_parts(paint, page_box) {
+                Some(parts) => units.extend(
+                    parts
+                        .iter()
+                        .enumerate()
+                        .map(|(part, piece)| (ContentUnit::Piece(index, part), piece.rect)),
+                ),
+                None => units.extend(
+                    self.paint_bounds(paint)
+                        .map(|rect| (ContentUnit::Paint(index), rect)),
+                ),
             }
         }
-        for draw in &self.draws {
+        for (index, draw) in self.draws.iter().enumerate() {
             match self.local_clip(&draw.clip_chain, page_box) {
                 Some(clip) => {
                     groups.insert(clip);
                 }
-                None => objects.push(PageObject {
-                    kind: ContentKind::Image,
-                    rect: draw.bounds,
-                    texts: Vec::new(),
-                }),
+                None => units.push((ContentUnit::Draw(index), draw.bounds)),
             }
         }
         for clip in groups {
-            let Some(rect) = self.paint_bounds(&self.paints[clip]) else {
-                continue;
+            if let Some(rect) = self.paint_bounds(&self.paints[clip]) {
+                units.push((ContentUnit::Group(clip), rect));
+            }
+        }
+        units
+    }
+
+    /// Which content at the same bounds each unit is
+    /// ([`crate::pdf_content_moves::ContentMove::nth`]); units missing from
+    /// the map are the first.
+    fn unit_names(&self, page_box: Option<[f64; 4]>) -> HashMap<ContentUnit, u32> {
+        unit_ordinals(&self.units(page_box))
+            .into_iter()
+            .filter(|(_, nth)| *nth > 0)
+            .collect()
+    }
+
+    /// The drawings and images the page's own content draws: what a small
+    /// clip clips is one drawing, named by the clip's bounds, with the text
+    /// lines it clips; otherwise each painted path that is not only a clip
+    /// (each piece of a stroked one), and each XObject, is one.
+    fn objects(&self, page_box: Option<[f64; 4]>) -> Vec<crate::pdf_content_moves::PageObject> {
+        use crate::pdf_content_moves::{ContentKind, PageObject};
+        let units = self.units(page_box);
+        let ordinals = unit_ordinals(&units);
+        let mut objects = Vec::with_capacity(units.len());
+        let mut outline_budget = MAX_OUTLINE_POINTS;
+        let mut parts: Option<(usize, Vec<PathPart>)> = None;
+        for ((unit, rect), (_, nth)) in units.iter().zip(&ordinals) {
+            let (rect, nth) = (*rect, *nth);
+            let (paint, ops) = match *unit {
+                ContentUnit::Draw(index) => {
+                    objects.push(PageObject {
+                        kind: ContentKind::Image,
+                        rect,
+                        nth,
+                        form: self.draws[index].form.is_some(),
+                        ..PageObject::default()
+                    });
+                    continue;
+                }
+                ContentUnit::Group(clip) => {
+                    let texts = self
+                        .lines
+                        .iter()
+                        .filter(|line| {
+                            line.ops.first().is_some_and(|&show| {
+                                self.local_clip(&self.shows[show].state.clips, page_box)
+                                    == Some(clip)
+                            })
+                        })
+                        .filter_map(|line| crate::pdf_tables::line_core_box(&line.public))
+                        .collect();
+                    objects.push(PageObject {
+                        kind: ContentKind::Drawing,
+                        rect,
+                        texts,
+                        nth,
+                        ..PageObject::default()
+                    });
+                    continue;
+                }
+                ContentUnit::Paint(index) => (&self.paints[index], self.paints[index].ops.clone()),
+                ContentUnit::Piece(index, part) => {
+                    if parts.as_ref().is_none_or(|(of, _)| *of != index) {
+                        parts = self
+                            .path_parts(&self.paints[index], page_box)
+                            .map(|found| (index, found));
+                    }
+                    let Some(ops) = parts
+                        .as_ref()
+                        .and_then(|(_, found)| found.get(part))
+                        .map(|piece| piece.ops.clone())
+                    else {
+                        continue;
+                    };
+                    (&self.paints[index], ops)
+                }
             };
-            let texts = self
-                .lines
-                .iter()
-                .filter(|line| {
-                    line.ops.first().is_some_and(|&show| {
-                        self.local_clip(&self.shows[show].state.clips, page_box) == Some(clip)
-                    })
-                })
-                .filter_map(|line| crate::pdf_tables::line_core_box(&line.public))
-                .collect();
+            // Half the stroke in page units: the matrix's mean scale, and
+            // never under a hairline.
+            let scale = (paint.ctm[0] * paint.ctm[3] - paint.ctm[1] * paint.ctm[2])
+                .abs()
+                .sqrt();
+            let reach = if paint.stroked {
+                round_hundredth((paint.line_width * scale / 2.).max(0.125))
+            } else {
+                0.
+            };
+            let mut outline = path_outline(&self.operations, &ops, paint.ctm);
+            let segment = straight_segment(&outline, rect);
+            if segment.is_some() {
+                outline.clear();
+            }
+            let points = outline.iter().map(Vec::len).sum::<usize>();
+            if points > outline_budget {
+                outline.clear();
+            } else {
+                outline_budget -= points;
+            }
             objects.push(PageObject {
                 kind: ContentKind::Drawing,
                 rect,
-                texts,
+                outline,
+                reach,
+                filled: paint.filled,
+                segment,
+                nth,
+                ..PageObject::default()
             });
         }
+        cluster_lettering(&mut objects);
         objects
+    }
+}
+
+/// A piece of page content Edit PDF can name: a painted path, a piece of a
+/// stroked one, an XObject drawn with `Do`, or a small clip with what it
+/// clips; by their indices among the page's paints and draws.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ContentUnit {
+    Paint(usize),
+    Piece(usize, usize),
+    Draw(usize),
+    Group(usize),
+}
+
+impl ContentUnit {
+    fn kind(self) -> crate::pdf_content_moves::ContentKind {
+        match self {
+            Self::Draw(_) => crate::pdf_content_moves::ContentKind::Image,
+            _ => crate::pdf_content_moves::ContentKind::Drawing,
+        }
+    }
+}
+
+/// Each unit's ordinal among the units of its kind at the same bounds (to
+/// a hundredth of a point), in order.
+fn unit_ordinals(units: &[(ContentUnit, [f64; 4])]) -> Vec<(ContentUnit, u32)> {
+    let mut seen: HashMap<(bool, [i64; 4]), u32> = HashMap::new();
+    units
+        .iter()
+        .map(|(unit, rect)| {
+            let key = (
+                unit.kind() == crate::pdf_content_moves::ContentKind::Image,
+                rect.map(|value| (value * 100.).round() as i64),
+            );
+            let count = seen.entry(key).or_insert(0);
+            let nth = *count;
+            *count += 1;
+            (*unit, nth)
+        })
+        .collect()
+}
+
+/// The largest a stroke or letter of lettering drawn as paths is, in
+/// points.
+const MAX_LETTER: f64 = 24.;
+/// How many of its letters' sizes a label may span across its lines: more,
+/// and it is hatching or symbols rather than lettering.
+const MAX_LABEL_LETTERS: f64 = 20.;
+/// How broad both ways, as a share of a label's letter size, a piece of a
+/// letter with breadth is (a bowl, a diagonal, a curve).
+const LETTER_BREADTH: f64 = 0.25;
+/// How much more than a letter a word may span across its line (italic
+/// lettering leans past its letters' boxes).
+const WORD_LETTER_SLACK: f64 = 1.3;
+/// The fewest pieces lettering has: two arcs of a rounded corner, or a
+/// two-stroke mark, are not a label.
+const MIN_LABEL_PIECES: usize = 3;
+/// The least share of a label's pieces with breadth both ways.
+const MIN_BROAD_SHARE: f64 = 0.25;
+
+/// Numbers the lettering among `objects` ([`PageObject::cluster`]): small
+/// paths (strokes of an SHX letter, outlined glyphs) of the same stroke,
+/// each within half its letters' size of the next, joined into one label.
+/// A path on its own is not lettering.
+fn cluster_lettering(objects: &mut [crate::pdf_content_moves::PageObject]) {
+    use crate::pdf_content_moves::ContentKind;
+    let size = |rect: [f64; 4]| (rect[2] - rect[0]).max(rect[3] - rect[1]);
+    let candidates = objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| {
+            object.kind == ContentKind::Drawing
+                && object.texts.is_empty()
+                && (object.segment.is_some() || !object.outline.is_empty())
+                && size(object.rect) <= MAX_LETTER
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if candidates.len() < 2 {
+        return;
+    }
+    // A grid of cells as large as the farthest two strokes join across.
+    let cell = |value: f64| (value / LETTERING_CELL).floor() as i64;
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (slot, &index) in candidates.iter().enumerate() {
+        let [left, bottom, right, top] = objects[index].rect;
+        for x in cell(left)..=cell(right) {
+            for y in cell(bottom)..=cell(top) {
+                grid.entry((x, y)).or_default().push(slot);
+            }
+        }
+    }
+    // Labels joined by words along their lines; where that runs into
+    // something too large to be lettering, by letters within a word.
+    let (lines, words) = lettering_components(objects, &candidates, &grid);
+    let lines_ok = labels_of(objects, &candidates, &lines);
+    let words_ok = labels_of(objects, &candidates, &words);
+    let mut numbers: HashMap<(bool, usize), u32> = HashMap::new();
+    for (slot, &index) in candidates.iter().enumerate() {
+        let label = if lines_ok.contains(&lines[slot]) {
+            (true, lines[slot])
+        } else if words_ok.contains(&words[slot]) {
+            (false, words[slot])
+        } else {
+            continue;
+        };
+        let next = numbers.len() as u32 + 1;
+        objects[index].cluster = *numbers.entry(label).or_insert(next);
+    }
+}
+
+/// The grid cell size [`cluster_lettering`] finds neighbours in: most
+/// strokes span a cell or two.
+const LETTERING_CELL: f64 = 8.;
+
+/// Each candidate's component twice over: its line of lettering, and its
+/// word. A word is the small paths of the same stroke each within half a
+/// letter of the next; words then join into a line a letter (a word's
+/// space) apart along their own direction, across for horizontal text and
+/// down for vertical text (as a sheet's dimensions are lettered), but never
+/// across their lines.
+fn lettering_components(
+    objects: &[crate::pdf_content_moves::PageObject],
+    candidates: &[usize],
+    grid: &HashMap<(i64, i64), Vec<usize>>,
+) -> (Vec<usize>, Vec<usize>) {
+    let size = |rect: [f64; 4]| (rect[2] - rect[0]).max(rect[3] - rect[1]);
+    let cell = |value: f64| (value / LETTERING_CELL).floor() as i64;
+    fn root(parent: &mut [usize], mut slot: usize) -> usize {
+        while parent[slot] != slot {
+            parent[slot] = parent[parent[slot]];
+            slot = parent[slot];
+        }
+        slot
+    }
+    fn join(parent: &mut [usize], a: usize, b: usize) {
+        let (ra, rb) = (root(parent, a), root(parent, b));
+        parent[ra] = rb;
+    }
+    let same_stroke = |a: &crate::pdf_content_moves::PageObject,
+                       b: &crate::pdf_content_moves::PageObject| {
+        (a.reach - b.reach).abs() <= 0.01 && a.filled == b.filled
+    };
+    let gaps = |a: [f64; 4], b: [f64; 4]| {
+        (
+            (b[0] - a[2]).max(a[0] - b[2]).max(0.),
+            (b[1] - a[3]).max(a[1] - b[3]).max(0.),
+        )
+    };
+    // Words: letters' strokes within half a letter.
+    let mut words = (0..candidates.len()).collect::<Vec<_>>();
+    for (slot, &index) in candidates.iter().enumerate() {
+        let a = &objects[index];
+        let reach = size(a.rect).max(1.);
+        let [left, bottom, right, top] = a.rect;
+        for x in cell(left - reach)..=cell(right + reach) {
+            for y in cell(bottom - reach)..=cell(top + reach) {
+                let Some(others) = grid.get(&(x, y)) else {
+                    continue;
+                };
+                for &other in others.iter().filter(|&&other| other > slot) {
+                    let b = &objects[candidates[other]];
+                    if !same_stroke(a, b) {
+                        continue;
+                    }
+                    let (gap_x, gap_y) = gaps(a.rect, b.rect);
+                    let letters = size(a.rect).max(size(b.rect)).max(1.);
+                    if gap_x.hypot(gap_y) <= letters / 2. {
+                        join(&mut words, slot, other);
+                    }
+                }
+            }
+        }
+    }
+    let word_of = (0..candidates.len())
+        .map(|slot| root(&mut words, slot))
+        .collect::<Vec<_>>();
+    // Each word's bounds, letter size and stroke.
+    let mut numbered: HashMap<usize, usize> = HashMap::new();
+    let mut boxes: Vec<([f64; 4], f64, usize)> = Vec::new();
+    for (slot, &index) in candidates.iter().enumerate() {
+        let rect = objects[index].rect;
+        let next = boxes.len();
+        let word = *numbered.entry(word_of[slot]).or_insert(next);
+        if word == next {
+            boxes.push((rect, 0., index));
+        }
+        let (bounds, letter, _) = &mut boxes[word];
+        *bounds = [
+            bounds[0].min(rect[0]),
+            bounds[1].min(rect[1]),
+            bounds[2].max(rect[2]),
+            bounds[3].max(rect[3]),
+        ];
+        *letter = letter.max(size(rect));
+    }
+    // A word no taller than a letter runs across; no wider than a letter,
+    // down; a single letter either way.
+    let runs = |[left, bottom, right, top]: [f64; 4], letter: f64| {
+        let (width, height) = (right - left, top - bottom);
+        (
+            height <= letter * WORD_LETTER_SLACK,
+            width <= letter * WORD_LETTER_SLACK,
+        )
+    };
+    let mut word_grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (word, (bounds, _, _)) in boxes.iter().enumerate() {
+        for x in cell(bounds[0])..=cell(bounds[2]) {
+            for y in cell(bounds[1])..=cell(bounds[3]) {
+                word_grid.entry((x, y)).or_default().push(word);
+            }
+        }
+    }
+    // A word's letters are at least as tall as the word is across its
+    // line: letters drawn in short strokes have none as tall as they are.
+    for (bounds, letter, _) in &mut boxes {
+        *letter = letter.max((bounds[2] - bounds[0]).min(bounds[3] - bounds[1]));
+    }
+    let mut lines = (0..boxes.len()).collect::<Vec<_>>();
+    for (word, &(a, letter_a, piece_a)) in boxes.iter().enumerate() {
+        let reach = letter_a.max(1.);
+        let mut seen = HashSet::new();
+        for x in cell(a[0] - reach)..=cell(a[2] + reach) {
+            for y in cell(a[1] - reach)..=cell(a[3] + reach) {
+                let Some(others) = word_grid.get(&(x, y)) else {
+                    continue;
+                };
+                for &other in others.iter().filter(|&&other| other > word) {
+                    if !seen.insert(other) {
+                        continue;
+                    }
+                    let (b, letter_b, piece_b) = boxes[other];
+                    if !same_stroke(&objects[piece_a], &objects[piece_b]) {
+                        continue;
+                    }
+                    let (gap_x, gap_y) = gaps(a, b);
+                    let letters = letter_a.max(letter_b).max(1.);
+                    let ((across_a, down_a), (across_b, down_b)) =
+                        (runs(a, letter_a), runs(b, letter_b));
+                    let overlap_y = a[3].min(b[3]) - a[1].max(b[1]);
+                    let overlap_x = a[2].min(b[2]) - a[0].max(b[0]);
+                    let height = (a[3] - a[1]).min(b[3] - b[1]);
+                    let width = (a[2] - a[0]).min(b[2] - b[0]);
+                    let across = across_a
+                        && across_b
+                        && gap_y == 0.
+                        && overlap_y >= height / 2.
+                        && gap_x <= letters;
+                    let down = down_a
+                        && down_b
+                        && gap_x == 0.
+                        && overlap_x >= width / 2.
+                        && gap_y <= letters;
+                    if across || down {
+                        join(&mut lines, word, other);
+                    }
+                }
+            }
+        }
+    }
+    (
+        (0..candidates.len())
+            .map(|slot| root(&mut lines, numbered[&word_of[slot]]))
+            .collect(),
+        word_of,
+    )
+}
+
+/// The components of `roots` that are lettering: of at least
+/// [`MIN_LABEL_PIECES`] pieces of more than one shape, and a line or a few across, at most
+/// [`MAX_LABEL_LETTERS`] of its letters' sizes; wider both ways, it is
+/// hatching or a field of symbols.
+fn labels_of(
+    objects: &[crate::pdf_content_moves::PageObject],
+    candidates: &[usize],
+    roots: &[usize],
+) -> HashSet<usize> {
+    let size = |rect: [f64; 4]| (rect[2] - rect[0]).max(rect[3] - rect[1]);
+    // Each label's pieces, bounds, sizes and shapes (to a tenth of a
+    // point).
+    #[allow(clippy::type_complexity)]
+    let mut labels: HashMap<usize, (usize, [f64; 4], Vec<f64>, HashSet<(i64, i64)>, Vec<f64>)> =
+        HashMap::new();
+    for (slot, &index) in candidates.iter().enumerate() {
+        let rect = objects[index].rect;
+        let entry =
+            labels
+                .entry(roots[slot])
+                .or_insert((0, rect, Vec::new(), HashSet::new(), Vec::new()));
+        entry.0 += 1;
+        entry.1 = [
+            entry.1[0].min(rect[0]),
+            entry.1[1].min(rect[1]),
+            entry.1[2].max(rect[2]),
+            entry.1[3].max(rect[3]),
+        ];
+        entry.2.push(size(rect));
+        entry.3.insert((
+            ((rect[2] - rect[0]) * 10.).round() as i64,
+            ((rect[3] - rect[1]) * 10.).round() as i64,
+        ));
+        entry.4.push((rect[2] - rect[0]).min(rect[3] - rect[1]));
+    }
+    labels
+        .into_iter()
+        .filter_map(|(label, (count, bounds, mut sizes, shapes, thicknesses))| {
+            sizes.sort_by(f64::total_cmp);
+            let letter = sizes[sizes.len() / 2].max(1.);
+            let narrow = (bounds[2] - bounds[0]).min(bounds[3] - bounds[1]);
+            // Lettering mixes shapes: a row of one shape is a dotted line or
+            // a pattern.
+            let varied = count < 3 || shapes.len() > 1;
+            // And its letters have breadth both ways (bowls, diagonals,
+            // curves); a dashed line's dashes and dots, or a run of
+            // parallel strokes, do not.
+            let broad = thicknesses
+                .iter()
+                .filter(|&&thickness| thickness >= LETTER_BREADTH * letter)
+                .count();
+            let letter_like = broad as f64 >= MIN_BROAD_SHARE * count as f64;
+            (count >= MIN_LABEL_PIECES
+                && varied
+                && letter_like
+                && narrow <= MAX_LABEL_LETTERS * letter)
+                .then_some(label)
+        })
+        .collect()
+}
+
+/// A piece of a stroked path that is a drawing of its own.
+struct PathPart {
+    rect: [f64; 4],
+    ops: Vec<usize>,
+    subpath: Subpath,
+}
+
+/// Whether `outline` is one straight segment across `rect`, corner to
+/// corner, and which way: rising from the bottom-left (`true`) or falling
+/// from the top-left.
+fn straight_segment(outline: &[Vec<[f64; 2]>], rect: [f64; 4]) -> Option<bool> {
+    let [[[x0, y0], [x1, y1]]] = outline
+        .iter()
+        .map(|subpath| <[[f64; 2]; 2]>::try_from(subpath.as_slice()).ok())
+        .collect::<Option<Vec<_>>>()?[..]
+    else {
+        return None;
+    };
+    let near = |a: f64, b: f64| (a - b).abs() <= 0.01;
+    let [left, bottom, right, top] = rect;
+    let (from, to) = if x0 <= x1 {
+        ((x0, y0), (x1, y1))
+    } else {
+        ((x1, y1), (x0, y0))
+    };
+    if !(near(from.0, left) && near(to.0, right)) {
+        return None;
+    }
+    if near(from.1, bottom) && near(to.1, top) {
+        Some(true)
+    } else if near(from.1, top) && near(to.1, bottom) {
+        Some(false)
+    } else {
+        None
     }
 }
 
 /// A clip covering less than this share of the page clips one drawing.
 const LOCAL_CLIP_SHARE: f64 = 0.5;
+/// A clip clipping more paths and XObjects than this is a view of a
+/// drawing, whose paths are each their own.
+const MAX_GROUP_PARTS: usize = 250;
+/// The most outline points a page's drawings keep for picking; drawings
+/// past it are picked by their bounds.
+const MAX_OUTLINE_POINTS: usize = 400_000;
+/// The segments a Bézier curve's outline is flattened into.
+const CURVE_SEGMENTS: usize = 8;
+
+fn round_hundredth(value: f64) -> f64 {
+    (value * 100.).round() / 100.
+}
+
+/// The subpaths `ops` construct under `ctm`, in page space, with curves
+/// flattened and closed subpaths returning to their start, rounded to a
+/// hundredth of a point: what a drawing is picked by.
+fn path_outline(operations: &[ContentOp], ops: &[usize], ctm: Matrix) -> Vec<Vec<[f64; 2]>> {
+    let mut subpaths: Vec<Vec<[f64; 2]>> = Vec::new();
+    let point = |x: f64, y: f64| {
+        let (x, y) = apply(ctm, x, y);
+        [round_hundredth(x), round_hundredth(y)]
+    };
+    let close = |subpath: &mut Vec<[f64; 2]>| {
+        if let (Some(&first), Some(&last)) = (subpath.first(), subpath.last())
+            && first != last
+        {
+            subpath.push(first);
+        }
+    };
+    // A cubic from the subpath's current point, in user space.
+    let mut current = (0., 0.);
+    let mut start = (0., 0.);
+    for &op in ops {
+        let operation = &operations[op];
+        let operands = &operation.operands;
+        let curve = |subpaths: &mut Vec<Vec<[f64; 2]>>,
+                     from: (f64, f64),
+                     c1: (f64, f64),
+                     c2: (f64, f64),
+                     to: (f64, f64)| {
+            if let Some(subpath) = subpaths.last_mut() {
+                for step in 1..=CURVE_SEGMENTS {
+                    let t = step as f64 / CURVE_SEGMENTS as f64;
+                    let u = 1. - t;
+                    let (a, b, c, d) = (u * u * u, 3. * u * u * t, 3. * u * t * t, t * t * t);
+                    subpath.push(point(
+                        a * from.0 + b * c1.0 + c * c2.0 + d * to.0,
+                        a * from.1 + b * c1.1 + c * c2.1 + d * to.1,
+                    ));
+                }
+            }
+        };
+        match operation.operator.as_slice() {
+            b"re" => {
+                if let Some([x, y, w, h]) = numbers::<4>(operands) {
+                    subpaths.push(vec![
+                        point(x, y),
+                        point(x + w, y),
+                        point(x + w, y + h),
+                        point(x, y + h),
+                        point(x, y),
+                    ]);
+                    (current, start) = ((x, y), (x, y));
+                }
+            }
+            b"m" => {
+                if let Some([x, y]) = numbers::<2>(operands) {
+                    subpaths.push(vec![point(x, y)]);
+                    (current, start) = ((x, y), (x, y));
+                }
+            }
+            b"l" => {
+                if let (Some([x, y]), Some(subpath)) = (numbers::<2>(operands), subpaths.last_mut())
+                {
+                    subpath.push(point(x, y));
+                    current = (x, y);
+                }
+            }
+            b"c" => {
+                if let Some([x1, y1, x2, y2, x3, y3]) = numbers::<6>(operands) {
+                    curve(&mut subpaths, current, (x1, y1), (x2, y2), (x3, y3));
+                    current = (x3, y3);
+                }
+            }
+            b"v" => {
+                if let Some([x2, y2, x3, y3]) = numbers::<4>(operands) {
+                    curve(&mut subpaths, current, current, (x2, y2), (x3, y3));
+                    current = (x3, y3);
+                }
+            }
+            b"y" => {
+                if let Some([x1, y1, x3, y3]) = numbers::<4>(operands) {
+                    curve(&mut subpaths, current, (x1, y1), (x3, y3), (x3, y3));
+                    current = (x3, y3);
+                }
+            }
+            b"h" => {
+                if let Some(subpath) = subpaths.last_mut() {
+                    close(subpath);
+                }
+                current = start;
+            }
+            _ => {}
+        }
+    }
+    subpaths.retain(|subpath| !subpath.is_empty());
+    subpaths
+}
 
 /// Decodes one content stream, counting its bytes against the page limit.
 /// Decoded content streams and font programs, by their encoded bytes and
@@ -3956,6 +4561,9 @@ struct DrawOp {
     bounds: [f64; 4],
     /// The image XObject it draws; `None` for a form.
     image: Option<lopdf::ObjectId>,
+    /// The Form XObject it draws, when Explode can write it into the page;
+    /// `None` for an image or a transparency group.
+    form: Option<lopdf::ObjectId>,
     /// The clips it is drawn inside.
     clip_chain: Option<std::sync::Arc<ClipLink>>,
 }
@@ -4162,6 +4770,22 @@ impl Walk<'_> {
             .then_some(object)
     }
 
+    /// The Form XObject `name` draws, when Explode can write it into the
+    /// page: a form that is a transparency group (`/Group`) is composited as
+    /// one, so it would show otherwise once its parts were the page's; it
+    /// stays whole.
+    fn xobject_form(&self, scope: &Scope, name: &[u8]) -> Option<lopdf::ObjectId> {
+        let object = get_dict(self.document, &scope.resources, b"XObject")?
+            .get(name)
+            .ok()?
+            .as_reference()
+            .ok()?;
+        let stream = self.document.get_object(object).ok()?.as_stream().ok()?;
+        (get_name(self.document, &stream.dict, b"Subtype").as_deref() == Some(b"Form")
+            && !stream.dict.has(b"Group"))
+        .then_some(object)
+    }
+
     fn xobject_bounds(&self, scope: &Scope, name: &[u8], ctm: Matrix) -> Option<[f64; 4]> {
         let object = get_dict(self.document, &scope.resources, b"XObject")?
             .get(name)
@@ -4307,11 +4931,13 @@ impl Walk<'_> {
                             && let Some(bounds) = self.xobject_bounds(scope, name, state.ctm)
                         {
                             let image = self.xobject_image(scope, name);
+                            let form = self.xobject_form(scope, name);
                             self.draws.push(DrawOp {
                                 op: op_index,
                                 ctm: state.ctm,
                                 bounds,
                                 image,
+                                form,
                                 clip_chain: state.clips.clone(),
                             });
                         }
@@ -4661,11 +5287,37 @@ fn extract_page_at(
     limits: &TextEditLimits,
     font_cache: Option<&FontCache>,
 ) -> Result<ExtractedPage, TextEditError> {
-    let content_ids = page_content_ids(document, page_id)?;
+    extract_page_at_with(document, page_id, limits, font_cache, None)
+}
+
+/// [`extract_page_at`], reading `with`'s content and resources in place of
+/// the page's own (a page with forms exploded into it,
+/// [`explode::PageOverride`]); its streams are then not the page's.
+fn extract_page_at_with(
+    document: &Document,
+    page_id: ObjectId,
+    limits: &TextEditLimits,
+    font_cache: Option<&FontCache>,
+    with: Option<&explode::PageOverride>,
+) -> Result<ExtractedPage, TextEditError> {
     let mut decoded_bytes = 0;
-    let streams = decode_streams(document, &content_ids, &mut decoded_bytes, limits)?;
+    let (content_ids, streams, resources) = match with {
+        Some(with) => {
+            decoded_bytes += with.content.len();
+            (
+                Vec::new(),
+                vec![with.content.clone()],
+                with.resources.clone(),
+            )
+        }
+        None => {
+            let content_ids = page_content_ids(document, page_id)?;
+            let streams = decode_streams(document, &content_ids, &mut decoded_bytes, limits)?;
+            let resources = page_resources(document, page_id).unwrap_or_default();
+            (content_ids, streams, resources)
+        }
+    };
     let operations = parse_operations(&streams, limits)?;
-    let resources = page_resources(document, page_id).unwrap_or_default();
     let mut walk = Walk {
         document,
         limits,
@@ -4795,6 +5447,19 @@ fn extract_page_at(
         line.public.in_form = matches!(owners[stream], StreamOwner::Form { .. });
         line.public.clip_bounds = shows[line.ops[0]].state.clip_bounds;
     }
+    let mut clip_uses = HashMap::new();
+    for chain in paints
+        .iter()
+        .filter(|paint| !paint.clips)
+        .map(|paint| &paint.clip_chain)
+        .chain(draws.iter().map(|draw| &draw.clip_chain))
+    {
+        let mut link = chain.as_deref();
+        while let Some(clip) = link {
+            *clip_uses.entry(clip.paint).or_insert(0) += 1;
+            link = clip.parent.as_deref();
+        }
+    }
     Ok(ExtractedPage {
         page_id,
         content_ids,
@@ -4807,6 +5472,7 @@ fn extract_page_at(
         paints,
         draws,
         saves,
+        clip_uses,
     })
 }
 
@@ -5395,6 +6061,30 @@ pub fn extract_page_text(
     extract_page_text_and_images(document, page_index, limits).map(|(layer, _)| layer)
 }
 
+/// [`extract_page_text`] with the blocks `explodes` names on the page
+/// exploded into it, in order.
+pub fn extract_page_text_with(
+    document: &Document,
+    page_index: u32,
+    explodes: &[crate::pdf_content_moves::ContentExplode],
+    limits: &TextEditLimits,
+) -> Result<PageTextLayer, TextEditError> {
+    let page_id = page_id(document, page_index)?;
+    let explodes = explodes
+        .iter()
+        .filter(|explode| explode.page_index == page_index)
+        .collect::<Vec<_>>();
+    extract_layer_at(
+        document,
+        page_index,
+        page_id,
+        &explodes,
+        limits,
+        &FontCache::default(),
+    )
+    .map(|(layer, _)| layer)
+}
+
 /// [`extract_page_text`], with the images the page's own content draws, in
 /// drawing order.
 pub fn extract_page_text_and_images(
@@ -5416,7 +6106,20 @@ pub fn extract_page_text_and_images_at(
     limits: &TextEditLimits,
     fonts: &FontCache,
 ) -> Result<(PageTextLayer, Vec<PageImage>), TextEditError> {
-    let page = extract_page_at(document, page_id, limits, Some(fonts))?;
+    extract_layer_at(document, page_index, page_id, &[], limits, fonts)
+}
+
+/// [`extract_page_text_and_images_at`] with `explodes` exploded into the
+/// page (and a flattened sheet opened, as always).
+fn extract_layer_at(
+    document: &Document,
+    page_index: u32,
+    page_id: ObjectId,
+    explodes: &[&crate::pdf_content_moves::ContentExplode],
+    limits: &TextEditLimits,
+    fonts: &FontCache,
+) -> Result<(PageTextLayer, Vec<PageImage>), TextEditError> {
+    let (page, _) = explode::extract_exploded(document, page_id, explodes, limits, Some(fonts))?;
     let page_box = visible_box_of_page(document, page_id);
     let images = page
         .draws
@@ -5660,7 +6363,20 @@ pub fn apply_content_edits(
     moves: &[crate::pdf_content_moves::ContentMove],
     limits: &TextEditLimits,
 ) -> Result<(), TextEditError> {
-    apply_page_content_edits(document, edits, tables, moves, limits)
+    apply_page_content_edits(document, edits, tables, moves, &[], limits)
+}
+
+/// [`apply_content_edits`], with blocks exploded first: what the other
+/// edits name is the page as `explodes` leaves it.
+pub fn apply_content_edits_with(
+    document: &mut Document,
+    edits: &[PageTextEdit],
+    tables: &[crate::pdf_tables::PageTableEdit],
+    moves: &[crate::pdf_content_moves::ContentMove],
+    explodes: &[crate::pdf_content_moves::ContentExplode],
+    limits: &TextEditLimits,
+) -> Result<(), TextEditError> {
+    apply_page_content_edits(document, edits, tables, moves, explodes, limits)
 }
 
 fn apply_page_content_edits(
@@ -5668,12 +6384,14 @@ fn apply_page_content_edits(
     edits: &[PageTextEdit],
     tables: &[crate::pdf_tables::PageTableEdit],
     moves: &[crate::pdf_content_moves::ContentMove],
+    explodes: &[crate::pdf_content_moves::ContentExplode],
     limits: &TextEditLimits,
 ) -> Result<(), TextEditError> {
     type PageEdits<'a> = (
         Vec<&'a PageTextEdit>,
         Vec<&'a crate::pdf_tables::PageTableEdit>,
         Vec<crate::pdf_content_moves::ContentMove>,
+        Vec<&'a crate::pdf_content_moves::ContentExplode>,
     );
     let mut by_page: BTreeMap<u32, PageEdits> = BTreeMap::new();
     for edit in edits {
@@ -5691,13 +6409,32 @@ fn apply_page_content_edits(
             .2
             .push(item.clone());
     }
-    for (page_index, (edits, tables, moves)) in by_page {
+    for explode in explodes {
+        explode.validate().map_err(TextEditError::Malformed)?;
+        by_page
+            .entry(explode.page_index)
+            .or_default()
+            .3
+            .push(explode);
+    }
+    for (page_index, (edits, tables, moves, explodes)) in by_page {
+        // Blocks explode first, and a flattened sheet opens: the other
+        // edits name the page as they leave it.
+        let page_id = page_id(document, page_index)?;
+        if let (_, Some(exploded)) =
+            explode::extract_exploded(document, page_id, &explodes, limits, None)?
+        {
+            explode::write(document, page_id, exploded, limits)?;
+        }
         apply_page_edits(document, page_index, &edits, &tables, &moves, limits)?;
     }
     Ok(())
 }
 
 use crate::pdf_tables::content_offset as table_offset;
+
+mod explode;
+pub use explode::PageOverride;
 
 fn moved(offset: (f64, f64)) -> bool {
     offset.0.abs() > 1e-6 || offset.1.abs() > 1e-6
@@ -6774,6 +7511,64 @@ fn fallback_glyph(
 
 /// A path construction operator drawn with its points at `points` (page
 /// space, by slot), under `ctm`.
+/// The splices that change the pieces of a stroked path by their own
+/// `changes` (one per piece): a moved, resized or turned piece's points are
+/// written where it goes, and a removed piece's operators go. The path is
+/// not painted when every piece is removed.
+fn path_part_splices(
+    page: &ExtractedPage,
+    paint: &PaintOp,
+    parts: &[PathPart],
+    changes: &[Option<&crate::pdf_content_moves::ContentMove>],
+    splices: &mut Vec<(usize, usize, usize, String)>,
+) -> Result<(), TextEditError> {
+    let mut push = |op: usize, text: String| {
+        let operation = &page.operations[op];
+        if operation.spans_streams {
+            return Err(TextEditError::ReadOnly(
+                "the drawing spans content streams".into(),
+            ));
+        }
+        splices.push((operation.stream, operation.start, operation.end, text));
+        Ok(())
+    };
+    let removed = |index: usize| changes[index].is_some_and(|item| item.removed);
+    if (0..parts.len()).all(removed) {
+        return push(paint.paint, "n".into());
+    }
+    for (index, (part, change)) in parts.iter().zip(changes).enumerate() {
+        let Some(item) = change else {
+            continue;
+        };
+        if removed(index) {
+            for &op in &part.ops {
+                push(op, String::new())?;
+            }
+            continue;
+        }
+        let placement = item.placement();
+        let mut points: BTreeMap<usize, BTreeMap<usize, (f64, f64)>> = BTreeMap::new();
+        for point in &part.subpath.points {
+            points
+                .entry(point.op)
+                .or_default()
+                .insert(point.slot, placement.map(part.rect, (point.x, point.y)));
+        }
+        for (&op, points) in &points {
+            let text = path_operator_text(&page.operations[op], points, paint.ctm)
+                .ok_or_else(|| TextEditError::ReadOnly("the drawing cannot move".into()))?;
+            push(op, text)?;
+        }
+    }
+    // `s` and `b` close the last piece: with it gone, the piece before it
+    // would be closed instead, so the path is stroked open.
+    let last = parts.len() - 1;
+    if removed(last) && page.operations[paint.paint].operator.as_slice() == b"s" {
+        push(paint.paint, "S".into())?;
+    }
+    Ok(())
+}
+
 fn path_operator_text(
     operation: &ContentOp,
     points: &BTreeMap<usize, (f64, f64)>,
@@ -6792,6 +7587,28 @@ fn path_operator_text(
         b"re" => {
             let (x0, y0) = user(0)?;
             let (x1, y1) = user(2)?;
+            // A turned rectangle is no longer upright: drawn as its four
+            // corners, closed.
+            let corners = [user(1), user(3)];
+            let upright = match corners {
+                [Some((ax, ay)), Some((bx, by))] => {
+                    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+                    (near(ax, x1) && near(ay, y0) && near(bx, x0) && near(by, y1))
+                        || (near(ax, x0) && near(ay, y1) && near(bx, x1) && near(by, y0))
+                }
+                _ => true,
+            };
+            if !upright && let [Some((ax, ay)), Some((bx, by))] = corners {
+                numbers(&[x0, y0], &mut text);
+                text.push_str("m ");
+                numbers(&[ax, ay], &mut text);
+                text.push_str("l ");
+                numbers(&[x1, y1], &mut text);
+                text.push_str("l ");
+                numbers(&[bx, by], &mut text);
+                text.push_str("l h");
+                return Some(text);
+            }
             numbers(&[x0, y0, x1 - x0, y1 - y0], &mut text);
             text.push_str("re");
             return Some(text);
@@ -6930,13 +7747,21 @@ fn table_content_splices(
     moves: &[crate::pdf_content_moves::ContentMove],
     page_box: Option<[f64; 4]>,
 ) -> Result<Vec<(usize, usize, usize, String)>, TextEditError> {
-    use crate::pdf_content_moves::{ContentKind, change_of};
+    use crate::pdf_content_moves::{ContentKind, change_of, change_of_nth};
     let mut splices = Vec::new();
     if tables.is_empty() && moves.is_empty() {
         return Ok(splices);
     }
     let maps = tables.iter().map(|table| table.map()).collect::<Vec<_>>();
-    for paint in &page.paints {
+    // Content at the same bounds as other content is named by its place
+    // among them.
+    let names = if moves.is_empty() {
+        HashMap::new()
+    } else {
+        page.unit_names(page_box)
+    };
+    let nth = |unit: ContentUnit| names.get(&unit).copied().unwrap_or(0);
+    for (paint_index, paint) in page.paints.iter().enumerate() {
         let subpaths = path_subpaths(&page.operations, &paint.ops, paint.ctm);
         // A changed path moves (or scales) whole, by its change alone: with
         // the small clip it is drawn in, or alone; a changed small clip
@@ -6948,13 +7773,48 @@ fn table_content_splices(
             })
         };
         let group = page.local_clip(&paint.clip_chain, page_box);
+        // A stroked path's pieces change each by its own change, unless an
+        // earlier change names the whole path.
+        if let Some(parts) = page.path_parts(paint, page_box).filter(|_| {
+            page.paint_bounds(paint)
+                .is_none_or(|rect| change_of(moves, ContentKind::Drawing, rect).is_none())
+        }) {
+            let changes = parts
+                .iter()
+                .enumerate()
+                .map(|(part_index, part)| {
+                    change_of_nth(
+                        moves,
+                        ContentKind::Drawing,
+                        part.rect,
+                        nth(ContentUnit::Piece(paint_index, part_index)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if changes.iter().any(Option::is_some) {
+                path_part_splices(page, paint, &parts, &changes, &mut splices)?;
+                continue;
+            }
+        }
         let changed = match group {
             Some(clip) => page.paint_bounds(&page.paints[clip]).and_then(|rect| {
-                change_of(moves, ContentKind::Drawing, rect).map(|item| (item, rect))
+                change_of_nth(
+                    moves,
+                    ContentKind::Drawing,
+                    rect,
+                    nth(ContentUnit::Group(clip)),
+                )
+                .map(|item| (item, rect))
             }),
             None if paint.clips && !local(paint) => None,
             None => page.paint_bounds(paint).and_then(|rect| {
-                change_of(moves, ContentKind::Drawing, rect).map(|item| (item, rect))
+                change_of_nth(
+                    moves,
+                    ContentKind::Drawing,
+                    rect,
+                    nth(ContentUnit::Paint(paint_index)),
+                )
+                .map(|item| (item, rect))
             }),
         };
         if let Some((item, rect)) = changed {
@@ -7100,14 +7960,28 @@ fn table_content_splices(
             ));
         }
     }
-    for draw in &page.draws {
+    for (draw_index, draw) in page.draws.iter().enumerate() {
         // An image is placed by its group's change, its own, or its table.
         let changed = page
             .local_clip(&draw.clip_chain, page_box)
-            .and_then(|clip| page.paint_bounds(&page.paints[clip]))
-            .and_then(|rect| change_of(moves, ContentKind::Drawing, rect).map(|item| (item, rect)))
+            .and_then(|clip| {
+                let rect = page.paint_bounds(&page.paints[clip])?;
+                change_of_nth(
+                    moves,
+                    ContentKind::Drawing,
+                    rect,
+                    nth(ContentUnit::Group(clip)),
+                )
+                .map(|item| (item, rect))
+            })
             .or_else(|| {
-                change_of(moves, ContentKind::Image, draw.bounds).map(|item| (item, draw.bounds))
+                change_of_nth(
+                    moves,
+                    ContentKind::Image,
+                    draw.bounds,
+                    nth(ContentUnit::Draw(draw_index)),
+                )
+                .map(|item| (item, draw.bounds))
             });
         let matrix = match changed {
             Some((item, _)) if item.removed => None,
@@ -7216,81 +8090,94 @@ fn content_copies(
             .ok_or_else(|| TextEditError::ReadOnly("the copy cannot be placed".into()))?;
         Ok(multiply(multiply(ctm, matrix), inverse))
     };
-    let area = |rect: [f64; 4]| (rect[2] - rect[0]).max(0.) * (rect[3] - rect[1]).max(0.);
-    let local =
-        |rect: [f64; 4]| page_box.is_some_and(|page| area(rect) < LOCAL_CLIP_SHARE * area(page));
     let copies = moves
         .iter()
         .filter(|item| item.copy.is_some() && !item.removed)
         .collect::<Vec<_>>();
+    let units = if copies.is_empty() {
+        Vec::new()
+    } else {
+        page.units(page_box)
+    };
+    let ordinals = unit_ordinals(&units);
     for item in &copies {
         let placement = item.placement();
         let matrix = placement.matrix(item.rect);
         match item.kind {
-            ContentKind::Image => {
-                let Some(draw) = page.draws.iter().find(|draw| {
-                    item.names(ContentKind::Image, draw.bounds)
-                        && page.local_clip(&draw.clip_chain, page_box).is_none()
-                }) else {
-                    continue;
-                };
-                inserts.push((
-                    draw.op,
-                    format!(
-                        " q {} cm {} Q",
-                        format_matrix(user(draw.ctm, matrix)?),
-                        bytes(draw.op)
-                    ),
-                ));
-            }
-            ContentKind::Drawing => {
-                // A small clip and all it clips.
-                let clip = page.paints.iter().find(|paint| {
-                    paint.clips
-                        && page.local_clip(&paint.clip_chain, page_box).is_none()
-                        && page.paint_bounds(paint).is_some_and(|rect| {
-                            local(rect) && item.names(ContentKind::Drawing, rect)
+            ContentKind::Image | ContentKind::Drawing => {
+                // The unit the copy is of, by kind, bounds and place among
+                // content at the same bounds.
+                let Some(unit) =
+                    units
+                        .iter()
+                        .zip(&ordinals)
+                        .find_map(|((unit, rect), (_, nth))| {
+                            (unit.kind() == item.kind && item.names_nth(item.kind, *rect, *nth))
+                                .then_some(*unit)
                         })
-                });
-                if let Some(clip) = clip {
-                    let (start, end) = enclosing_block(page, clip.paint).ok_or_else(|| {
-                        TextEditError::ReadOnly("the drawing cannot be copied".into())
-                    })?;
-                    let outer = page.saves.get(&start).copied().unwrap_or(IDENTITY);
-                    let (first, last) = (&page.operations[start], &page.operations[end]);
-                    let block =
-                        String::from_utf8_lossy(&page.streams[first.stream][first.start..last.end])
-                            .into_owned();
-                    inserts.push((
-                        end,
-                        format!(" q {} cm {block} Q", format_matrix(user(outer, matrix)?)),
-                    ));
-                    continue;
-                }
-                let Some(paint) = page.paints.iter().find(|paint| {
-                    !paint.clips
-                        && (paint.stroked || paint.filled)
-                        && page.local_clip(&paint.clip_chain, page_box).is_none()
-                        && page
-                            .paint_bounds(paint)
-                            .is_some_and(|rect| item.names(ContentKind::Drawing, rect))
-                }) else {
+                else {
                     continue;
                 };
-                let path = paint
-                    .ops
-                    .iter()
-                    .map(|&op| bytes(op))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                inserts.push((
-                    paint.paint,
-                    format!(
-                        " q {} cm {path} {} Q",
-                        format_matrix(user(paint.ctm, matrix)?),
-                        bytes(paint.paint)
-                    ),
-                ));
+                match unit {
+                    ContentUnit::Draw(index) => {
+                        let draw = &page.draws[index];
+                        inserts.push((
+                            draw.op,
+                            format!(
+                                " q {} cm {} Q",
+                                format_matrix(user(draw.ctm, matrix)?),
+                                bytes(draw.op)
+                            ),
+                        ));
+                    }
+                    // A small clip and all it clips.
+                    ContentUnit::Group(clip) => {
+                        let (start, end) = enclosing_block(page, page.paints[clip].paint)
+                            .ok_or_else(|| {
+                                TextEditError::ReadOnly("the drawing cannot be copied".into())
+                            })?;
+                        let outer = page.saves.get(&start).copied().unwrap_or(IDENTITY);
+                        let (first, last) = (&page.operations[start], &page.operations[end]);
+                        let block = String::from_utf8_lossy(
+                            &page.streams[first.stream][first.start..last.end],
+                        )
+                        .into_owned();
+                        inserts.push((
+                            end,
+                            format!(" q {} cm {block} Q", format_matrix(user(outer, matrix)?)),
+                        ));
+                    }
+                    // A whole path, or a piece of a stroked one, stroked
+                    // open.
+                    ContentUnit::Paint(index) | ContentUnit::Piece(index, _) => {
+                        let paint = &page.paints[index];
+                        let (ops, operator) = match unit {
+                            ContentUnit::Piece(_, part) => {
+                                let Some(piece) =
+                                    page.path_parts(paint, page_box).and_then(|mut parts| {
+                                        (part < parts.len()).then(|| parts.swap_remove(part))
+                                    })
+                                else {
+                                    continue;
+                                };
+                                (piece.ops, "S".to_owned())
+                            }
+                            _ => (paint.ops.clone(), bytes(paint.paint)),
+                        };
+                        let path = ops
+                            .iter()
+                            .map(|&op| bytes(op))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        inserts.push((
+                            paint.paint,
+                            format!(
+                                " q {} cm {path} {operator} Q",
+                                format_matrix(user(paint.ctm, matrix)?),
+                            ),
+                        ));
+                    }
+                }
             }
             ContentKind::Text => {
                 // Text a copied drawing's clip holds comes with the drawing.
@@ -7679,8 +8566,10 @@ mod tests {
             page_index: 0,
             kind,
             rect,
+            nth: 0,
             offset,
             scale: [1., 1.],
+            rotation: 0.,
             removed: false,
             copy: None,
         };
@@ -7742,8 +8631,10 @@ mod tests {
                 page_index: 0,
                 kind: ContentKind::Drawing,
                 rect: drawings[0].rect,
+                nth: 0,
                 offset: [0., -300.],
                 scale: [1., 1.],
+                rotation: 0.,
                 removed: false,
                 copy: None,
             },
@@ -7751,8 +8642,10 @@ mod tests {
                 page_index: 0,
                 kind: ContentKind::Text,
                 rect: text_rect,
+                nth: 0,
                 offset: [0., -300.],
                 scale: [1., 1.],
+                rotation: 0.,
                 removed: false,
                 copy: None,
             },
@@ -7774,6 +8667,639 @@ mod tests {
         // The text is still inside the moved clip.
         let clip = line.clip_bounds.unwrap();
         assert!(clip[1] <= 205. && clip[3] >= 205., "{clip:?}");
+    }
+
+    #[test]
+    fn a_drawing_sheet_s_paths_are_each_their_own_and_picked_where_drawn() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove, object_at};
+        // A CAD sheet: a border and title block (a ruled grid with text),
+        // and a viewport under half the sheet clipping more paths than a
+        // chart, among them a room's walls and a round column.
+        let mut content = String::from(
+            "1.5 w 10 10 592 772 re S 0.75 w 400 10 202 80 re S 400 50 m 602 50 l S \
+             BT /F1 10 Tf 410 30 Td (GROUND FLOOR PLAN) Tj ET \
+             q 40 400 300 300 re W n \
+             3 w 60 420 m 320 420 l 320 680 l 60 680 l h S \
+             1 w 200 550 m 200 572.09 182.09 590 160 590 c \
+             137.91 590 120 572.09 120 550 c 120 527.91 137.91 510 160 510 c \
+             182.09 510 200 527.91 200 550 c S 0.25 w ",
+        );
+        for index in 0..300 {
+            let x = 62. + f64::from(index) * 0.8;
+            content.push_str(&format!("{x} 440 m {x} 445 l S "));
+        }
+        content.push('Q');
+        let mut document = document(content.as_bytes(), vec![("F1", helvetica().into())]);
+        let before = layer(&document);
+        // The border and title block are not a table.
+        assert!(crate::pdf_tables::page_tables(&before).is_empty());
+        let walls_rect = [60., 420., 320., 680.];
+        let walls = before
+            .objects
+            .iter()
+            .find(|object| object.kind == ContentKind::Drawing && object.rect == walls_rect)
+            .expect("the walls are a drawing of their own, not the viewport's");
+        assert!((walls.reach - 1.5).abs() < 0.01, "{walls:?}");
+        let column = before
+            .objects
+            .iter()
+            .find(|object| object.rect[0] == 120. && object.rect[2] == 200.)
+            .expect("the column is a drawing of its own");
+        // Its curves are flattened: every point lies on the circle.
+        let points = column.outline.iter().flatten().collect::<Vec<_>>();
+        assert!(points.len() > 16, "{points:?}");
+        for [x, y] in points {
+            assert!(((x - 160.).hypot(y - 550.) - 40.).abs() < 0.1, "{x} {y}");
+        }
+        // Picked on its line, not inside the room.
+        let page = before.page_box;
+        let at = |point| object_at(&before.objects, page, &[], point, 2.);
+        assert_eq!(at((200., 681.)).map(|object| object.rect), Some(walls_rect));
+        assert_eq!(
+            at((160., 591.)).map(|object| object.rect),
+            Some(column.rect)
+        );
+        assert_eq!(at((250., 600.)), None);
+        // Moved alone, the walls stay in the viewport's clip.
+        let moves = [ContentMove {
+            page_index: 0,
+            kind: ContentKind::Drawing,
+            rect: walls_rect,
+            nth: 0,
+            offset: [5., -5.],
+            scale: [1., 1.],
+            rotation: 0.,
+            removed: false,
+            copy: None,
+        }];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        assert!(
+            after
+                .objects
+                .iter()
+                .any(|object| object.rect == [65., 415., 325., 675.])
+        );
+        assert!(
+            after
+                .objects
+                .iter()
+                .any(|object| object.rect == column.rect)
+        );
+    }
+
+    #[test]
+    fn a_stroked_path_s_pieces_move_delete_and_copy_on_their_own() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        // Three lines batched in one stroked path, closed by `s`, as CAD
+        // programs plot them, and a filled letter whose counter is a
+        // second subpath.
+        let content = b"1 w 100 100 m 200 100 l 100 200 m 200 200 l 100 300 m 200 300 l s \
+            0 g 300 300 m 340 300 l 340 340 l 300 340 l h 310 310 m 330 310 l 330 330 l 310 330 l h f";
+        let mut document = document(content, vec![]);
+        let before = layer(&document);
+        let pieces = before
+            .objects
+            .iter()
+            .filter(|object| object.rect[0] == 100.)
+            .collect::<Vec<_>>();
+        assert_eq!(pieces.len(), 3, "{:?}", before.objects);
+        assert!(pieces.iter().all(|piece| piece.segment.is_some()));
+        // The letter stays whole.
+        assert!(
+            before
+                .objects
+                .iter()
+                .any(|object| object.rect == [300., 300., 340., 340.] && object.filled)
+        );
+        let change = |rect, offset: [f64; 2], removed, copy| ContentMove {
+            page_index: 0,
+            kind: ContentKind::Drawing,
+            rect,
+            nth: 0,
+            offset,
+            scale: [1., 1.],
+            rotation: 0.,
+            removed,
+            copy,
+        };
+        let moves = [
+            change([100., 100., 200., 100.], [0., -50.], false, None),
+            change([100., 300., 200., 300.], [0., 0.], true, None),
+            change([100., 200., 200., 200.], [150., 0.], false, Some(0)),
+        ];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let rects = after
+            .objects
+            .iter()
+            .filter(|object| !object.filled)
+            .map(|object| object.rect)
+            .collect::<Vec<_>>();
+        // The first piece moved down, the second stayed and was copied
+        // across, and the last is gone.
+        assert!(rects.contains(&[100., 50., 200., 50.]), "{rects:?}");
+        assert!(rects.contains(&[100., 200., 200., 200.]), "{rects:?}");
+        assert!(rects.contains(&[250., 200., 350., 200.]), "{rects:?}");
+        assert!(!rects.iter().any(|rect| rect[1] == 300.), "{rects:?}");
+        // With its last piece gone, the path no longer closes the one
+        // before it.
+        let content = document
+            .get_and_decode_page_content(page_id(&document, 0).unwrap())
+            .unwrap();
+        let stroke = content
+            .operations
+            .iter()
+            .find(|operation| matches!(operation.operator.as_str(), "S" | "s"))
+            .unwrap();
+        assert_eq!(stroke.operator, "S");
+    }
+
+    #[test]
+    fn content_at_the_same_bounds_is_told_apart_and_moves_on_its_own() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        // A gate's frame, and its brace from corner to corner drawn twice,
+        // as AutoCAD plots it: all three have the same bounds.
+        let content = b"1 w 100 100 m 300 100 l 300 500 l 100 500 l h S \
+            100 100 m 300 500 l S 100 100 m 300 500 l S";
+        let mut document = document(content, vec![]);
+        let before = layer(&document);
+        let rect = [100., 100., 300., 500.];
+        let at_rect = before
+            .objects
+            .iter()
+            .filter(|object| object.rect == rect)
+            .map(|object| (object.nth, object.segment))
+            .collect::<Vec<_>>();
+        assert_eq!(at_rect, [(0, None), (1, Some(true)), (2, Some(true))]);
+        // Moving the brace (both copies) leaves the frame where it is.
+        let moves = [1, 2].map(|nth| ContentMove {
+            page_index: 0,
+            kind: ContentKind::Drawing,
+            rect,
+            nth,
+            offset: [50., 0.],
+            scale: [1., 1.],
+            rotation: 0.,
+            removed: false,
+            copy: None,
+        });
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let rects = after
+            .objects
+            .iter()
+            .map(|object| object.rect)
+            .collect::<Vec<_>>();
+        assert!(rects.contains(&rect), "{rects:?}");
+        assert_eq!(
+            rects
+                .iter()
+                .filter(|r| **r == [150., 100., 350., 500.])
+                .count(),
+            2,
+            "{rects:?}"
+        );
+    }
+
+    #[test]
+    fn lettering_drawn_as_strokes_is_picked_a_line_at_a_time() {
+        // "AB CD" in strokes 6 points tall, a line below it, and a field
+        // of short hatch strokes, all 0.36 points wide.
+        let mut content = String::from("0.36 w ");
+        let letter = |content: &mut String, x: f64, y: f64| {
+            content.push_str(&format!(
+                "{x} {y} m {} {} l {} {y} l S ",
+                x + 2.,
+                y + 6.,
+                x + 4.
+            ));
+            content.push_str(&format!(
+                "{} {} m {} {} l S ",
+                x + 1.,
+                y + 3.,
+                x + 3.,
+                y + 3.
+            ));
+        };
+        for x in [100., 105., 115., 120.] {
+            letter(&mut content, x, 700.);
+        }
+        for x in [100., 105.] {
+            letter(&mut content, x, 680.);
+        }
+        // A dimension lettered down the sheet: letters turned a quarter,
+        // in two words.
+        let turned = |content: &mut String, x: f64, y: f64| {
+            content.push_str(&format!(
+                "{x} {y} m {} {} l {x} {} l S ",
+                x - 6.,
+                y + 2.,
+                y + 4.
+            ));
+            content.push_str(&format!(
+                "{} {} m {} {} l S ",
+                x - 3.,
+                y + 1.,
+                x - 3.,
+                y + 3.
+            ));
+        };
+        for y in [400., 405., 415., 420.] {
+            turned(&mut content, 60., y);
+        }
+        for row in 0..30 {
+            for column in 0..30 {
+                let (x, y) = (300. + f64::from(column) * 5., 300. + f64::from(row) * 5.);
+                content.push_str(&format!("{x} {y} m {} {} l S ", x + 3., y + 3.));
+            }
+        }
+        let document = document(content.as_bytes(), vec![]);
+        let layer = layer(&document);
+        let cluster_at = |x: f64, y: f64| {
+            layer
+                .objects
+                .iter()
+                .find(|object| object.rect[0] == x && object.rect[1] == y)
+                .map(|object| object.cluster)
+                .unwrap()
+        };
+        // Both words of the first line are one label; the line below is
+        // another; the hatch is not lettering.
+        let first = cluster_at(100., 700.);
+        assert_ne!(first, 0);
+        assert_eq!(cluster_at(120., 700.), first);
+        let second = cluster_at(100., 680.);
+        assert_ne!(second, 0);
+        assert_ne!(second, first);
+        // Both words of the dimension down the sheet are one label.
+        let down = cluster_at(54., 400.);
+        assert_ne!(down, 0);
+        assert_eq!(cluster_at(54., 420.), down);
+        assert_eq!(cluster_at(300., 300.), 0);
+    }
+
+    /// `document` with the forms `forms` (name, bounding box, content and
+    /// fonts) in its page's resources.
+    fn with_forms(
+        mut document: Document,
+        forms: &[(&str, [f64; 4], &[u8], Vec<(&str, Object)>)],
+    ) -> Document {
+        let mut xobjects = Dictionary::new();
+        for (name, [x0, y0, x1, y1], content, fonts) in forms {
+            let mut font_dictionary = Dictionary::new();
+            for (font_name, font) in fonts {
+                let id = document.add_object(font.clone());
+                font_dictionary.set(*font_name, id);
+            }
+            let id = document.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Form",
+                    "BBox" => vec![(*x0).into(), (*y0).into(), (*x1).into(), (*y1).into()],
+                    "Resources" => dictionary! { "Font" => font_dictionary },
+                },
+                content.to_vec(),
+            ));
+            xobjects.set(*name, id);
+        }
+        let page_id = page_id(&document, 0).unwrap();
+        let page = document.get_dictionary_mut(page_id).unwrap();
+        let mut resources = page.get(b"Resources").unwrap().as_dict().unwrap().clone();
+        resources.set("XObject", xobjects);
+        page.set("Resources", resources);
+        document
+    }
+
+    #[test]
+    fn an_exploded_block_s_parts_are_page_content_of_their_own() {
+        use crate::pdf_content_moves::{ContentExplode, ContentKind, ContentMove, Placement};
+        // A block (a box, a cross and a label in its own font, named as
+        // the page's font is) placed twice.
+        let courier = dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Courier",
+            "Encoding" => "WinAnsiEncoding",
+        };
+        let document = document(
+            b"BT /F1 12 Tf 72 700 Td (Page) Tj ET \
+              q 1 0 0 1 100 100 cm /Blk Do Q q 1 0 0 1 300 100 cm /Blk Do Q",
+            vec![("F1", helvetica().into())],
+        );
+        let mut document = with_forms(
+            document,
+            &[(
+                "Blk",
+                [0., 0., 60., 40.],
+                b"1 w 0 0 60 40 re S 0 0 m 60 40 l S 0 40 m 60 0 l S \
+                  BT /F1 8 Tf 5 30 Td (BLK) Tj ET",
+                vec![("F1", courier.into())],
+            )],
+        );
+        let before = layer(&document);
+        let blocks = before
+            .objects
+            .iter()
+            .filter(|object| object.form)
+            .map(|object| object.rect)
+            .collect::<Vec<_>>();
+        assert_eq!(blocks, [[100., 100., 160., 140.], [300., 100., 360., 140.]]);
+        // Exploded, the first block's box and cross are drawings of their
+        // own; the second stays a block.
+        let explode = ContentExplode::new(0, [100., 100., 160., 140.], 0, Placement::UNMOVED);
+        let exploded = extract_page_text_with(
+            &document,
+            0,
+            std::slice::from_ref(&explode),
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let drawings = exploded
+            .objects
+            .iter()
+            .filter(|object| object.kind == ContentKind::Drawing)
+            .map(|object| object.rect)
+            .collect::<Vec<_>>();
+        assert!(drawings.contains(&[100., 100., 160., 140.]), "{drawings:?}");
+        assert_eq!(
+            exploded.objects.iter().filter(|object| object.form).count(),
+            1
+        );
+        // Its label is page text now, in its own font.
+        assert!(exploded.lines.iter().any(|line| line.text == "BLK"));
+        // Saved with a part of it moved, the block is gone from the page,
+        // its label still draws in Courier, and the page's own text in
+        // Helvetica.
+        let cross = ContentMove {
+            page_index: 0,
+            kind: ContentKind::Drawing,
+            rect: [100., 100., 160., 140.],
+            nth: 1,
+            offset: [0., -50.],
+            scale: [1., 1.],
+            rotation: 0.,
+            removed: false,
+            copy: None,
+        };
+        apply_content_edits_with(
+            &mut document,
+            &[],
+            &[],
+            &[cross],
+            &[explode],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let after = layer(&reload(&mut document));
+        assert_eq!(after.objects.iter().filter(|object| object.form).count(), 1);
+        assert!(
+            after
+                .objects
+                .iter()
+                .any(|object| object.rect == [100., 50., 160., 90.])
+        );
+        assert!(
+            after
+                .objects
+                .iter()
+                .any(|object| object.rect == [100., 100., 160., 140.])
+        );
+        let font_of = |text: &str| {
+            let line = after.lines.iter().find(|line| line.text == text).unwrap();
+            let name = &line.styles[0].font;
+            after
+                .fonts
+                .iter()
+                .find(|font| &font.font == name)
+                .and_then(|font| font.postscript_name.clone())
+        };
+        assert_eq!(font_of("BLK").as_deref(), Some("Courier"));
+        assert_eq!(font_of("Page").as_deref(), Some("Helvetica"));
+    }
+
+    #[test]
+    fn a_block_drawing_beyond_its_bounds_stays_clipped_when_exploded() {
+        use crate::pdf_content_moves::{ContentExplode, Placement};
+        // A block whose line runs on past its bounding box, which hides it.
+        let document = document(b"q 1 0 0 1 100 100 cm /Blk Do Q", vec![]);
+        let document = with_forms(
+            document,
+            &[("Blk", [0., 0., 60., 40.], b"1 w 0 20 m 120 20 l S", vec![])],
+        );
+        let explode = ContentExplode::new(0, [100., 100., 160., 140.], 0, Placement::UNMOVED);
+        let exploded =
+            extract_page_text_with(&document, 0, &[explode], &TextEditLimits::default()).unwrap();
+        // Nothing past the box shows: its clip came with it.
+        assert!(
+            exploded
+                .objects
+                .iter()
+                .all(|object| object.rect[2] <= 160.01)
+        );
+        assert!(exploded.objects.iter().all(|object| !object.form));
+    }
+
+    #[test]
+    fn a_moved_block_explodes_where_it_was_shown() {
+        use crate::pdf_content_moves::{ContentExplode, Placement};
+        let document = document(b"q 1 0 0 1 100 100 cm /Blk Do Q", vec![]);
+        let document = with_forms(
+            document,
+            &[("Blk", [0., 0., 60., 40.], b"1 w 0 0 m 60 40 l S", vec![])],
+        );
+        let explode = ContentExplode::new(
+            0,
+            [100., 100., 160., 140.],
+            0,
+            Placement::moved((50., -20.)),
+        );
+        let exploded =
+            extract_page_text_with(&document, 0, &[explode], &TextEditLimits::default()).unwrap();
+        assert!(
+            exploded
+                .objects
+                .iter()
+                .any(|object| object.rect == [150., 80., 210., 120.]),
+            "{:?}",
+            exploded.objects
+        );
+    }
+
+    #[test]
+    fn a_transparency_group_stays_whole() {
+        // A sheet wrapped in a form that is a transparency group: it is
+        // composited as one, so it is neither opened nor offered to Explode.
+        let document = document(b"q /Sheet Do Q", vec![]);
+        let mut document = with_forms(
+            document,
+            &[(
+                "Sheet",
+                [0., 0., 612., 792.],
+                b"1 w 100 400 m 300 400 l S",
+                vec![],
+            )],
+        );
+        let sheet = get_dict(
+            &document,
+            &page_resources(&document, page_id(&document, 0).unwrap()).unwrap(),
+            b"XObject",
+        )
+        .unwrap()
+        .get(b"Sheet")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+        document
+            .get_object_mut(sheet)
+            .unwrap()
+            .as_stream_mut()
+            .unwrap()
+            .dict
+            .set("Group", dictionary! { "S" => "Transparency", "K" => true });
+        let layer = layer(&document);
+        assert!(layer.objects.iter().all(|object| !object.form));
+        assert!(
+            layer
+                .objects
+                .iter()
+                .all(|object| object.rect != [100., 400., 300., 400.])
+        );
+    }
+
+    #[test]
+    fn a_flattened_sheet_opens_into_its_drawings() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        // The whole page drawn by one form, as some programs flatten a
+        // sheet.
+        let document = document(b"q /Sheet Do Q", vec![]);
+        let mut document = with_forms(
+            document,
+            &[(
+                "Sheet",
+                [0., 0., 612., 792.],
+                b"1 w 20 20 572 752 re S 100 400 m 300 400 l S 100 500 m 300 600 l S",
+                vec![],
+            )],
+        );
+        let before = layer(&document);
+        assert!(before.objects.iter().all(|object| !object.form));
+        assert!(
+            before
+                .objects
+                .iter()
+                .any(|object| object.rect == [100., 400., 300., 400.])
+        );
+        let item = ContentMove {
+            page_index: 0,
+            kind: ContentKind::Drawing,
+            rect: [100., 400., 300., 400.],
+            nth: 0,
+            offset: [0., 100.],
+            scale: [1., 1.],
+            rotation: 0.,
+            removed: false,
+            copy: None,
+        };
+        apply_content_edits(&mut document, &[], &[], &[item], &TextEditLimits::default()).unwrap();
+        let document = reload(&mut document);
+        let after = layer(&document);
+        assert!(
+            after
+                .objects
+                .iter()
+                .any(|object| object.rect == [100., 500., 300., 500.])
+        );
+        assert!(
+            after
+                .objects
+                .iter()
+                .any(|object| object.rect == [100., 500., 300., 600.])
+        );
+        // The sheet's form, drawn nowhere now, left the page's resources.
+        let resources = page_resources(&document, page_id(&document, 0).unwrap()).unwrap();
+        assert!(
+            get_dict(&document, &resources, b"XObject")
+                .is_none_or(|xobjects| !xobjects.has(b"Sheet"))
+        );
+    }
+
+    #[test]
+    fn turned_drawings_and_images_are_saved_turned() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        let content = b"0 0 1 RG 2 w 100 500 40 20 re S q 80 0 0 60 400 100 cm /Im0 Do Q";
+        let mut document = document(content, vec![]);
+        let image = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            vec![0],
+        ));
+        let page = document
+            .get_dictionary_mut(page_id(&document, 0).unwrap())
+            .unwrap();
+        let mut resources = page.get(b"Resources").unwrap().as_dict().unwrap().clone();
+        resources.set("XObject", dictionary! { "Im0" => image });
+        page.set("Resources", resources);
+        let turn = |kind, rect, rotation| ContentMove {
+            page_index: 0,
+            kind,
+            rect,
+            nth: 0,
+            offset: [0., 0.],
+            scale: [1., 1.],
+            rotation,
+            removed: false,
+            copy: None,
+        };
+        let moves = [
+            turn(ContentKind::Drawing, [100., 500., 140., 520.], 45.),
+            turn(ContentKind::Image, [400., 100., 480., 160.], 90.),
+        ];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let after = layer(&reload(&mut document));
+        let has = |kind, rect: [f64; 4]| {
+            after.objects.iter().any(|object| {
+                object.kind == kind
+                    && object
+                        .rect
+                        .iter()
+                        .zip(rect)
+                        .all(|(a, b)| (a - b).abs() < 0.01)
+            })
+        };
+        // Turned about their centres: 40 x 20 an eighth of a turn about
+        // (120, 510), 80 x 60 a quarter turn about (440, 130).
+        let reach = 30. * std::f64::consts::FRAC_1_SQRT_2;
+        assert!(
+            has(
+                ContentKind::Drawing,
+                [120. - reach, 510. - reach, 120. + reach, 510. + reach]
+            ),
+            "{:?}",
+            after.objects
+        );
+        assert!(
+            has(ContentKind::Image, [410., 90., 470., 170.]),
+            "{:?}",
+            after.objects
+        );
+        // The turned rectangle is written as its corners: a turned `re`
+        // would draw upright.
+        let content = document
+            .get_and_decode_page_content(page_id(&document, 0).unwrap())
+            .unwrap();
+        assert!(
+            content
+                .operations
+                .iter()
+                .all(|operation| operation.operator != "re")
+        );
     }
 
     #[test]
@@ -7812,8 +9338,10 @@ mod tests {
             page_index: 0,
             kind,
             rect,
+            nth: 0,
             offset,
             scale,
+            rotation: 0.,
             removed,
             copy: None,
         };
@@ -7935,8 +9463,10 @@ mod tests {
             page_index: 0,
             kind,
             rect,
+            nth: 0,
             offset,
             scale: [1., 1.],
+            rotation: 0.,
             removed: false,
             copy: Some(copy),
         };

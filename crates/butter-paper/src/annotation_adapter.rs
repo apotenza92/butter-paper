@@ -903,6 +903,7 @@ enum ActivePointer {
         current: PdfPoint,
         original_rect: PdfRect,
         original_rotation_degrees: f64,
+        aspect_locked: bool,
     },
     SnapshotRotate {
         document_id: u64,
@@ -1731,6 +1732,15 @@ impl AnnotationAdapter {
             .map_or(&[], |document| document.page_content_moves())
     }
 
+    pub fn document_page_content_explodes(
+        &self,
+        document_id: u64,
+    ) -> &[crate::pdf_content_moves::ContentExplode] {
+        self.documents
+            .get(&document_id)
+            .map_or(&[], |document| document.page_content_explodes())
+    }
+
     /// [`AnnotationDocument::change_page_content`] for a document.
     pub fn change_document_page_content(
         &mut self,
@@ -1744,6 +1754,19 @@ impl AnnotationAdapter {
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
             .change_page_content(page_index, groups, markups, change)
+    }
+
+    /// [`AnnotationDocument::explode_page_content`] for a document.
+    pub fn explode_document_page_content(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        block: &crate::pdf_content_moves::MovedContent,
+    ) -> Result<bool, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .explode_page_content(page_index, block)
     }
 
     /// [`AnnotationDocument::paste_page_content`] for a document.
@@ -8271,6 +8294,7 @@ impl AnnotationAdapter {
                         current: point,
                         original_rect: annotation.rect,
                         original_rotation_degrees: annotation.rotation_degrees(),
+                        aspect_locked: annotation.aspect_locked,
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
@@ -11024,6 +11048,7 @@ impl AnnotationAdapter {
                 start,
                 original_rect,
                 original_rotation_degrees,
+                aspect_locked,
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
@@ -11032,10 +11057,13 @@ impl AnnotationAdapter {
                 {
                     return Ok(PointerPhaseOutcome::SelectionChanged(Some(id)));
                 }
-                let rect = original_rect.rotated_resize_from_handle(
+                let rect = resized_snapshot_rect(
+                    original_rect,
                     original_rotation_degrees,
                     handle,
+                    start,
                     point,
+                    aspect_locked,
                 );
                 self.documents
                     .get_mut(&document_id)
@@ -12733,6 +12761,7 @@ impl AnnotationAdapter {
                 height_px: preview_asset.height_px(),
                 opacity: self.tool_properties(AnnotationTool::Snapshot).opacity,
                 rotation_degrees: 0.,
+                aspect_locked: false,
                 selected: true,
                 locked: false,
                 draft: true,
@@ -13850,9 +13879,11 @@ impl AnnotationAdapter {
             page_index: active_page_index,
             id,
             handle,
+            start,
             current,
             original_rect,
             original_rotation_degrees,
+            aspect_locked,
             ..
         }) = &self.active
             && (*active_document_id, *active_page_index) == (document_id, page_index)
@@ -13861,10 +13892,13 @@ impl AnnotationAdapter {
                 .iter_mut()
                 .find(|annotation| annotation.id == *id)
         {
-            annotation.rect = original_rect.rotated_resize_from_handle(
+            annotation.rect = resized_snapshot_rect(
+                *original_rect,
                 *original_rotation_degrees,
                 *handle,
+                *start,
                 *current,
+                *aspect_locked,
             );
             annotation.draft = true;
             annotation.feedback = SceneInteractionFeedback::Transform {
@@ -15379,7 +15413,36 @@ fn hit_snapshot_handle_index(
         point,
         edge_resize_reach(observed_pixels_per_point),
     )
+    // An aspect-locked Snapshot resizes from its corners only, as an
+    // aspect-locked Image does.
+    .filter(|handle| !annotation.aspect_locked || handle.is_corner())
     .map(resize_handle_index)
+}
+
+/// A Snapshot's box resized from `handle`: freely, or keeping its
+/// proportions from a corner when it is aspect-locked, as an Image does.
+fn resized_snapshot_rect(
+    original: PdfRect,
+    rotation_degrees: f64,
+    handle: RectangleResizeHandle,
+    start: PdfPoint,
+    current: PdfPoint,
+    aspect_locked: bool,
+) -> PdfRect {
+    if aspect_locked && handle.is_corner() {
+        let handle = match handle {
+            RectangleResizeHandle::NorthWest => ImageResizeHandle::NorthWest,
+            RectangleResizeHandle::NorthEast => ImageResizeHandle::NorthEast,
+            RectangleResizeHandle::SouthEast => ImageResizeHandle::SouthEast,
+            _ => ImageResizeHandle::SouthWest,
+        };
+        if let Ok(rect) =
+            resized_image_rect(original, handle, start, current, rotation_degrees, true)
+        {
+            return rect;
+        }
+    }
+    original.rotated_resize_from_handle(rotation_degrees, handle, current)
 }
 
 fn resized_image_rect(
@@ -21613,6 +21676,89 @@ mod tests {
             redact_adapter.snapshot(9).unwrap().redacts,
             redact_before.redacts
         );
+    }
+
+    #[test]
+    fn snapshots_keep_their_proportions_until_unlocked() {
+        let id = MarkupId::new("snapshot:aspect").unwrap();
+        let snapshot = SnapshotAnnotation::new(
+            id.clone(),
+            0,
+            PdfRect::new(100., 100., 200., 100.).unwrap(),
+            DecodedRgbaAsset::new(2, 1, vec![255; 8]).unwrap(),
+            1.,
+        )
+        .unwrap();
+        // New Snapshots, and their copies, are aspect-locked.
+        assert!(snapshot.aspect_locked);
+        let mut adapter = AnnotationAdapter::default();
+        let document = adapter.documents.entry(7).or_default();
+        document
+            .load_imported_annotations(vec![Annotation::Snapshot(snapshot)], Vec::new())
+            .unwrap();
+        assert!(document.select(&id));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_source(crate::semantic_snapping::SemanticSnapSource::Content, false)
+                    .with_source(
+                        crate::semantic_snapping::SemanticSnapSource::Annotation,
+                        false,
+                    )
+                    .with_source(
+                        crate::semantic_snapping::SemanticSnapSource::PageGrid,
+                        false,
+                    )
+                    .with_source(
+                        crate::semantic_snapping::SemanticSnapSource::ConstructionGrid,
+                        false,
+                    ),
+            )
+            .unwrap();
+        // Its edges are not handles: only its corners resize it.
+        assert_eq!(
+            adapter
+                .hover_snapshot_handle(7, 0, point(300., 150.), 2.)
+                .unwrap(),
+            None
+        );
+        assert!(
+            adapter
+                .hover_snapshot_handle(7, 0, point(300., 100.), 2.)
+                .unwrap()
+                .is_some()
+        );
+        // Dragged from its south-east corner, it keeps its shape about the
+        // north-west corner.
+        adapter
+            .pointer_down(7, 0, 1, point(300., 100.), 2.)
+            .unwrap();
+        adapter.pointer_move(1, point(400., 90.)).unwrap();
+        adapter.pointer_up(1, point(400., 90.)).unwrap();
+        let resized = adapter.snapshot(7).unwrap().snapshots[0].rect;
+        assert_eq!(resized, PdfRect::new(100., 50., 300., 150.).unwrap());
+        // Unlocked (one undo step), its edges stretch it.
+        adapter
+            .edit_primary_selected_annotation(
+                7,
+                &id,
+                AnnotationEdit::SetSnapshotAspectLocked(false),
+            )
+            .unwrap();
+        assert!(!adapter.snapshot(7).unwrap().snapshots[0].aspect_locked);
+        adapter
+            .pointer_down(7, 0, 2, point(400., 125.), 2.)
+            .unwrap();
+        adapter.pointer_move(2, point(450., 125.)).unwrap();
+        adapter.pointer_up(2, point(450., 125.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().snapshots[0].rect,
+            PdfRect::new(100., 50., 350., 150.).unwrap()
+        );
+        adapter.undo(7).unwrap();
+        adapter.undo(7).unwrap();
+        assert!(adapter.snapshot(7).unwrap().snapshots[0].aspect_locked);
     }
 
     #[test]

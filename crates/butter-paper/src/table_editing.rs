@@ -896,8 +896,10 @@ mod tests {
             page_index: 0,
             kind: crate::pdf_content_moves::ContentKind::Text,
             rect: below,
+            nth: 0,
             offset: [5., 7.],
             scale: [1., 1.],
+            rotation: 0.,
             removed: false,
             copy: None,
         }];

@@ -112,8 +112,10 @@ fn moved_below(layer: &PageTextLayer, table: &PageTable, by: f64) -> Vec<Content
             page_index: 0,
             kind: ContentKind::Text,
             rect,
+            nth: 0,
             offset: [0., -by],
             scale: [1., 1.],
+            rotation: 0.,
             removed: false,
             copy: None,
         })

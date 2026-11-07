@@ -12,7 +12,7 @@ use crate::{
     },
     document_workspace::{
         ActualSize, CloseDocument, ContinuousView, ConvertToWord, DocumentOpenBatchRequest,
-        DocumentOpenOrigin, FitPage, FitWidth, MergeDocuments, NavigateNextPage,
+        DocumentOpenOrigin, ExplodeBlock, FitPage, FitWidth, MergeDocuments, NavigateNextPage,
         NavigatePreviousPage, NewFromTemplate, OpenPdf, RotatePageLeft, RotatePageRight, Save,
         SaveAs, SaveDocumentAsTemplate, SignWithCertificate, SinglePageView, ZoomIn, ZoomOut,
     },
@@ -30,6 +30,7 @@ pub struct NativeApplicationMenuState {
     pub can_paste: bool,
     pub can_select_all: bool,
     pub can_delete: bool,
+    pub can_explode_block: bool,
     pub can_close_document: bool,
     pub document_ready: bool,
     pub can_previous_page: bool,
@@ -219,6 +220,11 @@ fn build_edit_menu(state: NativeApplicationMenuState, include_delete: bool) -> M
                 .disabled(!state.has_focused_input && !state.can_delete),
         );
     }
+    // A block selected in Edit PDF breaks into its parts.
+    items.extend([
+        MenuItem::separator(),
+        MenuItem::action("Explode Block", ExplodeBlock).disabled(!state.can_explode_block),
+    ]);
     items.extend([
         MenuItem::separator(),
         MenuItem::action("Select All", gpui_component::input::SelectAll)

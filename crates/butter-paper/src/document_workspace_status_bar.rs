@@ -92,6 +92,9 @@ impl DocumentWorkspace {
             redaction.to_owned()
         } else if editing_content && editing_text {
             "Edit PDF · Type to edit · Esc or click away to finish".to_owned()
+        } else if editing_content && self.selected_block(cx).is_some() {
+            "Edit PDF · Block · Right-click › Explode block to select its parts · Drag to move it"
+                .to_owned()
         } else if editing_content {
             "Edit PDF · Click text to edit it · Drag its edge, a drawing or an image to move it"
                 .to_owned()

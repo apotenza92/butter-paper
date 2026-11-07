@@ -228,11 +228,16 @@ impl DocumentWorkspace {
                             .pdf
                             .as_deref()
                             .map(crate::pdf_page_base::page_base_id);
+                        let system_image = copied
+                            .png
+                            .as_deref()
+                            .map(crate::pdf_page_base::page_base_id);
                         cx.set_global(MarkupClipboard {
                             annotations: vec![Annotation::Snapshot(copied.snapshot)],
                             source: Some(source),
                             pastes: 0,
                             system_pdf,
+                            system_image,
                         });
                         if let Some(item) = other_apps_clipboard(copied.png, copied.pdf) {
                             cx.write_to_clipboard(item);
@@ -316,6 +321,7 @@ impl DocumentWorkspace {
                         source: None,
                         pastes: 0,
                         system_pdf: Some(system_pdf),
+                        system_image: system_clipboard_image_id(cx),
                     });
                     workspace.paste_annotations_at(document_id, page_index, at, cx)
                 });
@@ -367,10 +373,17 @@ impl DocumentWorkspace {
         cx.spawn(async move |_, cx| {
             if let Some(item) = task.await {
                 cx.update(|cx| {
-                    // This PDF is the copied markup's own, not one copied since.
+                    // This PDF and picture are the copied markup's own, not
+                    // ones copied since.
                     let system_pdf = item.entries().iter().find_map(|entry| match entry {
                         gpui::ClipboardEntry::Pdf(pdf) => {
                             Some(crate::pdf_page_base::page_base_id(pdf))
+                        }
+                        _ => None,
+                    });
+                    let system_image = item.entries().iter().find_map(|entry| match entry {
+                        gpui::ClipboardEntry::Image(image) => {
+                            Some(crate::pdf_page_base::page_base_id(&image.bytes))
                         }
                         _ => None,
                     });
@@ -378,6 +391,7 @@ impl DocumentWorkspace {
                     if cx.has_global::<MarkupClipboard>() {
                         cx.update_global::<MarkupClipboard, _>(|clipboard, _| {
                             clipboard.system_pdf = system_pdf;
+                            clipboard.system_image = system_image;
                         });
                     }
                 });

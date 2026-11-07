@@ -411,6 +411,34 @@ fn edges(mut positions: Vec<f64>) -> Vec<f64> {
     edges
 }
 
+/// A cell covering at least this share of the page, with drawings in it,
+/// is a drawing sheet's drawing area.
+const DRAWING_AREA_SHARE: f64 = 0.25;
+
+/// Whether `table` is a drawing sheet's border and title block rather than
+/// a table: one of its cells covers a large part of the page and holds
+/// drawings or images (not just text and underlines), as a CAD sheet's
+/// drawing area does. Its contents are then page content like any other.
+fn frames_a_drawing(layer: &PageTextLayer, table: &PageTable) -> bool {
+    let area = |rect: [f64; 4]| (rect[2] - rect[0]).max(0.) * (rect[3] - rect[1]).max(0.);
+    let Some(page_area) = layer.page_box.map(area) else {
+        return false;
+    };
+    table.cells.iter().any(|cell| {
+        let [left, bottom, right, top] = table.cell_bounds(cell);
+        area([left, bottom, right, top]) >= DRAWING_AREA_SHARE * page_area
+            && layer.objects.iter().any(|object| {
+                let [l, b, r, t] = object.rect;
+                l > left + EDGE_TOLERANCE
+                    && b > bottom + EDGE_TOLERANCE
+                    && r < right - EDGE_TOLERANCE
+                    && t < top - EDGE_TOLERANCE
+                    && r - l >= MIN_BAND
+                    && t - b >= MIN_BAND
+            })
+    })
+}
+
 /// Grids the page rules round on all sides, with at least one rule inside
 /// and some text: the tables of an untagged page (a Word report saved
 /// without tags), which Edit PDF edits and the Word document converter
@@ -539,6 +567,9 @@ pub fn ruled_tables(layer: &PageTextLayer) -> Vec<PageTable> {
             read_only: None,
             tags: None,
         };
+        if frames_a_drawing(layer, &table) {
+            continue;
+        }
         let mut lines = layer
             .lines
             .iter()
@@ -1707,6 +1738,45 @@ mod tests {
         layer.tagged_tables.clear();
         layer.rules.clear();
         assert!(page_tables(&layer).is_empty());
+    }
+
+    #[test]
+    fn a_sheet_border_and_title_block_round_a_drawing_are_not_a_table() {
+        use crate::pdf_content_moves::{ContentKind, PageObject};
+        // A sheet's border, with a title block in its corner: a ruled grid
+        // with text, whose largest cell is the drawing area.
+        let rules = vec![
+            h(782., 10., 602.),
+            h(90., 400., 602.),
+            h(50., 400., 602.),
+            h(10., 10., 602.),
+            v(10., 10., 782.),
+            v(400., 10., 90.),
+            v(602., 10., 782.),
+        ];
+        let mut layer = PageTextLayer {
+            page_index: 0,
+            page_box: Some([0., 0., 612., 792.]),
+            lines: vec![line(410., 30., "GROUND FLOOR PLAN", 0)],
+            rules,
+            ..Default::default()
+        };
+        let drawing = |rect| PageObject {
+            kind: ContentKind::Drawing,
+            rect,
+            ..PageObject::default()
+        };
+        // With only text and an underline in it, it is a table.
+        layer.objects = vec![drawing([100., 500., 300., 500.])];
+        assert_eq!(page_tables(&layer).len(), 1);
+        // With a drawing in its drawing area, it is the drawing's frame.
+        layer.objects.push(drawing([60., 420., 320., 680.]));
+        assert!(page_tables(&layer).is_empty());
+        // A small table with a drawing in a cell stays a table.
+        let mut small = grid_layer();
+        small.page_box = Some([0., 0., 612., 792.]);
+        small.objects = vec![drawing([110., 142., 150., 158.])];
+        assert_eq!(page_tables(&small).len(), 1);
     }
 
     #[test]

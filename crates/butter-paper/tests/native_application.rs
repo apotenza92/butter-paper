@@ -54,6 +54,7 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
         can_paste: true,
         can_select_all: false,
         can_delete: true,
+        can_explode_block: false,
         can_close_document: true,
         document_ready: true,
         can_previous_page: false,
@@ -115,6 +116,8 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
             "Paste",
             "Delete",
             "<separator>",
+            "Explode Block",
+            "<separator>",
             "Select All",
         ]
     );
@@ -123,6 +126,13 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert_action(item(edit, "Cut"), |action| action.as_any().is::<Cut>());
     assert_action(item(edit, "Copy"), |action| action.as_any().is::<Copy>());
     assert_action(item(edit, "Paste"), |action| action.as_any().is::<Paste>());
+    // Explode Block waits for a block selected in Edit PDF.
+    assert_action(item(edit, "Explode Block"), |action| {
+        action
+            .as_any()
+            .is::<butter_paper::document_workspace::ExplodeBlock>()
+    });
+    assert!(item(edit, "Explode Block").is_disabled());
     assert_action(item(edit, "Delete"), |action| {
         action.as_any().is::<Delete>()
     });
@@ -365,6 +375,8 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             "Copy",
             "Paste",
             "<separator>",
+            "Explode Block",
+            "<separator>",
             "Select All",
         ]
     );
@@ -417,6 +429,7 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
             has_active_document: true,
             document_ready: true,
             can_delete: true,
+            can_explode_block: false,
             ..Default::default()
         },
         ApplicationMenuShellState {

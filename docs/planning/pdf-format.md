@@ -12,7 +12,7 @@ permission restrictions survive. Files that need a password to open are not
 editable.
 
 Settings with no standard or Bluebeam field are not saved per markup: pen
-smooth-curves, image aspect lock, measurement show-caption.
+smooth-curves, image and Snapshot aspect lock, measurement show-caption.
 
 ## Ground truth
 
@@ -329,18 +329,31 @@ A move (`pdf_content_moves.rs`, `ContentMove`) is kept with the page's
 text and table edits and applied in the same pass to the unedited file.
 It names a piece of content by its kind (`text`, `drawing` or `image`) and
 where the unedited page draws it (`rect`: a text line's core box, a painted
-path's bounds or the bounds of the small clip it is drawn in, an image's
-or form's placed bounds), and records how it is placed: scaled by `scale`
-(drawings and images only) from `rect`'s bottom-left corner, then moved by
-`offset`. `removed` deletes it. With `copy` (a number), it is instead a copy
+path's bounds, a piece of a stroked path's bounds, or the bounds of the
+small clip it is drawn in, an image's or form's placed bounds), and records
+which of the contents of its kind at that `rect` it is, in paint order
+(`nth`, from 0, written only when not 0: a brace drawn corner to corner of
+its frame has the frame's bounds), and records
+how it is placed: scaled by `scale` (drawings and images only) from
+`rect`'s bottom-left corner, turned by `rotation` degrees anticlockwise
+(drawings and images only) about the centre of the scaled `rect`, then
+moved by `offset`. `removed` deletes it. With `copy` (a number), it is instead a copy
 of that content, placed the same way, drawn as well as the original.
 
 - Only the page's own content streams change. A moved text line is redrawn
   by its first operator at its moved place, as a table moves its lines; a
-  moved or scaled path's construction operators are rewritten with every
-  point placed; a moved or scaled image or form is wrapped in `q … cm … Q`.
-  A removed line is emptied, a removed path's painting operator becomes
-  `n`, and a removed image's `Do` goes.
+  moved, scaled or turned path's construction operators are rewritten with
+  every point placed (a turned `re` that is no longer upright as its four
+  corners, `m l l l h`; the line width is kept); a moved, scaled or turned
+  image or form is wrapped in `q … cm … Q`. A removed line is emptied, a
+  removed path's painting operator becomes `n`, and a removed image's `Do`
+  goes.
+- A stroked, unfilled path of several subpaths outside a small clip is a
+  piece per subpath (from its `m` or `re` to the next): a changed piece's
+  own operators are rewritten, a removed piece's are emptied (and a closing
+  `s` becomes `S` when the last piece goes), and a copied piece is its
+  operators repeated, stroked with `S`. A move naming the whole path still
+  applies to it whole.
 - A copy is drawn again right after its original, in its graphics state
   (colour, line width, clip): a path's construction operators and painting
   operator, or an image's `Do`, are repeated inside `q <matrix> cm … Q`. A
@@ -350,6 +363,20 @@ of that content, placed the same way, drawn as well as the original.
 - What a clip covering under half of the page box clips is one drawing,
   named by the clip's bounds: the clip, its paths and its images move
   together, and the app moves the text lines it clips as text moves.
+- An exploded block (`ContentExplode`: `rect`, `nth`, and the `offset`,
+  `scale` and `rotation` it was shown with) is written into its page
+  before the page's other edits, which name the page as the explode
+  leaves it: its `Do` becomes `q`, the change's matrix, `/OC … BDC` for
+  its optional content, the form's `/Matrix`, its `/BBox` as a clip when
+  it drew beyond it, its content and `Q`. Its resources join the page's;
+  one whose name the page uses for something else is renamed (`Name_xN`,
+  N the form's object number) in the operators that name it, and every
+  other byte of its content is kept. A form the page no longer draws
+  leaves its resources. A form drawn once covering 80% of the page or more
+  (a flattened sheet) is written in the same way, by itself, whenever the
+  page is edited; up to four such forms deep. A form with a `/Group`
+  (a transparency group) is never exploded or opened: it composites as
+  one.
 - A moved piece moves by its move alone: table edits do not move it.
 - Markups are annotations, not page content: the app moves those whose
   centre is on moved content itself, in the same undo step.

@@ -83,6 +83,8 @@ pub enum EngineeringVisualPropertyValues {
     },
     Snapshot {
         opacity: f64,
+        /// Resizing keeps its proportions.
+        aspect_locked: bool,
     },
     Image {
         opacity: f64,
@@ -111,7 +113,7 @@ impl EngineeringVisualPropertyValues {
     fn opacity(&self) -> f64 {
         match self {
             Self::Arc { appearance } | Self::Cloud { appearance, .. } => appearance.opacity(),
-            Self::Image { opacity, .. } | Self::Snapshot { opacity } => *opacity,
+            Self::Image { opacity, .. } | Self::Snapshot { opacity, .. } => *opacity,
         }
     }
 }
@@ -129,7 +131,7 @@ pub struct EngineeringVisualPropertySnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineeringVisualPropertyPatch {
     Locked(bool),
-    /// An image's proportions locked or freed.
+    /// An image's or Snapshot's proportions locked or freed.
     AspectLocked(bool),
     ColorAndOpacity {
         color: String,
@@ -531,36 +533,40 @@ impl Render for EngineeringVisualPropertyInspector {
                         ),
                 ),
             );
-        // An image's proportions, kept as it is resized from a corner.
+        // An image's or Snapshot's proportions, kept as it is resized from
+        // a corner.
         let details = match snapshot.values {
-            EngineeringVisualPropertyValues::Image { aspect_locked, .. } => {
+            EngineeringVisualPropertyValues::Image { aspect_locked, .. }
+            | EngineeringVisualPropertyValues::Snapshot { aspect_locked, .. } => {
                 let aspect_control = cx.entity().downgrade();
+                let description = match snapshot.values.kind() {
+                    EngineeringVisualPropertyKind::Snapshot => {
+                        "Resizing keeps the Snapshot's shape."
+                    }
+                    _ => "Resizing keeps the image's shape.",
+                };
                 details.child(
-                    Field::new()
-                        .description("Resizing keeps the image's shape.")
-                        .child(
-                            div()
-                                .id(ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID)
-                                .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID.into())
-                                .child(
-                                    Switch::new(
-                                        "engineering-visual-property-inspector-aspect-locked-switch",
-                                    )
-                                    .label("Lock proportions")
-                                    .checked(aspect_locked)
-                                    .disabled(disabled)
-                                    .on_click(move |locked, _, cx| {
-                                        let _ = aspect_control.update(cx, |inspector, cx| {
-                                            inspector.emit_patch(
-                                                EngineeringVisualPropertyPatch::AspectLocked(
-                                                    *locked,
-                                                ),
-                                                cx,
-                                            );
-                                        });
-                                    }),
-                                ),
-                        ),
+                    Field::new().description(description).child(
+                        div()
+                            .id(ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID)
+                            .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID.into())
+                            .child(
+                                Switch::new(
+                                    "engineering-visual-property-inspector-aspect-locked-switch",
+                                )
+                                .label("Lock proportions")
+                                .checked(aspect_locked)
+                                .disabled(disabled)
+                                .on_click(move |locked, _, cx| {
+                                    let _ = aspect_control.update(cx, |inspector, cx| {
+                                        inspector.emit_patch(
+                                            EngineeringVisualPropertyPatch::AspectLocked(*locked),
+                                            cx,
+                                        );
+                                    });
+                                }),
+                            ),
+                    ),
                 )
             }
             _ => details,
@@ -750,7 +756,9 @@ fn patch_matches_snapshot(
         EngineeringVisualPropertyPatch::Locked(value) => snapshot.locked == *value,
         EngineeringVisualPropertyPatch::AspectLocked(value) => matches!(
             snapshot.values,
-            EngineeringVisualPropertyValues::Image { aspect_locked, .. } if aspect_locked == *value
+            EngineeringVisualPropertyValues::Image { aspect_locked, .. }
+                | EngineeringVisualPropertyValues::Snapshot { aspect_locked, .. }
+                if aspect_locked == *value
         ),
         EngineeringVisualPropertyPatch::ColorAndOpacity { color, opacity } => {
             snapshot.values.appearance().is_some_and(|appearance| {

@@ -217,6 +217,7 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::insert_table_row_above_from_action))
             .on_action(cx.listener(Self::insert_table_row_below_from_action))
             .on_action(cx.listener(Self::delete_table_row_from_action))
+            .on_action(cx.listener(Self::explode_block_from_action))
             .on_action(cx.listener(Self::copy_pages_from_action))
             .on_action(cx.listener(Self::cut_pages_from_action))
             .on_action(cx.listener(Self::paste_pages_from_action))

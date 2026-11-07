@@ -51,6 +51,8 @@ pub(super) struct PageTextDocumentState {
     layers: HashMap<u32, PageTextLayerState>,
     /// The kept page each page's text was read from (`None`: the file's).
     layer_bases: HashMap<u32, Option<String>>,
+    /// The blocks exploded into each page when its text was read.
+    layer_explodes: HashMap<u32, Vec<crate::pdf_content_moves::ContentExplode>>,
     /// The edits the worker renders.
     shown: DocumentEdits,
     /// Edits sent to the worker and not yet acknowledged.
@@ -140,6 +142,8 @@ pub(super) struct PageTextOverlay {
     pub selected: Vec<Quad>,
     /// Its resize handles, page points.
     pub handles: Vec<(f64, f64)>,
+    /// The knob that turns it, above its frame.
+    pub knob: bool,
 }
 
 /// A line under a page point: in a paragraph that can be edited, or a
@@ -453,22 +457,30 @@ impl DocumentWorkspace {
             .into_iter()
             .find(|base| base.page_index == page_index);
         let requested = base.as_ref().map(|base| base.id.clone());
+        // Blocks exploded into the page are read as page content.
+        let explodes = self
+            .page_content_explodes_of(document_id, cx)
+            .into_iter()
+            .filter(|explode| explode.page_index == page_index)
+            .collect::<Vec<_>>();
         let state = self.page_text_state(document_id, epoch);
         state.layers.insert(page_index, PageTextLayerState::Pending);
         state.layer_bases.insert(page_index, requested.clone());
-        let task = cx.background_executor().spawn(async move {
-            match base {
-                Some(base) => resource.page_base_text(page_index, &base),
-                None => resource.page_text(page_index),
-            }
-        });
+        state.layer_explodes.insert(page_index, explodes.clone());
+        let requested_explodes = explodes.clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { resource.page_text_with(page_index, base.as_ref(), &explodes) });
         cx.spawn(async move |owner, cx| {
             let result = task.await;
             let _ = owner.update(cx, |workspace, cx| {
                 let Some(state) = workspace.page_text.get_mut(&document_id) else {
                     return;
                 };
-                if state.epoch != epoch || state.layer_bases.get(&page_index) != Some(&requested) {
+                if state.epoch != epoch
+                    || state.layer_bases.get(&page_index) != Some(&requested)
+                    || state.layer_explodes.get(&page_index) != Some(&requested_explodes)
+                {
                     return;
                 }
                 state.layers.insert(
@@ -581,6 +593,22 @@ impl DocumentWorkspace {
                     .read(cx)
                     .annotations
                     .document_page_bases(document_id.value())
+                    .to_vec()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(super) fn page_content_explodes_of(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Vec<crate::pdf_content_moves::ContentExplode> {
+        self.session(document_id, cx)
+            .map(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .document_page_content_explodes(document_id.value())
                     .to_vec()
             })
             .unwrap_or_default()
@@ -738,6 +766,7 @@ impl DocumentWorkspace {
         if let Some(state) = self.page_text.get_mut(&document_id) {
             state.layers.clear();
             state.layer_bases.clear();
+            state.layer_explodes.clear();
             state.hover_probe = None;
         }
     }
@@ -759,6 +788,7 @@ impl DocumentWorkspace {
             forms: self.form_field_edits_of(document_id, cx),
             tables: self.desired_page_table_edits(document_id, cx),
             moves: self.desired_page_content_moves(document_id, cx),
+            explodes: self.page_content_explodes_of(document_id, cx),
             bases: self.page_bases_of(document_id, cx),
             pages: self
                 .session(document_id, cx)
@@ -791,9 +821,29 @@ impl DocumentWorkspace {
             })
             .map(|(page, _)| *page)
             .collect::<Vec<_>>();
+        // A block exploded, or its explode undone: the page is read again.
+        let stale = stale
+            .into_iter()
+            .chain(
+                state
+                    .layer_explodes
+                    .iter()
+                    .filter(|(page, read_with)| {
+                        let shown = desired
+                            .explodes
+                            .iter()
+                            .filter(|explode| explode.page_index == **page)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        **read_with != shown
+                    })
+                    .map(|(page, _)| *page),
+            )
+            .collect::<std::collections::BTreeSet<_>>();
         for page in stale {
             state.layers.remove(&page);
             state.layer_bases.remove(&page);
+            state.layer_explodes.remove(&page);
         }
         if state.sending.is_none() && state.shown == desired {
             return;
@@ -831,6 +881,7 @@ impl DocumentWorkspace {
                         if rearranged {
                             state.layers.clear();
                             state.layer_bases.clear();
+                            state.layer_explodes.clear();
                         }
                         state.shown = desired.clone();
                         state.rejected = None;
@@ -2448,7 +2499,7 @@ impl DocumentWorkspace {
             }
         }
         // The selected content, and the drawing or image under the pointer.
-        for (page, selected, hover, handles) in self.content_overlays(document_id, cx) {
+        for (page, selected, hover, handles, knob) in self.content_overlays(document_id, cx) {
             match overlays
                 .iter_mut()
                 .find(|overlay| overlay.page_index == page)
@@ -2457,12 +2508,14 @@ impl DocumentWorkspace {
                     overlay.selected = selected;
                     overlay.hover.extend(hover);
                     overlay.handles = handles;
+                    overlay.knob = knob;
                 }
                 None => overlays.push(PageTextOverlay {
                     page_index: page,
                     selected,
                     hover,
                     handles,
+                    knob,
                     ..Default::default()
                 }),
             }
@@ -2863,7 +2916,22 @@ pub(super) fn page_text_overlay_element(
                 // under the pointer, on the frame.
                 let frame = painted.selected.first().map(frame_bounds);
                 let pointer = window.mouse_position();
-                for &(x, y) in &painted.handles {
+                let frame_size = painted
+                    .handles
+                    .first()
+                    .zip(painted.handles.get(4))
+                    .map(|(&a, &b)| {
+                        let (a, b) = (project(a), project(b));
+                        (
+                            f64::from(f32::from((a.x - b.x).abs())),
+                            f64::from(f32::from((a.y - b.y).abs())),
+                        )
+                    })
+                    .unwrap_or_default();
+                for (index, &(x, y)) in painted.handles.iter().enumerate() {
+                    if !super::content::handle_shown(index, frame_size) {
+                        continue;
+                    }
                     let mut centre = project((x, y));
                     if let Some(frame) = frame {
                         let padding = px(super::content::FRAME_PADDING_PIXELS);
@@ -2884,6 +2952,33 @@ pub(super) fn page_text_overlay_element(
                     let hot = (pointer.x - centre.x).abs() <= reach
                         && (pointer.y - centre.y).abs() <= reach;
                     paint_feedback_handle(centre, ChromeState::Selected, hot, window);
+                }
+                // The knob that turns a drawing or image, on a stem above
+                // the middle of its frame, as above a markup.
+                if painted.knob
+                    && let Some(frame) = frame
+                {
+                    let stem = point(frame.center().x, frame.top());
+                    let centre = point(
+                        stem.x,
+                        stem.y - px(super::content::ROTATION_KNOB_OFFSET_PIXELS as f32),
+                    );
+                    let reach = px(super::content::HANDLE_SIZE_PIXELS / 2. + 3.);
+                    let dx = f32::from(pointer.x - centre.x);
+                    let dy = f32::from(pointer.y - centre.y);
+                    let hot = dx.hypot(dy) <= f32::from(reach);
+                    let radius = super::interaction_chrome::rotation_feedback_radius(
+                        ChromeState::Selected,
+                        hot,
+                    );
+                    super::interaction_chrome::paint_rotation_feedback(
+                        stem,
+                        point(centre.x, centre.y + px(radius)),
+                        centre,
+                        ChromeState::Selected,
+                        hot,
+                        window,
+                    );
                 }
                 for quad in &painted.selection {
                     fill_quad(quad, accent.opacity(0.3), window);

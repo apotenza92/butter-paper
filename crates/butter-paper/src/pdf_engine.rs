@@ -1698,7 +1698,7 @@ impl PdfPersistenceSession {
         &mut self,
         edits: &[crate::pdf_text_edit::PageTextEdit],
     ) -> Result<(), PdfPersistenceError> {
-        self.apply_page_content_edits(edits, &[], &[])
+        self.apply_page_content_edits(edits, &[], &[], &[])
     }
 
     /// Applies edits to existing page text and to tables' rows, and moves
@@ -1709,15 +1709,17 @@ impl PdfPersistenceSession {
         edits: &[crate::pdf_text_edit::PageTextEdit],
         tables: &[crate::pdf_tables::PageTableEdit],
         moves: &[crate::pdf_content_moves::ContentMove],
+        explodes: &[crate::pdf_content_moves::ContentExplode],
     ) -> Result<(), PdfPersistenceError> {
-        if edits.is_empty() && tables.is_empty() && moves.is_empty() {
+        if edits.is_empty() && tables.is_empty() && moves.is_empty() && explodes.is_empty() {
             return Ok(());
         }
-        crate::pdf_text_edit::apply_content_edits(
+        crate::pdf_text_edit::apply_content_edits_with(
             &mut self.document,
             edits,
             tables,
             moves,
+            explodes,
             &crate::pdf_text_edit::TextEditLimits::default(),
         )
         .map_err(|error| PdfPersistenceError::InvalidDocument(error.to_string()))
@@ -1760,9 +1762,20 @@ impl PdfPersistenceSession {
         &self,
         page_index: u32,
     ) -> Result<crate::pdf_text_edit::PageTextLayer, PdfPersistenceError> {
-        crate::pdf_text_edit::extract_page_text(
+        self.page_text_with(page_index, &[])
+    }
+
+    /// [`Self::page_text`] with the blocks `explodes` names exploded into
+    /// the page.
+    pub fn page_text_with(
+        &self,
+        page_index: u32,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<crate::pdf_text_edit::PageTextLayer, PdfPersistenceError> {
+        crate::pdf_text_edit::extract_page_text_with(
             &self.document,
             page_index,
+            explodes,
             &crate::pdf_text_edit::TextEditLimits::default(),
         )
         .map_err(|error| PdfPersistenceError::InvalidDocument(error.to_string()))
