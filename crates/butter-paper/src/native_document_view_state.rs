@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crate::{
     document_viewer::{ViewerFitPreset, resolve_fit_zoom_percent},
     page_view_control::{PageViewMode, WheelBehavior},
@@ -151,6 +153,44 @@ pub enum WheelOutcome {
 /// one line, a single notch.
 const SINGLE_PAGE_WHEEL_STEP: f32 = 16.;
 
+/// How far a two-finger swipe travels past a page's edge to turn the page in
+/// Single Page view: enough that resting fingers do not turn it.
+const SINGLE_PAGE_SWIPE_STEP: f32 = 40.;
+
+/// Scroll events this far apart belong to different swipes. Not every
+/// platform says when fingers land, and momentum keeps events coming for as
+/// long as a swipe carries on.
+const SINGLE_PAGE_SWIPE_IDLE: Duration = Duration::from_millis(150);
+
+/// One event of a trackpad or touch mouse scroll.
+#[derive(Clone, Copy, Debug)]
+pub struct PreciseScroll {
+    pub page_count: usize,
+    pub current_page: usize,
+    pub delta: (f32, f32),
+    /// The page goes on past the view in the direction of `delta`.
+    pub page_continues: bool,
+    /// Fingers have just landed, which also stops any momentum.
+    pub starts_gesture: bool,
+    pub control: bool,
+    pub reverse_zoom: bool,
+    pub at: Instant,
+}
+
+/// Progress of a two-finger swipe in Single Page view. A heading is the axis
+/// (vertical or not) and whether the delta is negative.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SinglePageSwipe {
+    last_event: Option<Instant>,
+    heading: Option<(bool, bool)>,
+    travel: f32,
+    /// The way this swipe last scrolled the page: run into the page's edge,
+    /// it stops there rather than carrying on to turn the page.
+    scrolled: Option<(bool, bool)>,
+    /// A swipe turns one page, however long it and its momentum go on.
+    turned: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeDocumentViewState {
     mode: PageViewMode,
@@ -161,6 +201,7 @@ pub struct NativeDocumentViewState {
     viewport_size: Option<(f32, f32)>,
     scroll: (f32, f32),
     single_page_wheel_delta: f32,
+    single_page_swipe: SinglePageSwipe,
     cad_view_active: bool,
     cad_organisation: CadViewOrganisation,
     pages_per_lane: usize,
@@ -177,6 +218,7 @@ impl Default for NativeDocumentViewState {
             viewport_size: None,
             scroll: (0., 0.),
             single_page_wheel_delta: 0.,
+            single_page_swipe: SinglePageSwipe::default(),
             cad_view_active: false,
             cad_organisation: CadViewOrganisation::Columns,
             pages_per_lane: 10,
@@ -382,19 +424,67 @@ impl NativeDocumentViewState {
         self.single_page_wheel_delta = 0.;
     }
 
-    /// Precise scrolling (trackpads and touch mice) pans in every view mode.
-    /// Ctrl zooms regardless of the mouse-wheel preference or CAD layout.
-    pub fn precise_scroll(
-        &mut self,
-        delta_y: f32,
-        control: bool,
-        reverse_zoom: bool,
-    ) -> WheelOutcome {
+    /// Precise scrolling (trackpads and touch mice) pans in every view mode,
+    /// and in Single Page a swipe past the page's edge turns the page. Ctrl
+    /// zooms. None of it depends on the mouse-wheel preference.
+    pub fn precise_scroll(&mut self, scroll: PreciseScroll) -> WheelOutcome {
         self.single_page_wheel_delta = 0.;
-        if control {
-            self.zoom_from_scroll(delta_y, reverse_zoom)
+        let (delta_x, delta_y) = scroll.delta;
+        if scroll.control {
+            self.single_page_swipe = SinglePageSwipe::default();
+            return self.zoom_from_scroll(delta_y, scroll.reverse_zoom);
+        }
+        if self.mode != PageViewMode::SinglePage || self.cad_view_active {
+            return WheelOutcome::NativeScroll;
+        }
+        let swipe = &mut self.single_page_swipe;
+        let continues_swipe = swipe
+            .last_event
+            .is_some_and(|last| scroll.at.duration_since(last) < SINGLE_PAGE_SWIPE_IDLE);
+        if scroll.starts_gesture || !continues_swipe {
+            *swipe = SinglePageSwipe::default();
+        }
+        swipe.last_event = Some(scroll.at);
+        if swipe.turned {
+            return WheelOutcome::Consumed;
+        }
+        let vertical = delta_y.abs() >= delta_x.abs();
+        let dominant = if vertical { delta_y } else { delta_x };
+        if !dominant.is_finite() || dominant.abs() <= f32::EPSILON {
+            return WheelOutcome::Consumed;
+        }
+        let heading = (vertical, dominant < 0.);
+        if scroll.page_continues {
+            swipe.scrolled = Some(heading);
+            swipe.travel = 0.;
+            return WheelOutcome::NativeScroll;
+        }
+        if swipe.scrolled == Some(heading) {
+            return WheelOutcome::Consumed;
+        }
+        if swipe.heading != Some(heading) {
+            swipe.heading = Some(heading);
+            swipe.travel = 0.;
+        }
+        swipe.travel += dominant.abs();
+        if swipe.travel < SINGLE_PAGE_SWIPE_STEP {
+            return WheelOutcome::Consumed;
+        }
+        swipe.turned = true;
+        // Like the scroll it stands in for: a delta that would scroll down
+        // (negative) turns to the next page.
+        let target = if dominant < 0. {
+            scroll
+                .current_page
+                .saturating_add(1)
+                .min(scroll.page_count.saturating_sub(1))
         } else {
-            WheelOutcome::NativeScroll
+            scroll.current_page.saturating_sub(1)
+        };
+        if target == scroll.current_page {
+            WheelOutcome::Consumed
+        } else {
+            WheelOutcome::Page(target)
         }
     }
 
@@ -560,33 +650,189 @@ mod tests {
         ));
     }
 
+    fn precise(delta_y: f32, control: bool, at: Instant) -> PreciseScroll {
+        PreciseScroll {
+            page_count: 5,
+            current_page: 2,
+            delta: (0., delta_y),
+            page_continues: true,
+            starts_gesture: false,
+            control,
+            reverse_zoom: false,
+            at,
+        }
+    }
+
     #[test]
     fn precise_scroll_is_independent_of_mouse_preferences_and_cad() {
         let mut view = NativeDocumentViewState::default();
+        let at = Instant::now();
         for mode in [PageViewMode::Continuous, PageViewMode::SinglePage] {
             view.set_mode(mode);
             for behavior in [WheelBehavior::Scroll, WheelBehavior::Zoom] {
                 view.set_wheel_behavior(mode, behavior);
                 let before = view.zoom_percent();
                 assert_eq!(
-                    view.precise_scroll(-120., false, false),
+                    view.precise_scroll(precise(-120., false, at)),
                     WheelOutcome::NativeScroll
                 );
                 assert_eq!(view.zoom_percent(), before);
                 assert!(
-                    matches!(view.precise_scroll(120., true, false), WheelOutcome::Zoom(zoom) if zoom > before)
+                    matches!(view.precise_scroll(precise(120., true, at)), WheelOutcome::Zoom(zoom) if zoom > before)
                 );
             }
         }
         view.activate_cad_view();
         assert_eq!(
-            view.precise_scroll(-120., false, false),
+            view.precise_scroll(precise(-120., false, at)),
             WheelOutcome::NativeScroll
         );
         assert!(matches!(
             view.wheel(5, 2, 0., 120., false, false),
             WheelOutcome::Zoom(_)
         ));
+    }
+
+    /// A scroll in Single Page at the page's edge.
+    fn at_edge(delta_y: f32, at: Instant) -> PreciseScroll {
+        PreciseScroll {
+            page_continues: false,
+            ..precise(delta_y, false, at)
+        }
+    }
+
+    fn single_page_view() -> NativeDocumentViewState {
+        let mut view = NativeDocumentViewState::default();
+        view.set_mode(PageViewMode::SinglePage);
+        view
+    }
+
+    #[test]
+    fn a_swipe_turns_one_page_once_it_has_travelled_far_enough() {
+        let mut view = single_page_view();
+        let at = Instant::now();
+        assert_eq!(
+            view.precise_scroll(at_edge(-30., at)),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(
+            view.precise_scroll(at_edge(-30., at)),
+            WheelOutcome::Page(3)
+        );
+
+        // Fingers still moving, then momentum: the one turn is all it gets.
+        assert_eq!(
+            view.precise_scroll(at_edge(-200., at)),
+            WheelOutcome::Consumed
+        );
+        // A page the momentum could scroll is left alone too.
+        assert_eq!(
+            view.precise_scroll(precise(-200., false, at)),
+            WheelOutcome::Consumed
+        );
+
+        // New fingers on the trackpad are a new swipe, the other way here.
+        assert_eq!(
+            view.precise_scroll(PreciseScroll {
+                starts_gesture: true,
+                ..at_edge(0., at)
+            }),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(view.precise_scroll(at_edge(60., at)), WheelOutcome::Page(1));
+    }
+
+    #[test]
+    fn a_pause_ends_a_swipe_where_the_platform_does_not_report_fingers() {
+        let mut view = single_page_view();
+        let at = Instant::now();
+        assert_eq!(
+            view.precise_scroll(at_edge(-60., at)),
+            WheelOutcome::Page(3)
+        );
+        let during = at + SINGLE_PAGE_SWIPE_IDLE / 2;
+        assert_eq!(
+            view.precise_scroll(at_edge(-60., during)),
+            WheelOutcome::Consumed
+        );
+        let later = during + SINGLE_PAGE_SWIPE_IDLE;
+        assert_eq!(
+            view.precise_scroll(at_edge(-60., later)),
+            WheelOutcome::Page(3)
+        );
+
+        // A nudge that never got far enough is forgotten after a pause.
+        let later = later + SINGLE_PAGE_SWIPE_IDLE;
+        view.precise_scroll(at_edge(-30., later));
+        let later = later + SINGLE_PAGE_SWIPE_IDLE;
+        assert_eq!(
+            view.precise_scroll(at_edge(-30., later)),
+            WheelOutcome::Consumed
+        );
+    }
+
+    #[test]
+    fn a_swipe_that_scrolls_to_the_page_edge_stops_there() {
+        let mut view = single_page_view();
+        let at = Instant::now();
+        assert_eq!(
+            view.precise_scroll(precise(-200., false, at)),
+            WheelOutcome::NativeScroll
+        );
+        assert_eq!(
+            view.precise_scroll(at_edge(-200., at)),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(
+            view.precise_scroll(PreciseScroll {
+                starts_gesture: true,
+                ..at_edge(-60., at)
+            }),
+            WheelOutcome::Page(3)
+        );
+
+        // A stray movement sideways does not count as scrolling to the edge.
+        let mut view = single_page_view();
+        assert_eq!(
+            view.precise_scroll(PreciseScroll {
+                delta: (1., 0.),
+                ..precise(0., false, at)
+            }),
+            WheelOutcome::NativeScroll
+        );
+        assert_eq!(
+            view.precise_scroll(at_edge(-60., at)),
+            WheelOutcome::Page(3)
+        );
+    }
+
+    #[test]
+    fn a_swipe_stops_at_the_first_and_last_pages_and_goes_across() {
+        let mut view = single_page_view();
+        let at = Instant::now();
+        assert_eq!(
+            view.precise_scroll(PreciseScroll {
+                current_page: 4,
+                ..at_edge(-60., at)
+            }),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(
+            view.precise_scroll(PreciseScroll {
+                current_page: 0,
+                starts_gesture: true,
+                ..at_edge(60., at)
+            }),
+            WheelOutcome::Consumed
+        );
+        assert_eq!(
+            view.precise_scroll(PreciseScroll {
+                delta: (-60., 2.),
+                starts_gesture: true,
+                ..at_edge(0., at)
+            }),
+            WheelOutcome::Page(3)
+        );
     }
 
     #[test]

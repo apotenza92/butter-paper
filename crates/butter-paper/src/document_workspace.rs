@@ -162,7 +162,7 @@ use crate::{
     },
     native_document_view_state::{
         CadViewOrganisation, DocumentNavigationAction, DocumentNavigationOutcome,
-        NativeDocumentViewState, RestartView, ViewerZoomPreset, WheelOutcome,
+        NativeDocumentViewState, PreciseScroll, RestartView, ViewerZoomPreset, WheelOutcome,
     },
     page_scale_control::{
         CalibrationPointDisposition, PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID,
@@ -12219,11 +12219,21 @@ impl DocumentWorkspace {
                 return WheelOutcome::NativeScroll;
             }
             if matches!(event.delta, gpui::ScrollDelta::Pixels(_)) {
-                return session.view_state.precise_scroll(
-                    f32::from(delta.y),
-                    event.modifiers.control,
+                let current_page = session.requested_page as usize;
+                return session.view_state.precise_scroll(PreciseScroll {
+                    page_count: session.page_sizes.len(),
+                    current_page,
+                    delta: (f32::from(delta.x), f32::from(delta.y)),
+                    page_continues: session.viewer.page_continues(
+                        current_page,
+                        f32::from(delta.x),
+                        f32::from(delta.y),
+                    ),
+                    starts_gesture: event.touch_phase == gpui::TouchPhase::Started,
+                    control: event.modifiers.control,
                     reverse_zoom,
-                );
+                    at: input_at,
+                });
             }
             // From the page last asked for, so a quick run of notches
             // keeps going while pages render.
@@ -12246,8 +12256,12 @@ impl DocumentWorkspace {
                     .wheel_scroll_target(f32::from(delta.x), f32::from(delta.y));
                 self.set_viewport_scroll(document_id, scroll_x, scroll_y, cx)
             }
-            WheelOutcome::Consumed => true,
+            WheelOutcome::Consumed => {
+                self.hold_viewport_scroll(document_id, cx);
+                true
+            }
             WheelOutcome::Page(target) => {
+                self.hold_viewport_scroll(document_id, cx);
                 if let Ok(target) = u32::try_from(target) {
                     // Turned back from the top of a page: the previous one
                     // shows from its bottom.
@@ -12264,6 +12278,16 @@ impl DocumentWorkspace {
                 true
             }
         }
+    }
+
+    /// Undoes what the scroll container did with a wheel event that was not
+    /// to scroll: it has moved the view already, and would paint it there.
+    fn hold_viewport_scroll(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let (scroll_x, scroll_y) = session.read(cx).viewer.wheel_scroll_target(0., 0.);
+        self.set_viewport_scroll(document_id, scroll_x, scroll_y, cx);
     }
 
     /// A trackpad pinch zooms smoothly about the pinch centre.

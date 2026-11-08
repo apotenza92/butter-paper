@@ -775,7 +775,11 @@ with it.
 ## Viewing
 
 - Trackpads and other precise scroll devices always scroll with two fingers,
-  including Single Page and CAD View. Pinch and Ctrl+trackpad scroll zoom about
+  including Single Page and CAD View. In Single Page, a swipe that finds the
+  page's edge already in view (always, for a page that fits) turns the page
+  once it has travelled 40 points: one page a swipe, however long it or its
+  momentum goes on, the next swipe turning the next. A swipe that scrolled the
+  page to its edge stops there. Pinch and Ctrl+trackpad scroll zoom about
   the pointer. Mouse-wheel dropdowns apply only to discrete mouse wheels;
   Ctrl+wheel reverses their Scroll/Zoom choice. CAD View always zooms with a
   discrete mouse wheel. Scrolling up zooms in; Reverse Scroll Zoom flips it.

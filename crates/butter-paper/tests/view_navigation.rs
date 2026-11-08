@@ -27,7 +27,7 @@ use butter_paper::page_view_control::{
 };
 use gpui::{
     AppContext as _, Bounds, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, point, px, size,
+    ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext, point, px, size,
 };
 use gpui_component::Root;
 
@@ -481,6 +481,27 @@ impl Harness<'_> {
             },
             ..Default::default()
         });
+        self.settle();
+    }
+
+    /// One two-finger swipe, in three events; negative swipes towards the
+    /// next page.
+    fn swipe(&mut self, dy: f32) {
+        self.settle();
+        let at = self.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+        self.cx.simulate_mouse_move(at, None, Modifiers::default());
+        for (touch_phase, delta) in [
+            (TouchPhase::Started, dy / 2.),
+            (TouchPhase::Moved, dy / 2.),
+            (TouchPhase::Ended, 0.),
+        ] {
+            self.cx.simulate_event(ScrollWheelEvent {
+                position: at,
+                delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+                touch_phase,
+                ..Default::default()
+            });
+        }
         self.settle();
     }
 
@@ -1093,6 +1114,56 @@ fn trackpad_scroll_ignores_mouse_zoom_preference_in_single_page(cx: &mut TestApp
     assert!(after.scroll.1 > before.scroll.1);
     h.wheel(0., 120., true);
     assert!(h.frame().zoom > after.zoom);
+}
+
+#[gpui::test]
+fn a_two_finger_swipe_turns_a_fit_page_in_single_page_view(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &MIXED_PAGES);
+    h.action(SinglePageView);
+    h.action(FitPage);
+    assert_eq!(h.frame().current_page, 0);
+
+    h.swipe(-60.);
+    let frame = h.frame();
+    assert_eq!(frame.current_page, 1, "swiping down turns on: {frame:?}");
+    assert!(frame.whole_page_in_view(1), "{frame:?}");
+
+    // The swipe's momentum neither turns another page nor shifts this one.
+    let turned = h.frame();
+    for _ in 0..12 {
+        h.wheel(0., -40., false);
+    }
+    let after = h.frame();
+    assert_eq!(after.current_page, 1, "one swipe, one page: {after:?}");
+    assert_eq!(after.scroll, turned.scroll);
+
+    h.swipe(-60.);
+    assert_eq!(h.frame().current_page, 2);
+    h.swipe(60.);
+    assert_eq!(h.frame().current_page, 1, "swiping up turns back");
+}
+
+#[gpui::test]
+fn a_two_finger_swipe_scrolls_a_zoomed_page_to_its_edge_then_the_next_swipe_turns(
+    cx: &mut TestAppContext,
+) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    h.set_zoom(200.);
+    h.go_to_page(1);
+
+    // A swipe far longer than the page stops at the page's edge.
+    h.swipe(-20_000.);
+    let edge = h.frame();
+    assert_eq!(edge.current_page, 1, "{edge:?}");
+    let shown = edge.page(1).unwrap();
+    assert!(
+        f32::from(shown.bottom() - edge.viewport.bottom()).abs() <= page_edge_margin(200.) + 1.,
+        "the page's bottom edge is in view: {edge:?}"
+    );
+
+    h.swipe(-60.);
+    assert_eq!(h.frame().current_page, 2, "the next swipe turns the page");
 }
 
 #[gpui::test]

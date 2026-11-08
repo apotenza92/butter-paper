@@ -4,6 +4,14 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.8]
+
+### Viewing
+
+- A two-finger swipe on a trackpad or Magic Mouse turns the page in Single
+  Page view, one page a swipe. A page larger than the view scrolls to its
+  edge first.
+
 ## [0.4.7]
 
 ### Edit PDF
