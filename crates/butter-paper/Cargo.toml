@@ -1,6 +1,6 @@
 [package]
 name = "butter-paper"
-version = "0.4.6"
+version = "0.4.7"
 edition = "2024"
 publish = false
 license = "MIT"
@@ -29,7 +29,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "wayland", "x11"] }
 gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "f30c8e026298f01dfda8d1a2948677871dfd0f69" }
 gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "f30c8e026298f01dfda8d1a2948677871dfd0f69" }
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "crypto-rust", "sync-secret-service", "windows-native"] }
 libc = "0.2"
 lopdf = { version = "=0.45.0", default-features = false }

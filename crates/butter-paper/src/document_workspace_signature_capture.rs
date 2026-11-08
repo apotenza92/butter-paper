@@ -241,7 +241,11 @@ impl DocumentWorkspace {
             })
         });
         let result = match image {
-            Some(bytes) => sanitize_signature_bytes(&bytes).map_err(|error| error.to_string()),
+            Some(bytes) => clipboard_picture_png_or_jpeg(&bytes)
+                .map_err(|error| error.to_string())
+                .and_then(|picture| {
+                    sanitize_signature_bytes(&picture).map_err(|error| error.to_string())
+                }),
             None => Err(
                 "Copy a picture of your signature first, such as a screenshot of it.".to_owned(),
             ),

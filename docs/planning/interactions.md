@@ -119,9 +119,11 @@ tooltip expands the instructions when the window truncates them.
 - Paste takes a PDF copied since Butter Paper last copied, by another app or
   another Butter Paper (on another machine, through a shared clipboard), as
   a vector Snapshot of its first page, centred on the pointer (or on the
-  page). A PNG or JPEG picture copied since (a screenshot, a browser's Copy
-  Image) pastes as an Image placed as a dropped one is, centred on the
-  pointer (or on the page). Otherwise it pastes Butter Paper's own copy.
+  page). A picture copied since (a screenshot, a browser's Copy Image)
+  pastes as an Image placed as a dropped one is, centred on the pointer (or
+  on the page): PNG or JPEG as it is, and a TIFF (as macOS apps copy), a
+  bitmap (as Windows copies), GIF or WebP converted to PNG. Otherwise it
+  pastes Butter Paper's own copy.
 - *Native:* the band that moves a markup is a box turned to it: along a
   line for Lines, Arrows, Lengths and Dimensions, at the rotation for boxes,
   else upright. A Length or Dimension's box holds everything it draws: the
@@ -176,7 +178,13 @@ tooltip expands the instructions when the window truncates them.
   second click finishes (Escape cancels it). Either one begun rightwards
   selects what is fully inside (blue), leftwards what it touches (green,
   dashed). Shift adds, Alt removes. With something selected, a press on
-  empty page only ends the selection, as in Revu.
+  empty page only ends the selection, as in Revu. Holding Ctrl (Cmd on
+  macOS) makes a press draw a selection box wherever it lands, over a
+  markup, handle, text, drawing or image as well as empty page, and in
+  Edit PDF it selects page content too: dragged it is the box, clicked it
+  starts one a second click finishes, by the same rightwards and leftwards
+  rule; Shift or Alt with it adds or removes. The pointer is a crosshair
+  and nothing under it is highlighted while it is held.
 - Double-clicking a text box, or the caption of a Callout or Cloud+, edits
   it in place (*native*: no properties panel). A Callout or Cloud+ caption
   box fits its text and stays against its leader; a new Callout's box sits
@@ -287,10 +295,14 @@ Every page converts to one page of the same size.
   it. Where two boxes would overlap or nearly touch, their facing edges
   meet on one line halfway between them; boxes whose text itself overlaps,
   or one within another, keep their edges. While dragged or resized, the content itself follows
-  the pointer every frame, inside its box: its picture as the page showed
-  it, with text's and drawings' paper clear so what it passes over shows,
-  while the page is shown without it; once let go, the picture stays until
-  the page shows the content there. A drag snaps as
+  the pointer every frame, inside its box, while the page is shown without
+  it; once let go, the picture stays until the page shows the content
+  there. A move soon shows the content drawn by itself, as the page will
+  draw it, in its own dashes and transparency, on a clear ground, with
+  nothing drawn over it; until that arrives (and for a resize or turn) it
+  is cut from the page as shown, with text's and drawings' paper clear so
+  what it passes over shows. A selection of more than 48 pieces waits for
+  the drawn picture, its frame moving meanwhile. A drag snaps as
   a markup move does (its corners, edge midpoints and centre to markups,
   other page content and the grids, with the same guides); content never
   snaps to itself. The boxes Edit PDF frames paragraphs, drawings and
@@ -321,11 +333,19 @@ Every page converts to one page of the same size.
   image or form by its matrix. Text is never turned. Markups on turned
   content move with it as their centres turn; they do not turn.
 - Delete or Backspace deletes the selected content and the markups
-  selected with it. Copy, Cut and Paste work on it too: Paste adds copies
-  10 points right and down (further each time), selected, on the page the
-  content was copied from; elsewhere it says so. A copy is drawn in its
-  original's colour and line width, and moves, resizes and deletes on its
-  own.
+  selected with it. Copy, Cut and Paste work on it too. On the page it was
+  copied from, Paste adds copies 10 points right and down (further each
+  time), selected; a copy is drawn in its original's colour and line
+  width, and moves, resizes and deletes on its own. On any other page, of
+  this PDF or any other open one, in any window, Paste writes the content
+  into that page centred on the pointer (or on the page, each paste a step
+  from the last), turning Edit PDF on there, and selects it: its lines,
+  fills, images and text are page content there, each its own to select,
+  move, resize and delete, in their own colours, dashes, transparency and
+  fonts, as one undo step. On a page turned differently it is turned to
+  look as it did. A PDF or picture copied by another app since takes
+  Paste instead. Text with unsaved edits pastes elsewhere only once
+  saved.
 - Enter edits a selected paragraph from its end; Escape ends the edit,
   leaving the paragraph selected.
 - What a small clip (under half the page, clipping at most 250 paths and
@@ -770,7 +790,12 @@ with it.
   render, never its thumbnail scaled up. Turning the wheel quickly flicks
   through the pages: each shows at once from its thumbnail, if drawn, and
   the view ends on the last page asked for, rendering only that one rather
-  than a render per page. Keys never scroll a page out of view.
+  than a render per page. A page with no picture yet (no thumbnail, not
+  drawn ahead) does not show white: the page before it stays, if the same
+  shape, until the whole of the new one can replace it. Pages drawn ahead
+  are drawn at the size the page shown has on screen (up to 2,400 pixels
+  wide), so a turn does not sharpen a moment later. Keys never scroll a
+  page out of view.
 - The page navigator in the view toolbar shows the page in view of the
   total ("3 / 12") between First and Previous page, and Next and Last
   page, which are disabled at either end. Clicking the page number makes

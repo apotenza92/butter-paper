@@ -4,6 +4,38 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.7]
+
+### Edit PDF
+
+- Copied or cut page content pastes onto any page of any open PDF, centred
+  on the pointer, with Edit PDF turned on there. Each line, fill, image and
+  label stays its own to select, move and resize, with its dashes,
+  transparency and fonts. Text with unsaved edits is pasted once saved.
+- While content is dragged it is drawn by itself, as the page will draw it:
+  what is drawn over a photo no longer moves with it.
+- Dragging no longer leaks graphics memory, and a large selection no longer
+  holds up the first frame of its drag.
+
+### Selecting
+
+- Hold Ctrl (Cmd on macOS) and drag to draw a selection box from anywhere,
+  even over a line, image, text or markup. Shift adds to the selection and
+  Alt removes from it.
+
+### Viewing
+
+- Turning pages in Single Page view no longer shows a white page while a
+  heavy page loads: the page before stays until the new one can replace it.
+- Pages drawn ahead match their size on screen, and draft tiles no longer
+  paint over a page image that is already as sharp.
+
+### Clipboard
+
+- Paste, and the signature panel's Paste, take TIFF, bitmap, GIF and WebP
+  pictures as well as PNG and JPEG, which is how many macOS and Windows
+  apps copy them.
+
 ## [0.4.6]
 
 ### Snapshots and images

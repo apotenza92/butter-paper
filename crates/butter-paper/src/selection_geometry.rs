@@ -69,6 +69,18 @@ impl SelectionMarquee {
         }
     }
 
+    /// A box drawn by dragging, wherever the press was.
+    pub fn dragged_box(
+        pointer_id: u64,
+        start: SelectionPoint,
+        operation: SelectionOperation,
+    ) -> Self {
+        Self {
+            pointer_id: Some(pointer_id),
+            ..Self::armed_box(start, operation)
+        }
+    }
+
     pub fn armed_box(start: SelectionPoint, operation: SelectionOperation) -> Self {
         Self {
             pointer_id: None,

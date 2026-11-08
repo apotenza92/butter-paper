@@ -470,6 +470,41 @@ pub(crate) struct PublicationDurabilityWarning {
     pub(crate) message: String,
 }
 
+/// The widest a page is drawn ahead of being turned to: wider views show
+/// tiles over it anyway.
+const MAX_ADJACENT_RENDER_WIDTH: u32 = 2_400;
+
+/// The width to draw a page ahead at, for a page `device_width` pixels wide
+/// on screen.
+fn adjacent_render_width(device_width: f32) -> u32 {
+    (device_width.ceil() as u32).clamp(DEFAULT_PAGE_RENDER_WIDTH, MAX_ADJACENT_RENDER_WIDTH)
+}
+
+/// Whether a turn to `current` with no picture of its own keeps showing the
+/// picture of `image_page`: only while the turn waits for one, and only if
+/// the pages are the same shape (2%), as it fills the page's box.
+fn holds_previous_page(
+    placeholder: Option<u32>,
+    current: u32,
+    image_page: Option<u32>,
+    page_sizes: &[(f32, f32)],
+) -> bool {
+    let Some(image_page) = image_page.filter(|page| *page != current) else {
+        return false;
+    };
+    if placeholder != Some(current) {
+        return false;
+    }
+    let shape = |page: u32| {
+        page_sizes
+            .get(page as usize)
+            .map(|(width, height)| width / height)
+    };
+    shape(image_page)
+        .zip(shape(current))
+        .is_some_and(|(held, turned_to)| (held / turned_to - 1.).abs() <= 0.02)
+}
+
 impl NativeDocumentSession {
     pub(crate) fn opening(id: DocumentId, path: PathBuf, generation: u64) -> Self {
         let title = path
@@ -1176,6 +1211,52 @@ impl NativeDocumentSession {
         })
     }
 
+    /// Whether the view keeps showing the picture of the page it left:
+    /// the page turned to has no picture of its own yet, and the old one is
+    /// the same shape, so it stays rather than the view going white.
+    pub(crate) fn holding_previous_page(&self) -> bool {
+        holds_previous_page(
+            self.placeholder_page,
+            self.current_page,
+            self.current_image
+                .is_some()
+                .then_some(self.current_image_page)
+                .flatten(),
+            &self.page_sizes,
+        )
+    }
+
+    /// How wide to draw a page ahead: as wide as the page shown now is on
+    /// screen, so that it needs no sharpening when it is turned to.
+    pub(crate) fn adjacent_page_render_width(&self) -> u32 {
+        let Some(plan) = self.viewer.plan_snapshot() else {
+            return DEFAULT_PAGE_RENDER_WIDTH;
+        };
+        let scale = plan
+            .tiles
+            .first()
+            .map_or(1., |tile| tile.device_scale_millis as f32 / 1_000.);
+        // A plan made while turning may hold the page before: at one zoom
+        // pages of a set are about the same width.
+        plan.page_layouts
+            .iter()
+            .find(|layout| layout.page == self.current_page as usize)
+            .or_else(|| plan.page_layouts.first())
+            .map_or(DEFAULT_PAGE_RENDER_WIDTH, |layout| {
+                adjacent_render_width(layout.logical_rect.width * scale)
+            })
+    }
+
+    /// Whether the picture under page `page`'s tiles is as fine as its
+    /// `device_width` on screen, so draft tiles would only make it worse.
+    pub(crate) fn base_image_outdoes_drafts(&self, page: u32, device_width: f32) -> bool {
+        self.current_image_page == Some(page)
+            && self
+                .current_base_raster
+                .as_ref()
+                .is_some_and(|raster| raster.width() as f32 >= device_width * 0.9)
+    }
+
     /// The adjacent page image of `page_index`, if it still shows the page.
     pub(crate) fn adjacent_page_image(&self, page_index: u32) -> Option<&AdjacentPageImage> {
         let key = self.adjacent_page_key(page_index)?;
@@ -1532,5 +1613,30 @@ mod decoded_asset_upload_tests {
         let error = state.edit_guard().unwrap_err();
         assert!(error.contains("unavailable"));
         assert!(error.contains("disk unavailable"));
+    }
+}
+
+#[cfg(test)]
+mod page_turn_tests {
+    use super::*;
+
+    #[test]
+    fn a_turn_with_no_picture_keeps_the_page_before_only_if_the_same_shape() {
+        let sizes = [(100., 200.), (100., 201.), (200., 100.)];
+        // Waiting on page 1, still holding page 0's picture.
+        assert!(holds_previous_page(Some(1), 1, Some(0), &sizes));
+        // Landscape after portrait would be stretched: not held.
+        assert!(!holds_previous_page(Some(2), 2, Some(0), &sizes));
+        // The page has its own picture, or no turn is waiting.
+        assert!(!holds_previous_page(Some(1), 1, Some(1), &sizes));
+        assert!(!holds_previous_page(None, 1, Some(0), &sizes));
+        assert!(!holds_previous_page(Some(1), 1, None, &sizes));
+    }
+
+    #[test]
+    fn pages_are_drawn_ahead_at_their_size_on_screen_within_bounds() {
+        assert_eq!(adjacent_render_width(1_203.2), 1_204);
+        assert_eq!(adjacent_render_width(300.), DEFAULT_PAGE_RENDER_WIDTH);
+        assert_eq!(adjacent_render_width(9_000.), MAX_ADJACENT_RENDER_WIDTH);
     }
 }

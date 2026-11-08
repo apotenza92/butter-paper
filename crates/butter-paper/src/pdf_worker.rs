@@ -427,6 +427,19 @@ pub enum WorkerRequest {
         /// The box in the page's user space: x, y, width, height.
         rect: [f64; 4],
     },
+    /// The content `items` names on a page, by itself, as a one-page PDF
+    /// (`pdf_text_edit::content_clip`): what Edit PDF copies and drags.
+    ContentClip {
+        request_id: RequestId,
+        session_id: SessionId,
+        page_index: u32,
+        /// The kept page shown as this page, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        explodes: Vec<crate::pdf_content_moves::ContentExplode>,
+        items: Vec<crate::pdf_content_moves::ContentMove>,
+    },
     /// Draws the first page of a standalone PDF (a Snapshot's region PDF)
     /// on a transparent ground; `transform` maps its page, as PDFium shows
     /// it, to the surface.
@@ -458,6 +471,7 @@ impl WorkerRequest {
             | Self::SetDocumentEdits { request_id, .. }
             | Self::RenderCrop { request_id, .. }
             | Self::RegionPdf { request_id, .. }
+            | Self::ContentClip { request_id, .. }
             | Self::RenderPdf { request_id, .. }
             | Self::Cancel { request_id, .. }
             | Self::Close { request_id, .. } => *request_id,
@@ -503,6 +517,12 @@ pub enum WorkerResponse {
         session_id: SessionId,
         pdf_base64: String,
     },
+    ContentClip {
+        request_id: RequestId,
+        session_id: SessionId,
+        pdf_base64: String,
+        bounds: [f64; 4],
+    },
     Rendered {
         request_id: RequestId,
         job_id: JobId,
@@ -534,6 +554,7 @@ impl WorkerResponse {
             | Self::DocumentEditsSet { request_id, .. }
             | Self::PageBaseAdded { request_id, .. }
             | Self::RegionPdf { request_id, .. }
+            | Self::ContentClip { request_id, .. }
             | Self::Rendered { request_id, .. }
             | Self::Cancelled { request_id, .. }
             | Self::Closed { request_id, .. }
@@ -633,6 +654,18 @@ pub trait PdfBackend {
         _page_index: u32,
         _rect: crate::page_geometry::PdfRect,
     ) -> Result<Vec<u8>, WorkerError> {
+        Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+    }
+
+    /// See [`WorkerRequest::ContentClip`].
+    fn content_clip(
+        &mut self,
+        _document: &mut Self::Document,
+        _page_index: u32,
+        _base: Option<&str>,
+        _explodes: &[crate::pdf_content_moves::ContentExplode],
+        _items: &[crate::pdf_content_moves::ContentMove],
+    ) -> Result<crate::pdf_text_edit::ContentClip, WorkerError> {
         Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
     }
 
@@ -961,7 +994,7 @@ where
                 use base64::Engine as _;
                 let pdf = match base64::engine::general_purpose::STANDARD.decode(&pdf_base64) {
                     Ok(pdf)
-                        if pdf.len() <= crate::pdf_page_base::MAX_PAGE_BASE_BYTES
+                        if pdf.len() <= crate::pdf_page_base::MAX_CONTENT_CLIP_BYTES
                             && crate::pdf_page_base::page_base_id(&pdf) == id =>
                     {
                         pdf
@@ -1011,6 +1044,43 @@ where
                         session_id,
                         layer,
                     },
+                    Err(error) => failed(request_id, None, error),
+                }
+            }
+            WorkerRequest::ContentClip {
+                session_id,
+                page_index,
+                base,
+                explodes,
+                items,
+                ..
+            } => {
+                let Some(document) = self.documents.get_mut(&session_id) else {
+                    return failed(
+                        request_id,
+                        None,
+                        WorkerError::with_detail(
+                            WorkerErrorCode::InvalidRequest,
+                            "session identifier is not open",
+                        ),
+                    );
+                };
+                match self.backend.content_clip(
+                    document,
+                    page_index,
+                    base.as_deref(),
+                    &explodes,
+                    &items,
+                ) {
+                    Ok(clip) => {
+                        use base64::Engine as _;
+                        WorkerResponse::ContentClip {
+                            request_id,
+                            session_id,
+                            pdf_base64: base64::engine::general_purpose::STANDARD.encode(&clip.pdf),
+                            bounds: clip.bounds,
+                        }
+                    }
                     Err(error) => failed(request_id, None, error),
                 }
             }
@@ -1128,7 +1198,7 @@ where
                 }
                 use base64::Engine as _;
                 let pdf = match base64::engine::general_purpose::STANDARD.decode(&pdf_base64) {
-                    Ok(pdf) if pdf.len() <= crate::pdf_page_base::MAX_PAGE_BASE_BYTES => pdf,
+                    Ok(pdf) if pdf.len() <= crate::pdf_page_base::MAX_CONTENT_CLIP_BYTES => pdf,
                     _ => {
                         return failed(
                             request_id,

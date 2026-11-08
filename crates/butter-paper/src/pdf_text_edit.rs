@@ -6074,15 +6074,25 @@ pub fn extract_page_text_with(
         .iter()
         .filter(|explode| explode.page_index == page_index)
         .collect::<Vec<_>>();
+    // Pasted content is read as the page will have it.
+    let (pasted, read_index) = clip::with_pastes(document, page_index, &explodes, limits)?;
+    let page_id = if read_index == page_index {
+        page_id
+    } else {
+        self::page_id(&pasted, read_index)?
+    };
     extract_layer_at(
-        document,
-        page_index,
+        &pasted,
+        read_index,
         page_id,
         &explodes,
         limits,
         &FontCache::default(),
     )
-    .map(|(layer, _)| layer)
+    .map(|(mut layer, _)| {
+        layer.page_index = page_index;
+        layer
+    })
 }
 
 /// [`extract_page_text`], with the images the page's own content draws, in
@@ -6421,6 +6431,7 @@ fn apply_page_content_edits(
         // Blocks explode first, and a flattened sheet opens: the other
         // edits name the page as they leave it.
         let page_id = page_id(document, page_index)?;
+        clip::write_pastes(document, page_id, &explodes, limits)?;
         if let (_, Some(exploded)) =
             explode::extract_exploded(document, page_id, &explodes, limits, None)?
         {
@@ -6433,7 +6444,9 @@ fn apply_page_content_edits(
 
 use crate::pdf_tables::content_offset as table_offset;
 
+mod clip;
 mod explode;
+pub use clip::{ContentClip, content_clip};
 pub use explode::PageOverride;
 
 fn moved(offset: (f64, f64)) -> bool {
@@ -8503,6 +8516,257 @@ mod tests {
         });
         document.trailer.set("Root", catalog_id);
         document
+    }
+
+    /// A sheet: a dashed red line, a blue line, a grey box, two labels and
+    /// an image, each in its own state.
+    fn sheet_for_clips() -> Document {
+        let content = b"q 1 0 0 RG 2 w [4 2] 0 d 100 500 m 200 500 l S Q \
+            q 0 0 1 RG 3 w 100 400 m 200 400 l S Q \
+            0.9 g 300 300 50 40 re f \
+            0 g BT /F1 12 Tf 72 700 Td (Left behind) Tj 0 -40 Td (Copied) Tj ET \
+            q 80 0 0 60 400 100 cm /Im0 Do Q";
+        let mut document = document(content, vec![("F1", helvetica().into())]);
+        let image = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerComponent" => 8,
+            },
+            vec![0],
+        ));
+        let page = page_id(&document, 0).unwrap();
+        let resources = document
+            .get_object_mut(page)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .get_mut(b"Resources")
+            .unwrap()
+            .as_dict_mut()
+            .unwrap();
+        resources.set("XObject", dictionary! { "Im0" => image });
+        reload(&mut document)
+    }
+
+    fn clip_item(
+        kind: crate::pdf_content_moves::ContentKind,
+        rect: [f64; 4],
+        offset: [f64; 2],
+    ) -> crate::pdf_content_moves::ContentMove {
+        crate::pdf_content_moves::ContentMove {
+            page_index: 0,
+            kind,
+            rect,
+            nth: 0,
+            offset,
+            scale: [1., 1.],
+            rotation: 0.,
+            removed: false,
+            copy: None,
+        }
+    }
+
+    /// The object of `layer` nearest to `y`, by the middle of its bounds.
+    fn object_near(layer: &PageTextLayer, y: f64) -> [f64; 4] {
+        layer
+            .objects
+            .iter()
+            .min_by_key(|object| ((object.rect[1] + object.rect[3]) / 2. - y).abs() as i64)
+            .unwrap()
+            .rect
+    }
+
+    fn pasted(
+        page_index: u32,
+        clip: &ContentClip,
+        offset: (f64, f64),
+    ) -> crate::pdf_content_moves::ContentExplode {
+        let [left, bottom, right, top] = clip.bounds;
+        crate::pdf_content_moves::ContentExplode::pasted(
+            page_index,
+            [
+                left + offset.0,
+                bottom + offset.1,
+                right + offset.0,
+                top + offset.1,
+            ],
+            crate::pdf_content_moves::ContentPaste {
+                id: crate::pdf_page_base::page_base_id(&clip.pdf),
+                matrix: [1., 0., 0., 1., offset.0, offset.1],
+                pdf: Some(std::sync::Arc::new(clip.pdf.clone())),
+            },
+        )
+    }
+
+    #[test]
+    fn a_clip_holds_only_the_selected_content_as_the_page_draws_it() {
+        use crate::pdf_content_moves::ContentKind;
+        let sheet = sheet_for_clips();
+        let page = layer(&sheet);
+        let dashed = object_near(&page, 500.);
+        let copied = page
+            .lines
+            .iter()
+            .find(|line| line.text == "Copied")
+            .and_then(crate::pdf_tables::line_core_box)
+            .unwrap();
+        let clip = content_clip(
+            &sheet,
+            0,
+            &[
+                clip_item(ContentKind::Drawing, dashed, [0., 0.]),
+                clip_item(ContentKind::Text, copied, [30., 0.]),
+            ],
+            &[],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let read = Document::load_mem(&clip.pdf).unwrap();
+        let drawn = layer(&read);
+        assert_eq!(drawn.objects.len(), 1, "{:?}", drawn.objects);
+        assert_eq!(drawn.objects[0].rect, dashed);
+        assert_eq!(
+            drawn
+                .lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Copied"]
+        );
+        let moved = crate::pdf_tables::line_core_box(&drawn.lines[0]).unwrap();
+        assert!((moved[0] - copied[0] - 30.).abs() < 0.01, "{moved:?}");
+        assert!((moved[1] - copied[1]).abs() < 0.01, "{moved:?}");
+        // Its look comes with it, and only the resources it uses.
+        let page_id = page_id(&read, 0).unwrap();
+        let mut total = 0;
+        let streams = decode_streams(
+            &read,
+            &page_content_ids(&read, page_id).unwrap(),
+            &mut total,
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&streams[0]).into_owned();
+        assert!(
+            text.contains("1 0 0 RG") && text.contains("[4 2] 0 d"),
+            "{text}"
+        );
+        let resources = page_resources(&read, page_id).unwrap();
+        assert!(!resources.has(b"XObject"), "the image is not used");
+        assert!(get_dict(&read, &resources, b"Font").unwrap().has(b"F1"));
+        assert_eq!(clip.bounds[2], dashed[2].max(moved[2]).max(clip.bounds[2]));
+    }
+
+    #[test]
+    fn pasted_content_is_page_content_of_a_blank_pdf() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        let sheet = sheet_for_clips();
+        let page = layer(&sheet);
+        let dashed = object_near(&page, 500.);
+        let image = page
+            .objects
+            .iter()
+            .find(|object| object.kind == ContentKind::Image)
+            .unwrap()
+            .rect;
+        let copied = page
+            .lines
+            .iter()
+            .find(|line| line.text == "Copied")
+            .and_then(crate::pdf_tables::line_core_box)
+            .unwrap();
+        let clip = content_clip(
+            &sheet,
+            0,
+            &[
+                clip_item(ContentKind::Drawing, dashed, [0., 0.]),
+                clip_item(ContentKind::Image, image, [0., 0.]),
+                clip_item(ContentKind::Text, copied, [0., 0.]),
+            ],
+            &[],
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        // A page that means something else by the same font name.
+        let blank_content = b"BT /F1 9 Tf 72 72 Td (Blank) Tj ET";
+        let mut blank = document(
+            blank_content,
+            vec![(
+                "F1",
+                dictionary! {
+                    "Type" => "Font",
+                    "Subtype" => "Type1",
+                    "BaseFont" => "Times-Roman",
+                    "Encoding" => "WinAnsiEncoding",
+                }
+                .into(),
+            )],
+        );
+        let paste = pasted(0, &clip, (10., -20.));
+        let read = extract_page_text_with(
+            &blank,
+            0,
+            std::slice::from_ref(&paste),
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(read.objects.len(), 2, "{:?}", read.objects);
+        let lines = read
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(
+            lines.contains("Blank") && lines.contains("Copied"),
+            "{lines:?}"
+        );
+        let drawing = read
+            .objects
+            .iter()
+            .find(|object| object.kind == ContentKind::Drawing)
+            .unwrap()
+            .rect;
+        assert!(
+            (drawing[0] - dashed[0] - 10.).abs() < 0.01
+                && (drawing[1] - dashed[1] + 20.).abs() < 0.01,
+            "{drawing:?}"
+        );
+        // Written and read back, a pasted line moves as page content does.
+        let moved = ContentMove {
+            kind: ContentKind::Drawing,
+            ..clip_item(ContentKind::Drawing, drawing, [0., 100.])
+        };
+        apply_content_edits_with(
+            &mut blank,
+            &[],
+            &[],
+            std::slice::from_ref(&moved),
+            std::slice::from_ref(&paste),
+            &TextEditLimits::default(),
+        )
+        .unwrap();
+        let saved = layer(&reload(&mut blank));
+        let line = saved
+            .objects
+            .iter()
+            .find(|object| object.kind == ContentKind::Drawing)
+            .unwrap();
+        assert!((line.rect[1] - drawing[1] - 100.).abs() < 0.01, "{line:?}");
+        let fonts = saved
+            .lines
+            .iter()
+            .flat_map(|line| line.styles.iter())
+            .map(|style| style.font.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            fonts.len(),
+            2,
+            "the pasted font keeps its own name: {fonts:?}"
+        );
     }
 
     #[test]

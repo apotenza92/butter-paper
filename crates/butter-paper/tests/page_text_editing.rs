@@ -737,6 +737,93 @@ fn edit_pdf_mode_selects_drags_and_double_click_edits_a_paragraph(cx: &mut TestA
     );
 }
 
+/// Ctrl (Cmd on macOS) draws a selection box from a press on content, which
+/// is neither picked nor moved; Shift adds to what is held, Alt takes away.
+#[gpui::test]
+fn the_box_modifier_draws_a_selection_box_from_over_a_drawing(cx: &mut TestAppContext) {
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    // A large image under two small drawings, as a site plan's lines lie on
+    // its photo.
+    let layer = text_page(
+        b"0.9 g 100 100 400 400 re f 1 0 0 rg 200 200 20 20 re f 0 0 1 rg 300 200 20 20 re f",
+        lopdf::Dictionary::new(),
+    );
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let selected = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, _| {
+            workspace.selected_content_count(document_id)
+        })
+    };
+    let moves = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_snapshot(document_id, cx)
+                .unwrap()
+                .page_content_moves
+                .len()
+        })
+    };
+    let boxed = |cx: &mut gpui::VisualTestContext, from, to, modifiers: Modifiers| {
+        let (from, _) = plain_page_point(cx, document_id, from);
+        let (to, _) = plain_page_point(cx, document_id, to);
+        cx.simulate_mouse_move(from, None, modifiers);
+        cx.simulate_mouse_down(from, gpui::MouseButton::Left, modifiers);
+        cx.run_until_parked();
+        cx.simulate_mouse_move(to, Some(gpui::MouseButton::Left), modifiers);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let marquee = workspace.read_with(cx, |workspace, cx| {
+            workspace.active_selection_marquee(document_id, cx)
+        });
+        assert!(
+            marquee.is_some_and(|(_, marquee)| marquee.active
+                && marquee.shape == butter_paper::selection_geometry::SelectionShape::Box),
+            "the press draws a box"
+        );
+        cx.simulate_mouse_up(to, gpui::MouseButton::Left, modifiers);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    };
+    let secondary = Modifiers::secondary_key();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    // Begun on the large drawing, round the red square only.
+    boxed(cx, (190., 240.), (230., 190.), secondary);
+    assert_eq!(selected(cx), 1, "only what is fully inside");
+    assert_eq!(moves(cx), 0, "the drawing under the press did not move");
+    // Shift adds the blue square, and Alt takes the red one away again.
+    let add = Modifiers {
+        shift: true,
+        ..secondary
+    };
+    boxed(cx, (290., 240.), (330., 190.), add);
+    assert_eq!(selected(cx), 2);
+    let remove = Modifiers {
+        alt: true,
+        ..secondary
+    };
+    boxed(cx, (190., 240.), (230., 190.), remove);
+    assert_eq!(selected(cx), 1);
+    // A plain press there still picks the drawing, as ever.
+    let (on_it, _) = plain_page_point(cx, document_id, (150., 150.));
+    cx.simulate_mouse_move(on_it, None, Modifiers::default());
+    cx.simulate_click(on_it, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(selected(cx), 1);
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .active_selection_marquee(document_id, cx))
+            .is_none()
+    );
+}
+
 /// Edit PDF mode on a drawing: its handles resize it, Copy and Paste add a
 /// copy beside it (selected), and Delete removes that copy, each one
 /// undoable change.

@@ -218,8 +218,8 @@ use crate::{
         GeneratedDocumentRequest, GeneratedDocumentStore, OwnedGeneratedDocument,
     },
     image_asset_decode::{
-        DecodedImageFile, SanitizedSignatureFile, decode_image_bytes, decode_image_path,
-        sanitize_signature_path, sanitize_signature_raster,
+        DecodedImageFile, SanitizedSignatureFile, clipboard_picture_png_or_jpeg,
+        decode_image_bytes, decode_image_path, sanitize_signature_path, sanitize_signature_raster,
     },
     page_geometry::PageCoordinateSpace,
     pdf_engine::{InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome},
@@ -2970,6 +2970,9 @@ pub struct DocumentWorkspace {
     thumbnail_refresh_generation: u64,
     /// The picture of content being dragged, painted where the drag puts it.
     content_sprite: Option<content::ContentSprite>,
+    /// Counts the pictures asked of the worker, so a late one is left out.
+    content_sprite_draw: u64,
+    pending_pasted_selection: Option<content::PendingPastedSelection>,
     /// The drawing or image under the pointer in Edit PDF mode, as shown.
     content_hover: Option<content::ContentHover>,
     /// Page content copied in Edit PDF mode.
@@ -4094,8 +4097,9 @@ fn system_clipboard_pdf_id(cx: &App) -> Option<String> {
     system_clipboard_pdf(cx).map(|pdf| crate::pdf_page_base::page_base_id(&pdf))
 }
 
-/// The PNG or JPEG picture on the system clipboard, as another app (a
-/// screenshot, a browser's Copy Image) or a copied Snapshot puts it there.
+/// The picture on the system clipboard, as another app (a screenshot, a
+/// browser's Copy Image) or a copied Snapshot puts it there: PNG or JPEG, or
+/// a TIFF, bitmap, GIF or WebP that pastes converted to PNG.
 fn system_clipboard_image(cx: &App) -> Option<Vec<u8>> {
     cx.read_from_clipboard()?
         .entries()
@@ -4104,7 +4108,12 @@ fn system_clipboard_image(cx: &App) -> Option<Vec<u8>> {
             gpui::ClipboardEntry::Image(image)
                 if matches!(
                     image.format,
-                    gpui::ImageFormat::Png | gpui::ImageFormat::Jpeg
+                    gpui::ImageFormat::Png
+                        | gpui::ImageFormat::Jpeg
+                        | gpui::ImageFormat::Tiff
+                        | gpui::ImageFormat::Bmp
+                        | gpui::ImageFormat::Gif
+                        | gpui::ImageFormat::Webp
                 ) =>
             {
                 Some(image.bytes.clone())
@@ -4682,6 +4691,8 @@ impl DocumentWorkspace {
             thumbnail_refreshes: HashMap::new(),
             thumbnail_refresh_generation: 0,
             content_sprite: None,
+            content_sprite_draw: 0,
+            pending_pasted_selection: None,
             content_hover: None,
             content_handle_hover: None,
             content_clipboard: None,
@@ -6213,11 +6224,8 @@ impl DocumentWorkspace {
             selection.document_id == document_id && !selection.groups.is_empty()
         });
         let has_page_text = self.selected_page_text(document_id, cx).is_some();
-        let can_paste_content = self
-            .content_clipboard
-            .as_ref()
-            .is_some_and(|clipboard| clipboard.document_id == document_id)
-            && self.editing_content(document_id, cx);
+        // Copied content pastes on any page of any open PDF.
+        let can_paste_content = cx.has_global::<content::CopiedContent>();
         DocumentEditCapabilities {
             can_undo: undo_depth > 0 && !saving,
             can_redo: redo_depth > 0 && !saving,
@@ -13432,15 +13440,16 @@ impl DocumentWorkspace {
                 .and_then(|page| {
                     let key = state.adjacent_page_key(page)?;
                     let source = *state.source_page_rotations.get(page as usize)?;
-                    Some((page, key, source, state.resource.clone()?))
+                    let width = state.adjacent_page_render_width();
+                    Some((page, key, source, width, state.resource.clone()?))
                 })
         };
-        let Some((page_index, key, source_rotation, resource)) = next else {
+        let Some((page_index, key, source_rotation, width, resource)) = next else {
             return;
         };
         let task = cx.background_executor().spawn(async move {
             let surface = resource
-                .render_adjacent_page_image(page_index, DEFAULT_PAGE_RENDER_WIDTH)
+                .render_adjacent_page_image(page_index, width)
                 .and_then(|surface| surface.rotated(key.rotation.delta_from(source_rotation)))?;
             let image = surface.clone().into_render_image()?;
             Ok::<_, String>((surface, image))
@@ -13936,12 +13945,23 @@ impl DocumentWorkspace {
                         // page and planned its tiles: only the image under
                         // them sharpens, and tiles on the way are kept.
                         let from_placeholder = session.placeholder_page == Some(request.page_index);
+                        // The page drawn ahead at the view's own size is
+                        // finer than this render: it stays, so the page
+                        // does not soften under its tiles.
+                        let finer_shown = from_placeholder
+                            && session.current_image_page == Some(request.page_index)
+                            && session
+                                .current_base_raster
+                                .as_ref()
+                                .is_some_and(|shown| shown.width() > surface.width());
                         session.current_page = request.page_index;
                         session.placeholder_page = None;
-                        session.current_base_raster = Some(surface);
-                        session.current_image_page = Some(request.page_index);
-                        if let Some(previous) = session.current_image.replace(image) {
-                            session.retired_images.push(previous);
+                        if !finer_shown {
+                            session.current_base_raster = Some(surface);
+                            session.current_image_page = Some(request.page_index);
+                            if let Some(previous) = session.current_image.replace(image) {
+                                session.retired_images.push(previous);
+                            }
                         }
                         if !from_placeholder {
                             session.pending_navigation_scroll = Some(request.page_index);
@@ -18169,6 +18189,9 @@ impl DocumentWorkspace {
         let content = self.copy_content_selection(false, cx);
         if !content {
             self.content_clipboard = None;
+            if cx.has_global::<content::CopiedContent>() {
+                cx.remove_global::<content::CopiedContent>();
+            }
         }
         if let Some(document_id) = self.active_document_id
             && !self.copy_selected_page_text(document_id, cx)
@@ -18270,7 +18293,7 @@ impl DocumentWorkspace {
             return;
         }
         // Copied page content pastes as copies in Edit PDF mode.
-        if self.paste_content(cx) && markup_clipboard(cx).annotations.is_empty() {
+        if self.paste_content(target, cx) && markup_clipboard(cx).annotations.is_empty() {
             return;
         }
         let Some(document_id) = self.active_document_id else {
@@ -18715,6 +18738,23 @@ impl DocumentWorkspace {
         {
             self.select_content_in_marquee(document_id, page_index, cx);
         }
+        // Ctrl (Cmd on macOS) draws a selection box from the press, whatever
+        // is under it; with Shift it adds, with Alt it removes.
+        let force_box = tool == AnnotationTool::Select && !box_armed && modifiers.secondary();
+        if force_box {
+            self.commit_page_text_editing(cx);
+            self.clear_text_selection(cx);
+            if !(modifiers.shift || modifiers.alt) {
+                self.clear_content_selection(cx);
+            }
+            if self.editing_content(interaction.document_id, cx) {
+                self.content_marquee =
+                    Some((interaction.document_id, interaction.page_index, point));
+                // Hovering, which reads the page, is passed over while held.
+                let _ = self.page_text_blocks(interaction.document_id, interaction.page_index, cx);
+            }
+        }
+        let box_armed = box_armed || force_box;
         // In Edit PDF mode, page content takes a press no markup or form
         // field does.
         if !box_armed
@@ -19431,6 +19471,7 @@ impl DocumentWorkspace {
                                 PointerInputModifiers {
                                     shift: modifiers.shift,
                                     alt: modifiers.alt,
+                                    force_box,
                                 },
                                 &selection_supplement,
                             )
@@ -19569,6 +19610,11 @@ impl DocumentWorkspace {
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
             return self.clear_hover_candidate(cx);
         };
+        // Held, the press will draw a box: nothing under it is offered.
+        if modifiers.secondary() && session.read(cx).annotations.tool() == AnnotationTool::Select {
+            let cleared = self.content_hover.take().is_some();
+            return self.clear_hover_candidate(cx) || cleared;
+        }
         if self.editing_content(interaction.document_id, cx)
             && self.update_content_hover(interaction, point, modifiers.alt, cx)
         {
@@ -19917,6 +19963,7 @@ impl DocumentWorkspace {
                         PointerInputModifiers {
                             shift: modifiers.shift,
                             alt: modifiers.alt,
+                            force_box: false,
                         },
                     )
                     .map_err(|error| error.to_string())?;
@@ -20040,6 +20087,7 @@ impl DocumentWorkspace {
                                 PointerInputModifiers {
                                     shift: modifiers.shift,
                                     alt: modifiers.alt,
+                                    force_box: false,
                                 },
                                 &selection_supplement,
                             )
@@ -26183,10 +26231,10 @@ impl Render for DocumentWorkspace {
                 .expect("a ready page must retain coordinate-space metadata");
             // Not another page's: in Continuous view the current page
             // follows scrolling while the image stays with its page.
-            let current_image = session
-                .current_image
-                .clone()
-                .filter(|_| session.current_image_page == Some(current_page));
+            let holding_previous_page = session.holding_previous_page();
+            let current_image = session.current_image.clone().filter(|_| {
+                session.current_image_page == Some(current_page) || holding_previous_page
+            });
             let annotation_tool = session.annotations.tool();
             let annotation_dirty = session.is_dirty();
             let (annotation_undo_depth, annotation_redo_depth) =
@@ -26516,6 +26564,26 @@ impl Render for DocumentWorkspace {
                                 &caption_supplement,
                             );
                             let tiles = session.viewer.visible_tiles(layout.page);
+                            // Draft tiles are for when nothing better is on
+                            // the way: over a page image as fine as the view
+                            // they would show a coarser page, then pop sharp.
+                            let device_width = layout.logical_rect.width
+                                * tiles.first().map_or(1., |(request, _)| {
+                                    request.device_scale_millis as f32 / 1_000.
+                                });
+                            let tiles = if session
+                                .base_image_outdoes_drafts(layout.page as u32, device_width)
+                            {
+                                tiles
+                                    .into_iter()
+                                    .filter(|(request, _)| {
+                                        session.viewer.visible_tile_quality(*request)
+                                            != Some(crate::document_viewer::ViewerRenderQuality::Preview)
+                                    })
+                                    .collect()
+                            } else {
+                                tiles
+                            };
                             let quality = session.viewer.page_quality(layout.page);
                             let render_error =
                                 session.viewer.page_error(layout.page).map(str::to_owned);
@@ -26524,6 +26592,16 @@ impl Render for DocumentWorkspace {
                                 .iter()
                                 .filter(|request| request.page == layout.page)
                                 .count();
+                            // The page before it holds the view until the whole
+                            // of this one can replace it, not patch by patch.
+                            let tiles = if holding_previous_page
+                                && layout.page == current_page as usize
+                                && tiles.len() < expected_tiles
+                            {
+                                Vec::new()
+                            } else {
+                                tiles
+                            };
                             let painted_viewer = tiles.first().and_then(|(first, _)| {
                                 (expected_tiles > 0
                                     && tiles.len() == expected_tiles
@@ -26684,6 +26762,13 @@ impl Render for DocumentWorkspace {
                         .flatten()
                 })
         };
+        // With the box modifier held, a press draws a selection box.
+        let select_hover_cursor = (annotation_tool == AnnotationTool::Select
+            && window.modifiers().secondary()
+            && self.active_annotation_pointer.is_none()
+            && self.content_drag.is_none())
+        .then_some(CursorStyle::Crosshair)
+        .or(select_hover_cursor);
         let form_overlays = self.form_overlays(document_id, cx);
         let content_sprite = self.content_sprite_paint(document_id, cx);
         let page_text_overlays = if editing_content

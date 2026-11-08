@@ -363,6 +363,15 @@ of that content, placed the same way, drawn as well as the original.
 - What a clip covering under half of the page box clips is one drawing,
   named by the clip's bounds: the clip, its paths and its images move
   together, and the app moves the text lines it clips as text moves.
+- Content pasted from another page or PDF is a `ContentExplode` with a
+  `paste` (`id`, the SHA-256 of a clip, and the `matrix` placing it). A clip
+  is a one-page PDF of the content alone (`content_clip`): the page's
+  content with everything else's painting dropped and its state operators
+  kept, and only the resources that is left using. Pasting closes the
+  page's own content in `q`…`Q` and writes the clip's after it, its
+  resources joining the page's (renamed where a name means something else),
+  before the page's other edits, which name it as page content. Until
+  saved, a clip is kept in memory and in recovery, as a kept page is.
 - An exploded block (`ContentExplode`: `rect`, `nth`, and the `offset`,
   `scale` and `rotation` it was shown with) is written into its page
   before the page's other edits, which name the page as the explode

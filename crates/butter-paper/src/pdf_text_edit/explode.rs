@@ -30,7 +30,7 @@ pub struct PageOverride {
 const MAX_SHEET_DEPTH: usize = 4;
 
 /// The resource categories a form's content names.
-const CATEGORIES: [&[u8]; 7] = [
+pub(super) const CATEGORIES: [&[u8]; 7] = [
     b"Font",
     b"XObject",
     b"ExtGState",
@@ -70,7 +70,7 @@ pub(super) fn extract_exploded(
             fonts,
         )?;
     }
-    for explode in explodes {
+    for explode in explodes.iter().filter(|explode| explode.paste.is_none()) {
         let units = page.units(page_box);
         let ordinals = unit_ordinals(&units);
         let found = units
@@ -224,47 +224,10 @@ fn inline_form(
     };
     // Its resources join the page's, renamed where the page uses the name
     // for something else. A form without resources uses the page's.
-    let mut renames: HashMap<&[u8], HashMap<Vec<u8>, Vec<u8>>> = HashMap::new();
-    if let Some(own) = get_dict(document, &form.dict, b"Resources") {
-        for category in CATEGORIES {
-            let Some(entries) = get_dict(document, own, category) else {
-                continue;
-            };
-            let mut merged = get_dict(document, &resources, category)
-                .cloned()
-                .unwrap_or_default();
-            for (name, value) in entries.iter() {
-                let taken = merged.get(name).ok();
-                if taken.is_some_and(|existing| existing == value) {
-                    continue;
-                }
-                let mut renamed = name.clone();
-                if taken.is_some() {
-                    let mut suffix = 0;
-                    while merged.has(&renamed) {
-                        suffix += 1;
-                        renamed = format!(
-                            "{}_x{}{}",
-                            String::from_utf8_lossy(name),
-                            form_id.0,
-                            if suffix > 1 {
-                                format!("_{suffix}")
-                            } else {
-                                String::new()
-                            }
-                        )
-                        .into_bytes();
-                    }
-                    renames
-                        .entry(category)
-                        .or_default()
-                        .insert(name.clone(), renamed.clone());
-                }
-                merged.set(renamed, value.clone());
-            }
-            resources.set(category, Object::Dictionary(merged));
-        }
-    }
+    let renames = match get_dict(document, &form.dict, b"Resources") {
+        Some(own) => merge_resources(document, &mut resources, own, form_id.0),
+        None => HashMap::new(),
+    };
     // The page no longer draws a form exploded where it drew it once: it
     // leaves the page's resources, and the file, rather than travel unused.
     let drawn_name = match operation.operands.last() {
@@ -384,9 +347,60 @@ fn inline_form(
     ))
 }
 
+/// Joins resources `own` to `resources`, renaming (with `unique`, to tell
+/// them apart) those whose name means something else there; and the names
+/// that changed, by category.
+pub(super) fn merge_resources(
+    document: &Document,
+    resources: &mut Dictionary,
+    own: &Dictionary,
+    unique: u32,
+) -> HashMap<&'static [u8], HashMap<Vec<u8>, Vec<u8>>> {
+    let mut renames: HashMap<&'static [u8], HashMap<Vec<u8>, Vec<u8>>> = HashMap::new();
+    for category in CATEGORIES {
+        let Some(entries) = get_dict(document, own, category) else {
+            continue;
+        };
+        let mut merged = get_dict(document, resources, category)
+            .cloned()
+            .unwrap_or_default();
+        for (name, value) in entries.iter() {
+            let taken = merged.get(name).ok();
+            if taken.is_some_and(|existing| existing == value) {
+                continue;
+            }
+            let mut renamed = name.clone();
+            if taken.is_some() {
+                let mut suffix = 0;
+                while merged.has(&renamed) {
+                    suffix += 1;
+                    renamed = format!(
+                        "{}_x{}{}",
+                        String::from_utf8_lossy(name),
+                        unique,
+                        if suffix > 1 {
+                            format!("_{suffix}")
+                        } else {
+                            String::new()
+                        }
+                    )
+                    .into_bytes();
+                }
+                renames
+                    .entry(category)
+                    .or_default()
+                    .insert(name.clone(), renamed.clone());
+            }
+            merged.set(renamed, value.clone());
+        }
+        resources.set(category, Object::Dictionary(merged));
+    }
+    renames
+}
+
 /// `content` with the resource names `renames` changes (by category)
 /// changed in the operators that name them; every other byte is kept.
-fn renamed_content(
+pub(super) fn renamed_content(
     content: &[u8],
     renames: &HashMap<&[u8], HashMap<Vec<u8>, Vec<u8>>>,
 ) -> Result<Vec<u8>, TextEditError> {

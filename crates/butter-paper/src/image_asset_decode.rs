@@ -405,6 +405,35 @@ pub fn decode_image_path_with_limit(
     decode_image_bytes(&encoded)
 }
 
+/// A picture another app put on the clipboard, as the PNG or JPEG Butter
+/// Paper places: a TIFF (as macOS apps copy pictures), a bitmap (as Windows
+/// copies them), GIF or WebP is converted to PNG.
+pub fn clipboard_picture_png_or_jpeg(
+    encoded: &[u8],
+) -> Result<std::borrow::Cow<'_, [u8]>, ImageDecodeError> {
+    let format = match image::guess_format(encoded).ok() {
+        Some(ImageFormat::Png | ImageFormat::Jpeg) => {
+            return Ok(std::borrow::Cow::Borrowed(encoded));
+        }
+        Some(
+            format @ (ImageFormat::Tiff | ImageFormat::Bmp | ImageFormat::Gif | ImageFormat::WebP),
+        ) => format,
+        _ => return Err(ImageDecodeError::UnsupportedFormat),
+    };
+    let mut decoder = ImageReader::with_format(std::io::Cursor::new(encoded), format)
+        .into_decoder()
+        .map_err(ImageDecodeError::Decode)?;
+    validate_geometry(decoder.dimensions())?;
+    let orientation = decoder.orientation().map_err(ImageDecodeError::Decode)?;
+    let mut decoded = DynamicImage::from_decoder(decoder).map_err(ImageDecodeError::Decode)?;
+    decoded.apply_orientation(orientation);
+    let mut png = Vec::new();
+    DynamicImage::ImageRgba8(decoded.into_rgba8())
+        .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+        .map_err(ImageDecodeError::Decode)?;
+    Ok(std::borrow::Cow::Owned(png))
+}
+
 pub fn decode_image_bytes(encoded: &[u8]) -> Result<DecodedImageFile, ImageDecodeError> {
     let format = match image::guess_format(encoded).ok() {
         Some(ImageFormat::Png) => DecodedImageFormat::Png,
@@ -516,6 +545,44 @@ mod signature_quality_tests {
         assert!(matches!(
             sanitize_signature_raster(width, height, &vec![255; page.len()]),
             Err(SignatureImageError::NoInk)
+        ));
+    }
+
+    #[test]
+    fn a_copied_tiff_bitmap_gif_or_webp_picture_converts_to_png() {
+        let picture = image::RgbaImage::from_fn(6, 4, |x, y| {
+            image::Rgba([(x * 40) as u8, (y * 60) as u8, 200, 255])
+        });
+        for format in [
+            ImageFormat::Tiff,
+            ImageFormat::Bmp,
+            ImageFormat::Gif,
+            ImageFormat::WebP,
+        ] {
+            let mut encoded = Vec::new();
+            DynamicImage::ImageRgba8(picture.clone())
+                .write_to(&mut std::io::Cursor::new(&mut encoded), format)
+                .unwrap();
+            let png = clipboard_picture_png_or_jpeg(&encoded).unwrap();
+            assert_eq!(image::guess_format(&png).unwrap(), ImageFormat::Png);
+            let decoded = decode_image_bytes(&png).unwrap();
+            assert_eq!(
+                (decoded.asset().width_px(), decoded.asset().height_px()),
+                (6, 4),
+                "{format:?}"
+            );
+        }
+        let mut png = Vec::new();
+        DynamicImage::ImageRgba8(picture)
+            .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        assert!(matches!(
+            clipboard_picture_png_or_jpeg(&png),
+            Ok(std::borrow::Cow::Borrowed(_))
+        ));
+        assert!(matches!(
+            clipboard_picture_png_or_jpeg(b"<svg/>"),
+            Err(ImageDecodeError::UnsupportedFormat)
         ));
     }
 }

@@ -506,6 +506,29 @@ pub struct ContentExplode {
     pub scale: [f64; 2],
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation: f64,
+    /// Instead of a form of the page, content pasted from another page or
+    /// PDF, written after the page's own: it names nothing, and what it
+    /// draws is page content as what a form draws is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paste: Option<ContentPaste>,
+}
+
+/// Content copied from a page (a clip: `pdf_text_edit::content_clip`),
+/// pasted into another: where it goes, and the clip, named by its SHA-256.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ContentPaste {
+    pub id: String,
+    /// From the clip's page space to the page's.
+    pub matrix: [f64; 6],
+    /// The clip itself. The worker is sent it once, not with every edit.
+    #[serde(skip)]
+    pub pdf: Option<std::sync::Arc<Vec<u8>>>,
+}
+
+impl PartialEq for ContentPaste {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.matrix == other.matrix
+    }
 }
 
 fn is_origin(offset: &[f64; 2]) -> bool {
@@ -523,6 +546,21 @@ impl ContentExplode {
             offset: placement.offset,
             scale: placement.scale,
             rotation: placement.rotation,
+            paste: None,
+        }
+    }
+
+    /// Content pasted into page `page_index`, whose bounds there are
+    /// `rect`.
+    pub fn pasted(page_index: u32, rect: [f64; 4], paste: ContentPaste) -> Self {
+        Self {
+            page_index,
+            rect,
+            nth: 0,
+            offset: [0., 0.],
+            scale: [1., 1.],
+            rotation: 0.,
+            paste: Some(paste),
         }
     }
 
@@ -536,7 +574,8 @@ impl ContentExplode {
 
     /// Whether it explodes the `nth` form at `rect`.
     pub fn names(&self, rect: [f64; 4], nth: u32) -> bool {
-        self.nth == nth
+        self.paste.is_none()
+            && self.nth == nth
             && self
                 .rect
                 .iter()

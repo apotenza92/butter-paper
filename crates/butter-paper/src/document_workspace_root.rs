@@ -17,6 +17,8 @@ impl DocumentWorkspace {
             .min_h_0()
             .track_focus(&self.workspace_focus)
             .key_context(self.size_entry_key_context(cx))
+            // Ctrl or Cmd turns the pointer into a selection box's.
+            .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
             .on_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
                 if !window.has_focused_input(cx) && workspace.handle_size_entry_key(event, cx) {
                     cx.stop_propagation();

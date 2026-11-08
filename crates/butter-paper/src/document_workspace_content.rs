@@ -2,15 +2,19 @@
 //! and moves the page's own content (text, drawings and images) where no
 //! markup or form field takes a press.
 
-use gpui::{App, Context, CursorStyle, Modifiers, Pixels, Window};
+use gpui::{App, BorrowAppContext as _, Context, CursorStyle, Modifiers, Pixels, Window};
 
-use super::{DocumentId, DocumentWorkspace, NativeDocumentStatus, PageInteraction};
+use super::{
+    DocumentId, DocumentWorkspace, NativeDocumentStatus, PageInteraction, PageRotation,
+    defer_drop_images, system_clipboard_image_id, system_clipboard_pdf_id,
+};
 use crate::annotation_adapter::AnnotationTool;
 use crate::annotation_model::{MarkupId, PdfPoint, RectangleResizeHandle};
 use crate::pdf_content_moves::{
     ContentChange, ContentKind, ContentMove, MovedContent, PageObject, Placement,
 };
 use crate::pdf_text_selection::Quad;
+use crate::selection_geometry::SelectionOperation;
 
 gpui::actions!(
     document_workspace,
@@ -345,6 +349,64 @@ pub struct ContentClipboard {
     pub pastes: u32,
 }
 
+/// A clip of copied content, by itself as a one-page PDF.
+#[derive(Clone)]
+pub(super) struct ContentClipData {
+    id: String,
+    pdf: std::sync::Arc<Vec<u8>>,
+    bounds: [f64; 4],
+}
+
+/// How the worker is getting on with a clip.
+#[derive(Clone)]
+enum ClipState {
+    Making,
+    Ready(ContentClipData),
+    Failed(String),
+}
+
+/// A Paste waiting for its clip: where it goes.
+struct WaitingPaste {
+    workspace: gpui::WeakEntity<DocumentWorkspace>,
+    document_id: DocumentId,
+    page_index: u32,
+    at: Option<PdfPoint>,
+}
+
+/// Content copied in Edit PDF mode, as it pastes on other pages and into
+/// other PDFs: shared by every window, as copied markups are.
+pub(super) struct CopiedContent {
+    /// Which copy this is, as the worker's reply must match.
+    copy: u64,
+    /// How far its page was turned, in degrees.
+    rotation: i64,
+    /// Each piece: what it is and where its page showed it.
+    items: Vec<(ContentKind, [f64; 4])>,
+    /// It holds text its page has edits to, which a clip cannot show yet.
+    edited_text: bool,
+    system_pdf: Option<String>,
+    system_image: Option<String>,
+    clip: ClipState,
+    waiting: Option<WaitingPaste>,
+    /// How often it was pasted, each a step further away.
+    pastes: u32,
+}
+
+impl gpui::Global for CopiedContent {}
+
+/// Where pasted content lands, once its page has been read, to select it.
+pub(super) struct PendingPastedSelection {
+    document_id: DocumentId,
+    page_index: u32,
+    items: Vec<(ContentKind, [f64; 4])>,
+}
+
+/// The largest picture of dragged content, in pixels.
+const MAX_SPRITE_PIXELS: f64 = 16_000_000.;
+/// How many pieces a drag cuts its picture from the page's tiles for, while
+/// the worker draws the real one: more are shown once that arrives.
+const MAX_TILE_PIECES: usize = 48;
+
 impl DocumentWorkspace {
     /// Whether Edit PDF mode can be turned on for the document: it is
     /// open and ready.
@@ -459,7 +521,7 @@ impl DocumentWorkspace {
             Ok(true) => {
                 self.content_selection = None;
                 self.content_hover = None;
-                self.content_sprite = None;
+                self.release_content_sprite(cx);
                 self.annotation_statuses.insert(
                     document_id,
                     "Exploded the block: its parts can now be selected on their own".into(),
@@ -1118,9 +1180,79 @@ impl DocumentWorkspace {
         page_index: u32,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some((layer, blocks)) = self.page_text_blocks(document_id, page_index, cx) else {
+        let Some(candidates) = self.content_candidates(document_id, page_index, cx) else {
             return true;
         };
+        let rects = candidates
+            .iter()
+            .filter_map(|group| group.iter().map(|item| item.shown()).reduce(union))
+            .collect::<Vec<_>>();
+        let Some(selected) = self.session(document_id, cx).and_then(|session| {
+            session.read(cx).annotations.marquee_selects_rects(
+                document_id.value(),
+                page_index,
+                &rects,
+            )
+        }) else {
+            return false;
+        };
+        let hits = candidates
+            .into_iter()
+            .zip(selected)
+            .filter_map(|(group, selected)| selected.then_some(group))
+            .collect::<Vec<_>>();
+        let operation = self
+            .active_selection_marquee(document_id, cx)
+            .map(|(_, marquee)| marquee.operation);
+        let held = self
+            .content_selection
+            .clone()
+            .filter(|selection| {
+                selection.document_id == document_id && selection.page_index == page_index
+            })
+            .map(|selection| selection.groups)
+            .unwrap_or_default();
+        let groups = match operation {
+            Some(SelectionOperation::Add) => {
+                let mut groups = held;
+                for hit in hits {
+                    if !groups.contains(&hit) {
+                        groups.push(hit);
+                    }
+                }
+                groups
+            }
+            Some(SelectionOperation::Remove) => held
+                .into_iter()
+                .filter(|group| !hits.contains(group))
+                .collect(),
+            _ => hits,
+        };
+        if groups.is_empty() {
+            if operation == Some(SelectionOperation::Remove) {
+                self.clear_content_selection(cx);
+            }
+        } else if !self.hold_restricted_content(document_id, page_index, cx) {
+            self.content_selection = Some(ContentSelection {
+                document_id,
+                page_index,
+                groups,
+                markups: Vec::new(),
+            });
+            cx.notify();
+        }
+        true
+    }
+
+    /// Everything on the page a selection can hold, each as its group; in
+    /// paint order within objects. `None` until the page has been read.
+    fn content_candidates(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Vec<MovedContent>>> {
+        let (layer, blocks) = self.page_text_blocks(document_id, page_index, cx)?;
         let mut candidates: Vec<Vec<MovedContent>> = Vec::new();
         for block in blocks.iter().filter(|block| block.cell.is_none()) {
             // Text inside a drawing's clip comes with the drawing.
@@ -1197,34 +1329,7 @@ impl DocumentWorkspace {
             }
         }
         candidates.extend(copies.into_values());
-        let rects = candidates
-            .iter()
-            .filter_map(|group| group.iter().map(|item| item.shown()).reduce(union))
-            .collect::<Vec<_>>();
-        let Some(selected) = self.session(document_id, cx).and_then(|session| {
-            session.read(cx).annotations.marquee_selects_rects(
-                document_id.value(),
-                page_index,
-                &rects,
-            )
-        }) else {
-            return false;
-        };
-        let groups = candidates
-            .into_iter()
-            .zip(selected)
-            .filter_map(|(group, selected)| selected.then_some(group))
-            .collect::<Vec<_>>();
-        if !groups.is_empty() && !self.hold_restricted_content(document_id, page_index, cx) {
-            self.content_selection = Some(ContentSelection {
-                document_id,
-                page_index,
-                groups,
-                markups: Vec::new(),
-            });
-            cx.notify();
-        }
-        true
+        Some(candidates)
     }
 
     /// Selects the paragraph whose first line is `anchor`, in Edit PDF
@@ -1333,6 +1438,9 @@ impl DocumentWorkspace {
         };
         if !drag.moved {
             self.take_content_sprite(drag.document_id, drag.page_index, cx);
+            if matches!(drag.mode, DragMode::Move) {
+                self.draw_content_sprite(drag.document_id, drag.page_index, cx);
+            }
         }
         drag.moved = true;
         self.content_drag = Some(drag);
@@ -1363,8 +1471,13 @@ impl DocumentWorkspace {
 
     /// Takes the picture of the selection about to be dragged, from the
     /// page's tiles as shown.
-    fn take_content_sprite(&mut self, document_id: DocumentId, page_index: u32, cx: &App) {
-        self.content_sprite = None;
+    fn take_content_sprite(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_content_sprite(cx);
         let Some(selection) = self.content_selection.as_ref().filter(|selection| {
             selection.document_id == document_id && selection.page_index == page_index
         }) else {
@@ -1450,6 +1563,11 @@ impl DocumentWorkspace {
                 ));
             }
         }
+        // A selection of many pieces waits for the worker's picture: cutting
+        // each out of the tiles here would hold up the first frame.
+        if parts.len() > MAX_TILE_PIECES {
+            return;
+        }
         let Some(session) = self.session(document_id, cx) else {
             return;
         };
@@ -1530,6 +1648,149 @@ impl DocumentWorkspace {
             sent: false,
             replied: false,
         });
+    }
+
+    /// Lets go of the dragged picture, and of the memory its images hold
+    /// on the graphics card.
+    pub(super) fn release_content_sprite(&mut self, cx: &mut App) {
+        self.content_sprite_draw += 1;
+        if let Some(sprite) = self.content_sprite.take() {
+            drop_sprite_images(sprite.pieces, cx);
+        }
+    }
+
+    /// Has the worker draw the selection by itself, as it will be drawn, to
+    /// replace the picture cut from the page: nothing drawn over it comes
+    /// with it, and it keeps its dashes, colours and transparency.
+    fn draw_content_sprite(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self.content_selection.as_ref().filter(|selection| {
+            selection.document_id == document_id && selection.page_index == page_index
+        }) else {
+            return;
+        };
+        let Some(interaction) = self
+            .page_interactions
+            .get(&(document_id, page_index))
+            .copied()
+        else {
+            return;
+        };
+        let items = Self::clip_items(selection);
+        let Some(session) = self.session(document_id, cx) else {
+            return;
+        };
+        let session = session.read(cx);
+        let Some(resource) = session.resource.clone() else {
+            return;
+        };
+        let rotation = session
+            .page_rotation(page_index)
+            .unwrap_or(PageRotation::Degrees0);
+        let device_scale = session
+            .viewer
+            .visible_tiles(page_index as usize)
+            .first()
+            .map_or(1., |(request, _)| {
+                request.device_scale_millis as f64 / 1_000.
+            });
+        let pixels_per_point = device_scale
+            / interaction
+                .transform
+                .tolerance_points(1.)
+                .unwrap_or(1.)
+                .max(f64::EPSILON);
+        let base = self
+            .page_bases_of(document_id, cx)
+            .into_iter()
+            .find(|base| base.page_index == page_index);
+        let explodes = self
+            .page_content_explodes_of(document_id, cx)
+            .into_iter()
+            .filter(|explode| explode.page_index == page_index)
+            .collect::<Vec<_>>();
+        self.content_sprite_draw += 1;
+        let draw = self.content_sprite_draw;
+        let task = cx.background_executor().spawn(async move {
+            let clip = resource.content_clip(page_index, base.as_ref(), &explodes, &items)?;
+            let from = clip.page_rect();
+            let size = (from[2] - from[0], from[3] - from[1]);
+            let fitted = (MAX_SPRITE_PIXELS / (size.0 * size.1)).sqrt();
+            let surface = resource.render_region_pdf(
+                &clip.pdf,
+                size,
+                pixels_per_point.min(fitted),
+                rotation,
+            )?;
+            Ok::<_, String>((from, surface.into_render_image()?))
+        });
+        cx.spawn(async move |workspace, cx| {
+            let drawn = task.await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                if workspace.content_sprite_draw != draw {
+                    if let Ok((_, image)) = drawn {
+                        defer_drop_images(vec![image], cx);
+                    }
+                    return;
+                }
+                let Ok((from, image)) = drawn else {
+                    return;
+                };
+                workspace.use_drawn_sprite(document_id, page_index, from, image, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Paints the worker's picture of the selection in place of the one
+    /// cut from the page, unless it has been dropped by now.
+    fn use_drawn_sprite(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        from: [f64; 4],
+        image: std::sync::Arc<gpui::RenderImage>,
+        cx: &mut Context<Self>,
+    ) {
+        let dragging = self.content_drag.is_some_and(|drag| {
+            drag.document_id == document_id && drag.page_index == page_index && drag.moved
+        });
+        if !dragging
+            || self
+                .content_sprite
+                .as_ref()
+                .is_some_and(|sprite| sprite.dropped.is_some())
+        {
+            defer_drop_images(vec![image], cx);
+            return;
+        }
+        let had_picture = self.content_sprite.is_some();
+        if let Some(sprite) = self.content_sprite.take() {
+            drop_sprite_images(sprite.pieces, cx);
+        }
+        self.content_sprite = Some(ContentSprite {
+            document_id,
+            page_index,
+            pieces: vec![SpritePiece {
+                from,
+                group: 0,
+                item: None,
+                image,
+                ink: None,
+            }],
+            dropped: None,
+            sent: false,
+            replied: false,
+        });
+        // Without a picture, the page was showing the content moved.
+        if !had_picture {
+            self.sync_document_edits(document_id, cx);
+        }
+        cx.notify();
     }
 
     /// Where each piece of the dragged selection is shown after `change`,
@@ -1641,7 +1902,7 @@ impl DocumentWorkspace {
     pub(super) fn content_sprite_paint(
         &mut self,
         document_id: DocumentId,
-        cx: &App,
+        cx: &mut App,
     ) -> Option<SpritePaint> {
         let sprite = self
             .content_sprite
@@ -1655,7 +1916,7 @@ impl DocumentWorkspace {
                     .shows_fresh_tiles(sprite.page_index as usize)
             });
             if fresh {
-                self.content_sprite = None;
+                self.release_content_sprite(cx);
                 return None;
             }
         }
@@ -2187,43 +2448,182 @@ impl DocumentWorkspace {
             groups: selection.groups.clone(),
             pastes: 0,
         });
+        self.make_copied_content(&selection, cx);
         if cut {
             self.change_selected_content(ContentChange::Remove, cx);
         }
         true
     }
 
-    /// Pastes copied content as new copies on its page, a little away from
-    /// the last, and selects them. Returns whether there was content to
-    /// paste in Edit PDF mode.
-    pub(super) fn paste_content(&mut self, cx: &mut Context<Self>) -> bool {
+    /// The selection as what a clip of it names, placed where it is shown.
+    fn clip_items(selection: &ContentSelection) -> Vec<ContentMove> {
+        selection
+            .groups
+            .iter()
+            .flatten()
+            .map(|item| ContentMove {
+                page_index: selection.page_index,
+                kind: item.kind,
+                rect: item.rect,
+                nth: item.nth,
+                offset: item.from.offset,
+                scale: item.from.scale,
+                rotation: item.from.rotation,
+                removed: false,
+                copy: None,
+            })
+            .collect()
+    }
+
+    /// Has the worker make a clip of the selection, to paste on other pages
+    /// and into other PDFs.
+    fn make_copied_content(&mut self, selection: &ContentSelection, cx: &mut Context<Self>) {
+        let (document_id, page_index) = (selection.document_id, selection.page_index);
+        let Some(session) = self.session(document_id, cx) else {
+            return;
+        };
+        let session = session.read(cx);
+        let Some(resource) = session.resource.clone() else {
+            return;
+        };
+        let rotation = session
+            .page_rotation(page_index)
+            .map_or(0, |turn| turn.degrees());
+        let edited_text = selection
+            .groups
+            .iter()
+            .flatten()
+            .any(|item| item.kind == ContentKind::Text)
+            && self
+                .desired_page_text_edits(document_id, cx)
+                .iter()
+                .any(|edit| edit.page_index == page_index);
+        let items = Self::clip_items(selection);
+        let shown = selection
+            .groups
+            .iter()
+            .flatten()
+            .map(|item| (item.kind, item.shown()))
+            .collect::<Vec<_>>();
+        let base = self
+            .page_bases_of(document_id, cx)
+            .into_iter()
+            .find(|base| base.page_index == page_index);
+        let explodes = self
+            .page_content_explodes_of(document_id, cx)
+            .into_iter()
+            .filter(|explode| explode.page_index == page_index)
+            .collect::<Vec<_>>();
+        let copy = cx
+            .try_global::<CopiedContent>()
+            .map_or(1, |copied| copied.copy + 1);
+        cx.set_global(CopiedContent {
+            copy,
+            rotation,
+            items: shown,
+            edited_text,
+            system_pdf: system_clipboard_pdf_id(cx),
+            system_image: system_clipboard_image_id(cx),
+            clip: ClipState::Making,
+            waiting: None,
+            pastes: 0,
+        });
+        let task = cx.background_executor().spawn(async move {
+            resource.content_clip(page_index, base.as_ref(), &explodes, &items)
+        });
+        cx.spawn(async move |_, cx| {
+            let result = task.await;
+            cx.update(|cx| Self::content_clip_made(copy, result, cx));
+        })
+        .detach();
+    }
+
+    /// The worker's clip for copy number `copy`, which a Paste may be
+    /// waiting for.
+    fn content_clip_made(
+        copy: u64,
+        result: Result<crate::pdf_text_edit::ContentClip, String>,
+        cx: &mut App,
+    ) {
+        if cx
+            .try_global::<CopiedContent>()
+            .is_none_or(|copied| copied.copy != copy)
+        {
+            return;
+        }
+        let clip = match result {
+            Ok(clip) if clip.pdf.len() <= crate::pdf_page_base::MAX_CONTENT_CLIP_BYTES => {
+                ClipState::Ready(ContentClipData {
+                    id: crate::pdf_page_base::page_base_id(&clip.pdf),
+                    pdf: std::sync::Arc::new(clip.pdf),
+                    bounds: clip.bounds,
+                })
+            }
+            Ok(_) => ClipState::Failed("it is too large to copy".into()),
+            Err(error) => ClipState::Failed(error),
+        };
+        let waiting = cx.update_global::<CopiedContent, _>(|copied, _| {
+            copied.clip = clip;
+            copied.waiting.take()
+        });
+        if let Some(waiting) = waiting
+            && let Some(workspace) = waiting.workspace.upgrade()
+        {
+            workspace.update(cx, |workspace, cx| {
+                workspace.place_copied_content(
+                    waiting.document_id,
+                    waiting.page_index,
+                    waiting.at,
+                    cx,
+                );
+            });
+        }
+    }
+
+    /// Whether what is on the system clipboard was copied after the content,
+    /// by another app: Paste takes that instead.
+    fn copied_content_overtaken(copied: &CopiedContent, cx: &App) -> bool {
+        let newer = |now: Option<String>, then: &Option<String>| now.is_some() && now != *then;
+        newer(system_clipboard_pdf_id(cx), &copied.system_pdf)
+            || newer(system_clipboard_image_id(cx), &copied.system_image)
+    }
+
+    /// Pastes copied content. On the page it was copied from it adds
+    /// copies, a little away from the last; on any other page, of this or
+    /// any open PDF, it is written into that page, centred on the pointer
+    /// (or the page), with Edit PDF turned on there. Either way it is
+    /// selected. Returns whether content was pasted.
+    pub(super) fn paste_content(
+        &mut self,
+        target: Option<(DocumentId, u32, PdfPoint)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         self.settle_content_nudge(cx);
         let Some(document_id) = self.active_document_id else {
             return false;
         };
-        if !self.editing_content(document_id, cx) {
+        if cx
+            .try_global::<CopiedContent>()
+            .is_some_and(|copied| Self::copied_content_overtaken(copied, cx))
+        {
             return false;
         }
-        let Some(clipboard) = self
-            .content_clipboard
-            .as_mut()
-            .filter(|clipboard| clipboard.document_id == document_id)
-        else {
-            return false;
-        };
-        let page_index = clipboard.page_index;
+        let target = target.filter(|(document, _, _)| *document == document_id);
         let current_page = self
             .session(document_id, cx)
             .map(|session| session.read(cx).current_page());
-        if current_page.is_some_and(|current| current != page_index) {
-            self.annotation_statuses.insert(
-                document_id,
-                format!(
-                    "Page content pastes on the page it was copied from (page {}).",
-                    page_index + 1
-                ),
-            );
-            cx.notify();
+        let Some(page_index) = target.map(|(_, page, _)| page).or(current_page) else {
+            return false;
+        };
+        let same_page = self.editing_content(document_id, cx)
+            && self.content_clipboard.as_ref().is_some_and(|clipboard| {
+                clipboard.document_id == document_id && clipboard.page_index == page_index
+            });
+        if !same_page {
+            if !cx.has_global::<CopiedContent>() {
+                return false;
+            }
+            self.place_copied_content(document_id, page_index, target.map(|(_, _, at)| at), cx);
             return true;
         }
         let Some(clipboard) = self.content_clipboard.as_mut() else {
@@ -2264,6 +2664,175 @@ impl DocumentWorkspace {
         self.refresh_content_snapping(document_id, page_index, cx);
         cx.notify();
         true
+    }
+
+    /// Writes copied content into `page_index` of `document_id`, once the
+    /// worker has made its clip.
+    fn place_copied_content(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        at: Option<PdfPoint>,
+        cx: &mut Context<Self>,
+    ) {
+        let say = |workspace: &mut Self, message: String, cx: &mut Context<Self>| {
+            workspace.annotation_statuses.insert(document_id, message);
+            cx.notify();
+        };
+        let Some(copied) = cx.try_global::<CopiedContent>() else {
+            return;
+        };
+        if copied.edited_text {
+            say(
+                self,
+                "Save this document first to paste its edited text elsewhere.".into(),
+                cx,
+            );
+            return;
+        }
+        let clip = match copied.clip.clone() {
+            ClipState::Ready(clip) => clip,
+            ClipState::Failed(error) => {
+                say(self, format!("The content was not pasted: {error}"), cx);
+                return;
+            }
+            ClipState::Making => {
+                let workspace = cx.entity().downgrade();
+                cx.update_global::<CopiedContent, _>(|copied, _| {
+                    copied.waiting = Some(WaitingPaste {
+                        workspace,
+                        document_id,
+                        page_index,
+                        at,
+                    });
+                });
+                say(self, "Copying the content…".into(), cx);
+                return;
+            }
+        };
+        let (rotation, items, pastes) = {
+            let pastes = cx.update_global::<CopiedContent, _>(|copied, _| {
+                copied.pastes += 1;
+                copied.pastes
+            });
+            let copied = cx.global::<CopiedContent>();
+            (copied.rotation, copied.items.clone(), pastes)
+        };
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let (view_box, turned) = {
+            let session = session.read(cx);
+            let Some(space) = session.source_page_coordinate_space(page_index) else {
+                return;
+            };
+            (
+                space.view_box(),
+                session
+                    .page_rotation(page_index)
+                    .map_or(0, |turn| turn.degrees()),
+            )
+        };
+        // Centred on the pointer; with none, on the page, each paste a step
+        // from the last.
+        let centre = at.unwrap_or_else(|| {
+            let step = PASTE_STEP * f64::from(pastes.saturating_sub(1));
+            PdfPoint {
+                x: view_box.x + view_box.width / 2. + step,
+                y: view_box.y + view_box.height / 2. - step,
+            }
+        });
+        let matrix = paste_matrix(clip.bounds, (centre.x, centre.y), turned, rotation);
+        let rect = mapped_rect(matrix, clip.bounds);
+        let explode = crate::pdf_content_moves::ContentExplode::pasted(
+            page_index,
+            rect,
+            crate::pdf_content_moves::ContentPaste {
+                id: clip.id,
+                matrix,
+                pdf: Some(clip.pdf),
+            },
+        );
+        self.commit_page_text_editing(cx);
+        let result = self.update_annotation_history_with_result(
+            document_id,
+            cx,
+            move |annotations, document_id| {
+                annotations.add_document_pasted_content(document_id, explode)
+            },
+        );
+        if let Err(error) = result {
+            say(self, format!("The content was not pasted: {error}"), cx);
+            return;
+        }
+        self.set_content_edit_mode(document_id, true, cx);
+        self.clear_markup_selection(document_id, cx);
+        self.content_selection = None;
+        self.content_hover = None;
+        self.pending_pasted_selection = Some(PendingPastedSelection {
+            document_id,
+            page_index,
+            items: items
+                .into_iter()
+                .map(|(kind, shown)| (kind, mapped_rect(matrix, shown)))
+                .collect(),
+        });
+        self.annotation_statuses.remove(&document_id);
+        self.sync_document_edits(document_id, cx);
+        self.refresh_content_snapping(document_id, page_index, cx);
+        cx.notify();
+    }
+
+    /// Selects content just pasted, now that its page has been read as
+    /// holding it: the last drawn at each of its places, as it is on top.
+    pub(super) fn select_pending_pasted_content(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .pending_pasted_selection
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.document_id == document_id && pending.page_index == page_index
+            })
+        {
+            return;
+        }
+        let Some(candidates) = self.content_candidates(document_id, page_index, cx) else {
+            return;
+        };
+        let Some(pending) = self.pending_pasted_selection.take() else {
+            return;
+        };
+        let near = |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.5);
+        let mut chosen = std::collections::BTreeSet::new();
+        for (kind, rect) in &pending.items {
+            let found = candidates.iter().enumerate().rev().find(|(index, group)| {
+                !chosen.contains(index)
+                    && group
+                        .iter()
+                        .any(|item| item.kind == *kind && near(item.shown(), *rect))
+            });
+            if let Some((index, _)) = found {
+                chosen.insert(index);
+            }
+        }
+        let groups = candidates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, group)| chosen.contains(&index).then_some(group))
+            .collect::<Vec<_>>();
+        if !groups.is_empty() && self.active_document_id == Some(document_id) {
+            self.content_selection = Some(ContentSelection {
+                document_id,
+                page_index,
+                groups,
+                markups: Vec::new(),
+            });
+            cx.notify();
+        }
     }
 
     /// Deletes the selected content, and the markups selected with it.
@@ -2721,6 +3290,52 @@ fn rect_quad(rect: [f64; 4]) -> Quad {
         (rect[2], rect[3]),
         (rect[0], rect[3]),
     ]
+}
+
+/// Lets go of a dragged picture's images, once no frame is using them.
+fn drop_sprite_images(pieces: Vec<SpritePiece>, cx: &mut App) {
+    defer_drop_images(pieces.into_iter().map(|piece| piece.image).collect(), cx);
+}
+
+/// From the clip's page to a page where its centre lands on `centre`,
+/// turned so that it looks as it did on a page turned `from` degrees.
+fn paste_matrix(bounds: [f64; 4], centre: (f64, f64), to: i64, from: i64) -> [f64; 6] {
+    let (cx0, cy0) = ((bounds[0] + bounds[2]) / 2., (bounds[1] + bounds[3]) / 2.);
+    let (sin, cos): (f64, f64) = match (to - from).rem_euclid(360) {
+        90 => (1., 0.),
+        180 => (0., -1.),
+        270 => (-1., 0.),
+        _ => (0., 1.),
+    };
+    [
+        cos,
+        sin,
+        -sin,
+        cos,
+        centre.0 - (cos * cx0 - sin * cy0),
+        centre.1 - (sin * cx0 + cos * cy0),
+    ]
+}
+
+/// The bounds of `rect` mapped by `matrix`.
+fn mapped_rect([a, b, c, d, e, f]: [f64; 6], rect: [f64; 4]) -> [f64; 4] {
+    let corners = [
+        (rect[0], rect[1]),
+        (rect[2], rect[1]),
+        (rect[0], rect[3]),
+        (rect[2], rect[3]),
+    ]
+    .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
+    corners
+        .iter()
+        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |rect, &(x, y)| {
+            [
+                rect[0].min(x),
+                rect[1].min(y),
+                rect[2].max(x),
+                rect[3].max(y),
+            ]
+        })
 }
 
 /// Paints a dragged picture on its page: each piece's picture where the
@@ -3227,6 +3842,18 @@ mod tests {
             ])),
             pad as i64,
         )
+    }
+
+    #[test]
+    fn pasted_content_is_centred_and_keeps_its_look_on_a_turned_page() {
+        let bounds = [10., 20., 50., 40.];
+        // Upright to upright: only moved, its centre on the point.
+        let matrix = paste_matrix(bounds, (100., 200.), 0, 0);
+        assert_eq!(matrix, [1., 0., 0., 1., 70., 170.]);
+        assert_eq!(mapped_rect(matrix, bounds), [80., 190., 120., 210.]);
+        // Onto a page shown a quarter turn: turned to look the same there.
+        let matrix = paste_matrix(bounds, (100., 200.), 90, 0);
+        assert_eq!(mapped_rect(matrix, bounds), [90., 180., 110., 220.]);
     }
 
     fn picture(image: &gpui::RenderImage) -> (i32, Vec<[u8; 4]>) {

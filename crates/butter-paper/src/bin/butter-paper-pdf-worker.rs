@@ -42,6 +42,27 @@ fn prepare_pdfium_display_bytes(
     })
 }
 
+/// `explodes` with the clips they paste, which the worker was sent once.
+fn with_paste_pdfs(
+    document: &PdfiumDocument,
+    explodes: &[butter_paper::pdf_content_moves::ContentExplode],
+) -> Result<Vec<butter_paper::pdf_content_moves::ContentExplode>, WorkerError> {
+    let mut explodes = explodes.to_vec();
+    for paste in explodes
+        .iter_mut()
+        .filter_map(|explode| explode.paste.as_mut())
+    {
+        let pdf = document.page_bases.get(&paste.id).ok_or_else(|| {
+            WorkerError::with_detail(
+                WorkerErrorCode::InvalidRequest,
+                "the pasted content is missing",
+            )
+        })?;
+        paste.pdf = Some(pdf.clone());
+    }
+    Ok(explodes)
+}
+
 /// A copy of `source` to apply edits to, whose new objects take numbers the
 /// file has never used: its own cross-reference stream's, which the parser
 /// drops, included. An update reusing that number is ignored by PDFium.
@@ -457,6 +478,7 @@ impl PdfBackend for PdfiumBackend {
         base: Option<&str>,
         explodes: &[butter_paper::pdf_content_moves::ContentExplode],
     ) -> Result<PageTextLayer, WorkerError> {
+        let explodes = &with_paste_pdfs(document, explodes)?;
         let Some(base) = base else {
             return extract_page_text_with(
                 &document.source,
@@ -490,6 +512,55 @@ impl PdfBackend for PdfiumBackend {
         Ok(layer)
     }
 
+    fn content_clip(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+        base: Option<&str>,
+        explodes: &[butter_paper::pdf_content_moves::ContentExplode],
+        items: &[butter_paper::pdf_content_moves::ContentMove],
+    ) -> Result<butter_paper::pdf_text_edit::ContentClip, WorkerError> {
+        let explodes = with_paste_pdfs(document, explodes)?;
+        let limits = TextEditLimits::default();
+        let Some(base) = base else {
+            return butter_paper::pdf_text_edit::content_clip(
+                &document.source,
+                page_index,
+                items,
+                &explodes,
+                &limits,
+            )
+            .map_err(map_text_edit_error);
+        };
+        let pdf = document.page_bases.get(base).ok_or_else(|| {
+            WorkerError::with_detail(WorkerErrorCode::InvalidRequest, "the kept page is missing")
+        })?;
+        let kept = PdfMetadataDocument::load_mem(pdf).map_err(|error| {
+            WorkerError::with_detail(
+                WorkerErrorCode::MalformedDocument,
+                format!("a kept page cannot be read: {error}"),
+            )
+        })?;
+        // The kept page is page 0 of its PDF: what names it says so.
+        let explodes = explodes
+            .into_iter()
+            .filter(|explode| explode.page_index == page_index)
+            .map(|explode| butter_paper::pdf_content_moves::ContentExplode {
+                page_index: 0,
+                ..explode
+            })
+            .collect::<Vec<_>>();
+        let items = items
+            .iter()
+            .map(|item| butter_paper::pdf_content_moves::ContentMove {
+                page_index: 0,
+                ..item.clone()
+            })
+            .collect::<Vec<_>>();
+        butter_paper::pdf_text_edit::content_clip(&kept, 0, &items, &explodes, &limits)
+            .map_err(map_text_edit_error)
+    }
+
     fn add_page_base(
         &mut self,
         document: &mut Self::Document,
@@ -518,6 +589,7 @@ impl PdfBackend for PdfiumBackend {
             })?;
             base.pdf = Some(pdf.clone());
         }
+        edits.explodes = with_paste_pdfs(document, &edits.explodes)?;
         let edits = &edits;
         let shown = edited_display(&document.source, &document.source_bytes, edits)?;
         let (metadata, bytes) =
@@ -2113,6 +2185,242 @@ mod tests {
             );
             backend.close(document);
         }
+    }
+
+    /// Copied content drawn by PDFium: by itself on a clear ground, as a
+    /// drag shows it, and written into another PDF.
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn copied_content_draws_by_itself_and_in_another_pdf() {
+        use butter_paper::pdf_content_moves::{
+            ContentExplode, ContentKind, ContentMove, ContentPaste,
+        };
+        use lopdf::{Object, Stream, dictionary};
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let pdf = |content: &[u8]| {
+            let mut document = PdfMetadataDocument::with_version("1.7");
+            let pages = document.new_object_id();
+            let contents = document.add_object(Stream::new(dictionary! {}, content.to_vec()));
+            let page = document.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages,
+                "MediaBox" => vec![0.into(), 0.into(), 200.into(), 200.into()],
+                "Contents" => contents,
+                "Resources" => dictionary! {},
+            });
+            document.objects.insert(
+                pages,
+                Object::Dictionary(dictionary! {
+                    "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
+                }),
+            );
+            let catalog =
+                document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+            document.trailer.set("Root", catalog);
+            let mut bytes = Vec::new();
+            document.save_to(&mut bytes).unwrap();
+            bytes
+        };
+        // Red, drawn over by a black bar: the bar must not come with it.
+        let sheet = pdf(b"1 0 0 rg 20 20 60 60 re f 0 0 0 rg 0 45 200 10 re f");
+        let open = |backend: &mut PdfiumBackend, bytes: &[u8], name: &str| {
+            let path = env::temp_dir().join(format!("bp-clip-{}-{name}.pdf", std::process::id()));
+            std::fs::write(&path, bytes).unwrap();
+            let source = File::open(&path).unwrap();
+            let opened = backend.open(source_handle(&source), None).unwrap().0;
+            std::fs::remove_file(&path).unwrap();
+            opened
+        };
+        let mut document = open(&mut backend, &sheet, "sheet");
+        let layer = backend.page_text(&mut document, 0).unwrap();
+        let square = layer
+            .objects
+            .iter()
+            .find(|object| object.rect[2] - object.rect[0] < 100.)
+            .unwrap();
+        let clip = backend
+            .content_clip(
+                &mut document,
+                0,
+                None,
+                &[],
+                &[ContentMove {
+                    page_index: 0,
+                    kind: ContentKind::Drawing,
+                    rect: square.rect,
+                    nth: square.nth,
+                    offset: [0., 0.],
+                    scale: [1., 1.],
+                    rotation: 0.,
+                    removed: false,
+                    copy: None,
+                }],
+            )
+            .unwrap();
+        let page = clip.page_rect();
+        let (width, height) = ((page[2] - page[0]) as u32, (page[3] - page[1]) as u32);
+        let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, width);
+        request.surface.height = height;
+        request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+        let mut pixels = vec![0; request.surface.byte_len as usize];
+        backend
+            .render_pdf(
+                clip.pdf.clone(),
+                [1., 0., 0., 1., 0., 0.],
+                &request.surface,
+                &mut pixels,
+            )
+            .unwrap();
+        let at = |pixels: &[u8], x: u32, y: u32| {
+            let offset = ((y * width + x) * 4) as usize;
+            [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]
+        };
+        // BGRA. The square's middle, where the bar crossed it, is red.
+        let (mx, my) = (width / 2, height / 2);
+        assert_eq!(at(&pixels, mx, my), [0, 0, 255, 255]);
+        assert_eq!(at(&pixels, 2, 2)[3], 0, "the ground is clear");
+
+        // Pasted into a blank PDF, 100 points up and right.
+        let blank = pdf(b"");
+        let mut target = open(&mut backend, &blank, "blank");
+        backend
+            .add_page_base(
+                &mut target,
+                butter_paper::pdf_page_base::page_base_id(&clip.pdf),
+                clip.pdf.clone(),
+            )
+            .unwrap();
+        let paste = ContentExplode::pasted(
+            0,
+            [120., 120., 180., 180.],
+            ContentPaste {
+                id: butter_paper::pdf_page_base::page_base_id(&clip.pdf),
+                matrix: [1., 0., 0., 1., 100., 100.],
+                pdf: None,
+            },
+        );
+        backend
+            .set_document_edits(
+                &mut target,
+                &DocumentEdits {
+                    explodes: vec![paste.clone()],
+                    ..DocumentEdits::default()
+                },
+            )
+            .unwrap();
+        let read = backend
+            .page_text_with(&mut target, 0, None, std::slice::from_ref(&paste))
+            .unwrap();
+        assert_eq!(read.objects.len(), 1);
+        let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, 200);
+        request.clip.height = 200;
+        request.surface.height = 200;
+        request.surface.byte_len = 200 * 200 * 4;
+        let mut pixels = vec![0; 160_000];
+        backend
+            .render_crop(&mut target, &request, &mut pixels, &AtomicBool::new(false))
+            .unwrap();
+        let red = |x: usize, y: usize| {
+            pixels[(y * 200 + x) * 4 + 2] == 255 && pixels[(y * 200 + x) * 4] == 0
+        };
+        assert!(red(150, 50), "the pasted square, 150 up from the bottom");
+        assert!(!red(50, 150), "nothing where it was");
+        backend.close(document);
+        backend.close(target);
+    }
+
+    /// Moving a drawing on a heavy page of a large file, as a drag ends:
+    /// the times to read the page, apply the move and draw the page. Set
+    /// BP_HEAVY_PDF (and BP_HEAVY_PAGE, 1-based) to the file; run with
+    /// `--nocapture`.
+    #[test]
+    #[ignore = "requires the pinned real PDFium library and BP_HEAVY_PDF"]
+    fn heavy_page_content_move_latency() {
+        use butter_paper::pdf_content_moves::{ContentKind, ContentMove};
+        use std::time::Instant;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let path = env::var_os("BP_HEAVY_PDF").expect("BP_HEAVY_PDF");
+        let page = env::var("BP_HEAVY_PAGE")
+            .ok()
+            .and_then(|page| page.parse::<u32>().ok())
+            .unwrap_or(1)
+            - 1;
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let source = File::open(&path).unwrap();
+        let started = Instant::now();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        eprintln!(
+            "opened in {:.0} ms",
+            started.elapsed().as_secs_f64() * 1000.
+        );
+        let started = Instant::now();
+        let layer = backend.page_text(&mut document, page).unwrap();
+        eprintln!(
+            "page read in {:.0} ms: {} objects, {} lines",
+            started.elapsed().as_secs_f64() * 1000.,
+            layer.objects.len(),
+            layer.lines.len()
+        );
+        let object = layer
+            .objects
+            .iter()
+            .find(|object| object.kind == ContentKind::Drawing)
+            .expect("a drawing");
+        let width = 1600_u32;
+        let page_box = layer.page_box.unwrap();
+        let scale = width as f32 / (page_box[2] - page_box[0]) as f32;
+        let height = ((page_box[3] - page_box[1]) as f32 * scale) as u32;
+        let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, width);
+        request.page_index = page;
+        request.transform = [scale, 0., 0., scale, 0., 0.];
+        request.clip.height = height;
+        request.surface.height = height;
+        request.surface.byte_len = u64::from(width) * u64::from(height) * 4;
+        let mut pixels = vec![0; request.surface.byte_len as usize];
+        for step in 1..=4 {
+            let started = Instant::now();
+            backend
+                .set_document_edits(
+                    &mut document,
+                    &DocumentEdits {
+                        moves: vec![ContentMove {
+                            page_index: page,
+                            kind: ContentKind::Drawing,
+                            rect: object.rect,
+                            nth: object.nth,
+                            offset: [10. * f64::from(step), 0.],
+                            scale: [1., 1.],
+                            rotation: 0.,
+                            removed: false,
+                            copy: None,
+                        }],
+                        ..DocumentEdits::default()
+                    },
+                )
+                .unwrap();
+            let edited = started.elapsed();
+            let started = Instant::now();
+            backend
+                .render_crop(
+                    &mut document,
+                    &request,
+                    &mut pixels,
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            eprintln!(
+                "move {step}: edit {:.0} ms, page drawn {:.0} ms",
+                edited.as_secs_f64() * 1000.,
+                started.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        backend.close(document);
     }
 
     #[test]

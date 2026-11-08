@@ -444,6 +444,17 @@ pub trait NativeDocumentResource: Send + Sync {
     fn region_pdf(&self, _page_index: u32, _rect: PdfRect) -> Result<Vec<u8>, String> {
         Err("vector Snapshots are unavailable for this document".into())
     }
+    /// The content `items` names on a page, by itself, as a one-page PDF
+    /// (`pdf_text_edit::content_clip`).
+    fn content_clip(
+        &self,
+        _page_index: u32,
+        _base: Option<&crate::pdf_page_base::PageBase>,
+        _explodes: &[crate::pdf_content_moves::ContentExplode],
+        _items: &[crate::pdf_content_moves::ContentMove],
+    ) -> Result<crate::pdf_text_edit::ContentClip, String> {
+        Err("copying page content is unavailable for this document".into())
+    }
     /// A region PDF of `size_pt` drawn at `pixels_per_point` on a
     /// transparent ground, turned as a page shown at `rotation` is.
     fn render_region_pdf(
@@ -1413,6 +1424,26 @@ impl PdfiumWorkerResource {
     }
 
     /// Sends the worker each of `bases` it has not been sent.
+    /// Sends the worker the clips `explodes` paste, once each.
+    fn send_pasted_clips(
+        &self,
+        client: &mut WorkerProcessClient,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<(), String> {
+        let clips = explodes
+            .iter()
+            .filter_map(|explode| {
+                let paste = explode.paste.as_ref()?;
+                Some(crate::pdf_page_base::PageBase {
+                    page_index: explode.page_index,
+                    id: paste.id.clone(),
+                    pdf: paste.pdf.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        self.send_page_bases(client, &clips)
+    }
+
     fn send_page_bases(
         &self,
         client: &mut WorkerProcessClient,
@@ -1621,6 +1652,53 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             }
             WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
             response => Err(unexpected_response("Snapshot copy", response)),
+        }
+    }
+
+    fn content_clip(
+        &self,
+        page_index: u32,
+        base: Option<&crate::pdf_page_base::PageBase>,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+        items: &[crate::pdf_content_moves::ContentMove],
+    ) -> Result<crate::pdf_text_edit::ContentClip, String> {
+        if page_index as usize >= self.shown_pages().sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        let _turn = self.gate.enter(RenderPriority::Interactive);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        if let Some(base) = base {
+            self.send_page_bases(client, std::slice::from_ref(base))?;
+        }
+        self.send_pasted_clips(client, explodes)?;
+        match client
+            .exchange(&WorkerRequest::ContentClip {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+                base: base.map(|base| base.id.clone()),
+                explodes: explodes.to_vec(),
+                items: items.to_vec(),
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::ContentClip {
+                pdf_base64, bounds, ..
+            } => {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(pdf_base64)
+                    .map(|pdf| crate::pdf_text_edit::ContentClip { pdf, bounds })
+                    .map_err(|_| "the PDF worker sent an unreadable copy".to_owned())
+            }
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("content copy", response)),
         }
     }
 
@@ -1855,6 +1933,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         if let Some(base) = base {
             self.send_page_bases(client, std::slice::from_ref(base))?;
         }
+        self.send_pasted_clips(client, explodes)?;
         match client
             .exchange(&WorkerRequest::PageText {
                 request_id: self.request_id(),
@@ -1901,6 +1980,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             .as_mut()
             .ok_or_else(|| "PDF worker resource is released".to_owned())?;
         self.send_page_bases(client, &edits.bases)?;
+        self.send_pasted_clips(client, &edits.explodes)?;
         match client
             .exchange(&WorkerRequest::SetDocumentEdits {
                 request_id: self.request_id(),

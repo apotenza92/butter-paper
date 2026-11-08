@@ -333,3 +333,68 @@ fn with_the_setting_off_new_images_are_free(cx: &mut TestAppContext) {
         .unwrap();
     assert!(!snapshot.images[0].aspect_locked);
 }
+
+/// Paste over the page with `picture` on the clipboard, as another app
+/// copied it.
+fn paste_picture(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    format: gpui::ImageFormat,
+    bytes: Vec<u8>,
+    cx: &mut gpui::VisualTestContext,
+) -> Vec<butter_paper::annotation_model::PdfRect> {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(
+        format, bytes,
+    )));
+    let (at, _) = window_point(cx, document_id, (300., 400.));
+    cx.simulate_mouse_move(at, None, gpui::Modifiers::default());
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-v"
+    } else {
+        "ctrl-v"
+    });
+    cx.run_until_parked();
+    workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .images
+        .iter()
+        .map(|image| image.rect)
+        .collect()
+}
+
+#[gpui::test]
+fn a_tiff_or_bitmap_another_app_copied_pastes_as_an_image(cx: &mut TestAppContext) {
+    // macOS apps copy pictures as TIFF, and Windows as a bitmap.
+    let picture =
+        image::RgbaImage::from_fn(64, 32, |x, _| image::Rgba([x as u8 * 4, 90, 160, 255]));
+    let encode = |format| {
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(picture.clone())
+            .write_to(&mut std::io::Cursor::new(&mut bytes), format)
+            .unwrap();
+        bytes
+    };
+    for (format, bytes) in [
+        (gpui::ImageFormat::Tiff, encode(image::ImageFormat::Tiff)),
+        (gpui::ImageFormat::Bmp, encode(image::ImageFormat::Bmp)),
+    ] {
+        let (workspace, document_id, cx) = blank_workspace(cx);
+        let images = paste_picture(&workspace, document_id, format, bytes, cx);
+        assert_eq!(images.len(), 1, "{format:?} pastes as an Image");
+        let rect = images[0];
+        assert!(
+            (rect.x + rect.width / 2. - 300.).abs() < 1.
+                && (rect.y + rect.height / 2. - 400.).abs() < 1.,
+            "{format:?} is centred on the pointer: {rect:?}"
+        );
+        assert!(
+            (rect.width / rect.height - 2.).abs() < 0.01,
+            "{format:?} keeps its shape: {rect:?}"
+        );
+    }
+}

@@ -57,11 +57,6 @@ alone do not establish these behaviours.
 
 ## Edit PDF
 
-- Paste copied page content on another page or into another PDF. Content
-  copies are references to the objects on the page they came from, so this
-  needs the worker to copy content objects (with their fonts, images and
-  resources) between pages and documents. Markups already paste anywhere.
-
 Paragraph editing works and is checked against real Chrome, LibreOffice
 and Quartz output (`tests/page_text_corpus.rs`; see [interactions.md](interactions.md#editing-page-text)
 and [pdf-format.md](pdf-format.md#edited-page-text)); the target is in
@@ -101,9 +96,8 @@ inspected captures. Steps are in priority order.
 3. **Moving content follow-ups.** Paragraphs, drawings and images move,
     resize, delete, copy and snap (see
     [interactions.md](interactions.md#editing-page-content)). Still open:
-    - Paste copies only onto the page they were copied from: another page
-      would need the original's fonts, images and colour spaces copied
-      into its resources.
+    - Pasting elsewhere does not take text with unsaved edits (the clip is
+      read from the page before them): it asks for a save first.
     - Paths that touch but share no clip are separate drawings; the lasso
       selects them together.
     - Text does not turn: turning it would need its text matrix

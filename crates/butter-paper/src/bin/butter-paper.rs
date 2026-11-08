@@ -4878,11 +4878,17 @@ mod review_driver {
                         pause(cx, 800).await;
                     }
                     "page-drag" => {
-                        // page-drag W PAGE X1 Y1 X2 Y2: a left drag between
-                        // two points of the active document's page PAGE
-                        // (1-based), in PDF points, in twelve steps.
+                        // page-drag W PAGE X1 Y1 X2 Y2 [secondary]: a left drag
+                        // between two points of the active document's page
+                        // PAGE (1-based), in PDF points, in twelve steps;
+                        // `secondary` holds Ctrl (Cmd on macOS).
                         let window = number(1) as usize;
                         let page_index = number(2) as u32 - 1;
+                        let modifiers = if words.get(7) == Some(&"secondary") {
+                            Modifiers::secondary_key()
+                        } else {
+                            Modifiers::default()
+                        };
                         let ends = cx.update(|cx| {
                             let entry = document_window_entries(cx).into_iter().nth(window)?;
                             let workspace = entry.workspace.upgrade()?;
@@ -4908,13 +4914,13 @@ mod review_driver {
                         dispatch(cx, window, PlatformInput::MouseMove(MouseMoveEvent {
                             position: start,
                             pressed_button: None,
-                            modifiers: Modifiers::default(),
+                            modifiers,
                         }));
                         pause(cx, 150).await;
                         dispatch(cx, window, PlatformInput::MouseDown(MouseDownEvent {
                             button: MouseButton::Left,
                             position: start,
-                            modifiers: Modifiers::default(),
+                            modifiers,
                             click_count: 1,
                             first_mouse: false,
                         }));
@@ -4923,14 +4929,14 @@ mod review_driver {
                             dispatch(cx, window, PlatformInput::MouseMove(MouseMoveEvent {
                                 position: start + (end - start) * (step as f32 / 12.),
                                 pressed_button: Some(MouseButton::Left),
-                                modifiers: Modifiers::default(),
+                                modifiers,
                             }));
                         }
                         pause(cx, 30).await;
                         dispatch(cx, window, PlatformInput::MouseUp(MouseUpEvent {
                             button: MouseButton::Left,
                             position: end,
-                            modifiers: Modifiers::default(),
+                            modifiers,
                             click_count: 1,
                         }));
                         pause(cx, 600).await;

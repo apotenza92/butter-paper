@@ -503,6 +503,7 @@ impl DocumentWorkspace {
                     .hover_probe
                     .filter(|(interaction, _)| interaction.page_index == page_index);
                 workspace.refresh_content_snapping_for_text(document_id, page_index, cx);
+                workspace.select_pending_pasted_content(document_id, page_index, cx);
                 if let Some((interaction, point)) = probe
                     && workspace.editing_content(document_id, cx)
                 {

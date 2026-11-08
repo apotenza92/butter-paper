@@ -591,6 +591,8 @@ fn vertex_path_property_rgb(color: String) -> String {
 pub struct PointerInputModifiers {
     pub shift: bool,
     pub alt: bool,
+    /// Select draws a selection box from the press, whatever is under it.
+    pub force_box: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1767,6 +1769,18 @@ impl AnnotationAdapter {
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
             .explode_page_content(page_index, block)
+    }
+
+    /// [`AnnotationDocument::add_pasted_content`] for a document.
+    pub fn add_document_pasted_content(
+        &mut self,
+        document_id: u64,
+        pasted: crate::pdf_content_moves::ContentExplode,
+    ) -> Result<(), AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .add_pasted_content(pasted)
     }
 
     /// [`AnnotationDocument::paste_page_content`] for a document.
@@ -5801,6 +5815,7 @@ impl AnnotationAdapter {
             Some(ActivePointer::Marquee {
                 marquee: SelectionMarquee {
                     shape: SelectionShape::Box,
+                    pointer_id: None,
                     ..
                 },
                 ..
@@ -7246,6 +7261,7 @@ impl AnnotationAdapter {
             PointerInputModifiers {
                 shift: constrain_orthogonal,
                 alt: false,
+                force_box: false,
             },
         )
     }
@@ -7350,6 +7366,7 @@ impl AnnotationAdapter {
             Some(ActivePointer::Marquee {
                 marquee: SelectionMarquee {
                     shape: SelectionShape::Box,
+                    pointer_id: None,
                     ..
                 },
                 ..
@@ -7699,6 +7716,20 @@ impl AnnotationAdapter {
         };
         let document = self.documents.entry(document_id).or_default();
         match tool {
+            AnnotationTool::Select if modifiers.force_box => {
+                self.active = Some(ActivePointer::Marquee {
+                    document_id,
+                    page_index,
+                    pointer_id,
+                    marquee: SelectionMarquee::dragged_box(
+                        pointer_id,
+                        viewport_point,
+                        SelectionOperation::from_modifiers(modifiers.shift, modifiers.alt),
+                    ),
+                    pdf_points: vec![point],
+                });
+                Ok(PointerPhaseOutcome::GestureStarted)
+            }
             AnnotationTool::Select => {
                 let selectable_hit_id = document
                     .hit_test(page_index, point, tolerance_pt)?
@@ -9258,6 +9289,7 @@ impl AnnotationAdapter {
             PointerInputModifiers {
                 shift: constrain_orthogonal,
                 alt: false,
+                force_box: false,
             },
         )
     }
@@ -9645,6 +9677,7 @@ impl AnnotationAdapter {
             PointerInputModifiers {
                 shift: constrain_orthogonal,
                 alt: false,
+                force_box: false,
             },
         )
     }
@@ -22218,6 +22251,7 @@ mod tests {
                 PointerInputModifiers {
                     shift: true,
                     alt: false,
+                    force_box: false,
                 },
             )
             .unwrap();
@@ -22262,6 +22296,7 @@ mod tests {
                 PointerInputModifiers {
                     shift: true,
                     alt: false,
+                    force_box: false,
                 },
             )
             .unwrap();
@@ -22414,6 +22449,7 @@ mod tests {
                 PointerInputModifiers {
                     shift: true,
                     alt: false,
+                    force_box: false,
                 },
             )
             .unwrap();

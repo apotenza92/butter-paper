@@ -7135,6 +7135,26 @@ impl AnnotationDocument {
                     pdf_base64: BASE64.encode(pdf.as_slice()),
                 });
         }
+        // Content pasted from elsewhere is kept the same way.
+        for paste in self
+            .past
+            .iter()
+            .chain(std::iter::once(&self.state))
+            .chain(self.future.iter())
+            .flat_map(|state| &state.page_content_explodes)
+            .filter_map(|explode| explode.paste.as_ref())
+        {
+            let pdf = paste
+                .pdf
+                .as_ref()
+                .ok_or_else(|| recovery_error("pasted content is missing its PDF"))?;
+            page_bases
+                .entry(paste.id.clone())
+                .or_insert_with(|| PageBaseWire {
+                    id: paste.id.clone(),
+                    pdf_base64: BASE64.encode(pdf.as_slice()),
+                });
+        }
         for vector in self
             .past
             .iter()
@@ -7235,7 +7255,7 @@ impl AnnotationDocument {
             let pdf = BASE64
                 .decode(&wire_base.pdf_base64)
                 .map_err(|_| recovery_error("invalid kept page base64"))?;
-            if pdf.len() > crate::pdf_page_base::MAX_PAGE_BASE_BYTES
+            if pdf.len() > crate::pdf_page_base::MAX_CONTENT_CLIP_BYTES
                 || crate::pdf_page_base::page_base_id(&pdf) != wire_base.id
             {
                 return Err(recovery_error("kept page hash mismatch"));
@@ -7255,6 +7275,17 @@ impl AnnotationDocument {
                     .ok_or_else(|| recovery_error(format!("missing kept page {}", base.id)))?;
                 base.pdf = Some(pdf.clone());
                 used_bases.insert(base.id.clone());
+            }
+            for paste in state
+                .page_content_explodes
+                .iter_mut()
+                .filter_map(|explode| explode.paste.as_mut())
+            {
+                let pdf = page_bases.get(&paste.id).ok_or_else(|| {
+                    recovery_error(format!("missing pasted content {}", paste.id))
+                })?;
+                paste.pdf = Some(pdf.clone());
+                used_bases.insert(paste.id.clone());
             }
             Ok(())
         };
@@ -7774,6 +7805,20 @@ impl AnnotationDocument {
             state.page_content_explodes.push(explode);
         });
         Ok(true)
+    }
+
+    /// Adds content pasted from another page or PDF, as one undoable
+    /// change.
+    pub fn add_pasted_content(
+        &mut self,
+        pasted: crate::pdf_content_moves::ContentExplode,
+    ) -> Result<(), AnnotationError> {
+        self.require_no_gesture()?;
+        pasted
+            .validate()
+            .map_err(AnnotationError::InvalidGeometry)?;
+        self.commit_state_change(|state| state.page_content_explodes.push(pasted));
+        Ok(())
     }
 
     pub fn page_bases(&self) -> &[PageBase] {
@@ -16459,6 +16504,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             [true, false]
         );
+    }
+
+    #[test]
+    fn pasted_content_survives_recovery_and_undo_with_its_pdf() {
+        use crate::pdf_content_moves::{ContentExplode, ContentPaste};
+        let mut document = AnnotationDocument::default();
+        let pdf = std::sync::Arc::new(b"%PDF-clip".to_vec());
+        let paste = ContentExplode::pasted(
+            0,
+            [10., 10., 50., 50.],
+            ContentPaste {
+                id: crate::pdf_page_base::page_base_id(&pdf),
+                matrix: [1., 0., 0., 1., 5., 5.],
+                pdf: Some(pdf.clone()),
+            },
+        );
+        document.add_pasted_content(paste.clone()).unwrap();
+        let restored = AnnotationDocument::hydrate_recovery_timeline(
+            &document.encode_recovery_timeline().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.page_content_explodes(),
+            std::slice::from_ref(&paste)
+        );
+        assert_eq!(
+            restored.page_content_explodes()[0]
+                .paste
+                .as_ref()
+                .and_then(|paste| paste.pdf.as_deref()),
+            Some(&*pdf)
+        );
+        document.undo().unwrap();
+        assert!(document.page_content_explodes().is_empty());
     }
 
     #[test]

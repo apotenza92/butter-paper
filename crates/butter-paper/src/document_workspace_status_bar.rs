@@ -7,6 +7,13 @@ pub const DOCUMENT_STATUS_MESSAGE_ID: &str = "document-status-message";
 /// How long a status message replaces the status bar's guidance.
 const STATUS_MESSAGE_SHOWN: std::time::Duration = std::time::Duration::from_secs(6);
 
+/// The modifier that draws a selection box from anywhere.
+const BOX_HINT: &str = if cfg!(target_os = "macos") {
+    "Cmd+drag: box anywhere"
+} else {
+    "Ctrl+drag: box anywhere"
+};
+
 impl DocumentWorkspace {
     /// Notes a new status message for the active document (why text cannot
     /// be edited, a conversion's progress or failure) so the status bar
@@ -96,14 +103,18 @@ impl DocumentWorkspace {
             "Edit PDF · Block · Right-click › Explode block to select its parts · Drag to move it"
                 .to_owned()
         } else if editing_content {
-            "Edit PDF · Click text to edit it · Drag its edge, a drawing or an image to move it"
-                .to_owned()
+            format!(
+                "Edit PDF · Click text to edit it · Drag its edge, a drawing or an image to move it · {BOX_HINT}"
+            )
         } else if self.pan_tool_active {
             "Pan · Drag to move the page".to_owned()
         } else if let Some(tool) = tool {
             let help = match tool {
+                AnnotationTool::Select if cfg!(target_os = "macos") => {
+                    "Click to select · Drag to lasso · Click empty space to start a box · Cmd+drag: box anywhere"
+                }
                 AnnotationTool::Select => {
-                    "Click to select · Drag to lasso · Click empty space to start a box"
+                    "Click to select · Drag to lasso · Click empty space to start a box · Ctrl+drag: box anywhere"
                 }
                 AnnotationTool::Polyline
                 | AnnotationTool::Polygon

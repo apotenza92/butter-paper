@@ -17,6 +17,8 @@ const MAX_DEPTH: usize = 64;
 /// The largest page kept: bigger pages are not kept, and undo stops at the
 /// save that rewrote them.
 pub const MAX_PAGE_BASE_BYTES: usize = 16 * 1024 * 1024;
+/// The largest copied page content (a clip): a large photo is most of it.
+pub const MAX_CONTENT_CLIP_BYTES: usize = 64 * 1024 * 1024;
 
 /// A page as an earlier file had it: a one-page PDF, named by its SHA-256.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -145,6 +147,19 @@ impl<'a> Copier<'a> {
 /// Page `page_index` of `document` as a one-page PDF: its content streams
 /// and resources, in its own boxes and rotation.
 pub fn snapshot_page(document: &Document, page_index: u32) -> Result<Vec<u8>, String> {
+    let mut snapshot = page_as_document(document, page_index)?;
+    let mut bytes = Vec::new();
+    snapshot
+        .save_to(&mut bytes)
+        .map_err(|error| format!("the page cannot be kept: {error}"))?;
+    if bytes.len() > MAX_PAGE_BASE_BYTES {
+        return Err("the page is too large to keep".into());
+    }
+    Ok(bytes)
+}
+
+/// Page `page_index` of `document` as a document of that page alone.
+pub(crate) fn page_as_document(document: &Document, page_index: u32) -> Result<Document, String> {
     let page = page_id(document, page_index)?;
     let mut snapshot = Document::with_version("1.7");
     let pages_id = snapshot.new_object_id();
@@ -177,14 +192,7 @@ pub fn snapshot_page(document: &Document, page_index: u32) -> Result<Vec<u8>, St
     );
     let catalog = snapshot.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     snapshot.trailer.set("Root", catalog);
-    let mut bytes = Vec::new();
-    snapshot
-        .save_to(&mut bytes)
-        .map_err(|error| format!("the page cannot be kept: {error}"))?;
-    if bytes.len() > MAX_PAGE_BASE_BYTES {
-        return Err("the page is too large to keep".into());
-    }
-    Ok(bytes)
+    Ok(snapshot)
 }
 
 /// Replaces page `page_index`'s content streams and resources with those of

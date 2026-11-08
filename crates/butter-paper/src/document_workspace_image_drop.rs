@@ -110,9 +110,11 @@ impl DocumentWorkspace {
         let Some(point) = centre else {
             return;
         };
-        let decoded = cx
-            .background_executor()
-            .spawn(async move { decode_image_bytes(&encoded).map_err(|error| error.to_string()) });
+        let decoded = cx.background_executor().spawn(async move {
+            clipboard_picture_png_or_jpeg(&encoded)
+                .and_then(|picture| decode_image_bytes(&picture))
+                .map_err(|error| error.to_string())
+        });
         cx.spawn(async move |entity, cx| {
             let decoded = decoded.await;
             let _ = entity.update(cx, |workspace, cx| {
