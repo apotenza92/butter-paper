@@ -10278,6 +10278,50 @@ fn pdfium_view_state_on_location(
     })
 }
 
+/// Whether [`pdfium_display_render_bytes`] keeps `document`'s bytes as
+/// they are, so PDFium can read them in place.
+pub fn pdfium_display_keeps_bytes(document: &Document) -> bool {
+    matches!(pdfium_view_states_to_clear(document), Ok(locations) if locations.is_empty())
+}
+
+/// The optional-content view states PDFium's display must not see.
+fn pdfium_view_states_to_clear(
+    document: &Document,
+) -> Result<HashSet<PdfiumViewStateOnLocation>, PdfPersistenceError> {
+    let Ok(root) = document
+        .trailer
+        .get(b"Root")
+        .and_then(|value| resolve_optional_object(document, value))
+        .and_then(Object::as_dict)
+    else {
+        return Ok(HashSet::new());
+    };
+    let Ok(properties) = root
+        .get(b"OCProperties")
+        .and_then(|value| resolve_optional_object(document, value))
+        .and_then(Object::as_dict)
+    else {
+        return Ok(HashSet::new());
+    };
+    let Ok(groups) = properties
+        .get(b"OCGs")
+        .and_then(|value| resolve_optional_object(document, value))
+        .and_then(Object::as_array)
+    else {
+        return Ok(HashSet::new());
+    };
+    if groups.len() > MAX_PDFIUM_DISPLAY_OPTIONAL_CONTENT_GROUPS {
+        return Err(PdfPersistenceError::InvalidDocument(format!(
+            "optional-content group count exceeds render preparation limit of {MAX_PDFIUM_DISPLAY_OPTIONAL_CONTENT_GROUPS}"
+        )));
+    }
+    Ok(groups
+        .iter()
+        .filter_map(|group| group.as_reference().ok())
+        .filter_map(|group_id| pdfium_view_state_on_location(document, group_id))
+        .collect())
+}
+
 /// Produces bytes for PDFium's display-only document without changing the
 /// source object graph or persistence bytes. PDF.js treats `/ViewState /ON` as
 /// neutral and leaves the default configuration authoritative; the pinned
@@ -10287,38 +10331,7 @@ pub fn pdfium_display_render_bytes(
     document: &Document,
     source_bytes: Vec<u8>,
 ) -> Result<Vec<u8>, PdfPersistenceError> {
-    let Ok(root) = document
-        .trailer
-        .get(b"Root")
-        .and_then(|value| resolve_optional_object(document, value))
-        .and_then(Object::as_dict)
-    else {
-        return Ok(source_bytes);
-    };
-    let Ok(properties) = root
-        .get(b"OCProperties")
-        .and_then(|value| resolve_optional_object(document, value))
-        .and_then(Object::as_dict)
-    else {
-        return Ok(source_bytes);
-    };
-    let Ok(groups) = properties
-        .get(b"OCGs")
-        .and_then(|value| resolve_optional_object(document, value))
-        .and_then(Object::as_array)
-    else {
-        return Ok(source_bytes);
-    };
-    if groups.len() > MAX_PDFIUM_DISPLAY_OPTIONAL_CONTENT_GROUPS {
-        return Err(PdfPersistenceError::InvalidDocument(format!(
-            "optional-content group count exceeds render preparation limit of {MAX_PDFIUM_DISPLAY_OPTIONAL_CONTENT_GROUPS}"
-        )));
-    }
-    let locations = groups
-        .iter()
-        .filter_map(|group| group.as_reference().ok())
-        .filter_map(|group_id| pdfium_view_state_on_location(document, group_id))
-        .collect::<HashSet<_>>();
+    let locations = pdfium_view_states_to_clear(document)?;
     if locations.is_empty() {
         return Ok(source_bytes);
     }

@@ -79,11 +79,26 @@ fn editable_copy(source: &PdfMetadataDocument) -> PdfMetadataDocument {
 /// `source_bytes` followed by an incremental update holding the objects
 /// `edited` adds to or changes in `source`. `None` when the source has no
 /// cross-reference to continue from, is still encrypted, or lost objects.
+#[cfg(test)]
 fn incremental_update(
     source: &PdfMetadataDocument,
     source_bytes: &[u8],
     edited: &PdfMetadataDocument,
 ) -> Option<Vec<u8>> {
+    let (appendix, _) = incremental_appendix(source, source_bytes, edited)?;
+    let mut bytes = Vec::with_capacity(source_bytes.len() + appendix.len());
+    bytes.extend_from_slice(source_bytes);
+    bytes.extend_from_slice(&appendix);
+    Some(bytes)
+}
+
+/// The incremental update [`incremental_update`] appends to `source_bytes`,
+/// and the objects `edited` adds to or changes in `source`.
+fn incremental_appendix(
+    source: &PdfMetadataDocument,
+    source_bytes: &[u8],
+    edited: &PdfMetadataDocument,
+) -> Option<(Vec<u8>, Vec<lopdf::ObjectId>)> {
     if source.xref_start == 0
         || source.trailer.has(b"Encrypt")
         || source
@@ -106,33 +121,182 @@ fn incremental_update(
             previous.trailer.set(key, value.clone());
         }
     }
-    let mut update = lopdf::IncrementalDocument::create_from(source_bytes.to_vec(), previous);
+    // The writer counts the previous bytes for its offsets but needs only
+    // their length and last byte: a zeroed stand-in (mapped lazily) spares
+    // copying a large source twice.
+    let mut stand_in = vec![0u8; source_bytes.len()];
+    if let (Some(last), Some(&byte)) = (stand_in.last_mut(), source_bytes.last()) {
+        *last = byte;
+    }
+    let mut update = lopdf::IncrementalDocument::create_from(stand_in, previous);
     for (id, object) in &edited.objects {
         if source.objects.get(id) != Some(object) {
             update.new_document.objects.insert(*id, object.clone());
         }
     }
     update.new_document.max_id = edited.max_id;
-    let mut bytes = Vec::with_capacity(source_bytes.len() + 64 * 1024);
-    update.save_to(&mut bytes).ok()?;
-    Some(bytes)
+    let mut appended = AfterPrevious {
+        skip: source_bytes.len(),
+        bytes: Vec::with_capacity(64 * 1024),
+    };
+    let changed = update.new_document.objects.keys().copied().collect();
+    update.save_to(&mut appended).ok()?;
+    Some((appended.bytes, changed))
+}
+
+/// `display`, a copy of `source` with the objects `changed` changed or
+/// added, made a copy of `source` again: far quicker than copying a large
+/// source anew for each edit.
+fn reset_to_source(
+    source: &PdfMetadataDocument,
+    mut display: PdfMetadataDocument,
+    changed: &[lopdf::ObjectId],
+) -> PdfMetadataDocument {
+    for id in changed {
+        match source.objects.get(id) {
+            Some(object) => {
+                display.objects.insert(*id, object.clone());
+            }
+            None => {
+                display.objects.remove(id);
+            }
+        }
+    }
+    let mut copy = PdfMetadataDocument {
+        version: source.version.clone(),
+        binary_mark: source.binary_mark.clone(),
+        trailer: source.trailer.clone(),
+        reference_table: source.reference_table.clone(),
+        objects: std::mem::take(&mut display.objects),
+        max_id: source.max_id,
+        max_bookmark_id: source.max_bookmark_id,
+        bookmarks: source.bookmarks.clone(),
+        bookmark_table: source.bookmark_table.clone(),
+        xref_start: source.xref_start,
+        encryption_state: source.encryption_state.clone(),
+    };
+    if let Ok(size) = copy.trailer.get(b"Size").and_then(lopdf::Object::as_i64)
+        && let Ok(size) = u32::try_from(size)
+    {
+        copy.max_id = copy.max_id.max(size.saturating_sub(1));
+    }
+    copy
+}
+
+/// Keeps what is written after the first `skip` bytes.
+struct AfterPrevious {
+    skip: usize,
+    bytes: Vec<u8>,
+}
+
+impl std::io::Write for AfterPrevious {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let skipped = self.skip.min(buf.len());
+        self.skip -= skipped;
+        self.bytes.extend_from_slice(&buf[skipped..]);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The document as renders show it: the source with page-text edits and
 /// filled form fields applied, and appearances drawn for form fields that
 /// lack them. `None` when that is the source itself.
-type EditedDisplay = Option<(PdfMetadataDocument, Vec<u8>)>;
+/// With the objects changed from the source, when known.
+type EditedDisplay = Option<(
+    PdfMetadataDocument,
+    DisplayBytes,
+    Option<Vec<lopdf::ObjectId>>,
+)>;
+
+/// A previous display document and the objects it changed from the source,
+/// to make the next one from.
+type DisplayBase = Option<(PdfMetadataDocument, Vec<lopdf::ObjectId>)>;
+
+/// The bytes of the displayed document.
+enum DisplayBytes {
+    Whole(Vec<u8>),
+    /// The source's bytes followed by these.
+    Appended(Vec<u8>),
+}
+
+/// The source's bytes followed by an update, read in place by PDFium.
+struct SplicedBytes {
+    head: std::sync::Arc<Vec<u8>>,
+    tail: Vec<u8>,
+    position: u64,
+}
+
+impl SplicedBytes {
+    fn len(&self) -> u64 {
+        (self.head.len() + self.tail.len()) as u64
+    }
+}
+
+impl std::io::Read for SplicedBytes {
+    /// Fills `buf` across the join: PDFium takes each block in one read.
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut count = 0;
+        while count < buf.len() {
+            let head = self.head.len() as u64;
+            let (from, at) = if self.position < head {
+                (self.head.as_slice(), self.position)
+            } else {
+                (self.tail.as_slice(), self.position - head)
+            };
+            let Some(rest) = usize::try_from(at)
+                .ok()
+                .and_then(|at| from.get(at..))
+                .filter(|rest| !rest.is_empty())
+            else {
+                break;
+            };
+            let taken = rest.len().min(buf.len() - count);
+            buf[count..count + taken].copy_from_slice(&rest[..taken]);
+            count += taken;
+            self.position += taken as u64;
+        }
+        Ok(count)
+    }
+}
+
+impl std::io::Seek for SplicedBytes {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let position = match to {
+            SeekFrom::Start(at) => Some(at),
+            SeekFrom::End(by) => self.len().checked_add_signed(by),
+            SeekFrom::Current(by) => self.position.checked_add_signed(by),
+        };
+        self.position = position.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start")
+        })?;
+        Ok(self.position)
+    }
+}
 
 fn edited_display(
     source: &PdfMetadataDocument,
     source_bytes: &[u8],
     edits: &DocumentEdits,
+    base: DisplayBase,
 ) -> Result<EditedDisplay, WorkerError> {
     let draw_fields = needs_appearances(source);
     if edits.is_empty() && !draw_fields {
-        return Ok(None);
+        return Ok(base.map(|(display, changed)| {
+            (
+                reset_to_source(source, display, &changed),
+                DisplayBytes::Appended(Vec::new()),
+                Some(Vec::new()),
+            )
+        }));
     }
-    let mut edited = editable_copy(source);
+    let mut edited = match base {
+        Some((display, changed)) => reset_to_source(source, display, &changed),
+        None => editable_copy(source),
+    };
     // Pages first: the other edits name pages as arranged.
     if !edits.pages.is_empty() {
         let managed =
@@ -169,8 +333,12 @@ fn edited_display(
     })?;
     // Only the changed objects are written, after the source's bytes: a
     // whole large file is not serialised for each edit.
-    if let Some(bytes) = incremental_update(source, source_bytes, &edited) {
-        return Ok(Some((edited, bytes)));
+    if let Some((appendix, changed)) = incremental_appendix(source, source_bytes, &edited) {
+        return Ok(Some((
+            edited,
+            DisplayBytes::Appended(appendix),
+            Some(changed),
+        )));
     }
     let mut bytes = Vec::with_capacity(source_bytes.len());
     edited.save_to(&mut bytes).map_err(|error| {
@@ -186,7 +354,39 @@ fn edited_display(
             format!("edited PDF cannot be read: {error}"),
         )
     })?;
-    Ok(Some((edited, bytes)))
+    Ok(Some((edited, DisplayBytes::Whole(bytes), None)))
+}
+
+/// Draws `page` into `output` (BGRA, `size` pixels) with `transform`, as
+/// `request` asks.
+fn render_page_into(
+    page: &PdfPage<'static>,
+    [a, b, c, d, e, f]: [f32; 6],
+    (width, height): (i32, i32),
+    render_annotations: bool,
+    request: &RenderRequest,
+    output: &mut [u8],
+) -> Result<(), WorkerError> {
+    let mut bitmap = PdfBitmap::from_bytes(width, height, PdfBitmapFormat::BGRA, output)
+        .map_err(map_pdfium_error)?;
+    let config = PdfRenderConfig::new()
+        // Shared surfaces and GPUI consume BGRA; the supplier defaults to RGBA.
+        .set_reverse_byte_order(false)
+        .set_fixed_size(width, height)
+        .render_form_data(false)
+        .render_annotations(render_annotations)
+        .reset_matrix(PdfMatrix::new(a, b, c, d, e, f))
+        .map_err(map_pdfium_error)?
+        .clip(0, 0, width, height);
+    let config = config.set_image_smoothing(!request.draft);
+    // A vector Snapshot's Form is drawn on a transparent page.
+    let config = if request.annotation_mode == AnnotationRenderMode::VectorSnapshots {
+        config.set_clear_color(PdfColor::new(255, 255, 255, 0))
+    } else {
+        config
+    };
+    page.render_into_bitmap_with_config(&mut bitmap, &config)
+        .map_err(map_pdfium_error)
 }
 
 /// Which of a document's PDFium documents a page was loaded from.
@@ -201,7 +401,99 @@ enum RasterSource {
 /// (the next viewer tile, or its thumbnail after its page) then neither
 /// parses its content nor decodes its images again.
 #[derive(Default)]
-struct LoadedPages(Vec<(RasterSource, i32, PdfPage<'static>)>);
+struct LoadedPages(Vec<(RasterSource, i32, PdfPage<'static>)>, PageRasters);
+
+/// A render of a whole page that is slow to draw (large images PDFium does
+/// not keep decoded), which the next tiles of it at the same scale are cut
+/// from instead of drawing the page again for each.
+#[derive(Default)]
+struct PageRasters {
+    /// Pages whose last tile took longer than [`HEAVY_PAGE_RENDER`].
+    heavy: Vec<(RasterSource, i32)>,
+    /// The most recent first: a page's scales (preview, full, detail)
+    /// alternate as its tiles arrive.
+    rasters: Vec<PageRaster>,
+}
+
+impl PageRasters {
+    fn keep(&mut self, raster: PageRaster) {
+        self.rasters.retain(|kept| kept.key != raster.key);
+        self.rasters.insert(0, raster);
+        let mut pixels = 0;
+        self.rasters.retain(|kept| {
+            pixels += (kept.width * kept.height) as u64;
+            pixels <= MAX_PAGE_RASTER_PIXELS
+        });
+    }
+}
+
+/// A page drawn for tiles too slow to draw one by one.
+const HEAVY_PAGE_RENDER: std::time::Duration = std::time::Duration::from_millis(100);
+/// How far round a tile a page too large to draw whole is drawn, at least,
+/// in pixels.
+const PAGE_RASTER_WINDOW_MARGIN: f64 = 1024.;
+/// The largest page drawn whole for its tiles: about a large screen's worth.
+const MAX_WHOLE_PAGE_RASTER_PIXELS: f64 = 12. * 1024. * 1024.;
+/// The pixels of page renders kept for tiles: 112 MB.
+const MAX_PAGE_RASTER_PIXELS: u64 = 28 * 1024 * 1024;
+
+#[derive(Clone, Copy, PartialEq)]
+struct PageRasterKey {
+    source: RasterSource,
+    page: i32,
+    /// The transform's scale and turn, without its translation.
+    linear: [u32; 4],
+    mode: AnnotationRenderMode,
+    draft: bool,
+}
+
+struct PageRaster {
+    key: PageRasterKey,
+    /// The transform's translation the page was drawn with.
+    origin: (f64, f64),
+    width: usize,
+    height: usize,
+    pixels: Vec<u8>,
+}
+
+impl PageRasterKey {
+    fn of(source: RasterSource, page: i32, request: &RenderRequest) -> Self {
+        let [a, b, c, d, _, _] = request.transform;
+        Self {
+            source,
+            page,
+            linear: [a.to_bits(), b.to_bits(), c.to_bits(), d.to_bits()],
+            mode: request.annotation_mode,
+            draft: request.draft,
+        }
+    }
+}
+
+impl PageRaster {
+    /// Copies the tile drawn with translation `(e, f)` into `output`, when
+    /// the page raster holds all of it at a whole-pixel offset.
+    fn crop(&self, (e, f): (f64, f64), width: usize, height: usize, output: &mut [u8]) -> bool {
+        let (dx, dy) = (self.origin.0 - e, self.origin.1 - f);
+        let (x, y) = (dx.round(), dy.round());
+        if (dx - x).abs() > 1e-3
+            || (dy - y).abs() > 1e-3
+            || x < 0.
+            || y < 0.
+            || x as usize + width > self.width
+            || y as usize + height > self.height
+            || output.len() < width * height * 4
+        {
+            return false;
+        }
+        let (x, y) = (x as usize, y as usize);
+        for row in 0..height {
+            let from = ((y + row) * self.width + x) * 4;
+            output[row * width * 4..(row + 1) * width * 4]
+                .copy_from_slice(&self.pixels[from..from + width * 4]);
+        }
+        true
+    }
+}
 
 impl LoadedPages {
     const CAPACITY: usize = 3;
@@ -231,6 +523,8 @@ impl LoadedPages {
 
     fn clear(&mut self) {
         self.0.clear();
+        // A page slow to draw stays so after an edit.
+        self.1.rasters.clear();
     }
 }
 
@@ -243,7 +537,10 @@ struct PdfiumDocument {
     metadata: PdfMetadataDocument,
     /// The unedited source, which page-text edits always apply to.
     source: PdfMetadataDocument,
-    source_bytes: Vec<u8>,
+    source_bytes: std::sync::Arc<Vec<u8>>,
+    /// The objects `metadata` changes from `source`, when known: the next
+    /// edits start from `metadata` put back to the source.
+    display_changes: Option<Vec<lopdf::ObjectId>>,
     password: Option<String>,
     edits: DocumentEdits,
     /// Kept pages the app sent, by name.
@@ -278,6 +575,40 @@ impl PdfiumBackend {
             .load_pdf_from_byte_vec(bytes, password)
             .map_err(map_pdfium_error)
     }
+
+    /// Loads the displayed document, reading the source's bytes in place
+    /// where display preparation keeps them, instead of copying a large
+    /// file for each edit.
+    fn load_display(
+        &self,
+        metadata: &PdfMetadataDocument,
+        bytes: DisplayBytes,
+        source: &std::sync::Arc<Vec<u8>>,
+        password: Option<&str>,
+    ) -> Result<PdfDocument<'static>, WorkerError> {
+        let tail = match bytes {
+            DisplayBytes::Whole(bytes) => {
+                return self.load_display_document(metadata, bytes, password);
+            }
+            DisplayBytes::Appended(tail) => tail,
+        };
+        if !butter_paper::pdf_engine::pdfium_display_keeps_bytes(metadata) {
+            let mut bytes = Vec::with_capacity(source.len() + tail.len());
+            bytes.extend_from_slice(source);
+            bytes.extend_from_slice(&tail);
+            return self.load_display_document(metadata, bytes, password);
+        }
+        self.pdfium
+            .load_pdf_from_reader(
+                SplicedBytes {
+                    head: source.clone(),
+                    tail,
+                    position: 0,
+                },
+                password,
+            )
+            .map_err(map_pdfium_error)
+    }
 }
 
 impl PdfBackend for PdfiumBackend {
@@ -300,15 +631,19 @@ impl PdfBackend for PdfiumBackend {
                 format!("page metadata parser rejected the PDF: {error}"),
             )
         })?;
-        let source_bytes = metadata_bytes.clone();
+        let source_bytes = std::sync::Arc::new(metadata_bytes);
         // A form whose fields lack appearances shows them drawn.
-        let (display, display_bytes) =
-            match edited_display(&metadata, &source_bytes, &DocumentEdits::default()) {
+        let (display, display_bytes, display_changes) =
+            match edited_display(&metadata, &source_bytes, &DocumentEdits::default(), None) {
                 Ok(Some(display)) => display,
-                _ => (metadata.clone(), metadata_bytes),
+                _ => (
+                    metadata.clone(),
+                    DisplayBytes::Appended(Vec::new()),
+                    Some(Vec::new()),
+                ),
             };
         let document = self
-            .load_display_document(&display, display_bytes, password)
+            .load_display(&display, display_bytes, &source_bytes, password)
             .map_err(|error| {
                 if password.is_none() && error.code == WorkerErrorCode::BadPassword {
                     WorkerError::with_detail(
@@ -330,6 +665,7 @@ impl PdfBackend for PdfiumBackend {
                 source: metadata,
                 metadata: display,
                 source_bytes,
+                display_changes,
                 password: password.map(str::to_owned),
                 edits: DocumentEdits::default(),
                 page_bases: Default::default(),
@@ -591,12 +927,52 @@ impl PdfBackend for PdfiumBackend {
         }
         edits.explodes = with_paste_pdfs(document, &edits.explodes)?;
         let edits = &edits;
-        let shown = edited_display(&document.source, &document.source_bytes, edits)?;
-        let (metadata, bytes) =
-            shown.unwrap_or_else(|| (document.source.clone(), document.source_bytes.clone()));
+        let base = document
+            .display_changes
+            .take()
+            .map(|changed| (std::mem::take(&mut document.metadata), changed));
+        let reused = base.is_some();
+        let shown = edited_display(&document.source, &document.source_bytes, edits, base).and_then(
+            |shown| {
+                let (metadata, bytes, changed) = shown.unwrap_or_else(|| {
+                    (
+                        document.source.clone(),
+                        DisplayBytes::Appended(Vec::new()),
+                        Some(Vec::new()),
+                    )
+                });
+                let loaded = self.load_display(
+                    &metadata,
+                    bytes,
+                    &document.source_bytes,
+                    document.password.as_deref(),
+                )?;
+                Ok((metadata, loaded, changed))
+            },
+        );
+        let (metadata, loaded, changed) = match shown {
+            Ok(shown) => shown,
+            Err(error) => {
+                // The page still shows the previous edits: their document
+                // was taken to make these from, so it is made again.
+                if reused {
+                    document.metadata = edited_display(
+                        &document.source,
+                        &document.source_bytes,
+                        &document.edits,
+                        None,
+                    )
+                    .ok()
+                    .flatten()
+                    .map(|(metadata, _, _)| metadata)
+                    .unwrap_or_else(|| document.source.clone());
+                }
+                return Err(error);
+            }
+        };
         document.loaded_pages.clear();
-        document.document =
-            self.load_display_document(&metadata, bytes, document.password.as_deref())?;
+        document.document = loaded;
+        document.display_changes = changed;
         document.metadata = metadata;
         document.retained = RetainedPdfiumDocument::Unprepared;
         document.edits = edits.clone();
@@ -694,6 +1070,117 @@ impl PdfBackend for PdfiumBackend {
                 }
             },
         };
+        let key = PageRasterKey::of(source, page_index, request);
+        let translation = (
+            f64::from(request.transform[4]),
+            f64::from(request.transform[5]),
+        );
+        let (surface_width, surface_height) = (
+            request.surface.width as usize,
+            request.surface.height as usize,
+        );
+        if document.loaded_pages.1.rasters.iter().any(|raster| {
+            raster.key == key && raster.crop(translation, surface_width, surface_height, output)
+        }) {
+            return Ok(());
+        }
+        let heavy = document
+            .loaded_pages
+            .1
+            .heavy
+            .contains(&(source, page_index));
+        let page = document
+            .loaded_pages
+            .get(source, page_index, raster_document)?;
+        let started = std::time::Instant::now();
+        // A slow page is drawn whole once, at this scale, and its tiles cut
+        // from that.
+        if heavy {
+            let [a, b, c, d, e, f] = request.transform.map(f64::from);
+            let (w, h) = (
+                f64::from(page.width().value),
+                f64::from(page.height().value),
+            );
+            let corners = [(0., 0.), (w, 0.), (0., h), (w, h)]
+                .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
+            let left = corners
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::INFINITY, f64::min)
+                .floor();
+            let top = corners
+                .iter()
+                .map(|p| p.1)
+                .fold(f64::INFINITY, f64::min)
+                .floor();
+            let right = corners
+                .iter()
+                .map(|p| p.0)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil();
+            let bottom = corners
+                .iter()
+                .map(|p| p.1)
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil();
+            // A page too large to draw whole at this scale: the part around
+            // this tile, which its neighbours on screen fall within.
+            let (left, top, right, bottom) =
+                if (right - left) * (bottom - top) <= MAX_WHOLE_PAGE_RASTER_PIXELS {
+                    (left, top, right, bottom)
+                } else {
+                    // The tiles round it: one tile each way.
+                    let margin =
+                        (surface_width.max(surface_height) as f64).max(PAGE_RASTER_WINDOW_MARGIN);
+                    (
+                        left.max(-margin),
+                        top.max(-margin),
+                        right.min(surface_width as f64 + margin),
+                        bottom.min(surface_height as f64 + margin),
+                    )
+                };
+            let (full_width, full_height) = ((right - left).max(1.), (bottom - top).max(1.));
+            if full_width * full_height <= MAX_PAGE_RASTER_PIXELS as f64
+                && full_width <= f64::from(i32::MAX)
+                && full_height <= f64::from(i32::MAX)
+            {
+                let origin = ((e - left) as f32, (f - top) as f32);
+                let (full_width, full_height) = (full_width as usize, full_height as usize);
+                let mut pixels = vec![0u8; full_width * full_height * 4];
+                let rendered = render_page_into(
+                    page,
+                    [
+                        request.transform[0],
+                        request.transform[1],
+                        request.transform[2],
+                        request.transform[3],
+                        origin.0,
+                        origin.1,
+                    ],
+                    (full_width as i32, full_height as i32),
+                    render_annotations,
+                    request,
+                    &mut pixels,
+                );
+                if rendered.is_ok() {
+                    let raster = PageRaster {
+                        key,
+                        origin: (f64::from(origin.0), f64::from(origin.1)),
+                        width: full_width,
+                        height: full_height,
+                        pixels,
+                    };
+                    let cut = raster.crop(translation, surface_width, surface_height, output);
+                    document.loaded_pages.1.keep(raster);
+                    if cut {
+                        if cancelled.load(Ordering::Acquire) {
+                            return Err(WorkerError::new(WorkerErrorCode::Cancelled));
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let page = document
             .loaded_pages
             .get(source, page_index, raster_document)?;
@@ -701,27 +1188,19 @@ impl PdfBackend for PdfiumBackend {
             .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
         let height = i32::try_from(request.surface.height)
             .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
-        let mut bitmap = PdfBitmap::from_bytes(width, height, PdfBitmapFormat::BGRA, output)
-            .map_err(map_pdfium_error)?;
-        let [a, b, c, d, e, f] = request.transform;
-        let config = PdfRenderConfig::new()
-            // Shared surfaces and GPUI consume BGRA; the supplier defaults to RGBA.
-            .set_reverse_byte_order(false)
-            .set_fixed_size(width, height)
-            .render_form_data(false)
-            .render_annotations(render_annotations)
-            .reset_matrix(PdfMatrix::new(a, b, c, d, e, f))
-            .map_err(map_pdfium_error)?
-            .clip(0, 0, width, height);
-        let config = config.set_image_smoothing(!request.draft);
-        // A vector Snapshot's Form is drawn on a transparent page.
-        let config = if request.annotation_mode == AnnotationRenderMode::VectorSnapshots {
-            config.set_clear_color(PdfColor::new(255, 255, 255, 0))
-        } else {
-            config
-        };
-        page.render_into_bitmap_with_config(&mut bitmap, &config)
-            .map_err(map_pdfium_error)?;
+        render_page_into(
+            page,
+            request.transform,
+            (width, height),
+            render_annotations,
+            request,
+            output,
+        )?;
+        let took = started.elapsed();
+        let heavy_pages = &mut document.loaded_pages.1.heavy;
+        if took > HEAVY_PAGE_RENDER && !heavy_pages.contains(&(source, page_index)) {
+            heavy_pages.push((source, page_index));
+        }
         if cancelled.load(Ordering::Acquire) {
             // PDFium's stable bitmap API is not progressively cancellable. The
             // result is discarded if cancellation arrived during the native call.
@@ -1974,6 +2453,146 @@ mod tests {
             .set_document_edits(&mut document, &DocumentEdits::from_text(&[]))
             .unwrap();
         assert_eq!(render(&mut backend, &mut document), original);
+        // Later edits start from the shown document put back to the source.
+        backend
+            .set_document_edits(
+                &mut document,
+                &DocumentEdits::from_text(std::slice::from_ref(&emptied)),
+            )
+            .unwrap();
+        assert_eq!(
+            render(&mut backend, &mut document),
+            0,
+            "the edit renders again"
+        );
+        assert_eq!(
+            backend.page_text(&mut document, 0).unwrap().lines[0].text,
+            "Hello"
+        );
+    }
+
+    /// A page slow to draw is drawn whole once and its tiles cut from that,
+    /// exactly as each tile draws by itself.
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn tiles_of_a_slow_page_cut_from_one_render_match_tiles_drawn_alone() {
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let path = env::temp_dir().join(format!("bp-page-raster-{}.pdf", std::process::id()));
+        std::fs::write(&path, retained_widget_fixture(90)).unwrap();
+        let source = File::open(&path).unwrap();
+        let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let tile = |backend: &mut PdfiumBackend, document: &mut PdfiumDocument, at: f32| {
+            let mut request = retained_test_request(AnnotationRenderMode::RetainedOnly, 80);
+            request.transform[4] = -at;
+            request.transform[5] = -at / 2.;
+            let mut pixels = vec![0; request.surface.byte_len as usize];
+            backend
+                .render_crop(document, &request, &mut pixels, &AtomicBool::new(false))
+                .unwrap();
+            pixels
+        };
+        let alone = [0., 80.].map(|at| tile(&mut backend, &mut document, at));
+        assert!(document.loaded_pages.1.rasters.is_empty(), "a quick page");
+        for source in [RasterSource::Display, RasterSource::Retained] {
+            document.loaded_pages.1.heavy.push((source, 0));
+        }
+        let cut = [0., 80.].map(|at| tile(&mut backend, &mut document, at));
+        assert_eq!(document.loaded_pages.1.rasters.len(), 1, "drawn once");
+        assert!(alone[0] != alone[1], "the tiles differ");
+        assert!(
+            alone == cut,
+            "tiles cut from the page draw as they do alone"
+        );
+        // An edit draws the page again.
+        backend
+            .set_document_edits(&mut document, &DocumentEdits::from_text(&[]))
+            .unwrap();
+        backend.close(document);
+    }
+
+    /// The display document put back to the source is the source again:
+    /// later edits made from it write what edits of a fresh copy write.
+    #[test]
+    fn a_display_document_put_back_is_the_source() {
+        let bytes = page_text_fixture();
+        let source = PdfMetadataDocument::load_mem(&bytes).unwrap();
+        let layer = extract_page_text(&source, 0, &TextEditLimits::default()).unwrap();
+        let line = &layer.lines[0];
+        let mut runs = line.original_runs();
+        runs[0].text.push_str(" zqx");
+        let edit = PageTextEdit {
+            page_index: 0,
+            anchor: line.anchor,
+            original: line.original_runs(),
+            runs,
+            layout: Default::default(),
+        };
+        let mut edited = editable_copy(&source);
+        apply_text_edits(&mut edited, &[edit], &TextEditLimits::default()).unwrap();
+        let (_, changed) = incremental_appendix(&source, &bytes, &edited).unwrap();
+        assert!(!changed.is_empty());
+        let reset = reset_to_source(&source, edited, &changed);
+        let fresh = editable_copy(&source);
+        assert_eq!(reset.objects, fresh.objects);
+        assert_eq!(reset.trailer, fresh.trailer);
+        assert_eq!(reset.max_id, fresh.max_id);
+        assert_eq!(reset.xref_start, fresh.xref_start);
+        assert!(
+            incremental_appendix(&source, &bytes, &reset)
+                .unwrap()
+                .1
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn spliced_bytes_read_as_one_file() {
+        use std::io::{Read as _, Seek as _};
+        let mut spliced = SplicedBytes {
+            head: std::sync::Arc::new(b"%PDF-1.7 head".to_vec()),
+            tail: b" tail".to_vec(),
+            position: 0,
+        };
+        let mut all = Vec::new();
+        spliced.read_to_end(&mut all).unwrap();
+        assert_eq!(all, b"%PDF-1.7 head tail");
+        // A read across the join, as PDFium's blocks are.
+        spliced.seek(SeekFrom::Start(10)).unwrap();
+        let mut block = [0; 6];
+        assert_eq!(spliced.read(&mut block).unwrap(), 6, "in one read");
+        assert_eq!(&block, b"ead ta");
+        assert_eq!(spliced.seek(SeekFrom::End(-2)).unwrap(), 16);
+        assert!(spliced.seek(SeekFrom::Current(-20)).is_err());
+    }
+
+    #[test]
+    fn a_page_raster_gives_the_tiles_within_it_at_whole_pixels() {
+        // A 4x3 raster whose pixels count up, drawn with translation (10, 20).
+        let raster = PageRaster {
+            key: PageRasterKey {
+                source: RasterSource::Display,
+                page: 0,
+                linear: [0; 4],
+                mode: AnnotationRenderMode::None,
+                draft: false,
+            },
+            origin: (10., 20.),
+            width: 4,
+            height: 3,
+            pixels: (0..12u8).flat_map(|pixel| [pixel; 4]).collect(),
+        };
+        // A 2x2 tile one pixel in and one down: its translation is less.
+        let mut tile = vec![0; 16];
+        assert!(raster.crop((9., 19.), 2, 2, &mut tile));
+        assert_eq!(
+            tile.chunks(4).map(|pixel| pixel[0]).collect::<Vec<_>>(),
+            [5, 6, 9, 10]
+        );
+        assert!(!raster.crop((9.5, 19.), 2, 2, &mut tile), "a part pixel");
+        assert!(!raster.crop((7., 19.), 2, 2, &mut tile), "past its right");
+        assert!(!raster.crop((11., 20.), 2, 2, &mut tile), "before its left");
     }
 
     /// A table edit renders through PDFium: a grown row moves the rows

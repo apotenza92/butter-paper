@@ -3433,6 +3433,7 @@ fn begin_startup_launch(
                                 {
                                     apply_deferred_startup_open(workspace, open, cx);
                                 }
+                            workspace.release_opens_awaiting_recovery(cx);
                         });
                     }
                     Err(error) => {
@@ -3449,6 +3450,7 @@ fn begin_startup_launch(
                             if let Some(open) = workspace.take_deferred_startup_open() {
                                 apply_deferred_startup_open(workspace, open, cx);
                             }
+                            workspace.release_opens_awaiting_recovery(cx);
                         });
                     }
                 }
@@ -4708,11 +4710,13 @@ mod review_driver {
                         );
                         pause(cx, 16).await;
                     }
-                    "page-click" | "page-move" => {
+                    "page-click" | "page-move" | "page-down" | "page-hold" | "page-up" => {
                         // page-click W PAGE X Y [shift], page-move W PAGE X Y
                         // [shift]: a left click at, or a move to, a point of
                         // the active document's page PAGE (1-based), in PDF
-                        // points.
+                        // points. page-down, page-hold and page-up press the
+                        // left button there, move there holding it, and let
+                        // it go there, for captures mid-drag.
                         let window = number(1) as usize;
                         let page_index = number(2) as u32 - 1;
                         let pdf_point = butter_paper::annotation_model::PdfPoint {
@@ -4738,6 +4742,51 @@ mod review_driver {
                             writeln!(log, "{line}: page {} is not painted", page_index + 1).unwrap();
                             continue;
                         };
+                        match words[0] {
+                            "page-down" => {
+                                dispatch(
+                                    cx,
+                                    window,
+                                    PlatformInput::MouseDown(MouseDownEvent {
+                                        button: MouseButton::Left,
+                                        position,
+                                        modifiers,
+                                        click_count: 1,
+                                        first_mouse: false,
+                                    }),
+                                );
+                                pause(cx, 16).await;
+                                continue;
+                            }
+                            "page-hold" => {
+                                dispatch(
+                                    cx,
+                                    window,
+                                    PlatformInput::MouseMove(MouseMoveEvent {
+                                        position,
+                                        pressed_button: Some(MouseButton::Left),
+                                        modifiers,
+                                    }),
+                                );
+                                pause(cx, 16).await;
+                                continue;
+                            }
+                            "page-up" => {
+                                dispatch(
+                                    cx,
+                                    window,
+                                    PlatformInput::MouseUp(MouseUpEvent {
+                                        button: MouseButton::Left,
+                                        position,
+                                        modifiers,
+                                        click_count: 1,
+                                    }),
+                                );
+                                pause(cx, 16).await;
+                                continue;
+                            }
+                            _ => {}
+                        }
                         dispatch(
                             cx,
                             window,
@@ -6345,7 +6394,7 @@ mod review_driver {
                         (workspace.session_debug_states(cx), workspace.active_document_id())
                     })
                     .unwrap_or_default();
-                let (tool, workspace_focus, view) = entry
+                let (tool, workspace_focus, view, picture) = entry
                     .workspace
                     .upgrade()
                     .map(|workspace| {
@@ -6363,6 +6412,8 @@ mod review_driver {
                                         workspace.viewport_cursor(),
                                     )
                                 }),
+                            // Pieces of dragged content's picture, if any.
+                            id.and_then(|id| workspace.content_drag_picture_pieces(id)),
                         )
                     })
                     .unwrap_or_default();
@@ -6389,13 +6440,14 @@ mod review_driver {
                 });
                 writeln!(
                     log,
-                    "{name} w{index} frame={:?} active_window={} tabs={:?} active_tab={:?} tool={:?} view={:?} focus={:?} saved={:?}",
+                    "{name} w{index} frame={:?} active_window={} tabs={:?} active_tab={:?} tool={:?} view={:?} picture={:?} focus={:?} saved={:?}",
                     bounds,
                     Some(entry.handle) == active,
                     titles.0,
                     titles.1,
                     tool,
                     view,
+                    picture,
                     focus,
                     saved.map(|_| path.display().to_string())
                 )

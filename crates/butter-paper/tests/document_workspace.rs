@@ -5128,6 +5128,41 @@ fn startup_recovery_holds_opens_until_nothing_more_can_be_recovered_automaticall
 }
 
 #[gpui::test]
+fn a_pdf_opened_while_a_clean_startup_is_checked_opens_after_the_launch(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace = cx.new(DocumentWorkspace::new);
+    workspace.update(cx, |workspace, cx| {
+        workspace.defer_startup_open(DeferredStartupOpen::None);
+        workspace.begin_startup_recovery_inspection(cx);
+        // The PDF that launched the app (from Finder or Outlook) arrives
+        // while recovery is still being checked.
+        assert_eq!(
+            workspace.open_documents(
+                DocumentOpenBatchRequest::new(
+                    DocumentOpenOrigin::System,
+                    vec![workspace_save_target("from-mail.pdf")],
+                ),
+                cx,
+            ),
+            DocumentOpenBatchDisposition::DeferredForRecovery,
+        );
+        // Nothing to recover: the startup launch runs, then the held open.
+        workspace.finish_startup_recovery_inspection(Vec::new(), cx);
+        assert_eq!(
+            workspace.take_deferred_startup_open(),
+            Some(DeferredStartupOpen::None)
+        );
+        assert_eq!(workspace.opens_awaiting_recovery().len(), 1);
+        workspace.release_opens_awaiting_recovery(cx);
+        assert!(workspace.opens_awaiting_recovery().is_empty());
+        assert!(matches!(
+            workspace.document_open_status(),
+            DocumentOpenBatchStatus::Opening { .. }
+        ));
+    });
+}
+
+#[gpui::test]
 fn discarding_the_exact_startup_recovery_retires_it_and_resumes_deferred_launch(
     cx: &mut TestAppContext,
 ) {

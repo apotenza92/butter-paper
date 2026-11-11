@@ -466,6 +466,17 @@ pub trait NativeDocumentResource: Send + Sync {
     ) -> Result<RasterSurface, String> {
         Err("vector Snapshots are unavailable for this document".into())
     }
+    /// [`Self::render_region_pdf`], after the viewer's tiles: a picture of
+    /// dragged content, which waits for the page drawn without it.
+    fn render_region_pdf_after_tiles(
+        &self,
+        pdf: &[u8],
+        size_pt: (f64, f64),
+        pixels_per_point: f64,
+        rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        self.render_region_pdf(pdf, size_pt, pixels_per_point, rotation)
+    }
     /// A box of a page (in its user space) as drawn on it, at
     /// `pixels_per_point`, turned as the page is shown at `rotation`.
     fn render_page_region(
@@ -1050,6 +1061,63 @@ struct PdfiumWorkerResource {
 }
 
 impl PdfiumWorkerResource {
+    fn render_region_pdf_with(
+        &self,
+        pdf: &[u8],
+        size_pt: (f64, f64),
+        pixels_per_point: f64,
+        rotation: PageRotation,
+        priority: RenderPriority,
+    ) -> Result<RasterSurface, String> {
+        let (width, height) = region_pixel_size(size_pt, pixels_per_point)?;
+        let surface_id = SurfaceId(self.next_surface.fetch_add(1, Ordering::Relaxed));
+        let descriptor = SurfaceDescriptor {
+            surface_id,
+            width,
+            height,
+            stride: width * 4,
+            byte_len: u64::from(width) * u64::from(height) * 4,
+            format: SurfaceFormat::Bgra8Premultiplied,
+        };
+        let _turn = self.gate.enter(priority);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        let surface = client.create_surface(&descriptor).map_err(worker_error)?;
+        let job_id = JobId(self.next_job.fetch_add(1, Ordering::Relaxed));
+        use base64::Engine as _;
+        let response = client
+            .exchange(&WorkerRequest::RenderPdf {
+                request_id: self.request_id(),
+                job_id,
+                pdf_base64: base64::engine::general_purpose::STANDARD.encode(pdf),
+                transform: [
+                    (f64::from(width) / size_pt.0) as f32,
+                    0.,
+                    0.,
+                    (f64::from(height) / size_pt.1) as f32,
+                    0.,
+                    0.,
+                ],
+                surface: descriptor,
+            })
+            .map_err(worker_error)?;
+        match response {
+            WorkerResponse::Rendered {
+                job_id: actual_job,
+                surface_id: actual_surface,
+                ..
+            } if actual_job == job_id && actual_surface == surface_id => {}
+            WorkerResponse::Failed { error, .. } => return Err(worker_error(error)),
+            response => return Err(unexpected_response("Snapshot render", response)),
+        }
+        RasterSurface::new(width, height, surface.pixels().to_vec())?.rotated(rotation)
+    }
+
     fn open(
         worker: &Path,
         library: &Path,
@@ -1709,53 +1777,29 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         pixels_per_point: f64,
         rotation: PageRotation,
     ) -> Result<RasterSurface, String> {
-        let (width, height) = region_pixel_size(size_pt, pixels_per_point)?;
-        let surface_id = SurfaceId(self.next_surface.fetch_add(1, Ordering::Relaxed));
-        let descriptor = SurfaceDescriptor {
-            surface_id,
-            width,
-            height,
-            stride: width * 4,
-            byte_len: u64::from(width) * u64::from(height) * 4,
-            format: SurfaceFormat::Bgra8Premultiplied,
-        };
-        let _turn = self.gate.enter(RenderPriority::Interactive);
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
-        let surface = client.create_surface(&descriptor).map_err(worker_error)?;
-        let job_id = JobId(self.next_job.fetch_add(1, Ordering::Relaxed));
-        use base64::Engine as _;
-        let response = client
-            .exchange(&WorkerRequest::RenderPdf {
-                request_id: self.request_id(),
-                job_id,
-                pdf_base64: base64::engine::general_purpose::STANDARD.encode(pdf),
-                transform: [
-                    (f64::from(width) / size_pt.0) as f32,
-                    0.,
-                    0.,
-                    (f64::from(height) / size_pt.1) as f32,
-                    0.,
-                    0.,
-                ],
-                surface: descriptor,
-            })
-            .map_err(worker_error)?;
-        match response {
-            WorkerResponse::Rendered {
-                job_id: actual_job,
-                surface_id: actual_surface,
-                ..
-            } if actual_job == job_id && actual_surface == surface_id => {}
-            WorkerResponse::Failed { error, .. } => return Err(worker_error(error)),
-            response => return Err(unexpected_response("Snapshot render", response)),
-        }
-        RasterSurface::new(width, height, surface.pixels().to_vec())?.rotated(rotation)
+        self.render_region_pdf_with(
+            pdf,
+            size_pt,
+            pixels_per_point,
+            rotation,
+            RenderPriority::Interactive,
+        )
+    }
+
+    fn render_region_pdf_after_tiles(
+        &self,
+        pdf: &[u8],
+        size_pt: (f64, f64),
+        pixels_per_point: f64,
+        rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        self.render_region_pdf_with(
+            pdf,
+            size_pt,
+            pixels_per_point,
+            rotation,
+            RenderPriority::PageImage,
+        )
     }
 
     fn render_page_region(

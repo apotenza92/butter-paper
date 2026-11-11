@@ -775,6 +775,13 @@ impl DocumentWorkspace {
     /// Sends the edits the pages should show (page text and form fields) to
     /// the worker when they differ from what it renders, one update at a
     /// time, then refreshes the view.
+    /// Whether the worker shows the document's edits: none are on their way.
+    pub(super) fn document_edits_settled(&self, document_id: DocumentId) -> bool {
+        self.page_text
+            .get(&document_id)
+            .is_none_or(|state| state.sending.is_none())
+    }
+
     pub(super) fn sync_document_edits(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
         let Some(session) = self.session(document_id, cx).cloned() else {
             self.page_text.remove(&document_id);

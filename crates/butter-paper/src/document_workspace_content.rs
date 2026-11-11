@@ -82,6 +82,10 @@ pub enum ContentHandle {
 /// markup.
 pub(super) const ROTATION_KNOB_OFFSET_PIXELS: f64 =
     crate::annotation_adapter::ROTATION_HANDLE_OFFSET_CSS_PX;
+/// How long the dragged content's own picture waits for the page drawn
+/// without it, and how often it looks.
+const SPRITE_DRAW_WAIT: std::time::Duration = std::time::Duration::from_millis(1_500);
+const SPRITE_DRAW_POLL: std::time::Duration = std::time::Duration::from_millis(16);
 /// The angle Shift turns content in steps of, in degrees.
 const ROTATION_SNAP_DEGREES: f64 = 15.;
 
@@ -113,6 +117,9 @@ pub(super) struct SpritePiece {
     /// A path's own geometry and look, drawn as a path wherever it goes,
     /// crisp at any angle, instead of its picture.
     pub ink: Option<SpriteInk>,
+    /// The worker's picture of the whole selection, which a move, resize
+    /// or turn changes as one.
+    pub whole: bool,
 }
 
 /// A dragged path as the page draws it: its outline where the base page
@@ -249,6 +256,13 @@ impl DocumentWorkspace {
                 && sprite.page_index == page_index
                 && sprite.dropped.is_none()
         });
+        // Too many pieces to cut from the page: it stays as it is until the
+        // worker's picture of them arrives, rather than being drawn again
+        // for every move while only their frame follows the pointer.
+        let awaiting = !pictured && self.content_sprite_awaited;
+        if awaiting {
+            return moves;
+        }
         for item in groups.iter().flatten() {
             moves.retain(|existing| {
                 !(existing.page_index == page_index
@@ -1438,7 +1452,9 @@ impl DocumentWorkspace {
         };
         if !drag.moved {
             self.take_content_sprite(drag.document_id, drag.page_index, cx);
-            if matches!(drag.mode, DragMode::Move) {
+            // A move soon shows the worker's picture of the selection; so
+            // does a resize or turn of one too large to cut from the page.
+            if matches!(drag.mode, DragMode::Move) || self.content_sprite.is_none() {
                 self.draw_content_sprite(drag.document_id, drag.page_index, cx);
             }
         }
@@ -1456,6 +1472,7 @@ impl DocumentWorkspace {
         let Some(drag) = self.content_drag.take() else {
             return false;
         };
+        self.content_sprite_awaited = false;
         if let Some(session) = self.session(drag.document_id, cx).cloned() {
             session.update(cx, |session, cx| {
                 session.annotations.clear_content_move_snap();
@@ -1634,6 +1651,7 @@ impl DocumentWorkspace {
                     item,
                     image,
                     ink,
+                    whole: false,
                 })
             })
             .collect::<Vec<_>>();
@@ -1654,6 +1672,7 @@ impl DocumentWorkspace {
     /// on the graphics card.
     pub(super) fn release_content_sprite(&mut self, cx: &mut App) {
         self.content_sprite_draw += 1;
+        self.content_sprite_awaited = false;
         if let Some(sprite) = self.content_sprite.take() {
             drop_sprite_images(sprite.pieces, cx);
         }
@@ -1715,21 +1734,55 @@ impl DocumentWorkspace {
             .collect::<Vec<_>>();
         self.content_sprite_draw += 1;
         let draw = self.content_sprite_draw;
-        let task = cx.background_executor().spawn(async move {
-            let clip = resource.content_clip(page_index, base.as_ref(), &explodes, &items)?;
-            let from = clip.page_rect();
-            let size = (from[2] - from[0], from[3] - from[1]);
-            let fitted = (MAX_SPRITE_PIXELS / (size.0 * size.1)).sqrt();
-            let surface = resource.render_region_pdf(
-                &clip.pdf,
-                size,
-                pixels_per_point.min(fitted),
-                rotation,
-            )?;
-            Ok::<_, String>((from, surface.into_render_image()?))
-        });
+        self.content_sprite_awaited = self.content_sprite.is_none();
+        // With a picture cut from the page, the page is drawn without the
+        // content first: until then the content shows twice, where it was
+        // and where it is dragged. Without one, the page waits for this.
+        let page_first = !self.content_sprite_awaited;
+        let background = cx.background_executor().clone();
         cx.spawn(async move |workspace, cx| {
-            let drawn = task.await;
+            let clip = {
+                let resource = resource.clone();
+                background
+                    .spawn(async move {
+                        resource.content_clip(page_index, base.as_ref(), &explodes, &items)
+                    })
+                    .await
+            };
+            if page_first {
+                let waited = std::time::Instant::now();
+                loop {
+                    let Ok(settled) = workspace.update(cx, |workspace, _| {
+                        (workspace.content_sprite_draw == draw)
+                            .then(|| workspace.document_edits_settled(document_id))
+                    }) else {
+                        return;
+                    };
+                    match settled {
+                        None => return,
+                        Some(true) => break,
+                        Some(false) if waited.elapsed() > SPRITE_DRAW_WAIT => break,
+                        Some(false) => background.timer(SPRITE_DRAW_POLL).await,
+                    }
+                }
+                // Its tiles are asked for on the next frames.
+                background.timer(SPRITE_DRAW_POLL * 3).await;
+            }
+            let drawn = background
+                .spawn(async move {
+                    let clip = clip?;
+                    let from = clip.page_rect();
+                    let size = (from[2] - from[0], from[3] - from[1]);
+                    let fitted = (MAX_SPRITE_PIXELS / (size.0 * size.1)).sqrt();
+                    let surface = resource.render_region_pdf_after_tiles(
+                        &clip.pdf,
+                        size,
+                        pixels_per_point.min(fitted),
+                        rotation,
+                    )?;
+                    Ok::<_, String>((from, surface.into_render_image()?))
+                })
+                .await;
             let _ = workspace.update(cx, |workspace, cx| {
                 if workspace.content_sprite_draw != draw {
                     if let Ok((_, image)) = drawn {
@@ -1737,7 +1790,12 @@ impl DocumentWorkspace {
                     }
                     return;
                 }
+                let awaited = std::mem::take(&mut workspace.content_sprite_awaited);
                 let Ok((from, image)) = drawn else {
+                    // Without its picture, the page shows the content moved.
+                    if awaited {
+                        workspace.sync_document_edits(document_id, cx);
+                    }
                     return;
                 };
                 workspace.use_drawn_sprite(document_id, page_index, from, image, cx);
@@ -1781,6 +1839,7 @@ impl DocumentWorkspace {
                 item: None,
                 image,
                 ink: None,
+                whole: true,
             }],
             dropped: None,
             sent: false,
@@ -1803,6 +1862,9 @@ impl DocumentWorkspace {
             .pieces
             .iter()
             .filter_map(|piece| {
+                if piece.whole {
+                    return Some(whole_picture_target(piece.from, change));
+                }
                 let group = selection.groups.get(piece.group)?;
                 Some(match piece.item {
                     // A path is drawn where its change places it.
@@ -3118,6 +3180,27 @@ impl DocumentWorkspace {
     }
 }
 
+/// Where a picture of the whole selection shown at `from` goes after
+/// `change`, and how far it is turned there: resized as a box, or turned
+/// about the change's pivot.
+fn whole_picture_target(from: [f64; 4], change: ContentChange) -> SpriteTarget {
+    match change {
+        ContentChange::Rotate { degrees, .. } => {
+            let centre = ((from[0] + from[2]) / 2., (from[1] + from[3]) / 2.);
+            let (x, y) = change.map(centre);
+            let (half_w, half_h) = ((from[2] - from[0]) / 2., (from[3] - from[1]) / 2.);
+            SpriteTarget::Picture([x - half_w, y - half_h, x + half_w, y + half_h], degrees)
+        }
+        _ => {
+            let (a, b) = (
+                change.map((from[0], from[1])),
+                change.map((from[2], from[3])),
+            );
+            SpriteTarget::Picture([a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)], 0.)
+        }
+    }
+}
+
 fn union(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     [
         a[0].min(b[0]),
@@ -3733,6 +3816,45 @@ mod tests {
         assert!(handle_shown(3, (30., 60.)) && !handle_shown(1, (30., 60.)));
         assert!((0..8).all(|index| !handle_shown(index, (20., 10.))));
         assert!((0..8).all(|index| handle_shown(index, (60., 60.))));
+    }
+
+    /// The worker's picture of a large selection follows a resize as a box
+    /// and a turn about the pivot, as the content it shows does.
+    #[test]
+    fn a_whole_selection_picture_is_resized_and_turned_as_one() {
+        let from = [100., 100., 300., 200.];
+        let target = |change| match whole_picture_target(from, change) {
+            SpriteTarget::Picture(rect, degrees) => (rect, degrees),
+            SpriteTarget::Placed(_) => panic!("a picture"),
+        };
+        assert_eq!(
+            target(ContentChange::Move(10., -5.)),
+            ([110., 95., 310., 195.], 0.)
+        );
+        // Twice as wide from its left edge, half as tall from its top.
+        assert_eq!(
+            target(ContentChange::Resize {
+                origin: (100., 200.),
+                factor: (2., 0.5),
+            }),
+            ([100., 150., 500., 200.], 0.)
+        );
+        // Flipped past its anchor, it is still an upright box.
+        assert_eq!(
+            target(ContentChange::Resize {
+                origin: (100., 100.),
+                factor: (-1., 1.),
+            }),
+            ([-100., 100., 100., 200.], 0.)
+        );
+        // A quarter turn about its left edge's middle: its centre swings up.
+        let (rect, degrees) = target(ContentChange::Rotate {
+            pivot: (100., 150.),
+            degrees: 90.,
+        });
+        assert_eq!(degrees, 90.);
+        let rounded = rect.map(|value| (value * 1e6).round() / 1e6);
+        assert_eq!(rounded, [0., 200., 200., 300.]);
     }
 
     #[test]

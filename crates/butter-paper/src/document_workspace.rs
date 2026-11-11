@@ -2972,6 +2972,9 @@ pub struct DocumentWorkspace {
     content_sprite: Option<content::ContentSprite>,
     /// Counts the pictures asked of the worker, so a late one is left out.
     content_sprite_draw: u64,
+    /// The worker is drawing the dragged selection, which had no picture
+    /// cut from the page: the page keeps it in place meanwhile.
+    content_sprite_awaited: bool,
     pending_pasted_selection: Option<content::PendingPastedSelection>,
     /// The drawing or image under the pointer in Edit PDF mode, as shown.
     content_hover: Option<content::ContentHover>,
@@ -4692,6 +4695,7 @@ impl DocumentWorkspace {
             thumbnail_refresh_generation: 0,
             content_sprite: None,
             content_sprite_draw: 0,
+            content_sprite_awaited: false,
             pending_pasted_selection: None,
             content_hover: None,
             content_handle_hover: None,
@@ -5073,6 +5077,18 @@ impl DocumentWorkspace {
             Some(DeferredStartupOpen::Restore(plan)) => {
                 self.restore_session(plan, cx);
             }
+        }
+        for request in std::mem::take(&mut self.opens_awaiting_recovery) {
+            self.open_documents(request, cx);
+        }
+    }
+
+    /// Opens held while startup recovery was checked (a PDF opened from
+    /// Finder or Mail as it launched the app) go ahead once nothing blocks
+    /// them. Call after the startup launch, so they open in front of it.
+    pub fn release_opens_awaiting_recovery(&mut self, cx: &mut Context<Self>) {
+        if self.startup_recovery_blocks_open() {
+            return;
         }
         for request in std::mem::take(&mut self.opens_awaiting_recovery) {
             self.open_documents(request, cx);

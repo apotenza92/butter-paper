@@ -4,6 +4,23 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.4.9]
+
+### Edit PDF
+
+- Moving content on large drawings with big photos is live: the page shows
+  a move within a fraction of a second instead of several, and the content
+  no longer shows twice at the start of a drag.
+- A large selection follows the pointer while it is dragged, and a drawing
+  of many strokes (such as CAD lettering) follows its resize handles and
+  rotation knob, instead of the page catching up in steps.
+- Undo and redo of content edits show at once on large files.
+
+### Opening
+
+- A PDF that starts Butter Paper, such as an attachment opened from Outlook
+  or Mail, now opens on the first try.
+
 ## [0.4.8]
 
 ### Viewing
