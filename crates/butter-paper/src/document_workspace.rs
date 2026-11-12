@@ -33,6 +33,9 @@ pub use tables::{DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow};
 mod certificate_signing;
 #[path = "interaction_chrome.rs"]
 mod interaction_chrome;
+#[path = "document_workspace_measure.rs"]
+mod measure;
+pub use measure::{MeasureFamily, MeasurePreferences};
 #[path = "document_workspace_page_scale.rs"]
 mod page_scale;
 #[path = "document_workspace_page_text.rs"]
@@ -166,7 +169,7 @@ use crate::{
     },
     page_scale_control::{
         CalibrationPointDisposition, PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID,
-        PAGE_SCALE_TRIGGER_ID, PageScaleControl,
+        PageScaleControl,
     },
     page_view_control::{PageViewControl, PageViewControlEvent, PageViewMode},
     rectangle_property_inspector::{
@@ -520,6 +523,11 @@ pub fn init_document_workspace_actions(cx: &mut App) {
             Some("DocumentWorkspace && SizeReadout && !Input"),
         ),
         KeyBinding::new("escape", Escape, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        KeyBinding::new(
+            "escape",
+            crate::page_scale_control::ClosePageScale,
+            Some(crate::page_scale_control::PAGE_SCALE_CONTEXT),
+        ),
     ]);
     crate::page_text_editor::init_page_text_editor_actions(cx);
     forms::init_form_field_actions(cx);
@@ -638,8 +646,6 @@ pub const DOCUMENT_LINE_TOOL_ID: &str = "document-workspace-line-tool";
 pub const DOCUMENT_ARROW_TOOL_ID: &str = "document-workspace-arrow-tool";
 pub const DOCUMENT_POLYLINE_TOOL_ID: &str = "document-workspace-polyline-tool";
 pub const DOCUMENT_POLYGON_TOOL_ID: &str = "document-workspace-polygon-tool";
-pub const DOCUMENT_POLYLENGTH_TOOL_ID: &str = "tool-polylength";
-pub const DOCUMENT_AREA_TOOL_ID: &str = "tool-area";
 pub const DOCUMENT_CLOUD_TOOL_ID: &str = "tool-cloud";
 pub const DOCUMENT_CLOUD_PLUS_TOOL_ID: &str = "tool-cloud-plus";
 pub const DOCUMENT_DIMENSION_TOOL_ID: &str = "tool-dimension";
@@ -721,7 +727,6 @@ pub const DOCUMENT_SNAP_MIDPOINT_ID: &str = "viewer-snap-target-midpoint";
 pub const DOCUMENT_SNAP_CENTER_ID: &str = "viewer-snap-target-center";
 pub const DOCUMENT_SNAP_INTERSECTION_ID: &str = "viewer-snap-target-intersection";
 pub const DOCUMENT_SNAP_NEAREST_ID: &str = "viewer-snap-target-nearest";
-pub const DOCUMENT_LENGTH_TOOL_ID: &str = "document-workspace-length-tool";
 pub const DOCUMENT_MEASUREMENT_PROPERTIES_ID: &str = "document-workspace-measurement-properties";
 pub const DOCUMENT_ANNOTATION_STATUS_ID: &str = "document-workspace-annotation-status";
 pub const DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID: &str = "document-text-box-editor-content";
@@ -1473,6 +1478,7 @@ impl PdfDocumentSaver {
         persistence
             .apply_form_field_edits(&request.annotations.form_field_edits)
             .map_err(|error| format!("could not save filled form fields: {error}"))?;
+        remove_markups_measure_turned(&mut persistence, &request.annotations)?;
         let deleted_snapshot_ids = persistence
             .snapshots()
             .iter()
@@ -3073,6 +3079,19 @@ pub struct DocumentWorkspace {
     page_scale_control: Option<Entity<PageScaleControl>>,
     /// Pages a measuring tool has asked for a scale on.
     measuring_scale_asked: HashSet<(DocumentId, u32)>,
+    /// Each page's scale when it was last removed, which the toolbar's
+    /// Scale switch brings back, while the document is open.
+    removed_page_scales: HashMap<(DocumentId, u32), PageScale>,
+    /// The page whose Scale was switched on without a scale to bring back:
+    /// the switch shows on while the Page Scale panel chooses one.
+    page_scale_switching_on: Option<(DocumentId, u32)>,
+    /// The pointer is over the toolbar's Scale.
+    page_scale_hovered: bool,
+    /// The Measure switches of Dimension, Polyline and Polygon.
+    measure_preferences: MeasurePreferences,
+    /// A page whose Scale panel opens with the next draw: markups were
+    /// measured there without a scale.
+    scale_panel_requested: Option<(DocumentId, u32)>,
     rectangle_property_inspector: Option<Entity<RectanglePropertyInspector>>,
     rectangle_property_subscription: Option<Subscription>,
     ellipse_property_inspector: Option<Entity<EllipsePropertyInspector>>,
@@ -4556,9 +4575,15 @@ impl DocumentWorkspace {
         });
         let page_navigator = cx.new(|_| crate::page_navigator::PageNavigator::new());
         let viewer_resizable = cx.new(|_| ResizableState::default());
+        let scale_owner = cx.entity().downgrade();
         viewer_toolbar.update(cx, |toolbar, cx| {
             toolbar.set_page_navigator(page_navigator.clone(), cx);
             toolbar.set_disabled(true, cx);
+            toolbar.set_scale_handler(std::rc::Rc::new(move |request, window, cx| {
+                let _ = scale_owner.update(cx, |workspace, cx| {
+                    workspace.handle_scale_request(request, window, cx)
+                });
+            }));
         });
         let viewer_toolbar_subscriptions = vec![
             cx.subscribe(
@@ -4769,6 +4794,11 @@ impl DocumentWorkspace {
             rejected_stale_save_prompts: 0,
             page_scale_control: None,
             measuring_scale_asked: HashSet::new(),
+            removed_page_scales: HashMap::new(),
+            page_scale_switching_on: None,
+            page_scale_hovered: false,
+            measure_preferences: MeasurePreferences::default(),
+            scale_panel_requested: None,
             rectangle_property_inspector: None,
             rectangle_property_subscription: None,
             ellipse_property_inspector: None,
@@ -6869,6 +6899,10 @@ impl DocumentWorkspace {
         recorded
     }
 
+    pub fn viewer_toolbar(&self) -> Entity<ViewerToolbarStrip> {
+        self.viewer_toolbar.clone()
+    }
+
     pub fn page_scale_control(&self) -> Option<Entity<PageScaleControl>> {
         self.page_scale_control.clone()
     }
@@ -7690,6 +7724,9 @@ impl DocumentWorkspace {
         event: &VertexPathPropertyEvent,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
+        if let VertexPathPropertyPatch::Measure(measure) = event.patch {
+            return self.set_selected_measure(event.document_id, measure, cx);
+        }
         if self.active_document_id != Some(event.document_id) {
             return Ok(false);
         }
@@ -8765,6 +8802,15 @@ impl DocumentWorkspace {
         };
         let page_count = u32::try_from(session.read(cx).page_sizes.len())
             .map_err(|_| "document page count exceeds the page-scale limit".to_owned())?;
+        // What the toolbar's Scale switch brings back.
+        let removed = crate::annotation_model::page_scale_target_pages(target.clone(), page_count)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter_map(|page_index| {
+                self.page_scale(document_id, page_index, cx)
+                    .map(|scale| (page_index, scale))
+            })
+            .collect::<Vec<_>>();
         let changed =
             self.update_native_session_history_with_result(document_id, cx, move |session| {
                 session
@@ -8773,6 +8819,10 @@ impl DocumentWorkspace {
                     .map_err(|error| error.to_string())
             })?;
         if changed {
+            for (page_index, scale) in removed {
+                self.removed_page_scales
+                    .insert((document_id, page_index), scale);
+            }
             cx.notify();
         }
         Ok(changed)
@@ -11777,6 +11827,13 @@ impl DocumentWorkspace {
             ViewerToolbarStripEvent::FitPresetChanged(preset) => preset,
             ViewerToolbarStripEvent::EditPdfToggled => {
                 self.toggle_content_edit_mode(document_id, cx);
+                return;
+            }
+            ViewerToolbarStripEvent::ScaleHovered(hovered) => {
+                if self.page_scale_hovered != hovered {
+                    self.page_scale_hovered = hovered;
+                    cx.notify();
+                }
                 return;
             }
             ViewerToolbarStripEvent::SignaturesRequested => {
@@ -15434,12 +15491,29 @@ impl DocumentWorkspace {
             return panel.clone();
         }
         let panel = cx.new(|cx| crate::tool_defaults_panel::ToolDefaultsPanel::new(window, cx));
-        self.tool_defaults_subscription = Some(cx.subscribe(&panel, |workspace, _, event, cx| {
-            if let Err(error) = workspace.apply_tool_defaults_event(event, cx) {
-                workspace.last_file_error = Some(error);
-                cx.notify();
-            }
-        }));
+        self.tool_defaults_subscription =
+            Some(
+                cx.subscribe_in(&panel, window, |workspace, _, event, window, cx| {
+                    if let crate::tool_defaults_panel::ToolDefaultsEvent::Measure {
+                        document_id,
+                        family,
+                        measure,
+                    } = event
+                    {
+                        if let Err(error) =
+                            workspace.set_tool_measure(*document_id, *family, *measure, window, cx)
+                        {
+                            workspace.last_file_error = Some(error);
+                        }
+                        cx.notify();
+                        return;
+                    }
+                    if let Err(error) = workspace.apply_tool_defaults_event(event, cx) {
+                        workspace.last_file_error = Some(error);
+                        cx.notify();
+                    }
+                }),
+            );
         self.tool_defaults_panel = Some(panel.clone());
         panel
     }
@@ -16281,6 +16355,9 @@ impl DocumentWorkspace {
         event: &DimensionPropertyEvent,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
+        if let DimensionPropertyPatch::Measure(measure) = event.patch {
+            return self.set_selected_measure(event.document_id, measure, cx);
+        }
         if self.active_document_id != Some(event.document_id)
             || self.pending_close_document_id == Some(event.document_id)
             || self.close_after_save_document_id == Some(event.document_id)
@@ -16341,6 +16418,7 @@ impl DocumentWorkspace {
                     || match &event.patch {
                         DimensionPropertyPatch::Locked(value) => *value == annotation.locked,
                         DimensionPropertyPatch::OffsetPt(_)
+                        | DimensionPropertyPatch::Measure(_)
                         | DimensionPropertyPatch::ResetCaptionPosition => true,
                         DimensionPropertyPatch::Appearance(value) => value == &appearance,
                     }
@@ -16358,6 +16436,7 @@ impl DocumentWorkspace {
             || *current_id != event.annotation_id
             || match &event.patch {
                 DimensionPropertyPatch::Locked(value) => *value == current_locked,
+                DimensionPropertyPatch::Measure(_) => true,
                 DimensionPropertyPatch::OffsetPt(value) => {
                     !is_dimension
                         || matches!(&current, Annotation::Dimension(annotation) if *value == annotation.dimension_line_offset())
@@ -16426,6 +16505,7 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
         match &event.patch {
+            DimensionPropertyPatch::Measure(_) => return Ok(false),
             DimensionPropertyPatch::Locked(value) => {
                 let annotation_id = event.annotation_id.clone();
                 self.update_annotation_history(event.document_id, cx, move |annotations, id| {
@@ -17881,6 +17961,44 @@ impl DocumentWorkspace {
         Ok(asset_id)
     }
 
+    /// A shortcut for Dimension, Polyline or Polygon: the family's tool,
+    /// with its Measure switch set first when `measure` says so.
+    fn select_available_measure_family(
+        &mut self,
+        family: MeasureFamily,
+        measure: Option<bool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(document_id) = self.tool_shortcut_document(window, cx) else {
+            return;
+        };
+        let _ = self.choose_measure_family(document_id, family, measure, cx);
+    }
+
+    /// The document a tool shortcut acts on, when one may act now.
+    fn tool_shortcut_document(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<DocumentId> {
+        if window.has_focused_input(cx) {
+            return None;
+        }
+        if self.pending_text_box_editor.is_some() || self.pending_close_document_id.is_some() {
+            cx.propagate();
+            return None;
+        }
+        let document_id = self.active_document_id?;
+        self.session(document_id, cx)
+            .is_some_and(|session| {
+                let session = session.read(cx);
+                matches!(session.status, NativeDocumentStatus::Ready)
+                    && session.save_status != NativeDocumentSaveStatus::Saving
+            })
+            .then_some(document_id)
+    }
+
     fn select_available_annotation_tool(
         &mut self,
         tool: AnnotationTool,
@@ -17995,7 +18113,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Polyline, window, cx);
+        self.select_available_measure_family(MeasureFamily::Polyline, Some(false), window, cx);
     }
 
     fn select_polygon_tool_from_action(
@@ -18004,7 +18122,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Polygon, window, cx);
+        self.select_available_measure_family(MeasureFamily::Polygon, Some(false), window, cx);
     }
 
     fn select_polylength_tool_from_action(
@@ -18013,7 +18131,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Polylength, window, cx);
+        self.select_available_measure_family(MeasureFamily::Polyline, Some(true), window, cx);
     }
 
     fn select_area_tool_from_action(
@@ -18022,7 +18140,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Area, window, cx);
+        self.select_available_measure_family(MeasureFamily::Polygon, Some(true), window, cx);
     }
 
     fn select_cloud_plus_tool_from_action(
@@ -18040,7 +18158,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Dimension, window, cx);
+        self.select_available_measure_family(MeasureFamily::Dimension, Some(false), window, cx);
     }
 
     fn finish_vertex_path_from_action(
@@ -18119,7 +18237,7 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_available_annotation_tool(AnnotationTool::Length, window, cx);
+        self.select_available_measure_family(MeasureFamily::Dimension, Some(true), window, cx);
     }
 
     fn select_highlight_tool_from_action(
@@ -18755,6 +18873,7 @@ impl DocumentWorkspace {
         {
             return false;
         }
+        self.resolve_dimension_tool(interaction.document_id, interaction.page_index, cx);
         let tool = session.read(cx).annotations.tool();
         if self.ask_for_measuring_scale(
             interaction.document_id,
@@ -24328,28 +24447,32 @@ fn annotation_layer(
         })
         .context_menu(move |menu, _, cx| {
             // Edit PDF as the document is now, as its switch shows it.
-            let (editing_pdf, edit_pdf_available, table_row, edit, block) = context_control
-                .as_ref()
-                .and_then(WeakEntity::upgrade)
-                .map_or(
-                    (
-                        false,
-                        false,
-                        None,
-                        DocumentEditCapabilities::default(),
-                        false,
-                    ),
-                    |workspace| {
-                        let workspace = workspace.read(cx);
+            let (editing_pdf, edit_pdf_available, table_row, edit, block, has_scale) =
+                context_control
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+                    .map_or(
                         (
-                            workspace.content_edit_mode(document_id),
-                            workspace.content_edit_available(document_id, cx),
-                            workspace.table_menu_row(document_id),
-                            workspace.document_edit_capabilities(cx),
-                            workspace.selected_block(cx).is_some(),
-                        )
-                    },
-                );
+                            false,
+                            false,
+                            None,
+                            DocumentEditCapabilities::default(),
+                            false,
+                            false,
+                        ),
+                        |workspace| {
+                            let workspace = workspace.read(cx);
+                            (
+                                workspace.content_edit_mode(document_id),
+                                workspace.content_edit_available(document_id, cx),
+                                workspace.table_menu_row(document_id),
+                                workspace.document_edit_capabilities(cx),
+                                workspace.selected_block(cx).is_some(),
+                                workspace.page_scale(document_id, page_index, cx).is_some(),
+                            )
+                        },
+                    );
+            let remove_scale = context_control.clone();
             // A table row right-clicked in Edit PDF: its row items first.
             let menu = match table_row {
                 Some(blocked) => {
@@ -24415,6 +24538,19 @@ fn annotation_layer(
                 .separator()
                 .label(format!("Page {}", page_index + 1))
                 .menu("Set page scale…", Box::new(SetPageScale))
+                .when(has_scale, |menu| {
+                    menu.item(PopupMenuItem::new("Remove page scale").on_click(
+                        move |_, window, cx| {
+                            if let Some(workspace) =
+                                remove_scale.as_ref().and_then(WeakEntity::upgrade)
+                            {
+                                workspace.update(cx, |workspace, cx| {
+                                    workspace.toggle_page_scale(document_id, page_index, window, cx)
+                                });
+                            }
+                        },
+                    ))
+                })
                 .menu("Rotate left", Box::new(RotatePageLeft))
                 .menu("Rotate right", Box::new(RotatePageRight))
         })
@@ -24572,6 +24708,91 @@ const fn properties_double_click_sidebar_open(
 // A second click toggles the existing properties surface, without re-arming
 // the tool (or launching a second file picker). Keyboard activation stays a
 // normal single click; popovers retain their own stock trigger behaviour.
+/// Removes from the file the markups whose Measure switch changed their
+/// kind (a Polyline now a Polylength, a Length now a Dimension, and back),
+/// before each kind is saved, so the new kind is written under the same id.
+fn remove_markups_measure_turned(
+    persistence: &mut crate::pdf_engine::PdfPersistenceSession,
+    annotations: &AnnotationSnapshot,
+) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    let ids = |ids: &mut dyn Iterator<Item = MarkupId>| ids.collect::<BTreeSet<_>>();
+    let vertex_paths = ids(&mut annotations.vertex_paths.iter().map(|path| path.id.clone()));
+    let measurement_paths = ids(&mut annotations
+        .measurement_paths
+        .iter()
+        .map(|path| path.id.clone()));
+    let dimensions = ids(&mut annotations
+        .dimensions
+        .iter()
+        .map(|dimension| dimension.id.clone()));
+    let lengths = ids(&mut annotations.lengths.iter().map(|length| length.id.clone()));
+    // In the file as one kind, and now the other.
+    let turned = |saved: &mut dyn Iterator<Item = MarkupId>,
+                  kept: &BTreeSet<MarkupId>,
+                  now: &BTreeSet<MarkupId>| {
+        saved
+            .filter(|id| !kept.contains(id) && now.contains(id))
+            .collect::<Vec<_>>()
+    };
+    let turned_vertex_paths = turned(
+        &mut persistence
+            .vertex_paths()
+            .iter()
+            .map(|path| path.id.clone()),
+        &vertex_paths,
+        &measurement_paths,
+    );
+    let turned_measurement_paths = turned(
+        &mut persistence
+            .measurement_paths()
+            .iter()
+            .map(|path| path.id.clone()),
+        &measurement_paths,
+        &vertex_paths,
+    );
+    let turned_dimensions = turned(
+        &mut persistence
+            .dimensions()
+            .iter()
+            .map(|dimension| dimension.id.clone()),
+        &dimensions,
+        &lengths,
+    );
+    let turned_lengths = turned(
+        &mut persistence.lengths().iter().map(|length| length.id.clone()),
+        &lengths,
+        &dimensions,
+    );
+    let error = |error: crate::pdf_engine::PdfPersistenceError| error.to_string();
+    for id in &turned_vertex_paths {
+        persistence.remove_vertex_path(id).map_err(error)?;
+    }
+    for id in &turned_measurement_paths {
+        persistence.remove_measurement_path(id).map_err(error)?;
+    }
+    for id in &turned_dimensions {
+        persistence.remove_dimension(id).map_err(error)?;
+    }
+    for id in &turned_lengths {
+        persistence.remove_length(id).map_err(error)?;
+    }
+    Ok(())
+}
+
+/// A Dimension, Polyline or Polygon button's tooltip: its shortcut, and the
+/// measurement its Measure switch draws.
+fn measure_family_tooltip(family: MeasureFamily) -> String {
+    let plain = family.tool(false);
+    let measured = family.tool(true);
+    format!(
+        "{} · Measure on draws a {} ({})",
+        plain.tooltip_label(),
+        measured.label(),
+        measured.shortcut().unwrap_or_default()
+    )
+}
+
 fn rail_tool_secondary_click(
     workspace: &mut DocumentWorkspace,
     event: &gpui::ClickEvent,
@@ -25143,7 +25364,6 @@ fn dim_inactive_window_chrome(window: &Window) -> bool {
 
 fn annotation_tool_group(
     document_id: DocumentId,
-    current_page: u32,
     annotation_tool: AnnotationTool,
     save_busy: bool,
     pan_active: bool,
@@ -25812,6 +26032,56 @@ fn annotation_tool_group(
                             workspace.set_annotation_tool(document_id, AnnotationTool::Ellipse, cx);
                     }))
                     .into_any_element(),
+                rail_tool_button(DOCUMENT_POLYGON_TOOL_ID, "Polygon", "pentagon")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_POLYGON_TOOL_ID.into())
+                    .tooltip(measure_family_tooltip(MeasureFamily::Polygon))
+                    .selected(
+                        MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polygon)
+                            && !pan_active,
+                    )
+                    .toggled(
+                        MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polygon)
+                            && !pan_active,
+                    )
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.choose_measure_family(
+                            document_id,
+                            MeasureFamily::Polygon,
+                            None,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                rail_tool_button(DOCUMENT_POLYLINE_TOOL_ID, "Polyline", "waypoints")
+                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_POLYLINE_TOOL_ID.into())
+                    .tooltip(measure_family_tooltip(MeasureFamily::Polyline))
+                    .selected(
+                        MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polyline)
+                            && !pan_active,
+                    )
+                    .toggled(
+                        MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polyline)
+                            && !pan_active,
+                    )
+                    .disabled(save_busy)
+                    .on_click(cx.listener(move |workspace, event, _, cx| {
+                        if rail_tool_secondary_click(workspace, event, cx) {
+                            return;
+                        }
+                        let _ = workspace.choose_measure_family(
+                            document_id,
+                            MeasureFamily::Polyline,
+                            None,
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
                 rail_tool_button(DOCUMENT_LINE_TOOL_ID, "Line", "minus")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_LINE_TOOL_ID.into())
@@ -25827,34 +26097,29 @@ fn annotation_tool_group(
                             workspace.set_annotation_tool(document_id, AnnotationTool::Line, cx);
                     }))
                     .into_any_element(),
-                rail_tool_button(DOCUMENT_POLYLINE_TOOL_ID, "Polyline", "waypoints")
+                rail_tool_button(DOCUMENT_DIMENSION_TOOL_ID, "Dimension", "dimension")
                     .disabled(save_busy)
-                    .debug_selector(|| DOCUMENT_POLYLINE_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Polyline.tooltip_label())
-                    .selected(annotation_tool == AnnotationTool::Polyline && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Polyline && !pan_active)
+                    .debug_selector(|| DOCUMENT_DIMENSION_TOOL_ID.into())
+                    .tooltip(measure_family_tooltip(MeasureFamily::Dimension))
+                    .selected(
+                        MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Dimension)
+                            && !pan_active,
+                    )
+                    .toggled(
+                        MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Dimension)
+                            && !pan_active,
+                    )
                     .disabled(save_busy)
                     .on_click(cx.listener(move |workspace, event, _, cx| {
                         if rail_tool_secondary_click(workspace, event, cx) {
                             return;
                         }
-                        let _ = workspace.set_annotation_tool(
+                        let _ = workspace.choose_measure_family(
                             document_id,
-                            AnnotationTool::Polyline,
+                            MeasureFamily::Dimension,
+                            None,
                             cx,
                         );
-                    }))
-                    .into_any_element(),
-                rail_tool_button(DOCUMENT_PEN_TOOL_ID, "Pen", "pen-line")
-                    .disabled(save_busy)
-                    .debug_selector(|| DOCUMENT_PEN_TOOL_ID.into())
-                    .selected(annotation_tool == AnnotationTool::Pen && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Pen && !pan_active)
-                    .on_click(cx.listener(move |workspace, event, _, cx| {
-                        if rail_tool_secondary_click(workspace, event, cx) {
-                            return;
-                        }
-                        let _ = workspace.set_annotation_tool(document_id, AnnotationTool::Pen, cx);
                     }))
                     .into_any_element(),
                 rail_tool_button(DOCUMENT_ARC_TOOL_ID, "Arc", "spline")
@@ -25871,98 +26136,16 @@ fn annotation_tool_group(
                         let _ = workspace.set_annotation_tool(document_id, AnnotationTool::Arc, cx);
                     }))
                     .into_any_element(),
-                rail_tool_button(DOCUMENT_POLYGON_TOOL_ID, "Polygon", "pentagon")
+                rail_tool_button(DOCUMENT_PEN_TOOL_ID, "Pen", "pen-line")
                     .disabled(save_busy)
-                    .debug_selector(|| DOCUMENT_POLYGON_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Polygon.tooltip_label())
-                    .selected(annotation_tool == AnnotationTool::Polygon && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Polygon && !pan_active)
-                    .disabled(save_busy)
+                    .debug_selector(|| DOCUMENT_PEN_TOOL_ID.into())
+                    .selected(annotation_tool == AnnotationTool::Pen && !pan_active)
+                    .toggled(annotation_tool == AnnotationTool::Pen && !pan_active)
                     .on_click(cx.listener(move |workspace, event, _, cx| {
                         if rail_tool_secondary_click(workspace, event, cx) {
                             return;
                         }
-                        let _ =
-                            workspace.set_annotation_tool(document_id, AnnotationTool::Polygon, cx);
-                    }))
-                    .into_any_element(),
-                rail_tool_button(DOCUMENT_DIMENSION_TOOL_ID, "Dimension", "ruler")
-                    .disabled(save_busy)
-                    .debug_selector(|| DOCUMENT_DIMENSION_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Dimension.tooltip_label())
-                    .selected(annotation_tool == AnnotationTool::Dimension && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Dimension && !pan_active)
-                    .disabled(save_busy)
-                    .on_click(cx.listener(move |workspace, event, _, cx| {
-                        if rail_tool_secondary_click(workspace, event, cx) {
-                            return;
-                        }
-                        let _ = workspace.set_annotation_tool(
-                            document_id,
-                            AnnotationTool::Dimension,
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-            ],
-            columns,
-            cx,
-        ))
-        .child(rail_tool_section(
-            "Measure",
-            vec![
-                rail_tool_button(PAGE_SCALE_TRIGGER_ID, "Page Scale", "scan-line")
-                    .debug_selector(|| PAGE_SCALE_TRIGGER_ID.into())
-                    .disabled(save_busy)
-                    .on_click(cx.listener(move |workspace, _, window, cx| {
-                        workspace.open_page_scale_dialog(document_id, current_page, window, cx);
-                    }))
-                    .into_any_element(),
-                rail_tool_button(DOCUMENT_LENGTH_TOOL_ID, "Length", "ruler-dimension-line")
-                    .disabled(save_busy)
-                    .debug_selector(|| DOCUMENT_LENGTH_TOOL_ID.into())
-                    .selected(annotation_tool == AnnotationTool::Length && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Length && !pan_active)
-                    .disabled(save_busy)
-                    .on_click(cx.listener(move |workspace, event, _, cx| {
-                        if rail_tool_secondary_click(workspace, event, cx) {
-                            return;
-                        }
-                        let _ =
-                            workspace.set_annotation_tool(document_id, AnnotationTool::Length, cx);
-                    }))
-                    .into_any_element(),
-                rail_tool_button(DOCUMENT_POLYLENGTH_TOOL_ID, "Polylength", "route")
-                    .disabled(save_busy)
-                    .debug_selector(|| DOCUMENT_POLYLENGTH_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Polylength.tooltip_label())
-                    .selected(annotation_tool == AnnotationTool::Polylength && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Polylength && !pan_active)
-                    .disabled(save_busy)
-                    .on_click(cx.listener(move |workspace, event, _, cx| {
-                        if rail_tool_secondary_click(workspace, event, cx) {
-                            return;
-                        }
-                        let _ = workspace.set_annotation_tool(
-                            document_id,
-                            AnnotationTool::Polylength,
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-                rail_tool_button(DOCUMENT_AREA_TOOL_ID, "Area", "chart-area")
-                    .disabled(save_busy)
-                    .debug_selector(|| DOCUMENT_AREA_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Area.tooltip_label())
-                    .selected(annotation_tool == AnnotationTool::Area && !pan_active)
-                    .toggled(annotation_tool == AnnotationTool::Area && !pan_active)
-                    .disabled(save_busy)
-                    .on_click(cx.listener(move |workspace, event, _, cx| {
-                        if rail_tool_secondary_click(workspace, event, cx) {
-                            return;
-                        }
-                        let _ =
-                            workspace.set_annotation_tool(document_id, AnnotationTool::Area, cx);
+                        let _ = workspace.set_annotation_tool(document_id, AnnotationTool::Pen, cx);
                     }))
                     .into_any_element(),
             ],
@@ -26081,6 +26264,8 @@ impl Render for DocumentWorkspace {
         // Overlays this draw records are the ones open; a prompt for a tab
         // that has closed is no longer drawn, so it no longer blocks presses.
         crate::overlay_state::begin_overlay_render(cx);
+        self.open_requested_scale_panel(window, cx);
+        self.sync_viewer_toolbar_scale(cx);
         // Release the GPU textures of tile and thumbnail images that are no
         // longer drawn; the window would otherwise keep every one.
         for session in self.sessions.clone() {
@@ -26841,6 +27026,8 @@ impl Render for DocumentWorkspace {
                 text_only: selected_vertex_path.is_some(),
                 appearance: appearance.clone(),
                 caption_moved: *caption_moved,
+                // A Length has no offset of its own; a Dimension has.
+                measure: selected_vertex_path.is_none().then_some(!*show_offset),
                 locked: *locked,
                 mutation_disabled: save_busy,
             };
@@ -26867,6 +27054,8 @@ impl Render for DocumentWorkspace {
                 .read(cx)
                 .annotations
                 .tool_properties(annotation_tool);
+            let measure =
+                MeasureFamily::of(annotation_tool).map(|family| self.measure_preference(family));
             tool_defaults_panel.update(cx, |panel, cx| {
                 panel.sync(
                     document_id,
@@ -26876,6 +27065,7 @@ impl Render for DocumentWorkspace {
                     window,
                     cx,
                 );
+                panel.set_measure(measure, cx);
             });
         }
         if defaults_need_sync {
@@ -27278,7 +27468,6 @@ impl Render for DocumentWorkspace {
         );
         let tool_group = annotation_tool_group(
             document_id,
-            current_page,
             annotation_tool,
             save_busy,
             self.pan_tool_active || self.middle_pan_active(),
@@ -27822,6 +28011,14 @@ impl Render for DocumentWorkspace {
                 selection_color,
                 semantic_snap_decision,
                 calibration_preview: self.calibration_preview(cx),
+                page_outline: self.page_outline(
+                    document_id,
+                    current_page,
+                    viewer_plan
+                        .as_ref()
+                        .is_some_and(|plan| plan.visible_pages.len() > 1),
+                    cx,
+                ),
                 viewer_pages,
                 viewer_pan_margin,
                 viewer_plan,
@@ -28013,6 +28210,7 @@ impl Render for DocumentWorkspace {
                     ),
             )
             .child(self.render_status_bar(window, cx))
+            .children(self.render_page_scale_panel(window, cx))
     }
 }
 
@@ -28105,6 +28303,7 @@ fn path_property_patch_matches(
 ) -> bool {
     match patch {
         VertexPathPropertyPatch::Locked(value) => locked == *value,
+        VertexPathPropertyPatch::Measure(_) => false,
         VertexPathPropertyPatch::StrokeColorAndOpacity { color, opacity } => {
             appearance.stroke_color() == color && appearance.opacity() == *opacity
         }

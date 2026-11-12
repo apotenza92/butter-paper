@@ -3371,7 +3371,7 @@ impl PageScale {
 }
 
 /// The pages a page-scale change applies to.
-fn page_scale_target_pages(
+pub(crate) fn page_scale_target_pages(
     target: PageScaleApplyTarget,
     page_count: u32,
 ) -> Result<Vec<u32>, AnnotationError> {
@@ -8742,6 +8742,174 @@ impl AnnotationDocument {
             }
         });
         Ok(true)
+    }
+
+    /// The markups among `ids` whose Measure switch can change: Dimensions
+    /// and Lengths, Polylines and Polylengths, Polygons and Areas, unlocked.
+    /// Each with whether it measures now.
+    pub fn measure_candidates(&self, ids: &[MarkupId]) -> Vec<(MarkupId, u32, bool)> {
+        let wanted = |id: &MarkupId, locked: bool| !locked && ids.contains(id);
+        let mut found = Vec::new();
+        for path in &self.state.vertex_paths {
+            if wanted(&path.id, path.locked) {
+                found.push((path.id.clone(), path.page_index, false));
+            }
+        }
+        for path in &self.state.measurement_paths {
+            if wanted(&path.id, path.locked) {
+                found.push((path.id.clone(), path.page_index, true));
+            }
+        }
+        for dimension in &self.state.dimensions {
+            if wanted(&dimension.id, dimension.locked) {
+                found.push((dimension.id.clone(), dimension.page_index, false));
+            }
+        }
+        for length in &self.state.lengths {
+            if wanted(&length.id, length.locked) {
+                found.push((length.id.clone(), length.page_index, true));
+            }
+        }
+        found
+    }
+
+    /// Turns measuring on or off for the markups among `ids`, as one
+    /// undoable change: a Polyline becomes a Polylength and back, a Polygon
+    /// an Area, a Dimension a Length. Each keeps its id, place in the
+    /// stacking order, points and appearance; a measurement made measures
+    /// at `calibrations` (its page's scale), and a Length turned back into a
+    /// Dimension keeps its line and caption as text. Returns how many
+    /// changed.
+    pub fn set_measure(
+        &mut self,
+        ids: &[MarkupId],
+        measure: bool,
+        calibrations: &BTreeMap<u32, LengthCalibration>,
+        path_text: &dyn Fn(MeasurementPathKind) -> TextBoxStyle,
+    ) -> Result<usize, AnnotationError> {
+        self.require_no_gesture()?;
+        let wanted = |id: &MarkupId, locked: bool| !locked && ids.contains(id);
+        let calibration = |page_index: u32| {
+            calibrations.get(&page_index).cloned().ok_or_else(|| {
+                AnnotationError::InvalidGeometry(format!(
+                    "no measuring scale for page {page_index}"
+                ))
+            })
+        };
+        let mut paths = Vec::new();
+        let mut vertex_paths = Vec::new();
+        let mut lengths = Vec::new();
+        let mut dimensions = Vec::new();
+        if measure {
+            for path in &self.state.vertex_paths {
+                if !wanted(&path.id, path.locked) {
+                    continue;
+                }
+                let kind = match path.kind {
+                    VertexPathKind::Polyline => MeasurementPathKind::Polylength,
+                    VertexPathKind::Polygon => MeasurementPathKind::Area,
+                };
+                let mut measured = MeasurementPathAnnotation::new_with_text_style(
+                    path.id.clone(),
+                    path.page_index,
+                    path.points.clone(),
+                    kind,
+                    calibration(path.page_index)?,
+                    path.appearance.clone(),
+                    path_text(kind),
+                )?;
+                measured.locked = path.locked;
+                paths.push(measured);
+            }
+            for dimension in &self.state.dimensions {
+                if !wanted(&dimension.id, dimension.locked) {
+                    continue;
+                }
+                let mut length = LengthAnnotation::new_with_appearance(
+                    dimension.id.clone(),
+                    dimension.page_index,
+                    dimension.start,
+                    dimension.end,
+                    calibration(dimension.page_index)?,
+                    dimension.appearance.clone(),
+                )?;
+                length.locked = dimension.locked;
+                length.caption_offset = dimension.caption_offset;
+                lengths.push(length);
+            }
+        } else {
+            for path in &self.state.measurement_paths {
+                if !wanted(&path.id, path.locked) {
+                    continue;
+                }
+                let kind = match path.kind {
+                    MeasurementPathKind::Polylength => VertexPathKind::Polyline,
+                    MeasurementPathKind::Area => VertexPathKind::Polygon,
+                };
+                let mut plain = VertexPathAnnotation::new(
+                    path.id.clone(),
+                    path.page_index,
+                    path.points.clone(),
+                    kind,
+                    path.appearance.clone(),
+                )?;
+                plain.locked = path.locked;
+                vertex_paths.push(plain);
+            }
+            for length in &self.state.lengths {
+                if !wanted(&length.id, length.locked) {
+                    continue;
+                }
+                let mut dimension = DimensionAnnotation::new(
+                    length.id.clone(),
+                    length.page_index,
+                    length.start,
+                    length.end,
+                    LENGTH_LEADER_LENGTH_PT,
+                    length.caption(),
+                    length.appearance.clone(),
+                )?;
+                dimension.locked = length.locked;
+                dimension.caption_offset = length.caption_offset;
+                dimensions.push(dimension);
+            }
+        }
+        let changed = paths.len() + vertex_paths.len() + lengths.len() + dimensions.len();
+        if changed == 0 {
+            return Ok(0);
+        }
+        let converted = |id: &MarkupId| {
+            paths.iter().any(|path| &path.id == id)
+                || vertex_paths.iter().any(|path| &path.id == id)
+                || lengths.iter().any(|length| &length.id == id)
+                || dimensions.iter().any(|dimension| &dimension.id == id)
+        };
+        let converted_ids = self
+            .state
+            .annotation_order
+            .iter()
+            .filter(|id| converted(id))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.commit_state_change(move |state| {
+            state
+                .vertex_paths
+                .retain(|path| !converted_ids.contains(&path.id));
+            state
+                .measurement_paths
+                .retain(|path| !converted_ids.contains(&path.id));
+            state
+                .dimensions
+                .retain(|dimension| !converted_ids.contains(&dimension.id));
+            state
+                .lengths
+                .retain(|length| !converted_ids.contains(&length.id));
+            state.measurement_paths.extend(paths);
+            state.vertex_paths.extend(vertex_paths);
+            state.lengths.extend(lengths);
+            state.dimensions.extend(dimensions);
+        });
+        Ok(changed)
     }
 
     /// Removes the scale of the target pages: later measurements there
@@ -18497,6 +18665,132 @@ mod tests {
                 RectangleAppearance::default(),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn measure_turns_plain_markups_into_measurements_and_back_in_one_undo_step() {
+        let appearance = RectangleAppearance::default();
+        let polyline = VertexPathAnnotation::new(
+            id("measure:polyline"),
+            0,
+            vec![point(0., 0.), point(72., 0.), point(72., 72.)],
+            VertexPathKind::Polyline,
+            appearance.clone(),
+        )
+        .unwrap();
+        let polygon = VertexPathAnnotation::new(
+            id("measure:polygon"),
+            0,
+            vec![point(0., 0.), point(72., 0.), point(72., 72.)],
+            VertexPathKind::Polygon,
+            appearance,
+        )
+        .unwrap();
+        let dimension_appearance = DimensionAppearance::new(
+            StraightLineAppearance::default_for(LineKind::Line),
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap();
+        let dimension = DimensionAnnotation::new(
+            id("measure:dimension"),
+            0,
+            point(0., 100.),
+            point(144., 100.),
+            24.,
+            "typed",
+            dimension_appearance,
+        )
+        .unwrap();
+        let locked = {
+            let mut locked = VertexPathAnnotation::new(
+                id("measure:locked"),
+                0,
+                vec![point(0., 0.), point(10., 10.)],
+                VertexPathKind::Polyline,
+                RectangleAppearance::default(),
+            )
+            .unwrap();
+            locked.locked = true;
+            locked
+        };
+        let mut document = AnnotationDocument::default();
+        document
+            .load_imported_annotations(
+                vec![
+                    Annotation::VertexPath(polyline.clone()),
+                    Annotation::Dimension(dimension.clone()),
+                    Annotation::VertexPath(polygon.clone()),
+                    Annotation::VertexPath(locked),
+                ],
+                Vec::new(),
+            )
+            .unwrap();
+        let order = document.snapshot().annotation_order;
+        let ids = order.clone();
+        // 1 in on paper = 1 ft.
+        let calibration = LengthCalibration::from_scale(72., 1., "ft", 2, true).unwrap();
+        let calibrations = BTreeMap::from([(0, calibration)]);
+        let text =
+            |_: MeasurementPathKind| TextBoxStyle::new("Helvetica", 12., "#0000ff", 1.).unwrap();
+
+        assert_eq!(
+            document
+                .set_measure(&ids, true, &calibrations, &text)
+                .unwrap(),
+            3
+        );
+        let measured = document.snapshot();
+        assert_eq!((measured.revision, measured.undo_depth), (1, 1));
+        assert_eq!(measured.annotation_order, order, "each keeps its place");
+        assert_eq!(
+            measured.vertex_paths.len(),
+            1,
+            "a locked markup is left alone"
+        );
+        let captions = measured
+            .measurement_paths
+            .iter()
+            .map(|path| (path.id.as_str().to_owned(), path.caption()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(captions["measure:polyline"], "2.00 ft");
+        assert_eq!(captions["measure:polygon"], "0.50 sq ft");
+        assert_eq!(measured.lengths.len(), 1);
+        assert_eq!(measured.lengths[0].caption(), "2.00 ft");
+        assert!(measured.dimensions.is_empty());
+
+        // Off again: plain markups at the same points, a Length's caption
+        // kept as the Dimension's text.
+        assert_eq!(
+            document
+                .set_measure(&ids, false, &calibrations, &text)
+                .unwrap(),
+            3
+        );
+        let plain = document.snapshot();
+        assert_eq!(plain.annotation_order, order);
+        assert!(plain.measurement_paths.is_empty() && plain.lengths.is_empty());
+        let polyline_again = plain
+            .vertex_paths
+            .iter()
+            .find(|path| path.id == polyline.id)
+            .unwrap();
+        assert_eq!(polyline_again.points(), polyline.points());
+        assert_eq!(polyline_again.kind, VertexPathKind::Polyline);
+        assert_eq!(plain.dimensions[0].content(), "2.00 ft");
+
+        document.undo().unwrap();
+        document.undo().unwrap();
+        let original = document.snapshot();
+        assert_eq!(original.dimensions, vec![dimension]);
+        assert_eq!(original.vertex_paths.len(), 3);
+        assert!(original.measurement_paths.is_empty());
+        assert_eq!(
+            document
+                .set_measure(&ids, false, &calibrations, &text)
+                .unwrap(),
+            0,
+            "plain markups have nothing to turn off"
         );
     }
 

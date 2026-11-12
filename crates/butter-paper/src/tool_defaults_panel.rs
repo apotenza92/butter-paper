@@ -8,7 +8,7 @@ use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use crate::{
     accessible_button::close_icon_button,
     annotation_adapter::AnnotationTool,
-    document_workspace::DocumentId,
+    document_workspace::{DocumentId, MeasureFamily},
     property_controls::{
         PropertyInspectorPanel, PropertyNumericInput, PropertySliderInput, format_property_number,
         format_property_percentage, property_color_picker,
@@ -62,6 +62,7 @@ pub const TOOL_DEFAULTS_CLOUD_INTENSITY_SLIDER_ID: &str =
 pub const TOOL_DEFAULTS_CLOUD_INTENSITY_INPUT_ID: &str =
     "tool-defaults-panel-cloud-intensity-input";
 pub const TOOL_DEFAULTS_EMPTY_ID: &str = "tool-defaults-panel-empty";
+pub const TOOL_DEFAULTS_MEASURE_ID: &str = "tool-defaults-panel-measure";
 pub const TOOL_DEFAULTS_RESET_ID: &str = "tool-defaults-panel-reset";
 pub const TOOL_DEFAULTS_RESET_BUTTON_ID: &str = "tool-defaults-panel-reset-button";
 pub const TOOL_DEFAULTS_RESET_CANCEL_ID: &str = "tool-defaults-panel-reset-cancel";
@@ -77,6 +78,12 @@ pub enum ToolDefaultsEvent {
         document_id: DocumentId,
         tool: AnnotationTool,
         properties: ToolProperties,
+    },
+    /// The Measure switch of Dimension, Polyline or Polygon.
+    Measure {
+        document_id: DocumentId,
+        family: MeasureFamily,
+        measure: bool,
     },
     Close,
 }
@@ -98,6 +105,8 @@ pub struct ToolDefaultsPanel {
     document_id: Option<DocumentId>,
     tool: Option<AnnotationTool>,
     properties: ToolProperties,
+    /// The Measure switch, for a tool that has one.
+    measure: Option<bool>,
     disabled: bool,
     syncing: bool,
     appearance_open: bool,
@@ -116,6 +125,7 @@ impl ToolDefaultsPanel {
             document_id: None,
             tool: None,
             properties,
+            measure: None,
             disabled: false,
             syncing: false,
             appearance_open: true,
@@ -159,6 +169,64 @@ impl ToolDefaultsPanel {
 
         self.syncing = false;
         cx.notify();
+    }
+
+    /// Shows the chosen tool's Measure switch, on or off, or hides it.
+    pub fn set_measure(&mut self, measure: Option<bool>, cx: &mut Context<Self>) {
+        if self.measure != measure {
+            self.measure = measure;
+            cx.notify();
+        }
+    }
+
+    pub fn measure(&self) -> Option<bool> {
+        self.measure
+    }
+
+    fn render_measure(&self, disabled: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let family = MeasureFamily::of(self.tool?)?;
+        let measure = self.measure?;
+        let document_id = self.document_id?;
+        let panel = cx.entity().downgrade();
+        Some(
+            v_flex()
+                .id(TOOL_DEFAULTS_MEASURE_ID)
+                .debug_selector(|| TOOL_DEFAULTS_MEASURE_ID.into())
+                .gap_1()
+                .px_3()
+                .pt_3()
+                .pb_2()
+                .child(
+                    Switch::new("tool-defaults-panel-measure-switch")
+                        .label("Measure")
+                        .checked(measure)
+                        .disabled(disabled)
+                        .tooltip(family.measure_hint())
+                        .on_click(move |measure, _, cx| {
+                            let _ = panel.update(cx, |_, cx| {
+                                cx.emit(ToolDefaultsEvent::Measure {
+                                    document_id,
+                                    family,
+                                    measure: *measure,
+                                })
+                            });
+                        }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(match (family, measure) {
+                            (MeasureFamily::Dimension, true) => {
+                                "Measures where the page has a scale; elsewhere, type its text."
+                            }
+                            (MeasureFamily::Dimension, false) => "Type its text.",
+                            (_, true) => "Measures with the page scale.",
+                            (_, false) => "Turn on to measure with the page scale.",
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     pub fn document_id(&self) -> Option<DocumentId> {
@@ -808,8 +876,9 @@ impl Render for ToolDefaultsPanel {
 
         let title = match tool {
             None | Some(AnnotationTool::Select) => "Properties",
-            Some(tool) => tool.label(),
+            Some(tool) => MeasureFamily::of(tool).map_or(tool.label(), MeasureFamily::label),
         };
+        let measure = self.render_measure(controls_disabled, cx);
         let content = match tool {
             Some(tool) if !ToolProperties::applicable_fields(tool).is_empty() => {
                 let sections = cx.entity().downgrade();
@@ -907,6 +976,7 @@ impl Render for ToolDefaultsPanel {
                 .id(TOOL_DEFAULTS_ACCORDION_ID)
                 .debug_selector(|| TOOL_DEFAULTS_ACCORDION_ID.into())
                 .w_full()
+                .children(measure)
                 .child(content),
         )
     }

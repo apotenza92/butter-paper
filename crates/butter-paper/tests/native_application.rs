@@ -1212,7 +1212,12 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
                 "Edit PDF switch overlaps at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, first={first:?}"
             );
             if controls + slot * 2. <= toolbar.size.width {
-                let centre = (first.left() + last.right()) / 2.;
+                // The controls' frames included.
+                let centre = cx
+                    .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
+                    .unwrap()
+                    .center()
+                    .x;
                 assert!(
                     (centre - toolbar.center().x).abs() <= px(0.5),
                     "toolbar controls not centred at width {width}: toolbar={toolbar:?}, content={content:?}, first={first:?}, last={last:?}",
@@ -1862,13 +1867,13 @@ fn workspace_right_rail_replaces_horizontal_tools_and_keeps_canvas_band_between_
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let offset = observed.read_with(cx, |workspace, _| workspace.right_rail_scroll_offset());
     let area = cx
-        .debug_bounds(butter_paper::document_workspace::DOCUMENT_AREA_TOOL_ID)
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_PEN_TOOL_ID)
         .unwrap_or_else(|| {
-            panic!("Area not revealed: scroll offset={offset:?}, scroller={scroller:?}")
+            panic!("Pen not revealed: scroll offset={offset:?}, scroller={scroller:?}")
         });
     assert!(
         area.top() >= scroller.top() && area.bottom() <= scroller.bottom(),
-        "scrolling reveals the final Measure tool"
+        "scrolling reveals the final Draw tool"
     );
     assert_eq!(
         cx.debug_bounds("document-workspace-rail-actions").unwrap(),

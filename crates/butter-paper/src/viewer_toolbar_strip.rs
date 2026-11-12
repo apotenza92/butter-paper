@@ -1,9 +1,10 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Render, ScrollHandle, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, rems,
+    App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, ElementExt as _, Icon, Selectable as _,
@@ -30,21 +31,30 @@ pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
 pub const EDIT_PDF_ID: &str = "viewer-edit-pdf";
+/// The page's Scale: a switch and the scale's menu, beside Edit PDF.
+pub const VIEWER_SCALE_ID: &str = "viewer-scale";
+pub const VIEWER_SCALE_SWITCH_ID: &str = "viewer-scale-switch";
+pub const VIEWER_SCALE_MENU_ID: &str = "viewer-scale-menu";
+/// The width of the scale shown in the Scale menu button, in rems; a longer
+/// scale is cut short, and its tooltip names it in full.
+const SCALE_VALUE_REMS: f32 = 5.75;
 /// A signed document's signatures button, at the trailing edge.
 pub const VIEWER_SIGNATURES_ID: &str = "viewer-signatures";
 /// The zoom, fit and page-view controls, centred in the toolbar.
 pub const VIEWER_TOOLBAR_CONTROLS_ID: &str = "viewer-toolbar-controls";
-/// The least width of the Edit PDF switch's slot, in rems. The view
-/// controls stay centred while the space opposite is as wide; in a narrower
-/// toolbar that space gives way first, and the controls move right.
-pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 8.125;
-/// The slot of the compact Edit PDF switch, an icon in place of its label,
-/// in rems.
-pub const EDIT_PDF_COMPACT_SLOT_REMS: f32 = 4.25;
+/// The least width of the slot of the Edit PDF switch and the Scale, in
+/// rems. The view controls stay centred while the space opposite is as wide;
+/// in a narrower toolbar that space gives way first, and the controls move
+/// right.
+pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 22.75;
+/// The slot of the compact Edit PDF switch and Scale, icons in place of
+/// their labels and no scale shown, in rems.
+pub const EDIT_PDF_COMPACT_SLOT_REMS: f32 = 13.;
 /// The slot of the signatures button, a shield alone, in rems.
 pub const TOOLBAR_ICON_SLOT_REMS: f32 = 2.5;
-/// The zoom, fit and page-view controls other than the page navigator.
-const VIEW_CONTROLS_REMS: f32 = 24.75;
+/// The zoom, fit and page-view controls other than the page navigator, with
+/// the frames of the zoom and page groups.
+const VIEW_CONTROLS_REMS: f32 = 26.;
 
 /// What a toolbar of a given width has room for. The whole toolbar turns
 /// compact at once: the Edit PDF switch shows an icon in place of its
@@ -97,11 +107,36 @@ pub enum FitPreset {
     Page,
 }
 
+/// What the Scale control shows for the current page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScaleToolbarState {
+    /// The page's number, from 1.
+    pub page_number: u32,
+    /// Whether the page has a scale (or one is being chosen for it).
+    pub on: bool,
+    /// The page's scale; off, the one switching on brings back.
+    pub label: Option<SharedString>,
+}
+
+/// What a press on the Scale control asks for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScaleRequest {
+    /// The switch: the page's scale on or off.
+    Toggle,
+    /// The menu button: the Page Scale panel.
+    Menu,
+}
+
+/// Handles a press on the Scale control, with the window it was made in.
+pub type ScaleHandler = Rc<dyn Fn(ScaleRequest, &mut Window, &mut App)>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ViewerToolbarStripEvent {
     FitPresetChanged(FitPreset),
     /// The Edit PDF switch was pressed.
     EditPdfToggled,
+    /// The pointer entered or left the Scale control.
+    ScaleHovered(bool),
     /// The signatures button was pressed.
     SignaturesRequested,
 }
@@ -130,6 +165,12 @@ pub struct ViewerToolbarStrip {
     edit_pdf: Option<bool>,
     /// A signed document's signatures, which show the signatures button.
     signatures: Option<SignatureStatus>,
+    /// The current page's Scale, beside Edit PDF; `None` hides it.
+    scale: Option<ScaleToolbarState>,
+    /// Where the Scale control was last laid out, in the window: the Page
+    /// Scale panel drops down from it.
+    scale_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    scale_handler: Option<ScaleHandler>,
     /// The toolbar's width as last laid out.
     width: Rc<Cell<Pixels>>,
 }
@@ -152,6 +193,9 @@ impl ViewerToolbarStrip {
             disabled: false,
             edit_pdf: None,
             signatures: None,
+            scale: None,
+            scale_bounds: Rc::new(Cell::new(None)),
+            scale_handler: None,
             width: Rc::new(Cell::new(Pixels::MAX)),
         }
     }
@@ -230,6 +274,9 @@ impl ViewerToolbarStrip {
             disabled: false,
             edit_pdf: None,
             signatures: None,
+            scale: None,
+            scale_bounds: Rc::new(Cell::new(None)),
+            scale_handler: None,
             width: Rc::new(Cell::new(Pixels::MAX)),
         }
     }
@@ -370,6 +417,143 @@ impl ViewerToolbarStrip {
 
     pub fn edit_pdf(&self) -> Option<bool> {
         self.edit_pdf
+    }
+
+    /// Shows the current page's Scale, or hides it.
+    pub fn set_scale(&mut self, scale: Option<ScaleToolbarState>, cx: &mut Context<Self>) {
+        if self.scale != scale {
+            self.scale = scale;
+            cx.notify();
+        }
+    }
+
+    /// What handles a press on the Scale control.
+    pub fn set_scale_handler(&mut self, handler: ScaleHandler) {
+        self.scale_handler = Some(handler);
+    }
+
+    fn request_scale(&self, request: ScaleRequest, window: &mut Window, cx: &mut App) {
+        if let Some(handler) = self.scale_handler.clone() {
+            handler(request, window, cx);
+        }
+    }
+
+    pub fn scale(&self) -> Option<&ScaleToolbarState> {
+        self.scale.as_ref()
+    }
+
+    /// Where the Scale control was last laid out, in the window.
+    pub fn scale_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.scale.as_ref().and(self.scale_bounds.get())
+    }
+
+    fn render_scale_control(
+        &self,
+        scale: ScaleToolbarState,
+        fit: ViewerToolbarFit,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let page = scale.page_number;
+        let switch_tooltip: SharedString = match (&scale.label, scale.on) {
+            (Some(label), true) => {
+                format!("Page {page} · {label}. Switch off to remove page {page}'s scale.")
+            }
+            (Some(label), false) => {
+                format!("Page {page} has no scale. Switch on to bring back {label}.")
+            }
+            (None, _) => format!("Page {page} has no scale. Switch on to set one."),
+        }
+        .into();
+        let menu_tooltip: SharedString = match &scale.label {
+            Some(label) if scale.on => format!("Page {page}'s scale: {label}. Change it…"),
+            _ => format!("Set page {page}'s scale…"),
+        }
+        .into();
+        let switch = Switch::new("viewer-scale-toggle")
+            .checked(scale.on)
+            .disabled(disabled)
+            .tooltip(switch_tooltip)
+            .on_click(cx.listener(|toolbar, _: &bool, window, cx| {
+                toolbar.request_scale(ScaleRequest::Toggle, window, cx);
+            }));
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let foreground = if disabled { muted } else { theme.foreground };
+        let switch_part = match fit {
+            ViewerToolbarFit::Full => h_flex().child(switch.label("Scale")),
+            // Narrow, a ruler where the label was; it toggles the switch as
+            // the label does.
+            ViewerToolbarFit::Compact => h_flex().gap_2().child(switch).child(
+                div()
+                    .id("viewer-scale-icon")
+                    .when(!disabled, |icon| {
+                        icon.cursor_pointer().on_click(cx.listener(
+                            |toolbar, _: &ClickEvent, window, cx| {
+                                toolbar.request_scale(ScaleRequest::Toggle, window, cx);
+                            },
+                        ))
+                    })
+                    .child(
+                        Icon::default()
+                            .path("icons/rail/ruler-dimension-line.svg")
+                            .text_color(foreground),
+                    ),
+            ),
+        };
+        let value: SharedString = scale.label.clone().unwrap_or_else(|| "Not set".into());
+        let menu = Button::new(VIEWER_SCALE_MENU_ID)
+            .debug_selector(|| VIEWER_SCALE_MENU_ID.into())
+            .accessibility_id(VIEWER_SCALE_MENU_ID)
+            .ghost()
+            .compact()
+            .dropdown_caret(true)
+            .rounded(px(0.))
+            .h_full()
+            .px_2()
+            .disabled(disabled)
+            .tooltip(menu_tooltip)
+            .when(fit == ViewerToolbarFit::Full, |button| {
+                button.child(
+                    div()
+                        .w(rems(SCALE_VALUE_REMS))
+                        .truncate()
+                        // Off, the scale switching on brings back.
+                        .when(!scale.on, |value| value.text_color(muted))
+                        .child(value.clone()),
+                )
+            })
+            .on_click(cx.listener(|toolbar, _: &ClickEvent, window, cx| {
+                toolbar.request_scale(ScaleRequest::Menu, window, cx);
+            }));
+        let menu = match fit {
+            ViewerToolbarFit::Full => menu.into_any_element(),
+            ViewerToolbarFit::Compact => {
+                accessible_icon_button(menu, format!("Page scale: {value}")).into_any_element()
+            }
+        };
+        let anchor = self.scale_bounds.clone();
+        toolbar_group(cx)
+            .id(VIEWER_SCALE_ID)
+            .debug_selector(|| VIEWER_SCALE_ID.into())
+            .role(gpui::Role::Group)
+            .aria_label("Page scale")
+            .overflow_hidden()
+            .on_prepaint(move |bounds, _, _| anchor.set(Some(bounds)))
+            .on_hover(cx.listener(|_, hovered: &bool, _, cx| {
+                cx.emit(ViewerToolbarStripEvent::ScaleHovered(*hovered));
+            }))
+            .child(
+                switch_part
+                    .id(VIEWER_SCALE_SWITCH_ID)
+                    .debug_selector(|| VIEWER_SCALE_SWITCH_ID.into())
+                    .px_2()
+                    .h_full()
+                    .items_center(),
+            )
+            .child(div().w(px(1.)).h_full().bg(theme.border))
+            .child(menu)
+            .into_any_element()
     }
 
     /// Shows the signatures button for a signed document, or hides it.
@@ -596,10 +780,10 @@ impl Render for ViewerToolbarStrip {
             navigator.update(cx, |navigator, cx| navigator.set_fit(fit.navigator(), cx));
         }
 
-        // The Edit PDF switch sits at the leading edge, and the signatures
-        // button at the trailing edge; matching flexible spaces keep the
-        // view controls centred. All scroll with the controls when the strip
-        // is narrow.
+        // The Edit PDF switch and the page's Scale sit at the leading edge,
+        // and the signatures button at the trailing edge; matching flexible
+        // spaces keep the view controls centred. All scroll with the
+        // controls when the strip is narrow.
         let edit_pdf = self.edit_pdf.map(|on| {
             let tooltip = if on {
                 "Stop editing the PDF's text, drawings and images (Shift+T)"
@@ -614,16 +798,22 @@ impl Render for ViewerToolbarStrip {
                     cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
                 }));
             let control = match fit {
-                ViewerToolbarFit::Full => switch.label("Edit PDF").into_any_element(),
+                ViewerToolbarFit::Full => toolbar_group(cx)
+                    .id("viewer-edit-pdf-full")
+                    .px_2()
+                    .role(gpui::Role::Group)
+                    .aria_label("Edit PDF")
+                    .child(switch.label("Edit"))
+                    .into_any_element(),
                 // Narrow, the same switch with an icon where its label was;
                 // the icon toggles it as the label does, and the group
                 // carries the name.
-                ViewerToolbarFit::Compact => h_flex()
+                ViewerToolbarFit::Compact => toolbar_group(cx)
                     .id("viewer-edit-pdf-compact")
+                    .px_2()
                     .role(gpui::Role::Group)
                     .aria_label("Edit PDF")
                     .gap_2()
-                    .items_center()
                     .child(switch)
                     .child(
                         div()
@@ -647,9 +837,13 @@ impl Render for ViewerToolbarStrip {
                     )
                     .into_any_element(),
             };
+            let scale = self
+                .scale
+                .clone()
+                .map(|scale| self.render_scale_control(scale, fit, disabled, cx));
             // Padded inside: the slot and the trailing space grow alike. The
-            // slot's least width is stated, so it always holds the control
-            // and its padding.
+            // slot's least width is stated, so it always holds the controls
+            // and their padding.
             h_flex()
                 .flex_1()
                 .flex_shrink_0()
@@ -660,6 +854,7 @@ impl Render for ViewerToolbarStrip {
                 .child(
                     h_flex()
                         .px_1()
+                        .gap_1p5()
                         .flex_shrink_0()
                         .whitespace_nowrap()
                         .items_center()
@@ -668,7 +863,8 @@ impl Render for ViewerToolbarStrip {
                                 .id(EDIT_PDF_ID)
                                 .debug_selector(|| EDIT_PDF_ID.into())
                                 .child(control),
-                        ),
+                        )
+                        .children(scale),
                 )
         });
         let has_edit_pdf = edit_pdf.is_some();
@@ -775,10 +971,17 @@ impl Render for ViewerToolbarStrip {
                                     .px_1()
                                     .py_1()
                                     .when_some(self.zoom_control.clone(), |toolbar, control| {
-                                        toolbar.child(h_flex().flex_shrink_0().child(control))
+                                        toolbar.child(
+                                            toolbar_group(cx).px_1().flex_shrink_0().child(control),
+                                        )
                                     })
                                     .when_some(self.page_navigator.clone(), |toolbar, navigator| {
-                                        toolbar.child(h_flex().flex_shrink_0().child(navigator))
+                                        toolbar.child(
+                                            toolbar_group(cx)
+                                                .px_1()
+                                                .flex_shrink_0()
+                                                .child(navigator),
+                                        )
                                     })
                                     .child(h_flex().flex_shrink_0().child(fit_controls))
                                     .child(
@@ -818,4 +1021,16 @@ impl Render for ViewerToolbarStrip {
                     ),
             )
     }
+}
+
+/// A group of toolbar controls in one frame, as the fit and page-view
+/// buttons are.
+fn toolbar_group(cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    h_flex()
+        .h_8()
+        .items_center()
+        .border_1()
+        .border_color(theme.border)
+        .rounded(theme.radius)
 }

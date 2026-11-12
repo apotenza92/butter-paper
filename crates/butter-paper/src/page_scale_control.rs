@@ -1,30 +1,29 @@
-//! The Page Scale dialog: which scale a page is drawn at (a standard scale,
+//! The Page Scale panel, dropping down from the toolbar's Scale: which scale a page is drawn at (a standard scale,
 //! one the page states, a custom ratio, or one measured from a line of
 //! known length), what measurements read in, and which pages it applies to.
 //!
 //! The workspace owns each page's scale and its undo history; this owns the
-//! dialog and, while one is picked, the calibration line.
+//! panel and, while one is picked, the calibration line.
 
 use crate::accessible_button::close_icon_button;
 use crate::annotation_model::{
     PageScale, PageScaleApplyTarget, PdfPoint, ScalePrecision, ScalePrecisionMode, ScaleSource,
     ScaleUnit, parse_page_scale_ranges,
 };
-use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use crate::page_scale_catalog::{
     STANDARD_SCALES, ScaleSystem, StandardScale, imperial_unit, nearest_standard, paper_label,
     paper_length_label, parse_length, ratio_label, ratio_of, scale_from_ratio, scale_label,
     standard_for, stated_scales, trimmed, with_unit,
 };
 use gpui::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, WeakEntity,
-    Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, SharedString,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, anchored, deferred, div,
+    point, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, GlobalState, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
-    dialog::{DialogClose, DialogDescription, DialogFooter, DialogHeader, DialogTitle},
     form::Field,
     h_flex,
     input::{Input, InputState},
@@ -34,7 +33,11 @@ use gpui_component::{
 
 use crate::document_workspace::{DocumentId, DocumentWorkspace};
 
-pub const PAGE_SCALE_TRIGGER_ID: &str = "measure-set-page-scale";
+/// The panel's key context: Escape closes it, after any list open in it.
+pub const PAGE_SCALE_CONTEXT: &str = "PageScalePanel";
+
+gpui::actions!(page_scale, [ClosePageScale]);
+
 pub const PAGE_SCALE_DIALOG_ID: &str = "page-scale-dialog";
 pub const PAGE_SCALE_CLOSE_ID: &str = "page-scale-close";
 pub const PAGE_SCALE_SELECT_ID: &str = "page-scale-select";
@@ -244,6 +247,9 @@ fn length_text(value: f64) -> String {
 
 pub struct PageScaleControl {
     owner: WeakEntity<DocumentWorkspace>,
+    /// The panel is showing (it hides while a calibration line is picked).
+    open: bool,
+    focus_handle: FocusHandle,
     request: Option<PageScaleRequest>,
     choice: ScaleChoice,
     /// The page's text has been searched for the scales it states.
@@ -395,6 +401,8 @@ impl PageScaleControl {
 
         Self {
             owner,
+            open: false,
+            focus_handle: cx.focus_handle(),
             request: None,
             choice: ScaleChoice::Unset,
             stated_read: false,
@@ -449,6 +457,42 @@ impl PageScaleControl {
             .iter()
             .map(|index| &STANDARD_SCALES[*index])
             .collect()
+    }
+
+    /// Whether the panel is showing.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The pages Apply would change: the page alone while the pages typed
+    /// cannot be read yet.
+    pub fn outlined_pages(&self, cx: &App) -> std::collections::BTreeSet<u32> {
+        let Some(request) = self.request.as_ref() else {
+            return Default::default();
+        };
+        self.target_pages(cx)
+            .ok()
+            .and_then(|target| {
+                crate::annotation_model::page_scale_target_pages(target, request.page_count).ok()
+            })
+            .unwrap_or_else(|| vec![request.page_index])
+            .into_iter()
+            .collect()
+    }
+
+    /// Closes the panel without applying anything.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if self.open {
+            self.open = false;
+            cx.notify();
+        }
+    }
+
+    /// Applies the panel's scale and closes it, unless something is wrong.
+    pub fn apply_and_close(&mut self, cx: &mut Context<Self>) {
+        if self.apply(cx) {
+            self.close(cx);
+        }
     }
 
     pub fn is_picking(&self) -> bool {
@@ -877,7 +921,7 @@ impl PageScaleControl {
     }
 
     /// Hides the dialog so both ends of a known length can be clicked.
-    pub fn begin_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn begin_pick(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.request.is_none() {
             return;
         }
@@ -889,7 +933,7 @@ impl PageScaleControl {
         self.end = None;
         self.hover = None;
         self.error = None;
-        window.close_dialog(cx);
+        self.open = false;
         cx.notify();
     }
 
@@ -1018,6 +1062,7 @@ impl PageScaleControl {
             return false;
         }
         self.request = None;
+        self.open = false;
         self.picking = false;
         self.start = None;
         self.end = None;
@@ -1069,22 +1114,164 @@ impl PageScaleControl {
     }
 
     fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let control = cx.weak_entity();
-        window.open_dialog(cx, move |dialog, _, _| {
-            let apply_control = control.clone();
-            let content_control = control.clone();
-            dialog
-                .close_button(false)
-                .w(px(560.))
-                .max_w_full()
-                .on_ok(move |_, _, cx| {
-                    apply_control
-                        .update(cx, |control, cx| control.apply(cx))
-                        .unwrap_or(false)
-                })
-                .content(move |content, _, cx| dialog_content(content, &content_control, cx))
-        });
+        self.open = true;
+        self.focus_handle.focus(window, cx);
     }
+}
+
+/// The panel, dropping down from `anchor` (the toolbar's Scale), while it is
+/// open. A press outside it closes it, unless the press is on the anchor,
+/// whose menu button opens and closes it, or in one of its own lists.
+pub fn page_scale_panel(
+    entity: &Entity<PageScaleControl>,
+    anchor: Option<Bounds<Pixels>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    if !entity.read(cx).open {
+        return None;
+    }
+    let viewport = window.viewport_size();
+    let margin = px(8.);
+    let position = anchor.map_or_else(
+        || point(margin, px(96.)),
+        |anchor| point(anchor.left(), anchor.bottom() + px(4.)),
+    );
+    let max_height = (viewport.height - position.y - margin).max(px(160.));
+    let width = px(480.).min(viewport.width - margin * 2.);
+    let content = panel_content(entity, cx)?;
+    let focus = entity.read(cx).focus_handle.clone();
+    let escape = entity.downgrade();
+    let outside = entity.downgrade();
+    let theme = cx.theme();
+    Some(
+        deferred(
+            anchored()
+                .position(position)
+                .snap_to_window_with_margin(margin)
+                .child(
+                    v_flex()
+                        .id(PAGE_SCALE_DIALOG_ID)
+                        .debug_selector(|| PAGE_SCALE_DIALOG_ID.into())
+                        .track_focus(&focus)
+                        .tab_group()
+                        .occlude()
+                        .w(width)
+                        .max_h(max_height)
+                        .bg(theme.popover)
+                        .text_color(theme.popover_foreground)
+                        .border_1()
+                        .border_color(theme.border)
+                        .rounded(theme.radius_lg)
+                        .shadow_lg()
+                        .key_context(PAGE_SCALE_CONTEXT)
+                        .on_action(move |_: &ClosePageScale, _, cx| {
+                            let _ = escape.update(cx, |control, cx| control.close(cx));
+                        })
+                        .on_mouse_down_out(move |event, _, cx| {
+                            if GlobalState::is_in_deferred_context(cx)
+                                || anchor.is_some_and(|anchor| anchor.contains(&event.position))
+                            {
+                                return;
+                            }
+                            let _ = outside.update(cx, |control, cx| control.close(cx));
+                        })
+                        .child(content),
+                ),
+        )
+        .with_priority(1)
+        .into_any_element(),
+    )
+}
+
+fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyElement> {
+    let state = entity.read(cx);
+    let request = state.request.clone()?;
+    let description = {
+        let mut parts = vec![
+            format!("Page {} of {}", request.page_index + 1, request.page_count),
+            paper_label(request.page_size.0, request.page_size.1),
+        ];
+        if let Some(current) = request.current.as_ref() {
+            parts.push(format!("Currently {}", scale_label(current)));
+        }
+        parts.join(" · ")
+    };
+    let muted = cx.theme().muted_foreground;
+    let close = entity.downgrade();
+    let cancel = entity.downgrade();
+    let apply = entity.downgrade();
+    Some(
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(
+                v_flex()
+                    .relative()
+                    .gap_1()
+                    .pl_4()
+                    .pr_10()
+                    .pt_4()
+                    .pb_3()
+                    .child(div().text_base().font_semibold().child("Page scale"))
+                    .child(div().text_sm().text_color(muted).child(description))
+                    .when(request.for_measuring, |header| {
+                        header.child(div().text_sm().text_color(muted).child(
+                            "This page has no scale yet. Set one to measure in real \
+                             units, or Cancel to measure paper size.",
+                        ))
+                    })
+                    .child(div().absolute().top_2().right_2().child(
+                        close_icon_button(PAGE_SCALE_CLOSE_ID, "Close").on_click(
+                            move |_, _, cx| {
+                                let _ = close.update(cx, |control, cx| control.close(cx));
+                            },
+                        ),
+                    )),
+            )
+            .child(
+                v_flex()
+                    .id("page-scale-dialog-body")
+                    .flex_1()
+                    .min_h_0()
+                    .gap_5()
+                    .px_4()
+                    .pb_1()
+                    .overflow_y_scroll()
+                    .child(scale_section(entity, &request, cx))
+                    .when(entity.read(cx).choice != ScaleChoice::None, |body| {
+                        body.child(display_section(entity, cx))
+                    })
+                    .when(request.page_count > 1, |body| {
+                        body.child(pages_section(entity, &request, cx))
+                    }),
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .p_4()
+                    .child(
+                        Button::new(PAGE_SCALE_CANCEL_ID)
+                            .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
+                            .label("Cancel")
+                            .outline()
+                            .on_click(move |_, _, cx| {
+                                let _ = cancel.update(cx, |control, cx| control.close(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new(PAGE_SCALE_APPLY_ID)
+                            .debug_selector(|| PAGE_SCALE_APPLY_ID.into())
+                            .label("Apply")
+                            .primary()
+                            .on_click(move |_, _, cx| {
+                                let _ = apply.update(cx, |control, cx| control.apply_and_close(cx));
+                            }),
+                    ),
+            )
+            .into_any_element(),
+    )
 }
 
 fn standard_index(scale: &StandardScale) -> usize {
@@ -1159,86 +1346,6 @@ fn scale_list(stated: &[usize], measured: bool, imperial_first: bool) -> ScaleLi
         .item(item(KEY_NONE.into(), "No scale".into()));
     groups.push(other);
     SearchableVec::new(groups)
-}
-
-fn dialog_content(
-    content: gpui_component::dialog::DialogContent,
-    control: &WeakEntity<PageScaleControl>,
-    cx: &mut App,
-) -> gpui_component::dialog::DialogContent {
-    let Some(entity) = control.upgrade() else {
-        return content;
-    };
-    let state = entity.read(cx);
-    let Some(request) = state.request.clone() else {
-        return content;
-    };
-    let description = {
-        let mut parts = vec![
-            format!("Page {} of {}", request.page_index + 1, request.page_count),
-            paper_label(request.page_size.0, request.page_size.1),
-        ];
-        if let Some(current) = request.current.as_ref() {
-            parts.push(format!("Currently {}", scale_label(current)));
-        }
-        parts.join(" · ")
-    };
-    content
-        .child(
-            v_flex()
-                .id(PAGE_SCALE_DIALOG_ID)
-                .debug_selector(|| PAGE_SCALE_DIALOG_ID.into())
-                .relative()
-                .gap_4()
-                .child(
-                    DialogHeader::new()
-                        .child(DialogTitle::new().child("Page scale"))
-                        .child(DialogDescription::new().child(description))
-                        .when(request.for_measuring, |header| {
-                            header.child(DialogDescription::new().child(
-                                "This page has no scale yet. Set one to measure in real \
-                                 units, or Cancel to measure paper size.",
-                            ))
-                        })
-                        .child(
-                            // Inside the content: the stock body clips anything
-                            // above it, leaving an outset X half unhoverable.
-                            div().absolute().top_0().right_0().child(
-                                DialogClose::new()
-                                    .child(close_icon_button(PAGE_SCALE_CLOSE_ID, "Close")),
-                            ),
-                        ),
-                )
-                .child(
-                    v_flex()
-                        .id("page-scale-dialog-body")
-                        .gap_5()
-                        .max_h(px(520.))
-                        .overflow_y_scroll()
-                        .child(scale_section(&entity, &request, cx))
-                        .when(entity.read(cx).choice != ScaleChoice::None, |body| {
-                            body.child(display_section(&entity, cx))
-                        })
-                        .when(request.page_count > 1, |body| {
-                            body.child(pages_section(&entity, &request, cx))
-                        }),
-                ),
-        )
-        .child(
-            DialogFooter::new()
-                .child(dialog_close_button(
-                    Button::new(PAGE_SCALE_CANCEL_ID)
-                        .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
-                        .label("Cancel")
-                        .outline(),
-                ))
-                .child(dialog_action_button(
-                    Button::new(PAGE_SCALE_APPLY_ID)
-                        .debug_selector(|| PAGE_SCALE_APPLY_ID.into())
-                        .label("Apply")
-                        .primary(),
-                )),
-        )
 }
 
 fn error_text(

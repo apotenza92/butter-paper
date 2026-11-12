@@ -370,11 +370,6 @@ fn every_dialog_has_a_dismissal_contract_test() {
             &["the_word_dialog_keeps_the_dialog_dismissal_contract"],
         ),
         (
-            "page_scale_control.rs",
-            1,
-            &["the_page_scale_dialog_keeps_the_dialog_dismissal_contract"],
-        ),
-        (
             "template_manager.rs",
             1,
             &["the_template_dialog_keeps_the_dialog_dismissal_contract"],
