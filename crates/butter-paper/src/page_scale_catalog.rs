@@ -122,8 +122,9 @@ impl StandardScale {
     }
 
     /// The unit and precision measurements at this scale read in by
-    /// default: metres to the centimetre on plans, millimetres on details,
-    /// decimal feet on imperial drawings.
+    /// default: metres to the centimetre on metric plans (1:50 and
+    /// coarser, so areas read in square metres), millimetres to the tenth
+    /// on details, decimal feet on imperial drawings.
     pub fn default_display(&self) -> (ScaleUnit, ScalePrecision) {
         default_display(self.system, self.ratio)
     }
@@ -132,7 +133,7 @@ impl StandardScale {
 pub fn default_display(system: ScaleSystem, ratio: f64) -> (ScaleUnit, ScalePrecision) {
     let decimal = |value| ScalePrecision::decimal(value).expect("a positive precision");
     match system {
-        ScaleSystem::Metric if ratio < 50. => (ScaleUnit::Mm, decimal(1.)),
+        ScaleSystem::Metric if ratio < 50. => (ScaleUnit::Mm, decimal(0.1)),
         ScaleSystem::Metric => (ScaleUnit::M, decimal(0.01)),
         ScaleSystem::Architectural => (ScaleUnit::Ft, decimal(0.01)),
         ScaleSystem::Engineering => (ScaleUnit::Ft, decimal(0.1)),
@@ -539,6 +540,30 @@ mod tests {
         assert_eq!(scale_label(&quarter), "1/4\" = 1'-0\"");
         assert_eq!(scale_label(&with_unit(&plan, ScaleUnit::Mm)), "1:100");
         assert!((ratio_of(&with_unit(&plan, ScaleUnit::Mm)) - 100.).abs() < 1e-9);
+    }
+
+    #[test]
+    fn metric_details_show_tenths_of_a_millimetre_and_plans_metres() {
+        for ratio in [1., 5., 10., 20.] {
+            assert_eq!(
+                standard_for(ratio, ScaleUnit::M).unwrap().default_display(),
+                (ScaleUnit::Mm, decimal(0.1))
+            );
+        }
+        // Plans read in metres, so their areas read in square metres.
+        for ratio in [50., 100., 200., 500.] {
+            assert_eq!(
+                standard_for(ratio, ScaleUnit::M).unwrap().default_display(),
+                (ScaleUnit::M, decimal(0.01))
+            );
+        }
+        assert_eq!(
+            standard_for(48., ScaleUnit::Ft)
+                .unwrap()
+                .default_display()
+                .0,
+            ScaleUnit::Ft
+        );
     }
 
     #[test]

@@ -466,8 +466,10 @@ impl ViewerToolbarStrip {
         }
         .into();
         let menu_tooltip: SharedString = match &scale.label {
-            Some(label) if scale.on => format!("Page {page}'s scale: {label}. Change it…"),
-            _ => format!("Set page {page}'s scale…"),
+            Some(label) if scale.on => {
+                format!("Page {page}'s scale: {label}. Change it… (Shift+Alt+S)")
+            }
+            _ => format!("Set page {page}'s scale… (Shift+Alt+S)"),
         }
         .into();
         let switch = Switch::new("viewer-scale-toggle")

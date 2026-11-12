@@ -481,6 +481,11 @@ pub fn init_document_workspace_actions(cx: &mut App) {
             Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
         ),
         KeyBinding::new(
+            "shift-alt-s",
+            SetPageScale,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
+        KeyBinding::new(
             "shift-t",
             ToggleEditPdf,
             Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
@@ -3089,6 +3094,11 @@ pub struct DocumentWorkspace {
     page_scale_hovered: bool,
     /// The Measure switches of Dimension, Polyline and Polygon.
     measure_preferences: MeasurePreferences,
+    /// Documents whose Dimension was chosen measuring (the Length shortcut
+    /// or its Measure switch), so it measures on a page without a scale
+    /// too, asking for one first, rather than drawing typed text. Kept per
+    /// document, as each document keeps its own tool.
+    dimension_measures_unscaled: HashSet<DocumentId>,
     /// A page whose Scale panel opens with the next draw: markups were
     /// measured there without a scale.
     scale_panel_requested: Option<(DocumentId, u32)>,
@@ -4798,6 +4808,7 @@ impl DocumentWorkspace {
             page_scale_switching_on: None,
             page_scale_hovered: false,
             measure_preferences: MeasurePreferences::default(),
+            dimension_measures_unscaled: HashSet::new(),
             scale_panel_requested: None,
             rectangle_property_inspector: None,
             rectangle_property_subscription: None,
@@ -6593,6 +6604,7 @@ impl DocumentWorkspace {
             self.session_tab_hovered = None;
         }
         let session = self.sessions.remove(index);
+        self.dimension_measures_unscaled.remove(&document_id);
         self.page_interactions
             .retain(|(owner, _), _| *owner != document_id);
         self.form_page_transforms
@@ -20755,6 +20767,7 @@ impl DocumentWorkspace {
             self.suppress_session_tab_click_id = None;
         }
         let session = self.sessions.remove(index);
+        self.dimension_measures_unscaled.remove(&document_id);
         self.page_interactions
             .retain(|(owner, _), _| *owner != document_id);
         self.form_page_transforms
@@ -24780,17 +24793,44 @@ fn remove_markups_measure_turned(
     Ok(())
 }
 
-/// A Dimension, Polyline or Polygon button's tooltip: its shortcut, and the
-/// measurement its Measure switch draws.
-fn measure_family_tooltip(family: MeasureFamily) -> String {
-    let plain = family.tool(false);
-    let measured = family.tool(true);
-    format!(
-        "{} · Measure on draws a {} ({})",
-        plain.tooltip_label(),
-        measured.label(),
-        measured.shortcut().unwrap_or_default()
-    )
+/// A scale-aware drawing tool's second tooltip line: what a page scale adds.
+fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<String> {
+    let line = match tool {
+        AnnotationTool::Rectangle | AnnotationTool::Ellipse => {
+            "shows width and height while drawing".to_owned()
+        }
+        AnnotationTool::Line | AnnotationTool::Arrow => {
+            "shows length and angle while drawing".to_owned()
+        }
+        // A Dimension measures by default; the Length shortcut also
+        // measures on a page without a scale.
+        AnnotationTool::Dimension => "shows the line's length as its text (Shift+Alt+L)".to_owned(),
+        AnnotationTool::Polyline | AnnotationTool::Polygon => {
+            let family = MeasureFamily::of(tool)?;
+            let total = match family {
+                MeasureFamily::Polygon => "the area",
+                _ => "the total",
+            };
+            let shortcut = family
+                .tool(true)
+                .shortcut()
+                .map(|shortcut| format!(" ({shortcut})"))
+                .unwrap_or_default();
+            format!("shows lengths while drawing, and {total}{shortcut}")
+        }
+        _ => return None,
+    };
+    Some(format!("Page scale: {line}"))
+}
+
+/// A Draw rail button's tooltip: its name and shortcut, and on a second line
+/// what a page scale adds, worded the same for every tool it enhances.
+fn draw_tool_tooltip(tool: AnnotationTool) -> String {
+    let tool = MeasureFamily::of(tool).map_or(tool, |family| family.tool(false));
+    match page_scale_tooltip_line(tool) {
+        Some(line) => format!("{}\n{line}", tool.tooltip_label()),
+        None => tool.tooltip_label(),
+    }
 }
 
 fn rail_tool_secondary_click(
@@ -25862,7 +25902,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_ARROW_TOOL_ID, "Arrow", "arrow-right")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_ARROW_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Arrow.tooltip_label())
+                    .tooltip(draw_tool_tooltip(AnnotationTool::Arrow))
                     .selected(annotation_tool == AnnotationTool::Arrow && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Arrow && !pan_active)
                     .disabled(save_busy)
@@ -26004,6 +26044,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_RECTANGLE_TOOL_ID, "Rectangle", "square")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_RECTANGLE_TOOL_ID.into())
+                    .tooltip(draw_tool_tooltip(AnnotationTool::Rectangle))
                     .selected(annotation_tool == AnnotationTool::Rectangle && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Rectangle && !pan_active)
                     .on_click(cx.listener(move |workspace, event, _, cx| {
@@ -26020,7 +26061,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_ELLIPSE_TOOL_ID, "Ellipse", "circle")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_ELLIPSE_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Ellipse.tooltip_label())
+                    .tooltip(draw_tool_tooltip(AnnotationTool::Ellipse))
                     .selected(annotation_tool == AnnotationTool::Ellipse && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Ellipse && !pan_active)
                     .disabled(save_busy)
@@ -26035,7 +26076,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_POLYGON_TOOL_ID, "Polygon", "pentagon")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_POLYGON_TOOL_ID.into())
-                    .tooltip(measure_family_tooltip(MeasureFamily::Polygon))
+                    .tooltip(draw_tool_tooltip(AnnotationTool::Polygon))
                     .selected(
                         MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polygon)
                             && !pan_active,
@@ -26060,7 +26101,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_POLYLINE_TOOL_ID, "Polyline", "waypoints")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_POLYLINE_TOOL_ID.into())
-                    .tooltip(measure_family_tooltip(MeasureFamily::Polyline))
+                    .tooltip(draw_tool_tooltip(AnnotationTool::Polyline))
                     .selected(
                         MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polyline)
                             && !pan_active,
@@ -26085,7 +26126,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_LINE_TOOL_ID, "Line", "minus")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_LINE_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Line.tooltip_label())
+                    .tooltip(draw_tool_tooltip(AnnotationTool::Line))
                     .selected(annotation_tool == AnnotationTool::Line && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Line && !pan_active)
                     .disabled(save_busy)
@@ -26100,7 +26141,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_DIMENSION_TOOL_ID, "Dimension", "dimension")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_DIMENSION_TOOL_ID.into())
-                    .tooltip(measure_family_tooltip(MeasureFamily::Dimension))
+                    .tooltip(draw_tool_tooltip(AnnotationTool::Dimension))
                     .selected(
                         MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Dimension)
                             && !pan_active,
@@ -26138,6 +26179,7 @@ fn annotation_tool_group(
                     .into_any_element(),
                 rail_tool_button(DOCUMENT_PEN_TOOL_ID, "Pen", "pen-line")
                     .disabled(save_busy)
+                    .tooltip(AnnotationTool::Pen.tooltip_label())
                     .debug_selector(|| DOCUMENT_PEN_TOOL_ID.into())
                     .selected(annotation_tool == AnnotationTool::Pen && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Pen && !pan_active)
@@ -28405,9 +28447,10 @@ fn next_workspace_markup_sequence<'a>(ids: impl Iterator<Item = &'a MarkupId>) -
 #[cfg(test)]
 mod tests {
     use super::{
-        Bounds, PendingTextEditorAuthority, ReconciledRecoveryAuthority, TextAlignment,
-        TextBoxRichTextRun, apply_recovery_confirmation_result, apply_recovery_preparation_result,
-        block_recovery_after_authority_conflict, document_viewport_cursor_style, point,
+        AnnotationTool, Bounds, PendingTextEditorAuthority, ReconciledRecoveryAuthority,
+        TextAlignment, TextBoxRichTextRun, apply_recovery_confirmation_result,
+        apply_recovery_preparation_result, block_recovery_after_authority_conflict,
+        document_viewport_cursor_style, draw_tool_tooltip, point,
         properties_double_click_sidebar_open, px, rectangle_resize_cursor_style,
         replace_recovery_timeline_reconciled, size, split_text_box_rich_lines,
         text_box_rich_line_x, validate_existing_text_editor_authority,
@@ -28448,6 +28491,46 @@ mod tests {
         assert_eq!(
             text_box_rich_line_x(bounds, px(20.), TextAlignment::Right),
             px(90.)
+        );
+    }
+
+    #[test]
+    fn draw_tool_tooltips_say_what_a_page_scale_adds_on_a_second_line() {
+        assert_eq!(
+            draw_tool_tooltip(AnnotationTool::Rectangle),
+            "Rectangle (R)\nPage scale: shows width and height while drawing"
+        );
+        assert_eq!(
+            draw_tool_tooltip(AnnotationTool::Line),
+            "Line (L)\nPage scale: shows length and angle while drawing"
+        );
+        assert_eq!(
+            draw_tool_tooltip(AnnotationTool::Polyline),
+            "Polyline (Shift+N)\nPage scale: shows lengths while drawing, and the total (Shift+Alt+Q)"
+        );
+        // A measured tool reads as its family's plain tool.
+        assert_eq!(
+            draw_tool_tooltip(AnnotationTool::Area),
+            "Polygon (Shift+P)\nPage scale: shows lengths while drawing, and the area (Shift+Alt+A)"
+        );
+        assert_eq!(
+            draw_tool_tooltip(AnnotationTool::Dimension),
+            "Dimension (Shift+L)\nPage scale: shows the line's length as its text (Shift+Alt+L)"
+        );
+        // Tools a scale does not change keep a single line.
+        assert_eq!(draw_tool_tooltip(AnnotationTool::Pen), "Pen (P)");
+        assert!(
+            [
+                AnnotationTool::Rectangle,
+                AnnotationTool::Ellipse,
+                AnnotationTool::Line,
+                AnnotationTool::Arrow,
+                AnnotationTool::Polyline,
+                AnnotationTool::Polygon,
+                AnnotationTool::Dimension,
+            ]
+            .into_iter()
+            .all(|tool| !draw_tool_tooltip(tool).contains("Measure"))
         );
     }
 

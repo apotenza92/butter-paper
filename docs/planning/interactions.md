@@ -9,8 +9,10 @@ reference; entries marked *native* are deliberate departures from it.
   `E`, Arc `Shift+C`, Line `L`, Arrow `A`, Dimension `Shift+L`, Polyline
   `Shift+N`, Polygon `Shift+P` (with Measure off; with it on: Dimension `Shift+Alt+L`, Polyline `Shift+Alt+Q`, Polygon
   `Shift+Alt+A`), Pen `P`, Highlight `H`, Cloud `C`, Cloud+
-  `K`, Callout `Q`, Image `I`, Snapshot `G`. `Shift+T`, or Edit PDF in the
-  page's right-click menu (ticked while on), turns Edit PDF on and off
+  `K`, Callout `Q`, Image `I`, Snapshot `G`; Page Scale `Shift+Alt+S` opens
+  the Scale panel for the current page (Revu has no default key for it).
+  `Shift+T`, or Edit PDF in the page's right-click menu (ticked while on),
+  turns Edit PDF on and off
   ([Editing page content](#editing-page-content)). Tool shortcuts
   ignore Cmd/Ctrl and editable or menu targets, including the page text
   editor.
@@ -55,8 +57,9 @@ visibly apart on screen.
 
 Shift constrains while drawing (lines and points horizontal or vertical from
 the last point, ellipse to a circle) and applies mid-drag. On a page without
-a scale, the first click of a Polyline or Polygon with Measure on opens Page
-Scale for that page instead, saying why; once applied, the next click
+a scale, the first click of a Polyline or Polygon with Measure on, or of a
+Dimension chosen measuring (`Shift+Alt+L`, or its switch turned on), opens
+Page Scale for that page instead, saying why; once applied, the next click
 measures. Cancel measures at 1 in = 1 in, and that page does not ask again
 while the document is open.
 
@@ -66,11 +69,16 @@ Dimension, Polyline and Polygon have a Measure switch, at the top of the
 tool's properties and in a selected one's. On, they draw Revu's
 measurements: a Dimension a Length, a Polyline a Polylength (its total
 length), a Polygon an Area. The rail button and the properties title keep
-the tool's own name; their tooltips say what Measure draws.
+the tool's own name. Every drawing tool a page scale enhances (Rectangle,
+Ellipse, Line, Arrow, Polyline, Polygon, Dimension) has a second tooltip
+line starting `Page scale:` that says what the scale adds, and for the
+three Measure tools what they can measure, with its shortcut.
 
-- Dimension's starts on: each press draws a Length where its page has a
-  scale and a Dimension with typed text where it has none. Polyline's and
-  Polygon's start off. The switches are the app's, kept while it is open;
+- Dimension's starts on: from the rail, each press draws a Length where its
+  page has a scale and a Dimension with typed text where it has none.
+  `Shift+Alt+L` (as in Revu) or turning its switch on measures everywhere,
+  asking for a scale first where there is none; `Shift+L` draws typed text.
+  Polyline's and Polygon's start off. The switches are the app's, kept while it is open;
   a rail button chooses its tool as its switch was last set, and a
   shortcut sets it.
 - Turning Measure on in a tool's properties for a page without a scale drops
@@ -730,7 +738,11 @@ a page without one measures paper size (1 in = 1 in).
   page has a scale); a length may be typed as drawings write it (`36'-6"`) or
   with its own unit (`3600 mm`). Within 3% of a standard scale, it offers
   that scale.
-- Measure in sets the unit and precision measurements show; changing the
+- Show measurements in sets the unit and precision measurements show:
+  metres to 0.01 m on metric plans (1:50 and coarser, so areas read in
+  square metres), millimetres to 0.1 mm on metric details and on a page that
+  suggests no scale, decimal feet on imperial drawings (Revu starts with
+  none chosen); changing the
   unit keeps the scale, converting typed lengths. Applying a scale moves
   measurements shown in the page's old unit to the new one; one shown in a
   unit of its own keeps it, as in Revu 20 and later.

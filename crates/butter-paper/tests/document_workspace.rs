@@ -7293,9 +7293,9 @@ fn workspace_tool_shortcuts_match_electron_and_preserve_modified_key_collisions(
         ("shift-alt-a", AnnotationTool::Area),
         ("l", AnnotationTool::Line),
         ("shift-l", AnnotationTool::Dimension),
-        // A Dimension measures where its page has a scale; this page has
-        // none.
-        ("shift-alt-l", AnnotationTool::Dimension),
+        // The Length shortcut measures even on this page without a scale,
+        // asking for one on its first click.
+        ("shift-alt-l", AnnotationTool::Length),
         ("shift-n", AnnotationTool::Polyline),
         ("h", AnnotationTool::Highlight),
         ("k", AnnotationTool::CloudPlus),
@@ -21721,8 +21721,8 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(request.document_id, cx)),
-        Some(AnnotationTool::Dimension),
-        "Shift+Alt+L chooses Dimension with Measure on: a Dimension until the page has a scale"
+        Some(AnnotationTool::Length),
+        "Shift+Alt+L chooses a measuring Dimension, a Length even before the page has a scale"
     );
     let shortcut_selected = workspace
         .read_with(cx, |workspace, cx| {
@@ -22677,6 +22677,106 @@ fn page_scale_dialog_no_scale_removes_the_scale_and_keeps_measurements(cx: &mut 
             .page_scales,
         vec![scale]
     );
+}
+
+#[gpui::test]
+fn the_length_shortcut_asks_for_a_page_scale_where_the_dimension_button_draws_text(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("length-asks.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let document_id = request.document_id;
+    cx.run_until_parked();
+    let tool = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.annotation_tool(document_id, cx)
+        })
+    };
+    let open = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .page_scale_control()
+                .is_some_and(|control| control.read(cx).is_open())
+        })
+    };
+
+    // The rail's Dimension button on a page without a scale draws typed text.
+    scroll_annotation_target_into_view(cx, DOCUMENT_DIMENSION_TOOL_ID);
+    let dimension = cx.debug_bounds(DOCUMENT_DIMENSION_TOOL_ID).unwrap();
+    cx.simulate_click(dimension.center(), Modifiers::default());
+    assert_eq!(tool(cx), Some(AnnotationTool::Dimension));
+
+    // Shift+Alt+L asks to measure: a Length, whose first click on the page
+    // opens Page Scale, as Polylength's and Area's do.
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes("shift-alt-l");
+    assert_eq!(tool(cx), Some(AnnotationTool::Length));
+    // Another document's Dimension button leaves this one measuring.
+    let other = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("length-asks-other.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &other,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+        workspace
+            .choose_measure_family(other.document_id, MeasureFamily::Dimension, None, cx)
+            .unwrap();
+        assert!(workspace.activate_document(document_id, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(tool(cx), Some(AnnotationTool::Length));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    assert!(!open(cx));
+    cx.simulate_click(layer.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(
+        open(cx),
+        "the Length shortcut's first click asks for a page scale"
+    );
+    assert_eq!(tool(cx), Some(AnnotationTool::Length));
+
+    // The Dimension button goes back to typed text.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let dimension = cx.debug_bounds(DOCUMENT_DIMENSION_TOOL_ID).unwrap();
+    cx.simulate_click(dimension.center(), Modifiers::default());
+    assert_eq!(tool(cx), Some(AnnotationTool::Dimension));
+
+    // Shift+Alt+S opens Page Scale for the current page.
+    assert!(!open(cx));
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes("shift-alt-s");
+    cx.run_until_parked();
+    assert!(open(cx), "Shift+Alt+S opens Page Scale");
 }
 
 #[gpui::test]
@@ -46796,8 +46896,8 @@ fn tool_creates_with(
     let at = |dx: f32, dy: f32| point(viewport.origin.x + px(dx), viewport.origin.y + px(dy));
     let before = annotation_count(&workspace, document_id, cx);
     if tool == AnnotationTool::Length {
-        // A Dimension with Measure on draws a Length only on a page with a
-        // scale, and never asks for one.
+        // A Dimension from the rail draws a Length only on a page with a
+        // scale; only Shift+Alt+L or its switch asks for one.
         workspace
             .update(cx, |workspace, cx| {
                 workspace.set_length_calibration(
