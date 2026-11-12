@@ -1096,7 +1096,8 @@ impl fmt::Debug for Operator {
 #[derive(Clone, Debug, Default)]
 struct ContentOp {
     operator: Operator,
-    operands: Vec<Operand>,
+    /// Where its operands are in [`ContentOps::operands`].
+    operands: std::ops::Range<u32>,
     /// Byte range of operands and operator in `stream`.
     stream: usize,
     start: usize,
@@ -1105,19 +1106,82 @@ struct ContentOp {
     spans_streams: bool,
 }
 
+/// Each byte's class, looked up rather than compared: a drawing set's page
+/// is megabytes of content, every byte of which is classed.
+const BYTE_CLASSES: [u8; 256] = {
+    let mut classes = [0; 256];
+    let whitespace = b"\0\t\n\x0c\r ";
+    let mut index = 0;
+    while index < whitespace.len() {
+        classes[whitespace[index] as usize] = WHITESPACE;
+        index += 1;
+    }
+    let delimiters = b"()<>[]{}/%";
+    let mut index = 0;
+    while index < delimiters.len() {
+        classes[delimiters[index] as usize] = DELIMITER;
+        index += 1;
+    }
+    classes
+};
+const WHITESPACE: u8 = 1;
+const DELIMITER: u8 = 2;
+
+/// A page's content operators, their operands held together: a drawing
+/// set's page has a hundred thousand operators, which as many small lists
+/// of operands would each take an allocation for.
+#[derive(Clone, Debug, Default)]
+struct ContentOps {
+    ops: Vec<ContentOp>,
+    operands: Vec<Operand>,
+}
+
+impl std::ops::Deref for ContentOps {
+    type Target = [ContentOp];
+
+    fn deref(&self) -> &[ContentOp] {
+        &self.ops
+    }
+}
+
+impl std::ops::DerefMut for ContentOps {
+    fn deref_mut(&mut self) -> &mut [ContentOp] {
+        &mut self.ops
+    }
+}
+
+impl ContentOps {
+    /// Adds `other`'s operators after these.
+    fn append(&mut self, other: ContentOps) {
+        let shift = self.operands.len() as u32;
+        self.operands.extend(other.operands);
+        self.ops.extend(other.ops.into_iter().map(|mut operation| {
+            operation.operands = operation.operands.start + shift..operation.operands.end + shift;
+            operation
+        }));
+    }
+
+    /// The operands of `operation`, one of these operators.
+    fn operands_of(&self, operation: &ContentOp) -> &[Operand] {
+        &self.operands[operation.operands.start as usize..operation.operands.end as usize]
+    }
+
+    /// The operands of operator `op`.
+    fn operands(&self, op: usize) -> &[Operand] {
+        self.operands_of(&self.ops[op])
+    }
+}
+
 fn is_whitespace(byte: u8) -> bool {
-    matches!(byte, b'\0' | b'\t' | b'\n' | b'\x0c' | b'\r' | b' ')
+    BYTE_CLASSES[byte as usize] == WHITESPACE
 }
 
 fn is_delimiter(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
-    )
+    BYTE_CLASSES[byte as usize] == DELIMITER
 }
 
 fn is_regular(byte: u8) -> bool {
-    !is_whitespace(byte) && !is_delimiter(byte)
+    BYTE_CLASSES[byte as usize] == 0
 }
 
 enum Token {
@@ -1443,7 +1507,7 @@ fn parse_number(word: &[u8]) -> Option<f64> {
 fn parse_operations(
     streams: &[Vec<u8>],
     limits: &TextEditLimits,
-) -> Result<Vec<ContentOp>, TextEditError> {
+) -> Result<ContentOps, TextEditError> {
     // A page's content streams are one sequence (as if joined with white
     // space), and a producer may split them between any two tokens, even
     // inside a dictionary or an array (Adobe PDF Library splits content into
@@ -1463,8 +1527,11 @@ fn parse_operations(
             .saturating_sub(1);
         (stream, offset - starts.get(stream).copied().unwrap_or(0))
     };
-    let mut operations = Vec::new();
-    let mut operands = Vec::new();
+    // About one operator to every dozen bytes of a drawing's content, and
+    // as many operands again.
+    let mut operations = Vec::with_capacity(joined.len() / 12);
+    let mut operands = Vec::with_capacity(joined.len() / 6);
+    let mut first_operand = 0;
     let mut operand_start: Option<(usize, usize)> = None;
     let mut lexer = Lexer {
         bytes: &joined,
@@ -1504,9 +1571,11 @@ fn parse_operations(
                 let end = end + 1;
                 let (first_stream, first_start) =
                     operand_start.take().unwrap_or((stream_index, start));
+                let count = u32::try_from(operands.len())
+                    .map_err(|_| TextEditError::LimitExceeded("too many operands".into()))?;
                 operations.push(ContentOp {
                     operator,
-                    operands: std::mem::take(&mut operands),
+                    operands: first_operand..count,
                     stream: stream_index,
                     start: if first_stream == stream_index {
                         first_start
@@ -1520,6 +1589,7 @@ fn parse_operations(
                     },
                     spans_streams: first_stream != stream_index || end_stream != stream_index,
                 });
+                first_operand = count;
                 if operations.len() > limits.max_operations_per_page {
                     return Err(TextEditError::LimitExceeded(format!(
                         "page content has more than {} operations",
@@ -1529,7 +1599,10 @@ fn parse_operations(
             }
         }
     }
-    Ok(operations)
+    Ok(ContentOps {
+        ops: operations,
+        operands,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3434,6 +3507,62 @@ struct ColorState {
     stroke_space: Option<String>,
     stroke: Option<String>,
     graphics_state: Option<String>,
+    /// How many components the fill's and stroke's colour spaces have,
+    /// when they are plain: grey, RGB or CMYK, as device spaces, ICC
+    /// profiles or calibrated spaces. `None` for a pattern, a spot colour
+    /// or any other space.
+    fill_components: Option<u8>,
+    stroke_components: Option<u8>,
+    /// The fill and stroke as RGB, when they are plain colours, profiles
+    /// read as their device spaces.
+    plain_fill: Option<[u64; 3]>,
+    plain_stroke: Option<[u64; 3]>,
+    /// The constant opacity the graphics state paints fills and strokes
+    /// with, when it is not opaque.
+    opacity: Option<[u64; 2]>,
+    /// The graphics state blends or masks what is painted, so no plain
+    /// colour shows.
+    blended: bool,
+    /// The fill's and stroke's colour spaces are patterns: tiles or
+    /// shadings, which no one colour shows.
+    fill_pattern: bool,
+    stroke_pattern: bool,
+    /// The pattern the fill and stroke paint with: its name and, for an
+    /// uncoloured one, its colour's components.
+    fill_paint: Option<(Vec<u8>, Vec<f64>)>,
+    stroke_paint: Option<(Vec<u8>, Vec<f64>)>,
+}
+
+/// The pattern `operands` of `scn` or `SCN` set: its name and the colour
+/// components before it.
+fn pattern_paint(operands: &[Operand]) -> Option<(Vec<u8>, Vec<f64>)> {
+    let (Operand::Name(name), components) = operands.split_last()? else {
+        return None;
+    };
+    let components = components
+        .iter()
+        .map(|operand| match operand {
+            Operand::Number(value) => Some(*value),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((name.clone(), components))
+}
+
+/// How a path's stroke is drawn: its dash pattern and phase, in user
+/// space, and its line cap and join styles.
+#[derive(Clone, Debug, Default)]
+struct StrokeStyle {
+    dash: Option<std::sync::Arc<[f64]>>,
+    phase: f64,
+    cap: u8,
+    join: u8,
+}
+
+/// A graphics state's stroke style to change, shared until it changes:
+/// most paths are drawn in the default style, which is `None`.
+fn style_mut(style: &mut Option<std::sync::Arc<StrokeStyle>>) -> &mut StrokeStyle {
+    std::sync::Arc::make_mut(style.get_or_insert_default())
 }
 
 #[derive(Clone, Debug)]
@@ -3453,6 +3582,7 @@ struct GraphicsState {
     color: ColorState,
     /// The stroke width, in user space.
     line_width: f64,
+    stroke_style: Option<std::sync::Arc<StrokeStyle>>,
     /// The clip's bounds in page space, when content is clipped.
     clip_bounds: Option<[f64; 4]>,
     /// The clipping paths the page's own content set, innermost first.
@@ -3473,6 +3603,7 @@ impl Default for GraphicsState {
             ctm: IDENTITY,
             clip: 0,
             line_width: 1.,
+            stroke_style: None,
             clip_bounds: None,
             clips: None,
             font: None,
@@ -3597,7 +3728,7 @@ struct ExtractedPage {
     /// The page's content streams, then each drawn Form XObject's.
     streams: Vec<Vec<u8>>,
     owners: Vec<StreamOwner>,
-    operations: Vec<ContentOp>,
+    operations: ContentOps,
     fonts: BTreeMap<Vec<u8>, LoadedFont>,
     shows: Vec<ShowOp>,
     lines: Vec<ExtractedLine>,
@@ -3607,7 +3738,7 @@ struct ExtractedPage {
     saves: HashMap<usize, Matrix>,
     /// For each clipping path (by its paint), how many paths and XObjects
     /// it clips.
-    clip_uses: HashMap<usize, usize>,
+    clip_uses: FastMap<usize, usize>,
 }
 
 impl ExtractedPage {
@@ -3658,12 +3789,7 @@ impl ExtractedPage {
 
     /// A painted path's bounds in page space: what names it when it moves.
     fn paint_bounds(&self, paint: &PaintOp) -> Option<[f64; 4]> {
-        points_bounds(
-            path_subpaths(&self.operations, &paint.ops, paint.ctm)
-                .iter()
-                .flat_map(|subpath| subpath.points.iter())
-                .map(|point| (point.x, point.y)),
-        )
+        paint.bounds
     }
 
     /// The pieces of a stroked path of several subpaths outside a small
@@ -3738,6 +3864,16 @@ impl ExtractedPage {
     /// them: each path (or piece of a stroked one) outside a small clip,
     /// each XObject outside one, then each small clip, with what it clips.
     fn units(&self, page_box: Option<[f64; 4]>) -> Vec<(ContentUnit, [f64; 4])> {
+        self.units_keeping(page_box, None)
+    }
+
+    /// [`Self::units`], keeping in `kept` the pieces each stroked path
+    /// splits into, by its index, so they are not found twice.
+    fn units_keeping(
+        &self,
+        page_box: Option<[f64; 4]>,
+        mut kept: Option<&mut FastMap<usize, Vec<PathPart>>>,
+    ) -> Vec<(ContentUnit, [f64; 4])> {
         let mut units = Vec::new();
         let mut groups = BTreeSet::new();
         for (index, paint) in self.paints.iter().enumerate() {
@@ -3749,12 +3885,17 @@ impl ExtractedPage {
                 continue;
             }
             match self.path_parts(paint, page_box) {
-                Some(parts) => units.extend(
-                    parts
-                        .iter()
-                        .enumerate()
-                        .map(|(part, piece)| (ContentUnit::Piece(index, part), piece.rect)),
-                ),
+                Some(parts) => {
+                    units.extend(
+                        parts
+                            .iter()
+                            .enumerate()
+                            .map(|(part, piece)| (ContentUnit::Piece(index, part), piece.rect)),
+                    );
+                    if let Some(kept) = kept.as_deref_mut() {
+                        kept.insert(index, parts);
+                    }
+                }
                 None => units.extend(
                     self.paint_bounds(paint)
                         .map(|rect| (ContentUnit::Paint(index), rect)),
@@ -3793,11 +3934,11 @@ impl ExtractedPage {
     /// (each piece of a stroked one), and each XObject, is one.
     fn objects(&self, page_box: Option<[f64; 4]>) -> Vec<crate::pdf_content_moves::PageObject> {
         use crate::pdf_content_moves::{ContentKind, PageObject};
-        let units = self.units(page_box);
+        let mut kept = FastMap::default();
+        let units = self.units_keeping(page_box, Some(&mut kept));
         let ordinals = unit_ordinals(&units);
         let mut objects = Vec::with_capacity(units.len());
         let mut outline_budget = MAX_OUTLINE_POINTS;
-        let mut parts: Option<(usize, Vec<PathPart>)> = None;
         for ((unit, rect), (_, nth)) in units.iter().zip(&ordinals) {
             let (rect, nth) = (*rect, *nth);
             let (paint, ops) = match *unit {
@@ -3832,21 +3973,12 @@ impl ExtractedPage {
                     });
                     continue;
                 }
-                ContentUnit::Paint(index) => (&self.paints[index], self.paints[index].ops.clone()),
+                ContentUnit::Paint(index) => (&self.paints[index], &self.paints[index].ops[..]),
                 ContentUnit::Piece(index, part) => {
-                    if parts.as_ref().is_none_or(|(of, _)| *of != index) {
-                        parts = self
-                            .path_parts(&self.paints[index], page_box)
-                            .map(|found| (index, found));
-                    }
-                    let Some(ops) = parts
-                        .as_ref()
-                        .and_then(|(_, found)| found.get(part))
-                        .map(|piece| piece.ops.clone())
-                    else {
+                    let Some(piece) = kept.get(&index).and_then(|parts| parts.get(part)) else {
                         continue;
                     };
-                    (&self.paints[index], ops)
+                    (&self.paints[index], &piece.ops[..])
                 }
             };
             // Half the stroke in page units: the matrix's mean scale, and
@@ -3859,7 +3991,7 @@ impl ExtractedPage {
             } else {
                 0.
             };
-            let mut outline = path_outline(&self.operations, &ops, paint.ctm);
+            let mut outline = path_outline(&self.operations, ops, paint.ctm);
             let segment = straight_segment(&outline, rect);
             if segment.is_some() {
                 outline.clear();
@@ -3878,6 +4010,14 @@ impl ExtractedPage {
                 filled: paint.filled,
                 segment,
                 nth,
+                fill: paint.fill,
+                stroke: paint.stroke,
+                even_odd: paint.filled && paint.even_odd,
+                patterned: paint.patterned,
+                line: paint
+                    .stroked
+                    .then(|| line_style(paint.stroke_style.as_deref()?, scale))
+                    .flatten(),
                 ..PageObject::default()
             });
         }
@@ -3909,7 +4049,7 @@ impl ContentUnit {
 /// Each unit's ordinal among the units of its kind at the same bounds (to
 /// a hundredth of a point), in order.
 fn unit_ordinals(units: &[(ContentUnit, [f64; 4])]) -> Vec<(ContentUnit, u32)> {
-    let mut seen: HashMap<(bool, [i64; 4]), u32> = HashMap::new();
+    let mut seen: FastMap<(bool, [i64; 4]), u32> = FastMap::default();
     units
         .iter()
         .map(|(unit, rect)| {
@@ -3966,7 +4106,7 @@ fn cluster_lettering(objects: &mut [crate::pdf_content_moves::PageObject]) {
     }
     // A grid of cells as large as the farthest two strokes join across.
     let cell = |value: f64| (value / LETTERING_CELL).floor() as i64;
-    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let mut grid: FastMap<(i64, i64), Vec<usize>> = FastMap::default();
     for (slot, &index) in candidates.iter().enumerate() {
         let [left, bottom, right, top] = objects[index].rect;
         for x in cell(left)..=cell(right) {
@@ -3980,7 +4120,7 @@ fn cluster_lettering(objects: &mut [crate::pdf_content_moves::PageObject]) {
     let (lines, words) = lettering_components(objects, &candidates, &grid);
     let lines_ok = labels_of(objects, &candidates, &lines);
     let words_ok = labels_of(objects, &candidates, &words);
-    let mut numbers: HashMap<(bool, usize), u32> = HashMap::new();
+    let mut numbers: FastMap<(bool, usize), u32> = FastMap::default();
     for (slot, &index) in candidates.iter().enumerate() {
         let label = if lines_ok.contains(&lines[slot]) {
             (true, lines[slot])
@@ -4007,7 +4147,7 @@ const LETTERING_CELL: f64 = 8.;
 fn lettering_components(
     objects: &[crate::pdf_content_moves::PageObject],
     candidates: &[usize],
-    grid: &HashMap<(i64, i64), Vec<usize>>,
+    grid: &FastMap<(i64, i64), Vec<usize>>,
 ) -> (Vec<usize>, Vec<usize>) {
     let size = |rect: [f64; 4]| (rect[2] - rect[0]).max(rect[3] - rect[1]);
     let cell = |value: f64| (value / LETTERING_CELL).floor() as i64;
@@ -4032,25 +4172,36 @@ fn lettering_components(
             (b[1] - a[3]).max(a[1] - b[3]).max(0.),
         )
     };
-    // Words: letters' strokes within half a letter.
+    // Words: letters' strokes within half a letter. What each stroke is
+    // compared by, side by side: a drawing set's page compares millions of
+    // pairs.
+    let strokes = candidates
+        .iter()
+        .map(|&index| {
+            let object = &objects[index];
+            (object.rect, size(object.rect), object.reach, object.filled)
+        })
+        .collect::<Vec<_>>();
     let mut words = (0..candidates.len()).collect::<Vec<_>>();
-    for (slot, &index) in candidates.iter().enumerate() {
-        let a = &objects[index];
-        let reach = size(a.rect).max(1.);
-        let [left, bottom, right, top] = a.rect;
-        for x in cell(left - reach)..=cell(right + reach) {
-            for y in cell(bottom - reach)..=cell(top + reach) {
+    for (slot, &(rect, letter, reach, filled)) in strokes.iter().enumerate() {
+        let span = letter.max(1.);
+        let [left, bottom, right, top] = rect;
+        for x in cell(left - span)..=cell(right + span) {
+            for y in cell(bottom - span)..=cell(top + span) {
                 let Some(others) = grid.get(&(x, y)) else {
                     continue;
                 };
-                for &other in others.iter().filter(|&&other| other > slot) {
-                    let b = &objects[candidates[other]];
-                    if !same_stroke(a, b) {
+                // Each cell lists its strokes in order: those after this one.
+                let after = others.partition_point(|&other| other <= slot);
+                for &other in &others[after..] {
+                    let (other_rect, other_letter, other_reach, other_filled) = strokes[other];
+                    // Of the same stroke ([`same_stroke`]).
+                    if (reach - other_reach).abs() > 0.01 || filled != other_filled {
                         continue;
                     }
-                    let (gap_x, gap_y) = gaps(a.rect, b.rect);
-                    let letters = size(a.rect).max(size(b.rect)).max(1.);
-                    if gap_x.hypot(gap_y) <= letters / 2. {
+                    let (gap_x, gap_y) = gaps(rect, other_rect);
+                    let half = letter.max(other_letter).max(1.) / 2.;
+                    if gap_x * gap_x + gap_y * gap_y <= half * half {
                         join(&mut words, slot, other);
                     }
                 }
@@ -4061,7 +4212,7 @@ fn lettering_components(
         .map(|slot| root(&mut words, slot))
         .collect::<Vec<_>>();
     // Each word's bounds, letter size and stroke.
-    let mut numbered: HashMap<usize, usize> = HashMap::new();
+    let mut numbered: FastMap<usize, usize> = FastMap::default();
     let mut boxes: Vec<([f64; 4], f64, usize)> = Vec::new();
     for (slot, &index) in candidates.iter().enumerate() {
         let rect = objects[index].rect;
@@ -4088,7 +4239,7 @@ fn lettering_components(
             width <= letter * WORD_LETTER_SLACK,
         )
     };
-    let mut word_grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    let mut word_grid: FastMap<(i64, i64), Vec<usize>> = FastMap::default();
     for (word, (bounds, _, _)) in boxes.iter().enumerate() {
         for x in cell(bounds[0])..=cell(bounds[2]) {
             for y in cell(bounds[1])..=cell(bounds[3]) {
@@ -4104,17 +4255,19 @@ fn lettering_components(
     let mut lines = (0..boxes.len()).collect::<Vec<_>>();
     for (word, &(a, letter_a, piece_a)) in boxes.iter().enumerate() {
         let reach = letter_a.max(1.);
-        let mut seen = HashSet::new();
-        for x in cell(a[0] - reach)..=cell(a[2] + reach) {
-            for y in cell(a[1] - reach)..=cell(a[3] + reach) {
+        let (from_x, from_y) = (cell(a[0] - reach), cell(a[1] - reach));
+        for x in from_x..=cell(a[2] + reach) {
+            for y in from_y..=cell(a[3] + reach) {
                 let Some(others) = word_grid.get(&(x, y)) else {
                     continue;
                 };
-                for &other in others.iter().filter(|&&other| other > word) {
-                    if !seen.insert(other) {
+                let after = others.partition_point(|&other| other <= word);
+                for &other in &others[after..] {
+                    let (b, letter_b, piece_b) = boxes[other];
+                    // Met once: in the first cell it shares with the scan.
+                    if (cell(b[0]).max(from_x), cell(b[1]).max(from_y)) != (x, y) {
                         continue;
                     }
-                    let (b, letter_b, piece_b) = boxes[other];
                     if !same_stroke(&objects[piece_a], &objects[piece_b]) {
                         continue;
                     }
@@ -4159,19 +4312,22 @@ fn labels_of(
     objects: &[crate::pdf_content_moves::PageObject],
     candidates: &[usize],
     roots: &[usize],
-) -> HashSet<usize> {
+) -> FastSet<usize> {
     let size = |rect: [f64; 4]| (rect[2] - rect[0]).max(rect[3] - rect[1]);
     // Each label's pieces, bounds, sizes and shapes (to a tenth of a
     // point).
     #[allow(clippy::type_complexity)]
-    let mut labels: HashMap<usize, (usize, [f64; 4], Vec<f64>, HashSet<(i64, i64)>, Vec<f64>)> =
-        HashMap::new();
+    let mut labels: FastMap<usize, (usize, [f64; 4], Vec<f64>, FastSet<(i64, i64)>, Vec<f64>)> =
+        FastMap::default();
     for (slot, &index) in candidates.iter().enumerate() {
         let rect = objects[index].rect;
-        let entry =
-            labels
-                .entry(roots[slot])
-                .or_insert((0, rect, Vec::new(), HashSet::new(), Vec::new()));
+        let entry = labels.entry(roots[slot]).or_insert((
+            0,
+            rect,
+            Vec::new(),
+            FastSet::default(),
+            Vec::new(),
+        ));
         entry.0 += 1;
         entry.1 = [
             entry.1[0].min(rect[0]),
@@ -4267,7 +4423,7 @@ fn round_hundredth(value: f64) -> f64 {
 /// The subpaths `ops` construct under `ctm`, in page space, with curves
 /// flattened and closed subpaths returning to their start, rounded to a
 /// hundredth of a point: what a drawing is picked by.
-fn path_outline(operations: &[ContentOp], ops: &[usize], ctm: Matrix) -> Vec<Vec<[f64; 2]>> {
+fn path_outline(operations: &ContentOps, ops: &[usize], ctm: Matrix) -> Vec<Vec<[f64; 2]>> {
     let mut subpaths: Vec<Vec<[f64; 2]>> = Vec::new();
     let point = |x: f64, y: f64| {
         let (x, y) = apply(ctm, x, y);
@@ -4285,7 +4441,7 @@ fn path_outline(operations: &[ContentOp], ops: &[usize], ctm: Matrix) -> Vec<Vec
     let mut start = (0., 0.);
     for &op in ops {
         let operation = &operations[op];
-        let operands = &operation.operands;
+        let operands = operations.operands(op);
         let curve = |subpaths: &mut Vec<Vec<[f64; 2]>>,
                      from: (f64, f64),
                      c1: (f64, f64),
@@ -4520,7 +4676,7 @@ struct Walk<'a> {
     font_cache: Option<&'a FontCache>,
     fonts: BTreeMap<Vec<u8>, LoadedFont>,
     shows: Vec<ShowOp>,
-    operations: Vec<ContentOp>,
+    operations: ContentOps,
     streams: Vec<Vec<u8>>,
     owners: Vec<StreamOwner>,
     actual_texts: Vec<(String, std::ops::Range<usize>)>,
@@ -4548,6 +4704,20 @@ struct PaintOp {
     /// It also sets the clip (`W`, `W*`).
     clips: bool,
     line_width: f64,
+    /// The bounds of its points in page space.
+    bounds: Option<[f64; 4]>,
+    /// The plain colours it is filled and stroked in, as RGBA (opacity in
+    /// alpha), when it is filled and stroked; `None` for a pattern, a
+    /// colour space of its own or a blend.
+    fill: Option<[u8; 4]>,
+    stroke: Option<[u8; 4]>,
+    /// It is filled or stroked with a pattern.
+    patterned: bool,
+    /// The patterns it is filled and stroked with ([`ColorState::fill_paint`]).
+    patterns: [Option<(Vec<u8>, Vec<f64>)>; 2],
+    /// It is filled by the even-odd rule.
+    even_odd: bool,
+    stroke_style: Option<std::sync::Arc<StrokeStyle>>,
     /// The clips it is painted inside.
     clip_chain: Option<std::sync::Arc<ClipLink>>,
 }
@@ -4586,7 +4756,7 @@ struct Subpath {
 }
 
 /// The subpaths `ops` construct under `ctm`, in page space.
-fn path_subpaths(operations: &[ContentOp], ops: &[usize], ctm: Matrix) -> Vec<Subpath> {
+fn path_subpaths(operations: &ContentOps, ops: &[usize], ctm: Matrix) -> Vec<Subpath> {
     let mut subpaths: Vec<Subpath> = Vec::new();
     let point = |op: usize, slot: usize, x: f64, y: f64| {
         let (x, y) = apply(ctm, x, y);
@@ -4594,7 +4764,7 @@ fn path_subpaths(operations: &[ContentOp], ops: &[usize], ctm: Matrix) -> Vec<Su
     };
     for &op in ops {
         let operation = &operations[op];
-        let operands = &operation.operands;
+        let operands = operations.operands(op);
         match operation.operator.as_slice() {
             b"re" => {
                 if let Some([x, y, w, h]) = numbers::<4>(operands) {
@@ -4715,6 +4885,131 @@ impl Walk<'_> {
                 _ => false,
             }
         })
+    }
+
+    /// How graphics state `name` changes what paths show: their opacity
+    /// and line style. `None` when it blends, masks or does anything else
+    /// that keeps a path from showing its plain colour.
+    fn graphics_state_effect(&self, scope: &Scope, name: &[u8]) -> Option<GraphicsEffect> {
+        let state = get_dict(self.document, &scope.resources, b"ExtGState")?
+            .get(name)
+            .ok()
+            .and_then(|object| resolve_dict(self.document, object))?;
+        let mut effect = GraphicsEffect::default();
+        for (key, value) in state.iter() {
+            let value = resolve(self.document, value).ok();
+            let number = value.and_then(object_number);
+            match key.as_slice() {
+                b"ca" => effect.fill_opacity = Some(number?.clamp(0., 1.)),
+                b"CA" => effect.stroke_opacity = Some(number?.clamp(0., 1.)),
+                b"LW" => effect.line_width = Some(number?),
+                b"LC" => effect.cap = Some((number? as u8).min(2)),
+                b"LJ" => effect.join = Some((number? as u8).min(2)),
+                b"D" => {
+                    let Some(Object::Array(dash)) = value else {
+                        return None;
+                    };
+                    let [Object::Array(pattern), phase] = dash.as_slice() else {
+                        return None;
+                    };
+                    let phase = object_number(resolve(self.document, phase).ok()?)?;
+                    let pattern =
+                        dash_pattern(pattern.iter().map(|value| {
+                            resolve(self.document, value).ok().and_then(object_number)
+                        }));
+                    effect.dash = Some((pattern, phase));
+                }
+                b"BM" => {
+                    let normal = match value {
+                        Some(Object::Name(name)) => {
+                            matches!(name.as_slice(), b"Normal" | b"Compatible")
+                        }
+                        Some(Object::Array(names)) => names.first().is_some_and(|name| {
+                            matches!(name, Object::Name(name) if name.as_slice() == b"Normal")
+                        }),
+                        _ => false,
+                    };
+                    if !normal {
+                        return None;
+                    }
+                }
+                b"SMask" => {
+                    if !matches!(value, Some(Object::Name(name)) if name.as_slice() == b"None") {
+                        return None;
+                    }
+                }
+                b"AIS" => {
+                    if !matches!(value, Some(Object::Boolean(false))) {
+                        return None;
+                    }
+                }
+                // Printing and font settings, which a screen does not show.
+                b"Type" | b"OP" | b"op" | b"OPM" | b"RI" | b"FL" | b"SM" | b"SA" | b"TK"
+                | b"ML" | b"Font" | b"BG" | b"BG2" | b"UCR" | b"UCR2" | b"TR" | b"TR2" | b"HT"
+                | b"UseBlackPtComp" | b"HTO" => {}
+                _ => return None,
+            }
+        }
+        Some(effect)
+    }
+
+    /// Colour space `name` in `scope` is a pattern space.
+    fn pattern_space(&self, scope: &Scope, name: &[u8]) -> bool {
+        if name == b"Pattern" {
+            return true;
+        }
+        let Some(space) = get_dict(self.document, &scope.resources, b"ColorSpace")
+            .and_then(|spaces| spaces.get(name).ok())
+            .and_then(|space| resolve(self.document, space).ok())
+        else {
+            return false;
+        };
+        let family = match space {
+            Object::Array(space) => space
+                .first()
+                .and_then(|family| resolve(self.document, family).ok()),
+            space => Some(space),
+        };
+        matches!(family, Some(Object::Name(family)) if family.as_slice() == b"Pattern")
+    }
+
+    /// How many components colour space `name` has in `scope`, when it is
+    /// a plain one: a device space, an ICC profile or a calibrated space of
+    /// grey, RGB or CMYK.
+    fn plain_components(&self, scope: &Scope, name: &[u8]) -> Option<u8> {
+        if let Some(components) = device_components(name) {
+            return Some(components);
+        }
+        let space = get_dict(self.document, &scope.resources, b"ColorSpace")?
+            .get(name)
+            .ok()?;
+        match resolve(self.document, space).ok()? {
+            Object::Name(name) => device_components(name),
+            Object::Array(space) => {
+                let family = resolve(self.document, space.first()?)
+                    .ok()?
+                    .as_name()
+                    .ok()?;
+                match family {
+                    b"CalGray" => Some(1),
+                    b"CalRGB" => Some(3),
+                    b"ICCBased" => {
+                        let profile = resolve(self.document, space.get(1)?).ok()?;
+                        let components = match profile {
+                            Object::Stream(stream) => {
+                                get_number(self.document, &stream.dict, b"N")?
+                            }
+                            _ => return None,
+                        };
+                        [1, 3, 4]
+                            .into_iter()
+                            .find(|&count| f64::from(count) == components)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// The key of font `name` in `scope`, loading it on first use.
@@ -4859,7 +5154,7 @@ impl Walk<'_> {
             )));
         }
         let stream_index = self.streams.len();
-        for operation in &mut operations {
+        for operation in operations.iter_mut() {
             operation.stream = stream_index;
         }
         let resources = get_dict(self.document, &stream.dict, b"Resources")
@@ -4887,7 +5182,7 @@ impl Walk<'_> {
             resources: resources.clone(),
         });
         let first = self.operations.len();
-        self.operations.extend(operations);
+        self.operations.append(operations);
         let last = self.operations.len();
         let inner = Scope {
             prefix: [scope.prefix.as_slice(), name, b"/"].concat(),
@@ -4920,10 +5215,14 @@ impl Walk<'_> {
         // Marked content: each level's ActualText, the first show inside it
         // and its marked-content identifier.
         let mut marked: Vec<(Option<String>, usize, Option<i64>)> = Vec::new();
+        // Each operator's operands, copied out while it is read: the forms
+        // it draws add operators and operands.
+        let mut copied: Vec<Operand> = Vec::new();
         for op_index in operation_range {
-            // Taken while it is read, as forms add operations; put back below.
-            let operation = std::mem::take(&mut self.operations[op_index]);
-            let operands = &operation.operands;
+            let operation = self.operations[op_index].clone();
+            copied.clear();
+            copied.extend_from_slice(self.operations.operands(op_index));
+            let operands = &copied[..];
             'step: {
                 if operation.operator == b"Do" {
                     if let Some(Operand::Name(name)) = operands.last() {
@@ -4981,20 +5280,51 @@ impl Walk<'_> {
                             state.line_width = width;
                         }
                     }
+                    b"d" => {
+                        if let (Some(Operand::Array(dash)), Some([phase])) =
+                            (operands.first(), numbers::<1>(operands))
+                        {
+                            style_mut(&mut state.stroke_style).dash =
+                                dash_pattern(dash.iter().map(|operand| match operand {
+                                    Operand::Number(value) => Some(*value),
+                                    _ => None,
+                                }));
+                            style_mut(&mut state.stroke_style).phase = phase;
+                        }
+                    }
+                    b"J" => {
+                        if let Some([cap]) = numbers::<1>(operands) {
+                            style_mut(&mut state.stroke_style).cap = (cap as u8).min(2);
+                        }
+                    }
+                    b"j" => {
+                        if let Some([join]) = numbers::<1>(operands) {
+                            style_mut(&mut state.stroke_style).join = (join as u8).min(2);
+                        }
+                    }
                     b"W" => pending_clip = Some(false),
                     b"W*" => pending_clip = Some(true),
                     b"n" | b"f" | b"F" | b"f*" | b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*" => {
                         let clips = pending_clip.is_some();
                         let clip_chain = state.clips.clone();
+                        let kept = matches!(self.owners[operation.stream], StreamOwner::Page)
+                            && !path_ops.is_empty()
+                            && self.paints.len() < 200_000;
+                        // Its bounds, read once: a page's content is
+                        // named and grouped by them many times over.
+                        let bounds = (clips || kept)
+                            .then(|| {
+                                points_bounds(
+                                    path_subpaths(&self.operations, &path_ops, state.ctm)
+                                        .iter()
+                                        .flat_map(|subpath| subpath.points.iter())
+                                        .map(|point| (point.x, point.y)),
+                                )
+                            })
+                            .flatten();
                         if let Some(even_odd) = pending_clip.take() {
                             let ctm = state.ctm.map(f64::to_bits);
                             state.clip = clip_key(&(state.clip, even_odd, ctm, path));
-                            let bounds = points_bounds(
-                                path_subpaths(&self.operations, &path_ops, state.ctm)
-                                    .iter()
-                                    .flat_map(|subpath| subpath.points.iter())
-                                    .map(|point| (point.x, point.y)),
-                            );
                             if let Some(bounds) = bounds {
                                 state.clip_bounds = Some(match state.clip_bounds {
                                     Some(clip) => [
@@ -5007,25 +5337,47 @@ impl Walk<'_> {
                                 });
                             }
                         }
-                        if matches!(self.owners[operation.stream], StreamOwner::Page)
-                            && !path_ops.is_empty()
-                            && self.paints.len() < 200_000
-                        {
+                        if kept {
                             let operator = operation.operator.as_slice();
+                            let stroked =
+                                matches!(operator, b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*");
+                            let filled = matches!(
+                                operator,
+                                b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*"
+                            );
+                            // A blend mode or soft mask shows what is under
+                            // it: no plain colour.
+                            let color = &state.color;
+                            let [fill_opacity, stroke_opacity] = color
+                                .opacity
+                                .map_or([1.; 2], |opacity| opacity.map(f64::from_bits));
+                            let plain = filled.then(|| plain_fill(color)).flatten();
+                            let fill = plain
+                                .filter(|_| !color.blended)
+                                .map(|rgb| rgba_bytes(rgb, fill_opacity));
+                            let plain = stroked.then(|| plain_stroke(color)).flatten();
+                            let stroke = plain
+                                .filter(|_| !color.blended)
+                                .map(|rgb| rgba_bytes(rgb, stroke_opacity));
                             self.paints.push(PaintOp {
                                 ops: std::mem::take(&mut path_ops),
                                 paint: op_index,
                                 ctm: state.ctm,
-                                stroked: matches!(
-                                    operator,
-                                    b"S" | b"s" | b"B" | b"B*" | b"b" | b"b*"
-                                ),
-                                filled: matches!(
-                                    operator,
-                                    b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*"
-                                ),
+                                stroked,
+                                filled,
                                 clips,
                                 line_width: state.line_width,
+                                bounds,
+                                fill,
+                                stroke,
+                                even_odd: matches!(operator, b"f*" | b"B*" | b"b*"),
+                                patterned: (filled && color.fill_pattern)
+                                    || (stroked && color.stroke_pattern),
+                                patterns: [
+                                    color.fill_paint.clone().filter(|_| filled),
+                                    color.stroke_paint.clone().filter(|_| stroked),
+                                ],
+                                stroke_style: stroked.then(|| state.stroke_style.clone()).flatten(),
                                 clip_chain: clip_chain.clone(),
                             });
                             if clips {
@@ -5110,10 +5462,38 @@ impl Walk<'_> {
                             state.color.fill_space.as_deref(),
                         )
                         .map(|rgb| rgb.map(f64::to_bits));
+                        if operation.operator != b"sc" && operation.operator != b"scn" {
+                            state.color.fill_components = None;
+                            state.color.fill_pattern = false;
+                        }
+                        state.color.fill_paint = state
+                            .color
+                            .fill_pattern
+                            .then(|| pattern_paint(operands))
+                            .flatten();
+                        state.color.plain_fill = plain_rgb(
+                            operands,
+                            state.color.fill_space.is_none(),
+                            state.color.fill_components,
+                        );
                     }
                     b"cs" => {
                         state.color.fill_space = Some(operation_text(operands, b"cs"));
                         state.color.fill = None;
+                        state.color.fill_paint = None;
+                        (state.color.fill_components, state.color.fill_pattern) =
+                            match operands.last() {
+                                Some(Operand::Name(name)) => (
+                                    self.plain_components(scope, name),
+                                    self.pattern_space(scope, name),
+                                ),
+                                _ => (None, false),
+                            };
+                        // A plain space starts black.
+                        state.color.plain_fill = state
+                            .color
+                            .fill_components
+                            .map(|_| [0f64; 3].map(f64::to_bits));
                         state.color.device_fill = match operands.last() {
                             Some(Operand::Name(name))
                                 if matches!(
@@ -5130,11 +5510,37 @@ impl Walk<'_> {
                         state.color.stroke = Some(format!("{operands:?}{:?}", operation.operator));
                         if operation.operator != b"SC" && operation.operator != b"SCN" {
                             state.color.stroke_space = None;
+                            state.color.stroke_components = None;
+                            state.color.stroke_pattern = false;
                         }
+                        state.color.stroke_paint = state
+                            .color
+                            .stroke_pattern
+                            .then(|| pattern_paint(operands))
+                            .flatten();
+                        state.color.plain_stroke = plain_rgb(
+                            operands,
+                            state.color.stroke_space.is_none(),
+                            state.color.stroke_components,
+                        );
                     }
                     b"CS" => {
                         state.color.stroke_space = Some(format!("{operands:?}"));
                         state.color.stroke = None;
+                        state.color.stroke_paint = None;
+                        (state.color.stroke_components, state.color.stroke_pattern) =
+                            match operands.last() {
+                                Some(Operand::Name(name)) => (
+                                    self.plain_components(scope, name),
+                                    self.pattern_space(scope, name),
+                                ),
+                                _ => (None, false),
+                            };
+                        // A plain space starts black.
+                        state.color.plain_stroke = state
+                            .color
+                            .stroke_components
+                            .map(|_| [0f64; 3].map(f64::to_bits));
                     }
                     b"gs" => {
                         // A state that only restates the defaults (normal blend,
@@ -5145,6 +5551,40 @@ impl Walk<'_> {
                             if self.neutral_graphics_state(scope, name));
                         if !neutral {
                             state.color.graphics_state = Some(format!("{operands:?}"));
+                            let effect = match operands.first() {
+                                Some(Operand::Name(name)) => {
+                                    self.graphics_state_effect(scope, name)
+                                }
+                                _ => None,
+                            };
+                            match effect {
+                                Some(effect) => {
+                                    let [fill, stroke] = state
+                                        .color
+                                        .opacity
+                                        .map_or([1.; 2], |opacity| opacity.map(f64::from_bits));
+                                    let opacity = [
+                                        effect.fill_opacity.unwrap_or(fill),
+                                        effect.stroke_opacity.unwrap_or(stroke),
+                                    ];
+                                    state.color.opacity =
+                                        (opacity != [1.; 2]).then(|| opacity.map(f64::to_bits));
+                                    if let Some(width) = effect.line_width {
+                                        state.line_width = width;
+                                    }
+                                    if let Some(cap) = effect.cap {
+                                        style_mut(&mut state.stroke_style).cap = cap;
+                                    }
+                                    if let Some(join) = effect.join {
+                                        style_mut(&mut state.stroke_style).join = join;
+                                    }
+                                    if let Some((dash, phase)) = effect.dash {
+                                        style_mut(&mut state.stroke_style).dash = dash;
+                                        style_mut(&mut state.stroke_style).phase = phase;
+                                    }
+                                }
+                                None => state.color.blended = true,
+                            }
                         }
                     }
                     b"BMC" => marked.push((None, self.shows.len(), None)),
@@ -5236,7 +5676,6 @@ impl Walk<'_> {
                     _ => {}
                 }
             }
-            self.operations[op_index] = operation;
         }
         Ok(())
     }
@@ -5447,7 +5886,7 @@ fn extract_page_at_with(
         line.public.in_form = matches!(owners[stream], StreamOwner::Form { .. });
         line.public.clip_bounds = shows[line.ops[0]].state.clip_bounds;
     }
-    let mut clip_uses = HashMap::new();
+    let mut clip_uses = FastMap::default();
     for chain in paints
         .iter()
         .filter(|paint| !paint.clips)
@@ -5619,6 +6058,96 @@ fn shown_glyphs(
     (glyphs, has_string, x)
 }
 
+/// An RGB colour and its opacity as bytes.
+fn rgba_bytes([r, g, b]: [f64; 3], opacity: f64) -> [u8; 4] {
+    [r, g, b, opacity].map(|value| (value.clamp(0., 1.) * 255.).round() as u8)
+}
+
+/// A stroke's style in page space, `scale` the size of a user space unit
+/// there; `None` for a solid line with butt ends and mitred corners.
+fn line_style(style: &StrokeStyle, scale: f64) -> Option<crate::pdf_content_moves::LineStyle> {
+    let dash = style
+        .dash
+        .as_deref()
+        .map(|dash| {
+            dash.iter()
+                .map(|length| round_hundredth(length * scale))
+                .collect()
+        })
+        .unwrap_or_default();
+    let line = crate::pdf_content_moves::LineStyle {
+        phase: if style.dash.is_some() {
+            round_hundredth(style.phase * scale)
+        } else {
+            0.
+        },
+        dash,
+        cap: style.cap,
+        join: style.join,
+    };
+    (line != crate::pdf_content_moves::LineStyle::default()).then_some(line)
+}
+
+/// What a graphics state sets that changes how a path shows.
+#[derive(Default)]
+struct GraphicsEffect {
+    fill_opacity: Option<f64>,
+    stroke_opacity: Option<f64>,
+    line_width: Option<f64>,
+    cap: Option<u8>,
+    join: Option<u8>,
+    dash: Option<(Option<std::sync::Arc<[f64]>>, f64)>,
+}
+
+/// The components of device colour space `name`.
+fn device_components(name: &[u8]) -> Option<u8> {
+    match name {
+        b"DeviceGray" | b"G" => Some(1),
+        b"DeviceRGB" | b"RGB" => Some(3),
+        b"DeviceCMYK" | b"CMYK" => Some(4),
+        _ => None,
+    }
+}
+
+/// A dash pattern's lengths; `None` for a solid line (an empty pattern,
+/// or one that is all gaps or not numbers).
+fn dash_pattern(lengths: impl Iterator<Item = Option<f64>>) -> Option<std::sync::Arc<[f64]>> {
+    let lengths = lengths
+        .map(|length| length.filter(|length| length.is_finite() && *length >= 0.))
+        .collect::<Option<Vec<_>>>()?;
+    (lengths.iter().sum::<f64>() > 0.).then(|| lengths.into())
+}
+
+/// The colour `operands` set as RGB, when it is a plain colour: in the
+/// default grey space (`default_space`), or in a plain space of
+/// `components`.
+fn plain_rgb(
+    operands: &[Operand],
+    default_space: bool,
+    components: Option<u8>,
+) -> Option<[u64; 3]> {
+    if !default_space && components.is_none_or(|components| operands.len() != components as usize) {
+        return None;
+    }
+    device_rgb(operands, b"k", None).map(|rgb| rgb.map(f64::to_bits))
+}
+
+/// A colour state's fill as RGB, when it is a plain colour.
+fn plain_fill(color: &ColorState) -> Option<[f64; 3]> {
+    match (&color.fill_space, &color.fill) {
+        (None, None) => Some([0.; 3]),
+        _ => color.plain_fill.map(|rgb| rgb.map(f64::from_bits)),
+    }
+}
+
+/// A colour state's stroke as RGB, when it is a plain colour.
+fn plain_stroke(color: &ColorState) -> Option<[f64; 3]> {
+    match (&color.stroke_space, &color.stroke) {
+        (None, None) => Some([0.; 3]),
+        _ => color.plain_stroke.map(|rgb| rgb.map(f64::from_bits)),
+    }
+}
+
 /// A colour state's fill as DeviceRGB, when it is a device colour.
 fn device_fill(color: &ColorState) -> Option<[f64; 3]> {
     match (&color.fill_space, &color.fill) {
@@ -5655,7 +6184,7 @@ fn run_fill(first: &ShowOp, show: &ShowOp) -> Option<Option<[f64; 3]>> {
 }
 
 fn read_only_reason(
-    operations: &[ContentOp],
+    operations: &ContentOps,
     fonts: &BTreeMap<Vec<u8>, LoadedFont>,
     show: &ShowOp,
 ) -> Option<String> {
@@ -5710,7 +6239,14 @@ fn clip_key(parts: &impl std::hash::Hash) -> u64 {
 
 /// A fast multiplicative hash (FxHash's): clip keys only tell a page's
 /// clips apart, and a page has millions of path operators to hash.
+#[derive(Default)]
 struct ClipHasher(u64);
+
+/// A map hashed by [`ClipHasher`], for the many small keys (grid cells,
+/// indices) of a drawing set's page, where the default hash's resistance
+/// to crafted keys costs more than the work.
+type FastMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<ClipHasher>>;
+type FastSet<K> = HashSet<K, std::hash::BuildHasherDefault<ClipHasher>>;
 
 impl std::hash::Hasher for ClipHasher {
     fn write(&mut self, bytes: &[u8]) {
@@ -5727,6 +6263,10 @@ impl std::hash::Hasher for ClipHasher {
 
     fn write_u8(&mut self, value: u8) {
         self.write_u64(u64::from(value));
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.write_u64(value as u64);
     }
 
     fn write_usize(&mut self, value: usize) {
@@ -5747,7 +6287,7 @@ fn is_list_marker(text: &str) -> bool {
 }
 
 fn group_lines(
-    operations: &[ContentOp],
+    operations: &ContentOps,
     fonts: &BTreeMap<Vec<u8>, LoadedFont>,
     shows: &[ShowOp],
     limits: &TextEditLimits,
@@ -6432,12 +6972,18 @@ fn apply_page_content_edits(
         // edits name the page as they leave it.
         let page_id = page_id(document, page_index)?;
         clip::write_pastes(document, page_id, &explodes, limits)?;
-        if let (_, Some(exploded)) =
-            explode::extract_exploded(document, page_id, &explodes, limits, None)?
-        {
-            explode::write(document, page_id, exploded, limits)?;
-        }
-        apply_page_edits(document, page_index, &edits, &tables, &moves, limits)?;
+        // The page as read here is the page the edits apply to, unless
+        // something was written into it (a drawing set's page takes tens of
+        // milliseconds to read).
+        let read = match explode::extract_exploded(document, page_id, &explodes, limits, None)? {
+            (_, Some(exploded)) => {
+                explode::write(document, page_id, exploded, limits)?;
+                None
+            }
+            (page, None) if explodes.iter().all(|explode| explode.paste.is_none()) => Some(page),
+            _ => None,
+        };
+        apply_page_edits(document, page_index, read, &edits, &tables, &moves, limits)?;
     }
     Ok(())
 }
@@ -6453,15 +6999,21 @@ fn moved(offset: (f64, f64)) -> bool {
     offset.0.abs() > 1e-6 || offset.1.abs() > 1e-6
 }
 
-pub(crate) fn apply_page_edits(
+/// Applies a page's text edits, table edits and moves to `document`:
+/// `page` is the page as read already, when it is.
+fn apply_page_edits(
     document: &mut Document,
     page_index: u32,
+    page: Option<ExtractedPage>,
     edits: &[&PageTextEdit],
     tables: &[&crate::pdf_tables::PageTableEdit],
     moves: &[crate::pdf_content_moves::ContentMove],
     limits: &TextEditLimits,
 ) -> Result<(), TextEditError> {
-    let page = extract_page(document, page_index, limits)?;
+    let page = match page {
+        Some(page) => page,
+        None => extract_page(document, page_index, limits)?,
+    };
     let layer = PageTextLayer {
         page_index,
         fonts: page
@@ -6601,7 +7153,20 @@ pub(crate) fn apply_page_edits(
         });
     }
     let page_box = visible_box_of_page(document, page.page_id);
-    let mut table_splices = table_content_splices(&page, tables, moves, page_box)?;
+    // Patterns the page names, which a moved path's copies are made of.
+    let available = page_resources(document, page.page_id)
+        .and_then(|resources| get_dict(document, &resources, b"Pattern").cloned())
+        .map(|patterns| patterns.iter().map(|(name, _)| name.clone()).collect())
+        .unwrap_or_default();
+    let mut pattern_copies = Vec::new();
+    let mut table_splices = table_content_splices(
+        &page,
+        tables,
+        moves,
+        page_box,
+        &available,
+        &mut pattern_copies,
+    )?;
     grow_clips_for_added_lines(&page, &planned, page_box, &mut table_splices);
     let mut cell_lines = table_cell_lines(&page, &layer, tables)?;
     // The structure declaring each edited table, and a marked-content
@@ -6999,6 +7564,54 @@ pub(crate) fn apply_page_edits(
     } else {
         Object::Array(content_ids.into_iter().map(Object::Reference).collect())
     };
+    // Moved paths' patterns, copied with their matrices moved too.
+    if !pattern_copies.is_empty() {
+        let mut patterns = get_dict(document, &page_resources_dictionary, b"Pattern")
+            .cloned()
+            .unwrap_or_default();
+        for copy in &pattern_copies {
+            let Some(mut pattern) = patterns
+                .get(&copy.from)
+                .ok()
+                .and_then(|object| resolve(document, object).ok())
+                .cloned()
+            else {
+                continue;
+            };
+            let dictionary = match &mut pattern {
+                Object::Stream(stream) => &mut stream.dict,
+                Object::Dictionary(dictionary) => dictionary,
+                _ => continue,
+            };
+            let matrix = dictionary
+                .get(b"Matrix")
+                .ok()
+                .and_then(|matrix| matrix.as_array().ok())
+                .and_then(|values| {
+                    <[f64; 6]>::try_from(
+                        values
+                            .iter()
+                            .map(|value| resolve(document, value).ok().and_then(object_number))
+                            .collect::<Option<Vec<_>>>()?,
+                    )
+                    .ok()
+                })
+                .unwrap_or(IDENTITY);
+            dictionary.set(
+                "Matrix",
+                Object::Array(
+                    multiply(matrix, copy.matrix)
+                        .into_iter()
+                        .map(|value| Object::Real(value as f32))
+                        .collect(),
+                ),
+            );
+            let id = document.add_object(pattern);
+            patterns.set(copy.name.as_bytes(), Object::Reference(id));
+        }
+        page_resources_dictionary.set("Pattern", Object::Dictionary(patterns));
+        page_resources_changed = true;
+    }
     let page_dictionary = document.get_object_mut(page.page_id)?.as_dict_mut()?;
     page_dictionary.set("Contents", contents);
     if page_resources_changed {
@@ -7754,11 +8367,95 @@ fn grow_clips_for_added_lines(
 /// their model's, moved paths move whole, and images and forms are moved by
 /// a matrix. Each change is a stream, the byte range it replaces and its
 /// replacement.
+/// A pattern a moved path paints with, copied to move with it: the
+/// pattern's name in the page's resources, the copy's name there, and the
+/// move (in page space) its matrix takes on.
+struct PatternCopy {
+    from: Vec<u8>,
+    name: String,
+    matrix: Matrix,
+}
+
+/// Paints `paint`, moved by `matrix`, with copies of its patterns moved
+/// too, as `pattern_copies` lists them: a pattern is fixed to the page, so
+/// without them a moved or turned hatch or shading would stay where it
+/// was while its path moved. The path is painted inside `q` and `Q` with
+/// the copies. A clip, a path in a form, or one painting with a pattern
+/// the page's resources do not name is left as it is.
+fn carry_patterns(
+    page: &ExtractedPage,
+    paint: &PaintOp,
+    matrix: Matrix,
+    available: &BTreeSet<Vec<u8>>,
+    pattern_copies: &mut Vec<PatternCopy>,
+    splices: &mut Vec<(usize, usize, usize, String)>,
+) -> Option<()> {
+    if paint.clips || paint.patterns.iter().all(Option::is_none) {
+        return None;
+    }
+    let painted = &page.operations[paint.paint];
+    let first = &page.operations[*paint.ops.first()?];
+    if painted.spans_streams
+        || first.stream != painted.stream
+        || !matches!(page.owners[painted.stream], StreamOwner::Page)
+        || paint
+            .patterns
+            .iter()
+            .flatten()
+            .any(|(name, _)| !available.contains(name))
+    {
+        return None;
+    }
+    let mut select = String::from("q ");
+    let mut copies = Vec::new();
+    for (pattern, operator) in paint.patterns.iter().zip(["scn", "SCN"]) {
+        let Some((name, components)) = pattern else {
+            continue;
+        };
+        let mut number = pattern_copies.len() + copies.len() + 1;
+        let copy = loop {
+            let copy = format!("BPMoved{number}");
+            if !available.contains(copy.as_bytes()) {
+                break copy;
+            }
+            number += 1;
+        };
+        for component in components {
+            push_number(&mut select, *component);
+            select.push(' ');
+        }
+        select.push_str(&format!("/{copy} {operator} "));
+        copies.push(PatternCopy {
+            from: name.clone(),
+            name: copy,
+            matrix,
+        });
+    }
+    // The path's first operator, already spliced with its moved points,
+    // starts the `q`; its painting operator ends with the `Q`.
+    let opening = splices.iter_mut().find(|(stream, start, end, _)| {
+        (*stream, *start, *end) == (first.stream, first.start, first.end)
+    })?;
+    opening.3.insert_str(0, &select);
+    let original =
+        String::from_utf8_lossy(&page.streams[painted.stream][painted.start..painted.end]);
+    splices.push((
+        painted.stream,
+        painted.start,
+        painted.end,
+        format!("{original} Q"),
+    ));
+    pattern_copies.extend(copies);
+    Some(())
+}
+
 fn table_content_splices(
     page: &ExtractedPage,
     tables: &[&crate::pdf_tables::PageTableEdit],
     moves: &[crate::pdf_content_moves::ContentMove],
     page_box: Option<[f64; 4]>,
+    available: &BTreeSet<Vec<u8>>,
+    pattern_copies: &mut Vec<PatternCopy>,
 ) -> Result<Vec<(usize, usize, usize, String)>, TextEditError> {
     use crate::pdf_content_moves::{ContentKind, change_of, change_of_nth};
     let mut splices = Vec::new();
@@ -7774,8 +8471,23 @@ fn table_content_splices(
         page.unit_names(page_box)
     };
     let nth = |unit: ContentUnit| names.get(&unit).copied().unwrap_or(0);
+    // A drawing a move names lies inside the bounds of the path it is (or
+    // is a piece of): a path holding none has no piece to change.
+    let holds_moved = |paint: &PaintOp| {
+        page.paint_bounds(paint)
+            .is_some_and(|[left, bottom, right, top]| {
+                moves.iter().any(|item| {
+                    let [l, b, r, t] = item.rect;
+                    item.kind == ContentKind::Drawing
+                        && l >= left - 1.
+                        && b >= bottom - 1.
+                        && r <= right + 1.
+                        && t <= top + 1.
+                })
+            })
+    };
     for (paint_index, paint) in page.paints.iter().enumerate() {
-        let subpaths = path_subpaths(&page.operations, &paint.ops, paint.ctm);
+        let subpaths = || path_subpaths(&page.operations, &paint.ops, paint.ctm);
         // A changed path moves (or scales) whole, by its change alone: with
         // the small clip it is drawn in, or alone; a changed small clip
         // changes itself. A removed one is not painted.
@@ -7788,10 +8500,14 @@ fn table_content_splices(
         let group = page.local_clip(&paint.clip_chain, page_box);
         // A stroked path's pieces change each by its own change, unless an
         // earlier change names the whole path.
-        if let Some(parts) = page.path_parts(paint, page_box).filter(|_| {
-            page.paint_bounds(paint)
-                .is_none_or(|rect| change_of(moves, ContentKind::Drawing, rect).is_none())
-        }) {
+        if let Some(parts) = holds_moved(paint)
+            .then(|| page.path_parts(paint, page_box))
+            .flatten()
+            .filter(|_| {
+                page.paint_bounds(paint)
+                    .is_none_or(|rect| change_of(moves, ContentKind::Drawing, rect).is_none())
+            })
+        {
             let changes = parts
                 .iter()
                 .enumerate()
@@ -7846,7 +8562,7 @@ fn table_content_splices(
             }
             let placement = item.placement();
             let mut points: BTreeMap<usize, BTreeMap<usize, (f64, f64)>> = BTreeMap::new();
-            for point in subpaths.iter().flat_map(|subpath| &subpath.points) {
+            for point in subpaths().iter().flat_map(|subpath| &subpath.points) {
                 points
                     .entry(point.op)
                     .or_default()
@@ -7863,6 +8579,14 @@ fn table_content_splices(
                     .ok_or_else(|| TextEditError::ReadOnly("the drawing cannot move".into()))?;
                 splices.push((operation.stream, operation.start, operation.end, text));
             }
+            carry_patterns(
+                page,
+                paint,
+                placement.matrix(rect),
+                available,
+                pattern_copies,
+                &mut splices,
+            );
             continue;
         }
         if maps.is_empty() {
@@ -7872,6 +8596,7 @@ fn table_content_splices(
         let mut moved_points: BTreeMap<usize, BTreeMap<usize, (f64, f64)>> = BTreeMap::new();
         let mut changed_ops = BTreeSet::new();
         let mut copies: Vec<(usize, BTreeMap<usize, BTreeMap<usize, (f64, f64)>>)> = Vec::new();
+        let subpaths = subpaths();
         for (subpath_index, subpath) in subpaths.iter().enumerate() {
             let Some(rect) = points_bounds(subpath.points.iter().map(|point| (point.x, point.y)))
             else {
@@ -9489,6 +10214,93 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_pattern_fill_takes_its_pattern_along() {
+        use crate::pdf_content_moves::{ContentKind, ContentMove};
+        let content = b"/Pattern cs /Stripes scn 100 100 50 50 re f\n0 g 300 100 50 50 re f";
+        let mut document = document(content, vec![]);
+        let stripes = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "Pattern",
+                "PatternType" => 1,
+                "PaintType" => 1,
+                "TilingType" => 1,
+                "BBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+                "XStep" => 10,
+                "YStep" => 10,
+                "Matrix" => vec![2.into(), 0.into(), 0.into(), 2.into(), 5.into(), 0.into()],
+                "Resources" => dictionary! {},
+            },
+            b"1 0 0 rg 0 0 5 10 re f".to_vec(),
+        ));
+        let page = document
+            .get_dictionary_mut(page_id(&document, 0).unwrap())
+            .unwrap();
+        let mut resources = page.get(b"Resources").unwrap().as_dict().unwrap().clone();
+        resources.set("Pattern", dictionary! { "Stripes" => stripes });
+        page.set("Resources", resources);
+        let moves = [
+            ContentMove {
+                page_index: 0,
+                kind: ContentKind::Drawing,
+                rect: [100., 100., 150., 150.],
+                nth: 0,
+                offset: [20., 30.],
+                scale: [1., 1.],
+                rotation: 0.,
+                removed: false,
+                copy: None,
+            },
+            ContentMove {
+                page_index: 0,
+                kind: ContentKind::Drawing,
+                rect: [300., 100., 350., 150.],
+                nth: 0,
+                offset: [20., 0.],
+                scale: [1., 1.],
+                rotation: 0.,
+                removed: false,
+                copy: None,
+            },
+        ];
+        apply_content_edits(&mut document, &[], &[], &moves, &TextEditLimits::default()).unwrap();
+        let page = page_id(&document, 0).unwrap();
+        let text = String::from_utf8(page_content(&document)).unwrap();
+        // Painted with a copy, inside `q` and `Q`; the plain fill is not.
+        assert!(text.contains("q /BPMoved1 scn"), "{text}");
+        assert!(text.contains("f Q"), "{text}");
+        assert_eq!(text.matches(" Q").count(), 1, "{text}");
+        assert!(text.contains("320 100"), "the plain fill moved too: {text}");
+        let resources = page_resources(&document, page).unwrap();
+        let patterns = get_dict(&document, &resources, b"Pattern").unwrap();
+        assert!(patterns.has(b"Stripes"), "the original stays");
+        let copy = resolve(&document, patterns.get(b"BPMoved1").unwrap()).unwrap();
+        let matrix = copy
+            .as_stream()
+            .unwrap()
+            .dict
+            .get(b"Matrix")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let matrix = matrix
+            .iter()
+            .map(|value| object_number(value).unwrap())
+            .collect::<Vec<_>>();
+        // Its own matrix, then the move: 20 right and 30 up.
+        assert_eq!(matrix, [2., 0., 0., 2., 25., 30.]);
+        // The page reads as before: both still drawings.
+        let after = layer(&document);
+        assert!(
+            after
+                .objects
+                .iter()
+                .any(|object| object.patterned && (object.rect[0] - 120.).abs() < 0.01),
+            "{:?}",
+            after.objects
+        );
+    }
+
+    #[test]
     fn turned_drawings_and_images_are_saved_turned() {
         use crate::pdf_content_moves::{ContentKind, ContentMove};
         let content = b"0 0 1 RG 2 w 100 500 40 20 re S q 80 0 0 60 400 100 cm /Im0 Do Q";
@@ -9802,6 +10614,180 @@ mod tests {
         let mut bytes = Vec::new();
         document.save_to(&mut bytes).expect("save");
         Document::load_mem(&bytes).expect("reload")
+    }
+
+    /// Each drawing carries the plain colours the PDF fills and strokes it
+    /// in, so a dragged one is drawn in them; none where the PDF paints
+    /// with a pattern or through transparency.
+    #[test]
+    fn drawings_carry_the_plain_colours_they_are_painted_in() {
+        let mut document = document(
+            b"q 0.47 g 10 10 50 50 re f Q\n\
+              q 0.4 0.6 0.8 rg 100 10 50 50 re f Q\n\
+              q 1 0 0 RG 2 w 200 10 50 50 re S Q\n\
+              q 0 0 1 rg 0 1 0 RG 300 10 50 50 re B Q\n\
+              q /Pattern cs /P0 scn 400 10 50 50 re f Q\n\
+              q 0 0 0 1 k 10 100 50 50 re f Q\n\
+              q /Half gs 0 g 100 100 50 50 re f Q\n\
+              q /Multiply gs 0 g 200 100 50 50 re f Q\n\
+              q /Rgb cs 1 0.5 0 sc /Grey CS 0.2 SC 300 100 50 50 re B Q\n\
+              q /Spot cs 1 sc 400 100 50 50 re f Q\n\
+              q /Rgb cs 10 200 50 50 re f Q",
+            vec![],
+        );
+        let rgb_profile = document.add_object(lopdf::Stream::new(dictionary! { "N" => 3 }, vec![]));
+        let grey_profile =
+            document.add_object(lopdf::Stream::new(dictionary! { "N" => 1 }, vec![]));
+        let page = page_id(&document, 0).unwrap();
+        let resources = document
+            .get_object_mut(page)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .get_mut(b"Resources")
+            .unwrap()
+            .as_dict_mut()
+            .unwrap();
+        resources.set(
+            "ExtGState",
+            dictionary! {
+                "Half" => dictionary! { "ca" => 0.5, "Type" => "ExtGState" },
+                "Multiply" => dictionary! { "BM" => "Multiply" },
+            },
+        );
+        resources.set(
+            "ColorSpace",
+            dictionary! {
+                "Rgb" => vec!["ICCBased".into(), rgb_profile.into()],
+                "Grey" => vec!["ICCBased".into(), grey_profile.into()],
+                "Spot" => vec![
+                    "Separation".into(),
+                    "Gold".into(),
+                    "DeviceCMYK".into(),
+                    Object::Null,
+                ],
+            },
+        );
+        let layer = layer(&document);
+        let at = |left: f64, bottom: f64| {
+            layer
+                .objects
+                .iter()
+                .find(|object| {
+                    (object.rect[0] - left).abs() < 2. && (object.rect[1] - bottom).abs() < 2.
+                })
+                .map(|object| (object.fill, object.stroke))
+                .unwrap_or_else(|| panic!("a drawing at {left}, {bottom}: {:?}", layer.objects))
+        };
+        assert_eq!(
+            at(10., 10.),
+            (Some([120, 120, 120, 255]), None),
+            "grey fill"
+        );
+        assert_eq!(
+            at(100., 10.),
+            (Some([102, 153, 204, 255]), None),
+            "colour fill"
+        );
+        assert_eq!(at(200., 10.), (None, Some([255, 0, 0, 255])), "red stroke");
+        assert_eq!(
+            at(300., 10.),
+            (Some([0, 0, 255, 255]), Some([0, 255, 0, 255])),
+            "filled and stroked in two colours"
+        );
+        assert_eq!(at(400., 10.), (None, None), "a pattern is no plain colour");
+        let patterned = |left: f64| {
+            layer
+                .objects
+                .iter()
+                .find(|object| (object.rect[0] - left).abs() < 2.)
+                .is_some_and(|object| object.patterned)
+        };
+        assert!(patterned(400.) && !patterned(10.) && !patterned(300.));
+        assert_eq!(at(10., 100.), (Some([0, 0, 0, 255]), None), "CMYK black");
+        assert_eq!(
+            at(100., 100.),
+            (Some([0, 0, 0, 128]), None),
+            "half opacity, in the colour's alpha"
+        );
+        assert_eq!(
+            at(200., 100.),
+            (None, None),
+            "a blend shows what is under it"
+        );
+        assert_eq!(
+            at(300., 100.),
+            (Some([255, 128, 0, 255]), Some([51, 51, 51, 255])),
+            "ICC profiles read as their device spaces"
+        );
+        assert_eq!(
+            at(400., 100.),
+            (None, None),
+            "a spot colour is no plain colour"
+        );
+        assert_eq!(
+            at(10., 200.),
+            (Some([0, 0, 0, 255]), None),
+            "a profile's colour starts black"
+        );
+    }
+
+    /// A drawing carries how its stroke is drawn, in page space, and its
+    /// fill rule, so a dragged copy is drawn as the page draws it.
+    #[test]
+    fn drawings_carry_their_line_style_and_fill_rule() {
+        let mut document = document(
+            b"q 2 0 0 2 0 0 cm [3 1] 0.5 d 1 J 2 j 10 10 20 20 re S Q\n\
+              q 100 10 50 50 re 110 20 30 30 re f* Q\n\
+              q /Dashed gs 200 10 50 50 re S Q\n\
+              q [] 0 d 300 10 50 50 re S Q",
+            vec![],
+        );
+        let page = page_id(&document, 0).unwrap();
+        document
+            .get_object_mut(page)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .get_mut(b"Resources")
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set(
+                "ExtGState",
+                dictionary! {
+                    "Dashed" => dictionary! {
+                        "D" => vec![vec![4.into()].into(), 0.into()],
+                        "LW" => 3,
+                    },
+                },
+            );
+        let layer = layer(&document);
+        let at = |left: f64| {
+            layer
+                .objects
+                .iter()
+                .find(|object| (object.rect[0] - left).abs() < 2.)
+                .cloned()
+                .unwrap_or_else(|| panic!("a drawing at {left}: {:?}", layer.objects))
+        };
+        let scaled = at(20.);
+        assert_eq!(
+            scaled.line,
+            Some(crate::pdf_content_moves::LineStyle {
+                dash: vec![6., 2.],
+                phase: 1.,
+                cap: 1,
+                join: 2,
+            }),
+            "dashes in page space"
+        );
+        let holed = at(100.);
+        assert!(holed.even_odd && holed.line.is_none());
+        let state = at(200.);
+        assert_eq!(state.line.map(|line| line.dash), Some(vec![4.]));
+        assert_eq!(state.reach, 1.5, "the graphics state's line width");
+        assert_eq!(at(300.).line, None, "an empty pattern is a solid line");
     }
 
     fn layer(document: &Document) -> PageTextLayer {

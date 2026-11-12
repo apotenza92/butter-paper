@@ -85,7 +85,7 @@ fn incremental_update(
     source_bytes: &[u8],
     edited: &PdfMetadataDocument,
 ) -> Option<Vec<u8>> {
-    let (appendix, _) = incremental_appendix(source, source_bytes, edited)?;
+    let (appendix, _) = incremental_appendix(source, source_bytes, edited, &HeldImages::default())?;
     let mut bytes = Vec::with_capacity(source_bytes.len() + appendix.len());
     bytes.extend_from_slice(source_bytes);
     bytes.extend_from_slice(&appendix);
@@ -94,10 +94,75 @@ fn incremental_update(
 
 /// The incremental update [`incremental_update`] appends to `source_bytes`,
 /// and the objects `edited` adds to or changes in `source`.
+/// The large images of a document about to be edited, each by where its
+/// bytes are held and how many there are. Edits never rewrite an image's
+/// bytes in place (they replace whole objects), so an image still holding
+/// the same bytes afterwards, with the same dictionary, is unchanged: a
+/// large file's images, most of its bytes, are not compared byte by byte
+/// for each edit.
+#[derive(Default)]
+struct HeldImages(std::collections::HashMap<lopdf::ObjectId, (usize, usize)>);
+
+/// Images under this size are compared in full.
+const HELD_IMAGE_BYTES: usize = 256 * 1024;
+
+/// How much of each end of a held image is compared all the same.
+const HELD_IMAGE_CHECK: usize = 4096;
+
+impl HeldImages {
+    fn of(document: &PdfMetadataDocument) -> Self {
+        Self(
+            document
+                .objects
+                .iter()
+                .filter_map(|(id, object)| {
+                    let stream = image_stream(object)?;
+                    Some((
+                        *id,
+                        (stream.content.as_ptr() as usize, stream.content.len()),
+                    ))
+                })
+                .collect(),
+        )
+    }
+
+    /// Whether `object`, `edited`'s object `id`, is still the image it
+    /// was, as `source` has it.
+    fn unchanged(
+        &self,
+        id: &lopdf::ObjectId,
+        object: &lopdf::Object,
+        source: Option<&lopdf::Object>,
+    ) -> bool {
+        let (Some(image), Some(lopdf::Object::Stream(original))) = (image_stream(object), source)
+        else {
+            return false;
+        };
+        let (content, before) = (&image.content, &original.content);
+        let check = HELD_IMAGE_CHECK.min(content.len());
+        self.0.get(id) == Some(&(content.as_ptr() as usize, content.len()))
+            && before.len() == content.len()
+            && image.dict == original.dict
+            && content[..check] == before[..check]
+            && content[content.len() - check..] == before[before.len() - check..]
+    }
+}
+
+/// `object` as a large image stream.
+fn image_stream(object: &lopdf::Object) -> Option<&lopdf::Stream> {
+    let lopdf::Object::Stream(stream) = object else {
+        return None;
+    };
+    (stream.content.len() >= HELD_IMAGE_BYTES
+        && matches!(stream.dict.get(b"Subtype"), Ok(lopdf::Object::Name(name)) if name == b"Image"))
+    .then_some(stream)
+}
+
 fn incremental_appendix(
     source: &PdfMetadataDocument,
     source_bytes: &[u8],
     edited: &PdfMetadataDocument,
+    held: &HeldImages,
 ) -> Option<(Vec<u8>, Vec<lopdf::ObjectId>)> {
     if source.xref_start == 0
         || source.trailer.has(b"Encrypt")
@@ -130,7 +195,8 @@ fn incremental_appendix(
     }
     let mut update = lopdf::IncrementalDocument::create_from(stand_in, previous);
     for (id, object) in &edited.objects {
-        if source.objects.get(id) != Some(object) {
+        let original = source.objects.get(id);
+        if !held.unchanged(id, object, original) && original != Some(object) {
             update.new_document.objects.insert(*id, object.clone());
         }
     }
@@ -297,6 +363,7 @@ fn edited_display(
         Some((display, changed)) => reset_to_source(source, display, &changed),
         None => editable_copy(source),
     };
+    let held = HeldImages::of(&edited);
     // Pages first: the other edits name pages as arranged.
     if !edits.pages.is_empty() {
         let managed =
@@ -333,7 +400,7 @@ fn edited_display(
     })?;
     // Only the changed objects are written, after the source's bytes: a
     // whole large file is not serialised for each edit.
-    if let Some((appendix, changed)) = incremental_appendix(source, source_bytes, &edited) {
+    if let Some((appendix, changed)) = incremental_appendix(source, source_bytes, &edited, &held) {
         return Ok(Some((
             edited,
             DisplayBytes::Appended(appendix),
@@ -495,6 +562,18 @@ impl PageRaster {
     }
 }
 
+/// Pages and a document an edit replaced, waiting to close: the pages
+/// first.
+struct Retired {
+    _pages: Vec<(RasterSource, i32, PdfPage<'static>)>,
+    _document: PdfDocument<'static>,
+    _retained: RetainedPdfiumDocument,
+}
+
+/// The most replaced documents left open at once: more edits arriving
+/// before the worker is idle close the oldest straight away.
+const MAX_RETIRED: usize = 2;
+
 impl LoadedPages {
     const CAPACITY: usize = 3;
 
@@ -529,8 +608,15 @@ impl LoadedPages {
 }
 
 struct PdfiumDocument {
-    /// Declared first, so its pages close before the documents they
-    /// belong to. Cleared whenever one of those documents is replaced.
+    /// Documents an edit replaced and the pages loaded from them, closed
+    /// when the worker is next idle: closing a page frees the images it
+    /// decoded, which on a drawing set takes tens of milliseconds that the
+    /// edited page's first draw would otherwise wait for. Declared first,
+    /// so they close before the documents some of their pages belong to.
+    retired: Vec<Retired>,
+    /// Declared before the documents, so its pages close before the
+    /// documents they belong to. Cleared whenever one of those documents
+    /// is replaced.
     loaded_pages: LoadedPages,
     document: PdfDocument<'static>,
     /// The displayed document: the source with any page-text edits.
@@ -614,6 +700,10 @@ impl PdfiumBackend {
 impl PdfBackend for PdfiumBackend {
     type Document = PdfiumDocument;
 
+    fn idle(&mut self, document: &mut Self::Document) {
+        document.retired.clear();
+    }
+
     fn open(
         &mut self,
         source: SourceHandleId,
@@ -660,6 +750,7 @@ impl PdfBackend for PdfiumBackend {
             .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
         Ok((
             PdfiumDocument {
+                retired: Vec::new(),
                 loaded_pages: LoadedPages::default(),
                 document,
                 source: metadata,
@@ -970,11 +1061,22 @@ impl PdfBackend for PdfiumBackend {
                 return Err(error);
             }
         };
+        // The pages and documents replaced close once the worker is idle.
+        let pages = std::mem::take(&mut document.loaded_pages.0);
         document.loaded_pages.clear();
-        document.document = loaded;
+        if document.retired.len() >= MAX_RETIRED {
+            document.retired.remove(0);
+        }
+        document.retired.push(Retired {
+            _pages: pages,
+            _document: std::mem::replace(&mut document.document, loaded),
+            _retained: std::mem::replace(
+                &mut document.retained,
+                RetainedPdfiumDocument::Unprepared,
+            ),
+        });
         document.display_changes = changed;
         document.metadata = metadata;
-        document.retained = RetainedPdfiumDocument::Unprepared;
         document.edits = edits.clone();
         Ok(())
     }
@@ -2531,7 +2633,8 @@ mod tests {
         };
         let mut edited = editable_copy(&source);
         apply_text_edits(&mut edited, &[edit], &TextEditLimits::default()).unwrap();
-        let (_, changed) = incremental_appendix(&source, &bytes, &edited).unwrap();
+        let (_, changed) =
+            incremental_appendix(&source, &bytes, &edited, &HeldImages::default()).unwrap();
         assert!(!changed.is_empty());
         let reset = reset_to_source(&source, edited, &changed);
         let fresh = editable_copy(&source);
@@ -2540,11 +2643,52 @@ mod tests {
         assert_eq!(reset.max_id, fresh.max_id);
         assert_eq!(reset.xref_start, fresh.xref_start);
         assert!(
-            incremental_appendix(&source, &bytes, &reset)
+            incremental_appendix(&source, &bytes, &reset, &HeldImages::default())
                 .unwrap()
                 .1
                 .is_empty()
         );
+    }
+
+    /// A large image an edit leaves alone is known unchanged without
+    /// comparing its bytes; one replaced, even by as many bytes, or given
+    /// another dictionary, is changed.
+    #[test]
+    fn untouched_images_are_not_compared_byte_by_byte() {
+        let image = |byte: u8| {
+            lopdf::Object::Stream(lopdf::Stream::new(
+                lopdf::dictionary! { "Subtype" => "Image", "Width" => 512 },
+                vec![byte; HELD_IMAGE_BYTES],
+            ))
+        };
+        let mut source = PdfMetadataDocument::new();
+        let id = source.add_object(image(1));
+        let mut edited = editable_copy(&source);
+        let held = HeldImages::of(&edited);
+        assert!(held.unchanged(&id, &edited.objects[&id], source.objects.get(&id)));
+        edited.objects.insert(id, image(2));
+        assert!(!held.unchanged(&id, &edited.objects[&id], source.objects.get(&id)));
+        let mut edited = editable_copy(&source);
+        let held = HeldImages::of(&edited);
+        if let Ok(stream) = edited
+            .get_object_mut(id)
+            .and_then(lopdf::Object::as_stream_mut)
+        {
+            stream.dict.set("Width", 256);
+        }
+        assert!(!held.unchanged(&id, &edited.objects[&id], source.objects.get(&id)));
+        // Small images are compared in full.
+        let mut small = PdfMetadataDocument::new();
+        let small_id = small.add_object(lopdf::Object::Stream(lopdf::Stream::new(
+            lopdf::dictionary! { "Subtype" => "Image" },
+            vec![0; 16],
+        )));
+        let copy = editable_copy(&small);
+        assert!(!HeldImages::of(&copy).unchanged(
+            &small_id,
+            &copy.objects[&small_id],
+            small.objects.get(&small_id)
+        ));
     }
 
     #[test]
@@ -3036,9 +3180,14 @@ mod tests {
                     &AtomicBool::new(false),
                 )
                 .unwrap();
+            let drawn = started.elapsed();
+            // The worker tidies up while idle, as between drags.
+            let started = Instant::now();
+            backend.idle(&mut document);
             eprintln!(
-                "move {step}: edit {:.0} ms, page drawn {:.0} ms",
+                "move {step}: edit {:.0} ms, page drawn {:.0} ms, idle {:.0} ms",
                 edited.as_secs_f64() * 1000.,
+                drawn.as_secs_f64() * 1000.,
                 started.elapsed().as_secs_f64() * 1000.
             );
         }

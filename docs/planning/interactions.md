@@ -330,7 +330,9 @@ Every page converts to one page of the same size.
   own axes, so it never skews: a quarter-turned piece stretches along the
   page's axes, and one at another angle keeps its proportions. A turned
   path is written with its points turned (its line width kept), a turned
-  image or form by its matrix. Text is never turned. Markups on turned
+  image or form by its matrix. A pattern a moved path is painted with (a
+  hatch, a shading), being fixed to the page, is copied and moved, resized
+  or turned with it. Text is never turned. Markups on turned
   content move with it as their centres turn; they do not turn.
 - Delete or Backspace deletes the selected content and the markups
   selected with it. Copy, Cut and Paste work on it too. On the page it was
@@ -387,9 +389,14 @@ Every page converts to one page of the same size.
   handles to the piece under them; Alt on empty page still starts a lasso
   that deselects.
 - While content is dragged, turned or resized, a path follows the pointer
-  drawn as the page draws it (its outline, line width and the colour the
-  page shows it in), crisp at any angle; a paragraph or image follows as
-  its picture. Nothing it frames or crosses comes with it.
+  drawn as the page draws it, crisp at any angle: its outline and fill
+  rule (a ring keeps its hole), its line width, dashes, ends and corners
+  (scaled as a resize scales them), and its fill and stroke in the PDF's
+  own colours and opacity, a colour profile's read as its grey, RGB or
+  CMYK. A spot colour or a blend, which has no plain colour, is drawn in
+  the colour the page shows it in; a pattern or shading, and a paragraph
+  or image, follow as their picture. Nothing it frames or crosses comes
+  with it.
 - A block (a Form XObject: a CAD block, a flattened markup, a placed
   drawing) is picked whole, as an image is. Explode block, in the page's
   right-click menu and the Edit menu while one block is selected (right-
