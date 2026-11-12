@@ -4,6 +4,21 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.1]
+
+### Measuring
+
+- Every drawing tool a page scale improves says so the same way: its
+  tooltip shows its shortcut, then a second line starting "Page scale:"
+  with what the scale adds.
+- Shift+Alt+S opens Page Scale for the current page.
+- Shift+Alt+L, as in Revu, measures on a page without a scale too, asking
+  for one on the first click, as Shift+Alt+Q and Shift+Alt+A do. The
+  Dimension button still draws typed text there.
+- Page Scale's "Measure in" is now "Show measurements in". Detail scales and
+  pages with no suggested scale start in millimetres to 0.1 mm; plans stay
+  in metres, so areas read in square metres.
+
 ## [0.5.0]
 
 ### Measuring
