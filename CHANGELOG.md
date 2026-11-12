@@ -4,6 +4,45 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.0]
+
+### Measuring
+
+- Dimension, Polyline and Polygon each have a Measure switch, in the tool's
+  properties and in a selected markup's properties. With it on they draw a
+  Length, Polylength or Area; the separate measure tools are gone from the
+  rail. Switching it on a selection turns plain markups into measurements,
+  or back, in one undoable step.
+- Dimension measures by default on a page with a scale, and takes typed text
+  elsewhere.
+- The toolbar has a Scale switch beside Edit. Off removes the current page's
+  scale and switching back on restores it; on a page never scaled it opens
+  Page Scale as a panel under the button.
+- Remove page scale is in the page's right-click menu.
+- A thin outline marks the current page when several pages are in view, and
+  the pages a new scale will apply to while Page Scale is open.
+
+### Toolbar and rail
+
+- Edit PDF is now Edit, and toolbar groups sit in frames. At half a 1920
+  screen the page navigator shows only its page field.
+- The Draw tools sit in pairs: Rectangle and Ellipse, Polygon and Polyline,
+  Line and Dimension, Arc and Pen. Dimension has a new icon.
+- The smallest document window is 906 pixels wide.
+
+### Edit PDF
+
+- Dragged and turned drawings keep their dashes, line ends, holes, opacity
+  and true colours.
+- Moved pattern fills take their pattern with them.
+- Moves and page reads on large drawing sets are much faster (Moreland: a
+  move takes 53 ms instead of 145 ms).
+- Large drawing pages read faster (Moreland page 45: 140 → ~85 ms).
+
+### Releases
+
+- Versions tick over at 9, as decimals do: after 0.4.9 comes 0.5.0.
+
 ## [0.4.9]
 
 ### Edit PDF
