@@ -30285,6 +30285,10 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         Some(scale.clone()),
     );
 
+    workspace.update(cx, |workspace, _| {
+        workspace.set_measure_preference_for_test(MeasureFamily::Polyline, true);
+        workspace.set_measure_preference_for_test(MeasureFamily::Polygon, true);
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let polylength_tool = cx
