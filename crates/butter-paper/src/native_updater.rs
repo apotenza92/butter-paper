@@ -1669,8 +1669,14 @@ mod tests {
         )
         .expect("a newer stable Linux release is published");
         let new = update.version.to_string();
-        let old = ReleaseVersion::stable(update.version.0, update.version.1, update.version.2 - 1)
-            .to_string();
+        // One version lower, as versions tick over at 9: 0.5.0 follows 0.4.9.
+        let (major, minor, patch) = (update.version.0, update.version.1, update.version.2);
+        let old = match (minor, patch) {
+            (_, 1..) => ReleaseVersion::stable(major, minor, patch - 1),
+            (1.., 0) => ReleaseVersion::stable(major, minor - 1, 9),
+            (0, 0) => ReleaseVersion::stable(major - 1, 9, 9),
+        }
+        .to_string();
         let root = std::env::temp_dir().join(format!("bp-linux-update-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let home = root.join("home");

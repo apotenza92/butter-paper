@@ -205,12 +205,11 @@ fn precision_title(precision: ScalePrecision, unit: ScaleUnit) -> SharedString {
     }
 }
 
-/// A unit's own default precision: whole millimetres, centimetres to the
-/// millimetre, metres and feet to the hundredth, inches to the sixteenth.
+/// A unit's own default precision: millimetres and centimetres to the tenth,
+/// metres and feet to the hundredth, inches to the sixteenth.
 fn unit_default_precision(unit: ScaleUnit) -> ScalePrecision {
     match unit {
-        ScaleUnit::Mm => ScalePrecision::decimal(1.),
-        ScaleUnit::Cm => ScalePrecision::decimal(0.1),
+        ScaleUnit::Mm | ScaleUnit::Cm => ScalePrecision::decimal(0.1),
         ScaleUnit::M | ScaleUnit::Ft => ScalePrecision::decimal(0.01),
         ScaleUnit::In => ScalePrecision::fraction(16),
     }
@@ -407,8 +406,8 @@ impl PageScaleControl {
             choice: ScaleChoice::Unset,
             stated_read: false,
             stated: Vec::new(),
-            display_unit: ScaleUnit::M,
-            precision: unit_default_precision(ScaleUnit::M),
+            display_unit: ScaleUnit::Mm,
+            precision: unit_default_precision(ScaleUnit::Mm),
             custom_paper_unit: ScaleUnit::Cm,
             pages: PageScalePages::This,
             picking: false,
@@ -613,7 +612,7 @@ impl PageScaleControl {
                 self.display_unit = if imperial {
                     ScaleUnit::Ft
                 } else {
-                    ScaleUnit::M
+                    ScaleUnit::Mm
                 };
                 self.precision = unit_default_precision(self.display_unit);
                 if let ScaleChoice::Standard(index) = self.choice {
@@ -1598,7 +1597,7 @@ fn scale_section(
 
 fn display_section(entity: &Entity<PageScaleControl>, cx: &App) -> impl IntoElement {
     let state = entity.read(cx);
-    Field::new().label("Measure in").child(
+    Field::new().label("Show measurements in").child(
         h_flex()
             .gap_2()
             .child(

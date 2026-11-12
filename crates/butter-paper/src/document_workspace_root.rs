@@ -180,13 +180,26 @@ impl DocumentWorkspace {
                 }
             }))
             .on_action(cx.listener(|workspace, _: &SetPageScale, window, cx| {
-                let Some(document_id) = workspace.active_document_id else {
+                // Shift+Alt+S or the page's menu: as a tool shortcut, never
+                // while text is being typed, a document closes or saves.
+                let Some(document_id) = workspace.tool_shortcut_document(window, cx) else {
                     return;
                 };
                 let current_page = workspace
                     .session(document_id, cx)
                     .map(|session| session.read(cx).current_page)
                     .unwrap_or_default();
+                // Already open for that page: keep what is typed in it.
+                if workspace
+                    .page_scale_control
+                    .as_ref()
+                    .is_some_and(|control| {
+                        let control = control.read(cx);
+                        control.is_open() && control.target() == Some((document_id, current_page))
+                    })
+                {
+                    return;
+                }
                 workspace.open_page_scale_dialog(document_id, current_page, window, cx);
             }))
             .on_action(cx.listener(Self::select_text_box_tool_from_action))

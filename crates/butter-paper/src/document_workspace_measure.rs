@@ -118,9 +118,11 @@ impl DocumentWorkspace {
         self.measure_preferences.get(family)
     }
 
-    /// The tool a family draws on `page_index`: a Dimension measures only
-    /// where the page has a scale; a Polyline or Polygon measures whenever
-    /// its switch is on, asking for a scale on its first click if need be.
+    /// The tool a family draws on `page_index`: a Dimension chosen from the
+    /// rail measures only where the page has a scale; one chosen measuring
+    /// (Shift+Alt+L, or its switch turned on), a Polyline or a Polygon
+    /// measures whenever its switch is on, asking for a scale on its first
+    /// click if need be.
     fn measure_family_tool(
         &self,
         document_id: DocumentId,
@@ -130,6 +132,7 @@ impl DocumentWorkspace {
     ) -> AnnotationTool {
         let measure = self.measure_preference(family)
             && (family != MeasureFamily::Dimension
+                || self.dimension_measures_unscaled.contains(&document_id)
                 || self.page_scale(document_id, page_index, cx).is_some());
         family.tool(measure)
     }
@@ -146,6 +149,15 @@ impl DocumentWorkspace {
     ) -> Result<(), String> {
         if let Some(measure) = measure {
             self.measure_preferences.set(family, measure);
+        }
+        if family == MeasureFamily::Dimension {
+            // The rail button keeps Dimension's default: typed text where a
+            // page has no scale. Asking to measure measures everywhere.
+            if measure == Some(true) {
+                self.dimension_measures_unscaled.insert(document_id);
+            } else {
+                self.dimension_measures_unscaled.remove(&document_id);
+            }
         }
         let page_index = self
             .session(document_id, cx)
