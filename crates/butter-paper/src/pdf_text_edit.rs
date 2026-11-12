@@ -3937,20 +3937,19 @@ impl ExtractedPage {
         let mut kept = FastMap::default();
         let units = self.units_keeping(page_box, Some(&mut kept));
         let ordinals = unit_ordinals(&units);
-        let mut objects = Vec::with_capacity(units.len());
-        let mut outline_budget = MAX_OUTLINE_POINTS;
-        for ((unit, rect), (_, nth)) in units.iter().zip(&ordinals) {
-            let (rect, nth) = (*rect, *nth);
+        // Each unit's object, its outline whole: drawn up on the
+        // processor's cores, a drawing set's page having tens of thousands.
+        let object_of = |(unit, rect): &(ContentUnit, [f64; 4]), nth: u32| -> Option<PageObject> {
+            let rect = *rect;
             let (paint, ops) = match *unit {
                 ContentUnit::Draw(index) => {
-                    objects.push(PageObject {
+                    return Some(PageObject {
                         kind: ContentKind::Image,
                         rect,
                         nth,
                         form: self.draws[index].form.is_some(),
                         ..PageObject::default()
                     });
-                    continue;
                 }
                 ContentUnit::Group(clip) => {
                     let texts = self
@@ -3964,20 +3963,17 @@ impl ExtractedPage {
                         })
                         .filter_map(|line| crate::pdf_tables::line_core_box(&line.public))
                         .collect();
-                    objects.push(PageObject {
+                    return Some(PageObject {
                         kind: ContentKind::Drawing,
                         rect,
                         texts,
                         nth,
                         ..PageObject::default()
                     });
-                    continue;
                 }
                 ContentUnit::Paint(index) => (&self.paints[index], &self.paints[index].ops[..]),
                 ContentUnit::Piece(index, part) => {
-                    let Some(piece) = kept.get(&index).and_then(|parts| parts.get(part)) else {
-                        continue;
-                    };
+                    let piece = kept.get(&index).and_then(|parts| parts.get(part))?;
                     (&self.paints[index], &piece.ops[..])
                 }
             };
@@ -3996,13 +3992,7 @@ impl ExtractedPage {
             if segment.is_some() {
                 outline.clear();
             }
-            let points = outline.iter().map(Vec::len).sum::<usize>();
-            if points > outline_budget {
-                outline.clear();
-            } else {
-                outline_budget -= points;
-            }
-            objects.push(PageObject {
+            Some(PageObject {
                 kind: ContentKind::Drawing,
                 rect,
                 outline,
@@ -4019,7 +4009,49 @@ impl ExtractedPage {
                     .then(|| line_style(paint.stroke_style.as_deref()?, scale))
                     .flatten(),
                 ..PageObject::default()
-            });
+            })
+        };
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(8);
+        let mut objects = if threads < 2 || units.len() < OBJECTS_PARALLEL {
+            units
+                .iter()
+                .zip(&ordinals)
+                .filter_map(|(unit, (_, nth))| object_of(unit, *nth))
+                .collect::<Vec<_>>()
+        } else {
+            let run = units.len().div_ceil(threads);
+            let object_of = &object_of;
+            std::thread::scope(|scope| {
+                let workers = units
+                    .chunks(run)
+                    .zip(ordinals.chunks(run))
+                    .map(|(units, ordinals)| {
+                        scope.spawn(move || {
+                            units
+                                .iter()
+                                .zip(ordinals)
+                                .filter_map(|(unit, (_, nth))| object_of(unit, *nth))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                workers
+                    .into_iter()
+                    .flat_map(|worker| worker.join().unwrap_or_default())
+                    .collect()
+            })
+        };
+        // Outlines past the page's budget, in order, are left out.
+        let mut outline_budget = MAX_OUTLINE_POINTS;
+        for object in &mut objects {
+            let points = object.outline.iter().map(Vec::len).sum::<usize>();
+            if points > outline_budget {
+                object.outline.clear();
+            } else {
+                outline_budget -= points;
+            }
         }
         cluster_lettering(&mut objects);
         objects
@@ -4138,6 +4170,13 @@ fn cluster_lettering(objects: &mut [crate::pdf_content_moves::PageObject]) {
 /// strokes span a cell or two.
 const LETTERING_CELL: f64 = 8.;
 
+/// The fewest units of a page whose objects are drawn up on several cores.
+const OBJECTS_PARALLEL: usize = 4096;
+
+/// The fewest lettering candidates whose neighbours are found on several
+/// cores: fewer take less time than starting the threads.
+const LETTERING_PARALLEL: usize = 4096;
+
 /// Each candidate's component twice over: its line of lettering, and its
 /// word. A word is the small paths of the same stroke each within half a
 /// letter of the next; words then join into a line a letter (a word's
@@ -4182,31 +4221,67 @@ fn lettering_components(
             (object.rect, size(object.rect), object.reach, object.filled)
         })
         .collect::<Vec<_>>();
-    let mut words = (0..candidates.len()).collect::<Vec<_>>();
-    for (slot, &(rect, letter, reach, filled)) in strokes.iter().enumerate() {
-        let span = letter.max(1.);
-        let [left, bottom, right, top] = rect;
-        for x in cell(left - span)..=cell(right + span) {
-            for y in cell(bottom - span)..=cell(top + span) {
-                let Some(others) = grid.get(&(x, y)) else {
-                    continue;
-                };
-                // Each cell lists its strokes in order: those after this one.
-                let after = others.partition_point(|&other| other <= slot);
-                for &other in &others[after..] {
-                    let (other_rect, other_letter, other_reach, other_filled) = strokes[other];
-                    // Of the same stroke ([`same_stroke`]).
-                    if (reach - other_reach).abs() > 0.01 || filled != other_filled {
+    // The strokes each is joined to, found for runs of strokes across the
+    // processor's cores, then joined in order, as one pass would.
+    // Only the pairs that join two words so far are kept: the rest join
+    // nothing more, and a dense drawing has a million.
+    let pairs_of = |slots: std::ops::Range<usize>| {
+        let mut pairs = Vec::new();
+        let mut local = (0..strokes.len()).collect::<Vec<_>>();
+        for slot in slots {
+            let (rect, letter, reach, filled) = strokes[slot];
+            let span = letter.max(1.);
+            let [left, bottom, right, top] = rect;
+            for x in cell(left - span)..=cell(right + span) {
+                for y in cell(bottom - span)..=cell(top + span) {
+                    let Some(others) = grid.get(&(x, y)) else {
                         continue;
-                    }
-                    let (gap_x, gap_y) = gaps(rect, other_rect);
-                    let half = letter.max(other_letter).max(1.) / 2.;
-                    if gap_x * gap_x + gap_y * gap_y <= half * half {
-                        join(&mut words, slot, other);
+                    };
+                    // Each cell lists its strokes in order: those after this
+                    // one.
+                    let after = others.partition_point(|&other| other <= slot);
+                    for &other in &others[after..] {
+                        let (other_rect, other_letter, other_reach, other_filled) = strokes[other];
+                        // Of the same stroke ([`same_stroke`]).
+                        if (reach - other_reach).abs() > 0.01 || filled != other_filled {
+                            continue;
+                        }
+                        let (gap_x, gap_y) = gaps(rect, other_rect);
+                        let half = letter.max(other_letter).max(1.) / 2.;
+                        if gap_x * gap_x + gap_y * gap_y <= half * half
+                            && root(&mut local, slot) != root(&mut local, other)
+                        {
+                            join(&mut local, slot, other);
+                            pairs.push((slot, other));
+                        }
                     }
                 }
             }
         }
+        pairs
+    };
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(8);
+    let pairs = if threads < 2 || strokes.len() < LETTERING_PARALLEL {
+        vec![pairs_of(0..strokes.len())]
+    } else {
+        let (count, run) = (strokes.len(), strokes.len().div_ceil(threads));
+        let pairs_of = &pairs_of;
+        std::thread::scope(|scope| {
+            let workers = (0..count)
+                .step_by(run)
+                .map(|start| scope.spawn(move || pairs_of(start..(start + run).min(count))))
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap_or_default())
+                .collect()
+        })
+    };
+    let mut words = (0..candidates.len()).collect::<Vec<_>>();
+    for (slot, other) in pairs.into_iter().flatten() {
+        join(&mut words, slot, other);
     }
     let word_of = (0..candidates.len())
         .map(|slot| root(&mut words, slot))
@@ -4827,6 +4902,63 @@ fn path_subpaths(operations: &ContentOps, ops: &[usize], ctm: Matrix) -> Vec<Sub
     subpaths
 }
 
+/// The bounds of the points [`path_subpaths`] finds, in the same order,
+/// without gathering them: every path a page paints is bounded as it is
+/// read.
+fn path_bounds(operations: &ContentOps, ops: &[usize], ctm: Matrix) -> Option<[f64; 4]> {
+    let mut bounds: Option<[f64; 4]> = None;
+    let mut add = |x: f64, y: f64| {
+        let (x, y) = apply(ctm, x, y);
+        let b = bounds.get_or_insert([x, y, x, y]);
+        b[0] = b[0].min(x);
+        b[1] = b[1].min(y);
+        b[2] = b[2].max(x);
+        b[3] = b[3].max(y);
+    };
+    // Points join a subpath only once one has begun.
+    let mut begun = false;
+    for &op in ops {
+        let operands = operations.operands(op);
+        match operations[op].operator.as_slice() {
+            b"re" => {
+                if let Some([x, y, w, h]) = numbers::<4>(operands) {
+                    add(x, y);
+                    add(x + w, y);
+                    add(x + w, y + h);
+                    add(x, y + h);
+                    begun = true;
+                }
+            }
+            b"m" => {
+                if let Some([x, y]) = numbers::<2>(operands) {
+                    add(x, y);
+                    begun = true;
+                }
+            }
+            b"l" if begun => {
+                if let Some([x, y]) = numbers::<2>(operands) {
+                    add(x, y);
+                }
+            }
+            b"c" if begun => {
+                if let Some([x1, y1, x2, y2, x3, y3]) = numbers::<6>(operands) {
+                    add(x1, y1);
+                    add(x2, y2);
+                    add(x3, y3);
+                }
+            }
+            b"v" | b"y" if begun => {
+                if let Some([x1, y1, x2, y2]) = numbers::<4>(operands) {
+                    add(x1, y1);
+                    add(x2, y2);
+                }
+            }
+            _ => {}
+        }
+    }
+    bounds
+}
+
 /// The bounds of `points`: left, bottom, right, top.
 fn points_bounds(points: impl Iterator<Item = (f64, f64)>) -> Option<[f64; 4]> {
     let mut bounds: Option<[f64; 4]> = None;
@@ -5313,14 +5445,7 @@ impl Walk<'_> {
                         // Its bounds, read once: a page's content is
                         // named and grouped by them many times over.
                         let bounds = (clips || kept)
-                            .then(|| {
-                                points_bounds(
-                                    path_subpaths(&self.operations, &path_ops, state.ctm)
-                                        .iter()
-                                        .flat_map(|subpath| subpath.points.iter())
-                                        .map(|point| (point.x, point.y)),
-                                )
-                            })
+                            .then(|| path_bounds(&self.operations, &path_ops, state.ctm))
                             .flatten();
                         if let Some(even_odd) = pending_clip.take() {
                             let ctm = state.ctm.map(f64::to_bits);
@@ -10211,6 +10336,25 @@ mod tests {
             get_dict(&document, &resources, b"XObject")
                 .is_none_or(|xobjects| !xobjects.has(b"Sheet"))
         );
+    }
+
+    /// A path's bounds read directly are those of its points gathered.
+    #[test]
+    fn path_bounds_match_the_points_gathered() {
+        let content = b"0 0 m 10 5 l 20 30 40 -5 50 0 c h 60 60 15 10 re 5 5 l \
+            70 70 m 80 75 90 60 v 75 80 100 90 y 1 1 l";
+        let operations = parse_operations(&[content.to_vec()], &TextEditLimits::default()).unwrap();
+        let all = (0..operations.len()).collect::<Vec<_>>();
+        let ctm = [2., 0.5, -0.5, 1.5, 10., 20.];
+        for ops in [&all[..], &all[1..], &all[5..], &all[..3]] {
+            let gathered = points_bounds(
+                path_subpaths(&operations, ops, ctm)
+                    .iter()
+                    .flat_map(|subpath| subpath.points.iter())
+                    .map(|point| (point.x, point.y)),
+            );
+            assert_eq!(path_bounds(&operations, ops, ctm), gathered, "{ops:?}");
+        }
     }
 
     #[test]
