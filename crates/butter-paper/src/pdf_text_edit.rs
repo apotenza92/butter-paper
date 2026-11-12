@@ -4902,6 +4902,63 @@ fn path_subpaths(operations: &ContentOps, ops: &[usize], ctm: Matrix) -> Vec<Sub
     subpaths
 }
 
+/// The bounds of the points [`path_subpaths`] finds, in the same order,
+/// without gathering them: every path a page paints is bounded as it is
+/// read.
+fn path_bounds(operations: &ContentOps, ops: &[usize], ctm: Matrix) -> Option<[f64; 4]> {
+    let mut bounds: Option<[f64; 4]> = None;
+    let mut add = |x: f64, y: f64| {
+        let (x, y) = apply(ctm, x, y);
+        let b = bounds.get_or_insert([x, y, x, y]);
+        b[0] = b[0].min(x);
+        b[1] = b[1].min(y);
+        b[2] = b[2].max(x);
+        b[3] = b[3].max(y);
+    };
+    // Points join a subpath only once one has begun.
+    let mut begun = false;
+    for &op in ops {
+        let operands = operations.operands(op);
+        match operations[op].operator.as_slice() {
+            b"re" => {
+                if let Some([x, y, w, h]) = numbers::<4>(operands) {
+                    add(x, y);
+                    add(x + w, y);
+                    add(x + w, y + h);
+                    add(x, y + h);
+                    begun = true;
+                }
+            }
+            b"m" => {
+                if let Some([x, y]) = numbers::<2>(operands) {
+                    add(x, y);
+                    begun = true;
+                }
+            }
+            b"l" if begun => {
+                if let Some([x, y]) = numbers::<2>(operands) {
+                    add(x, y);
+                }
+            }
+            b"c" if begun => {
+                if let Some([x1, y1, x2, y2, x3, y3]) = numbers::<6>(operands) {
+                    add(x1, y1);
+                    add(x2, y2);
+                    add(x3, y3);
+                }
+            }
+            b"v" | b"y" if begun => {
+                if let Some([x1, y1, x2, y2]) = numbers::<4>(operands) {
+                    add(x1, y1);
+                    add(x2, y2);
+                }
+            }
+            _ => {}
+        }
+    }
+    bounds
+}
+
 /// The bounds of `points`: left, bottom, right, top.
 fn points_bounds(points: impl Iterator<Item = (f64, f64)>) -> Option<[f64; 4]> {
     let mut bounds: Option<[f64; 4]> = None;
@@ -5388,14 +5445,7 @@ impl Walk<'_> {
                         // Its bounds, read once: a page's content is
                         // named and grouped by them many times over.
                         let bounds = (clips || kept)
-                            .then(|| {
-                                points_bounds(
-                                    path_subpaths(&self.operations, &path_ops, state.ctm)
-                                        .iter()
-                                        .flat_map(|subpath| subpath.points.iter())
-                                        .map(|point| (point.x, point.y)),
-                                )
-                            })
+                            .then(|| path_bounds(&self.operations, &path_ops, state.ctm))
                             .flatten();
                         if let Some(even_odd) = pending_clip.take() {
                             let ctm = state.ctm.map(f64::to_bits);
@@ -10286,6 +10336,25 @@ mod tests {
             get_dict(&document, &resources, b"XObject")
                 .is_none_or(|xobjects| !xobjects.has(b"Sheet"))
         );
+    }
+
+    /// A path's bounds read directly are those of its points gathered.
+    #[test]
+    fn path_bounds_match_the_points_gathered() {
+        let content = b"0 0 m 10 5 l 20 30 40 -5 50 0 c h 60 60 15 10 re 5 5 l \
+            70 70 m 80 75 90 60 v 75 80 100 90 y 1 1 l";
+        let operations = parse_operations(&[content.to_vec()], &TextEditLimits::default()).unwrap();
+        let all = (0..operations.len()).collect::<Vec<_>>();
+        let ctm = [2., 0.5, -0.5, 1.5, 10., 20.];
+        for ops in [&all[..], &all[1..], &all[5..], &all[..3]] {
+            let gathered = points_bounds(
+                path_subpaths(&operations, ops, ctm)
+                    .iter()
+                    .flat_map(|subpath| subpath.points.iter())
+                    .map(|point| (point.x, point.y)),
+            );
+            assert_eq!(path_bounds(&operations, ops, ctm), gathered, "{ops:?}");
+        }
     }
 
     #[test]
