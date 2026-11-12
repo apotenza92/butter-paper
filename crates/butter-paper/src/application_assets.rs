@@ -57,17 +57,15 @@ impl AssetSource for ApplicationAssets {
             "icons/rail/pen-line.svg" => Some(include_bytes!("../assets/icons/rail/pen-line.svg")),
             "icons/rail/spline.svg" => Some(include_bytes!("../assets/icons/rail/spline.svg")),
             "icons/rail/pentagon.svg" => Some(include_bytes!("../assets/icons/rail/pentagon.svg")),
-            "icons/rail/ruler.svg" => Some(include_bytes!("../assets/icons/rail/ruler.svg")),
+            "icons/rail/dimension.svg" => {
+                Some(include_bytes!("../assets/icons/rail/dimension.svg"))
+            }
             "icons/rail/scan-line.svg" => {
                 Some(include_bytes!("../assets/icons/rail/scan-line.svg"))
             }
             "icons/rail/ruler-dimension-line.svg" => Some(include_bytes!(
                 "../assets/icons/rail/ruler-dimension-line.svg"
             )),
-            "icons/rail/route.svg" => Some(include_bytes!("../assets/icons/rail/route.svg")),
-            "icons/rail/chart-area.svg" => {
-                Some(include_bytes!("../assets/icons/rail/chart-area.svg"))
-            }
             "icons/rail/magnet.svg" => Some(include_bytes!("../assets/icons/rail/magnet.svg")),
             "icons/rail/sliders-horizontal.svg" => Some(include_bytes!(
                 "../assets/icons/rail/sliders-horizontal.svg"
@@ -164,20 +162,14 @@ impl AssetSource for ApplicationAssets {
         if "icons/rail/pentagon.svg".starts_with(path) {
             entries.push("icons/rail/pentagon.svg".into());
         }
-        if "icons/rail/ruler.svg".starts_with(path) {
-            entries.push("icons/rail/ruler.svg".into());
+        if "icons/rail/dimension.svg".starts_with(path) {
+            entries.push("icons/rail/dimension.svg".into());
         }
         if "icons/rail/scan-line.svg".starts_with(path) {
             entries.push("icons/rail/scan-line.svg".into());
         }
         if "icons/rail/ruler-dimension-line.svg".starts_with(path) {
             entries.push("icons/rail/ruler-dimension-line.svg".into());
-        }
-        if "icons/rail/route.svg".starts_with(path) {
-            entries.push("icons/rail/route.svg".into());
-        }
-        if "icons/rail/chart-area.svg".starts_with(path) {
-            entries.push("icons/rail/chart-area.svg".into());
         }
         if "icons/rail/magnet.svg".starts_with(path) {
             entries.push("icons/rail/magnet.svg".into());
@@ -242,7 +234,7 @@ mod tests {
     #[test]
     fn every_rail_icon_is_embedded_and_loadable() {
         let icons = ApplicationAssets.list("icons/rail/").unwrap();
-        assert_eq!(icons.len(), 27);
+        assert_eq!(icons.len(), 25);
         for path in icons {
             let bytes = ApplicationAssets
                 .load(&path)

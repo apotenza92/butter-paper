@@ -95,7 +95,10 @@ changes it; history is in git.
 ## Interface
 
 - A page has one scale, stored as Revu stores it (a page-wide `/VP`
-  viewport). One Page Scale dialog chooses it: standard scales, the ones the
+  viewport). The view toolbar's Scale turns the current page's scale on and
+  off, and its menu drops down the one Page Scale panel that chooses it
+  (decided 2026-11-11, replacing a Page Scale button among the measuring
+  tools, which read as one of them): standard scales, the ones the
   page states (suggested, never applied without Apply), a custom ratio, or
   calibration from a line of known length; then the measuring unit,
   precision and pages. Saved scale presets were dropped: they lived only in
@@ -111,27 +114,39 @@ changes it; history is in git.
   saved is the same ordinary markup, as Sketch to Scale's is. A page without
   a scale shows no size and takes no typed size. Properties show and edit a
   shape's size in the page's real units.
-- Measurements stay their own tools: they are quantities, with captions,
-  listed by Revu as measurements. A line drawn to scale is not a Length.
+- Measuring is a switch on the drawing tools, not separate tools (decided
+  2026-11-11, replacing the Measure section of Length, Polylength and
+  Area): Dimension, Polyline and Polygon each have Measure, in the tool's
+  properties and a selected markup's. On, they draw Revu's measurements (a
+  Length, Polylength or Area), still quantities with captions that Revu
+  lists as measurements and saved as Revu writes them; off, the plain
+  markup. A Dimension measures by default wherever its page has a scale,
+  and takes typed text where it has none; Polyline and Polygon start with
+  it off. Adding a scale never turns plain markups into measurements. A
+  line drawn to scale is not a Length.
   As in Revu 20 and later, each measurement shows its own unit, independent
   of the page scale's; the page keeps the precision. Geometry is stored
   exactly; units and precision only round what is shown and typed.
 - Every feature is free for now. Scale and measurement features (setting a
-  scale, measurement tools, typed sizes) may later be a paid tier; that is
-  why they hang off the page scale and the Measure section rather than off
-  duplicate tools. No licensing code until that is decided.
+  scale, measuring, typed sizes) may later be a paid tier; that is why they
+  hang off the page scale and the Measure switches rather than off duplicate
+  tools. No licensing code until that is decided.
 
 - A window filling half a 1920-pixel screen shows the whole interface with
-  its sidebars collapsed: Edit PDF, every view control, the whole page
-  navigator and a signed document's signatures button, for documents of up
-  to 9,999 pages. Changes to the view toolbar keep to that. Narrower than it
+  its sidebars collapsed: Edit PDF, the page's Scale, every view control, the
+  page navigator's page field and a signed document's signatures button, for
+  documents of up to 9,999 pages. (Its First, Previous, Next and Last buttons
+  showed there too until the Scale joined the toolbar, 2026-11-11; the page
+  keys and menu still turn pages.) Changes to the view toolbar keep to that. Narrower than it
   needs, the whole toolbar turns compact at once, not control by control:
-  the Edit PDF switch shows an icon in place of its label, and the page
-  navigator only its page field. The signatures button is always the shield
+  the Edit PDF switch (labelled Edit) and the Scale switch show icons in
+  place of their labels, the Scale its menu without the scale, and the page
+  navigator only its page field. Each group of toolbar controls sits in its
+  own frame. The signatures button is always the shield
   alone, coloured by the verdict; its tooltip says the verdict, and a click
   lists the signatures.
-- Windows have a least size: document windows 746 × 480, where the view
-  toolbar shows Edit PDF, the signatures button and all its view controls,
+- Windows have a least size: document windows 906 × 480, where the view
+  toolbar shows Edit PDF, Scale, the signatures button and all its view controls,
   with the page field, between the left
   rail and the two-column tool rail (the tool rail folds into its overflow
   menu when short), Settings 600 × 420. Page Thumbnails yields to the
@@ -220,8 +235,8 @@ changes it; history is in git.
 - Sidebars: page thumbnails on the left, properties on the right, both 300px
   by default and resizable; thumbnails hide automatically when the window is
   too narrow for both and return when it widens. The right tool rail snaps to
-  whole columns, two by default, in sections General, Edit, Review, Draw
-  and Measure. When it overflows, an ellipsis cue at the hidden edge covers
+  whole columns, two by default, in sections General, Edit, Review and
+  Draw. When it overflows, an ellipsis cue at the hidden edge covers
   the tools faded under it; hovering it shows "Scroll to see other tools"
   beside the ellipsis, and a rail with nothing to scroll never shows it.
 - Pages are arranged from Page Thumbnails (its right-click menu, drag, the

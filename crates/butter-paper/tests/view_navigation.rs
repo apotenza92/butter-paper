@@ -1970,9 +1970,9 @@ fn a_signed_document_s_whole_toolbar_fits_half_a_1080p_screen(cx: &mut TestAppCo
     let (mut h, _) = setup_tabs(cx, &PAGES_1000, &[signed]);
     let wide_edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
     whole_toolbar_fits(&mut h, "signed");
-    // Not compact: Edit PDF keeps its label.
+    // Compact: Edit PDF shows its icon for its label.
     let edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
-    assert_eq!(edit_pdf.size, wide_edit_pdf.size);
+    assert!(edit_pdf.size.width < wide_edit_pdf.size.width);
     let toolbar = h.cx.debug_bounds("viewer-toolbar").unwrap();
     let controls =
         h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
@@ -1996,7 +1996,8 @@ fn whole_toolbar_fits(h: &mut Harness<'_>, document: &str) {
         PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_LAST_ID, PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
     };
     use butter_paper::viewer_toolbar_strip::{
-        EDIT_PDF_ID, VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
+        EDIT_PDF_ID, VIEWER_SCALE_ID, VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID,
+        VIEWER_TOOLBAR_ID,
     };
     h.cx.simulate_resize(size(px(HALF_1080P_WIDTH), px(1000.)));
     h.settle();
@@ -2014,12 +2015,21 @@ fn whole_toolbar_fits(h: &mut Harness<'_>, document: &str) {
         "Edit PDF overlaps the controls"
     );
     assert!(controls.right() <= toolbar.right());
+    // Narrow, the page navigator shows its page field alone (decided
+    // 2026-11-11, to make room for the page's Scale beside Edit PDF).
+    for id in [PAGE_FIRST_ID, PAGE_PREVIOUS_ID, PAGE_NEXT_ID, PAGE_LAST_ID] {
+        assert!(
+            h.cx.debug_bounds(id).is_none(),
+            "{id} shows at half 1080p for {document}: the toolbar is not compact"
+        );
+    }
+    let scale = h.cx.debug_bounds(VIEWER_SCALE_ID).unwrap();
+    assert!(
+        edit_pdf.right() <= scale.left() && scale.right() <= controls.left(),
+        "the Scale overlaps at half 1080p for {document}"
+    );
     for id in [
-        PAGE_FIRST_ID,
-        PAGE_PREVIOUS_ID,
         PAGE_INDICATOR_ID,
-        PAGE_NEXT_ID,
-        PAGE_LAST_ID,
         "viewer-zoom-menu",
         "viewer-fit-width",
         "viewer-fit-page",

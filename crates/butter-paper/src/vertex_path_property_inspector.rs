@@ -26,6 +26,7 @@ use crate::document_workspace::DocumentId;
 
 pub const VERTEX_PATH_PROPERTY_INSPECTOR_ID: &str = "vertex-path-property-inspector";
 pub const VERTEX_PATH_INSPECTOR_LOCKED_ID: &str = "vertex-path-property-inspector-locked";
+pub const VERTEX_PATH_INSPECTOR_MEASURE_ID: &str = "vertex-path-property-inspector-measure";
 pub const VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID: &str =
     "vertex-path-property-inspector-stroke-color";
 pub const VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID: &str =
@@ -48,6 +49,11 @@ pub enum PathPropertyKind {
 }
 
 impl PathPropertyKind {
+    /// A Polylength or Area: measured with the page scale.
+    pub fn measures(self) -> bool {
+        matches!(self, Self::Polylength | Self::Area)
+    }
+
     pub fn supports_fill(self) -> bool {
         matches!(self, Self::Polygon | Self::Area)
     }
@@ -94,8 +100,16 @@ pub struct VertexPathPropertySnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum VertexPathPropertyPatch {
     Locked(bool),
-    StrokeColorAndOpacity { color: String, opacity: f64 },
-    FillColorAndOpacity { color: String, opacity: f64 },
+    /// Measuring on (a Polylength or Area) or off (a Polyline or Polygon).
+    Measure(bool),
+    StrokeColorAndOpacity {
+        color: String,
+        opacity: f64,
+    },
+    FillColorAndOpacity {
+        color: String,
+        opacity: f64,
+    },
     StrokeColor(String),
     StrokeWidthPt(f64),
     Opacity(f64),
@@ -405,6 +419,7 @@ impl Render for VertexPathPropertyInspector {
         };
         let weak = cx.entity().downgrade();
         let weak_lock = weak.clone();
+        let weak_measure = weak.clone();
         let weak_stroke = weak.clone();
         let weak_fill = weak.clone();
         let weak_none = weak.clone();
@@ -415,6 +430,32 @@ impl Render for VertexPathPropertyInspector {
                 Field::new()
                     .label("Type")
                     .child(div().child(snapshot.kind.label())),
+            )
+            .child(
+                Field::new().child(
+                    div()
+                        .id(VERTEX_PATH_INSPECTOR_MEASURE_ID)
+                        .debug_selector(|| VERTEX_PATH_INSPECTOR_MEASURE_ID.into())
+                        .child(
+                            Switch::new("vertex-path-property-inspector-measure-switch")
+                                .label("Measure")
+                                .checked(snapshot.kind.measures())
+                                .disabled(disabled)
+                                .tooltip(if snapshot.kind.supports_fill() {
+                                    "Measure its area with the page scale (Area)"
+                                } else {
+                                    "Measure its total length with the page scale (Polylength)"
+                                })
+                                .on_click(move |measure, _, cx| {
+                                    let _ = weak_measure.update(cx, |this, cx| {
+                                        this.emit_patch(
+                                            VertexPathPropertyPatch::Measure(*measure),
+                                            cx,
+                                        )
+                                    });
+                                }),
+                        ),
+                ),
             )
             .child(
                 Field::new().child(
@@ -571,6 +612,7 @@ fn color_control(
 fn patch_matches(patch: &VertexPathPropertyPatch, snapshot: &VertexPathPropertySnapshot) -> bool {
     match patch {
         VertexPathPropertyPatch::Locked(v) => snapshot.locked == *v,
+        VertexPathPropertyPatch::Measure(v) => snapshot.kind.measures() == *v,
         VertexPathPropertyPatch::StrokeColorAndOpacity { color, opacity } => {
             snapshot.appearance.stroke_color() == color && snapshot.appearance.opacity() == *opacity
         }

@@ -961,16 +961,20 @@ fn merge_documents_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn the_page_scale_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
+fn the_page_scale_panel_drops_from_the_scale_and_closes_like_a_popup(cx: &mut TestAppContext) {
     use butter_paper::generated_document::GeneratedDocumentStore;
-    use butter_paper::page_scale_control::{PAGE_SCALE_CANCEL_ID, PAGE_SCALE_DIALOG_ID};
+    use butter_paper::page_scale_control::{
+        PAGE_SCALE_CANCEL_ID, PAGE_SCALE_CLOSE_ID, PAGE_SCALE_DIALOG_ID,
+    };
+    use butter_paper::viewer_toolbar_strip::{VIEWER_SCALE_ID, VIEWER_SCALE_MENU_ID};
+    use gpui::{Modifiers, point, px};
     cx.update(|cx| {
         gpui_component::init(cx);
         init_document_workspace_actions(cx);
     });
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.join(format!(
-        "target/test-scratch/scale-contract-{}",
+        "target/test-scratch/scale-panel-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
@@ -994,21 +998,72 @@ fn the_page_scale_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppCon
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
     let file = manifest.join("tests/fixtures/bp-multi-page-v1.pdf");
-    let document_id = workspace.update(cx, |workspace, cx| workspace.open_path(file, cx));
+    workspace.update(cx, |workspace, cx| workspace.open_path(file, cx));
     cx.run_until_parked();
-    let reopen = move |cx: &mut gpui::VisualTestContext| {
-        workspace.update_in(cx, |workspace, window, cx| {
-            workspace.open_page_scale_dialog(document_id, 0, window, cx)
-        });
+    let settle = |cx: &mut gpui::VisualTestContext| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     };
-    reopen.clone()(cx);
-    dialog_contract::assert_dialog_dismissal(
-        cx,
-        "Page scale",
-        PAGE_SCALE_DIALOG_ID,
-        PAGE_SCALE_CANCEL_ID,
-        dialog_contract::Outside::Closes,
-        reopen,
+    let open = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .page_scale_control()
+                .is_some_and(|control| control.read(cx).is_open())
+        })
+    };
+    settle(cx);
+    let menu = cx
+        .debug_bounds(VIEWER_SCALE_MENU_ID)
+        .expect("the toolbar shows the page's Scale");
+    let reopen = |cx: &mut gpui::VisualTestContext, after: &str| {
+        cx.simulate_click(menu.center(), Modifiers::none());
+        settle(cx);
+        assert!(open(cx), "the Scale menu reopens the panel after {after}");
+    };
+    reopen(cx, "opening the document");
+
+    // It drops down from the Scale, inside the window.
+    let scale = cx.debug_bounds(VIEWER_SCALE_ID).unwrap();
+    let panel = cx.debug_bounds(PAGE_SCALE_DIALOG_ID).unwrap();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    assert!(
+        panel.top() >= scale.bottom(),
+        "the panel drops below the Scale"
     );
+    assert!(
+        (panel.left() - scale.left()).abs() <= px(1.),
+        "and lines up with it"
+    );
+    assert!(panel.right() <= viewport.width && panel.bottom() <= viewport.height);
+
+    // The menu button closes it again.
+    cx.simulate_click(menu.center(), Modifiers::none());
+    settle(cx);
+    assert!(!open(cx), "the Scale menu closes the panel");
+    reopen(cx, "the Scale menu");
+
+    cx.simulate_keystrokes("escape");
+    settle(cx);
+    assert!(!open(cx), "Escape closes it");
+    reopen(cx, "Escape");
+
+    for (button, name) in [
+        (PAGE_SCALE_CLOSE_ID, "its X"),
+        (PAGE_SCALE_CANCEL_ID, "Cancel"),
+    ] {
+        let bounds = cx.debug_bounds(button).unwrap();
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        settle(cx);
+        assert!(!open(cx), "{name} closes it");
+        reopen(cx, name);
+    }
+
+    // A press on the page beside it closes it, and only closes it.
+    let panel = cx.debug_bounds(PAGE_SCALE_DIALOG_ID).unwrap();
+    let beside = point(panel.right() + px(40.), panel.bottom() - px(20.));
+    assert!(beside.x < viewport.width, "leaves page beside it to press");
+    cx.simulate_click(beside, Modifiers::none());
+    settle(cx);
+    assert!(!open(cx), "a press outside it closes it");
     std::fs::remove_dir_all(root).unwrap();
 }

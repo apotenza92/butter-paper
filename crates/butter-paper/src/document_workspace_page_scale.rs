@@ -3,10 +3,146 @@
 //! ([`crate::page_scale_control`]).
 
 use super::*;
-use crate::page_scale_control::{CalibrationPreview, PageScaleRequest};
+use crate::page_scale_control::{CalibrationPreview, PageScaleRequest, page_scale_panel};
+use crate::viewer_toolbar_strip::{ScaleRequest, ScaleToolbarState};
 use gpui_component::Sizable as _;
 
 impl DocumentWorkspace {
+    /// The active document's current page, which the toolbar's Scale is
+    /// for.
+    pub(super) fn scale_target_page(&self, cx: &App) -> Option<(DocumentId, u32)> {
+        let document_id = self.active_ready_document_id(cx)?;
+        let session = self.session(document_id, cx)?.read(cx);
+        Some((document_id, session.current_page))
+    }
+
+    /// Shows the current page's scale in the toolbar.
+    pub(super) fn sync_viewer_toolbar_scale(&mut self, cx: &mut Context<Self>) {
+        let panel_open = self.page_scale_control.as_ref().is_some_and(|control| {
+            let control = control.read(cx);
+            control.is_open() || control.is_picking()
+        });
+        if !panel_open {
+            self.page_scale_switching_on = None;
+        }
+        let state = self.scale_target_page(cx).map(|(document_id, page_index)| {
+            let current = self.page_scale(document_id, page_index, cx);
+            let shown = current.clone().or_else(|| {
+                self.removed_page_scales
+                    .get(&(document_id, page_index))
+                    .cloned()
+            });
+            ScaleToolbarState {
+                page_number: page_index + 1,
+                on: current.is_some()
+                    || self.page_scale_switching_on == Some((document_id, page_index)),
+                label: shown
+                    .as_ref()
+                    .map(|scale| crate::page_scale_catalog::scale_label(scale).into()),
+            }
+        });
+        self.viewer_toolbar
+            .update(cx, |toolbar, cx| toolbar.set_scale(state, cx));
+    }
+
+    /// A press on the toolbar's Scale.
+    pub fn handle_scale_request(
+        &mut self,
+        request: ScaleRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((document_id, page_index)) = self.scale_target_page(cx) else {
+            return;
+        };
+        match request {
+            ScaleRequest::Menu => {
+                // The menu button opens and closes the panel.
+                if let Some(control) = self.page_scale_control.clone()
+                    && control.read(cx).is_open()
+                {
+                    control.update(cx, |control, cx| control.close(cx));
+                } else {
+                    self.open_page_scale_dialog(document_id, page_index, window, cx);
+                }
+            }
+            ScaleRequest::Toggle => self.toggle_page_scale(document_id, page_index, window, cx),
+        }
+        cx.notify();
+    }
+
+    /// The Scale switch: removes the page's scale, brings back the one it
+    /// last had, or opens the panel to choose one, the switch showing on
+    /// until the panel closes.
+    pub fn toggle_page_scale(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let page = page_index + 1;
+        if self.page_scale_switching_on == Some((document_id, page_index)) {
+            self.page_scale_switching_on = None;
+            if let Some(control) = self.page_scale_control.clone() {
+                control.update(cx, |control, cx| control.close(cx));
+            }
+            return;
+        }
+        let status = if let Some(current) = self.page_scale(document_id, page_index, cx) {
+            match self.remove_page_scale(document_id, PageScaleApplyTarget::Current(page_index), cx)
+            {
+                Ok(_) => format!(
+                    "Removed the scale from page {page}. Switch Scale on to bring back {}.",
+                    crate::page_scale_catalog::scale_label(&current)
+                ),
+                Err(error) => error,
+            }
+        } else if let Some(previous) = self
+            .removed_page_scales
+            .get(&(document_id, page_index))
+            .cloned()
+        {
+            match self.apply_page_scale(
+                document_id,
+                previous.clone(),
+                PageScaleApplyTarget::Current(page_index),
+                cx,
+            ) {
+                Ok(_) => format!(
+                    "Page {page} set to {}.",
+                    crate::page_scale_catalog::scale_label(&previous)
+                ),
+                Err(error) => error,
+            }
+        } else {
+            self.page_scale_switching_on = Some((document_id, page_index));
+            self.open_page_scale_dialog(document_id, page_index, window, cx);
+            return;
+        };
+        self.annotation_statuses.insert(document_id, status);
+        cx.notify();
+    }
+
+    /// The Page Scale panel, under the toolbar's Scale, while it is open.
+    pub(super) fn render_page_scale_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let control = self.page_scale_control.clone();
+        let open = control
+            .as_ref()
+            .is_some_and(|control| control.read(cx).is_open());
+        crate::overlay_state::sync_overlay_open(
+            crate::page_scale_control::PAGE_SCALE_DIALOG_ID,
+            open,
+            cx,
+        );
+        let anchor = self.viewer_toolbar.read(cx).scale_bounds();
+        page_scale_panel(&control?, anchor, window, cx)
+    }
+
     /// Opens the Page Scale dialog for `page_index` of the document.
     pub fn open_page_scale_dialog(
         &mut self,

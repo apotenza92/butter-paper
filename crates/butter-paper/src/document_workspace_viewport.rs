@@ -4,6 +4,7 @@
 use super::*;
 use crate::document_viewer::ViewerPlanSnapshot;
 use gpui::{Canvas, Hsla};
+use std::collections::BTreeSet;
 
 /// One visible page: layout, display size, PDF size and rotation, coordinate
 /// space, annotation scene, whether highlights are precomposed, painted tiles,
@@ -52,6 +53,9 @@ pub(super) struct ViewportInputs {
     pub semantic_snap_decision: Option<SemanticSnapDecision>,
     /// The calibration line of the Page Scale dialog.
     pub calibration_preview: Option<crate::page_scale_control::CalibrationPreview>,
+    /// The pages outlined, and whether the Scale that acts on them is in
+    /// hand.
+    pub page_outline: Option<PageOutline>,
     pub viewer_pages: Vec<ViewerPageRender>,
     /// Each page's tiles from before a zoom, drawn under its tiles.
     pub viewer_zoom_fallback: HashMap<usize, Vec<(crate::viewer::Rect, Arc<RenderImage>)>>,
@@ -96,6 +100,7 @@ impl DocumentWorkspace {
             selection_color,
             semantic_snap_decision,
             calibration_preview,
+            page_outline,
             viewer_pages,
             viewer_zoom_fallback,
             viewer_pan_margin,
@@ -112,6 +117,16 @@ impl DocumentWorkspace {
             forms::form_focus_element(self.form_focus.clone(), cx.entity().downgrade());
         let form_owner = cx.entity().downgrade();
         let warning_colors = tables::WarningColors::new(cx);
+        let outline_color = page_outline.as_ref().map(|outline| {
+            let theme = cx.theme();
+            let dark = theme.mode.is_dark();
+            theme.foreground.opacity(match (outline.emphasized, dark) {
+                (false, false) => 0.35,
+                (false, true) => 0.6,
+                (true, false) => 0.75,
+                (true, true) => 0.9,
+            })
+        });
         gpui::div()
                                 .id(DOCUMENT_VIEWPORT_ID)
                                 .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
@@ -457,6 +472,13 @@ impl DocumentWorkspace {
                                                                 }),
                                                         )
                                                         .children(render_error_surface)
+                                                        .children(
+                                                            page_outline
+                                                                .as_ref()
+                                                                .filter(|outline| outline.pages.contains(&page_index))
+                                                                .zip(outline_color)
+                                                                .map(|(_, color)| page_outline_element(color)),
+                                                        )
                                                 },
                                             )),
                                             ),
@@ -570,5 +592,54 @@ impl DocumentWorkspace {
                                             ),
                                     )
                                 })
+    }
+}
+
+/// The pages the canvas outlines: the current page, or the pages the Scale
+/// panel applies to.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct PageOutline {
+    pub pages: BTreeSet<u32>,
+    /// The Scale is hovered or its panel open: the outline is stronger.
+    pub emphasized: bool,
+}
+
+/// The page's outline, just outside its edge: a theme colour, not the
+/// paper's.
+pub(super) const PAGE_OUTLINE_WIDTH: f32 = 2.;
+
+fn page_outline_element(color: Hsla) -> gpui::Div {
+    gpui::div()
+        .absolute()
+        .left(px(-PAGE_OUTLINE_WIDTH))
+        .top(px(-PAGE_OUTLINE_WIDTH))
+        .right(px(-PAGE_OUTLINE_WIDTH))
+        .bottom(px(-PAGE_OUTLINE_WIDTH))
+        .border(px(PAGE_OUTLINE_WIDTH))
+        .border_color(color)
+}
+
+impl DocumentWorkspace {
+    /// What the canvas outlines: while the toolbar's Scale is hovered or
+    /// its panel open, the pages it acts on; otherwise the current page,
+    /// once more than one page is in view.
+    pub(super) fn page_outline(
+        &self,
+        document_id: DocumentId,
+        current_page: u32,
+        several_pages_visible: bool,
+        cx: &App,
+    ) -> Option<PageOutline> {
+        let panel_pages = self.page_scale_control.as_ref().and_then(|control| {
+            let control = control.read(cx);
+            (control.is_open() && control.target().map(|(id, _)| id) == Some(document_id))
+                .then(|| control.outlined_pages(cx))
+        });
+        let emphasized = panel_pages.is_some() || self.page_scale_hovered;
+        if !emphasized && !several_pages_visible {
+            return None;
+        }
+        let pages = panel_pages.unwrap_or_else(|| BTreeSet::from([current_page]));
+        Some(PageOutline { pages, emphasized })
     }
 }

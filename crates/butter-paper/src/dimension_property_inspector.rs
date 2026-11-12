@@ -13,6 +13,7 @@ use crate::property_controls::{
 use gpui::{
     AnyElement, App, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::{
     Disableable as _,
@@ -30,6 +31,7 @@ use crate::document_workspace::DocumentId;
 
 pub const DIMENSION_PROPERTY_INSPECTOR_ID: &str = "dimension-property-inspector";
 pub const DIMENSION_INSPECTOR_LOCKED_ID: &str = "dimension-property-inspector-locked";
+pub const DIMENSION_INSPECTOR_MEASURE_ID: &str = "dimension-property-inspector-measure";
 pub const DIMENSION_INSPECTOR_OFFSET_ID: &str = "dimension-property-offset";
 pub const DIMENSION_INSPECTOR_WIDTH_ID: &str = "dimension-property-stroke-width";
 pub const DIMENSION_INSPECTOR_FONT_SIZE_ID: &str = "dimension-property-font-size";
@@ -55,6 +57,9 @@ pub struct DimensionPropertySnapshot {
     pub appearance: DimensionAppearance,
     /// A Dimension's caption was moved from where it usually sits.
     pub caption_moved: bool,
+    /// A Dimension's (off) or Length's (on) Measure switch; `None` for a
+    /// measured path's caption.
+    pub measure: Option<bool>,
     pub locked: bool,
     pub mutation_disabled: bool,
 }
@@ -62,6 +67,8 @@ pub struct DimensionPropertySnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DimensionPropertyPatch {
     Locked(bool),
+    /// Measuring on (a Length) or off (a Dimension).
+    Measure(bool),
     OffsetPt(f64),
     Appearance(DimensionAppearance),
     ResetCaptionPosition,
@@ -380,6 +387,7 @@ impl Render for DimensionPropertyInspector {
         };
         let disabled = snapshot.mutation_disabled || snapshot.locked;
         let lock = cx.entity().downgrade();
+        let measure_switch = cx.entity().downgrade();
         let stroke = cx.entity().downgrade();
         let text = cx.entity().downgrade();
         let details = Field::new().child(
@@ -398,6 +406,35 @@ impl Render for DimensionPropertyInspector {
                         }),
                 ),
         );
+        let details =
+            v_flex()
+                .gap_3()
+                .child(details)
+                .when_some(snapshot.measure, |details, measure| {
+                    details.child(
+                Field::new().child(
+                    div()
+                        .id(DIMENSION_INSPECTOR_MEASURE_ID)
+                        .debug_selector(|| DIMENSION_INSPECTOR_MEASURE_ID.into())
+                        .child(
+                            Switch::new("dimension-property-measure-switch")
+                                .label("Measure")
+                                .checked(measure)
+                                .disabled(disabled)
+                                .tooltip(if measure {
+                                    "Off, the line keeps its measured text, which you can then edit"
+                                } else {
+                                    "Measure the line with the page scale (Length)"
+                                })
+                                .on_click(move |value, _, cx| {
+                                    let _ = measure_switch.update(cx, |this, cx| {
+                                        this.emit_patch(DimensionPropertyPatch::Measure(*value), cx)
+                                    });
+                                }),
+                        ),
+                ),
+            )
+                });
         let mut appearance = v_flex().gap_3();
         if snapshot.show_offset {
             appearance = appearance.child(
@@ -675,6 +712,7 @@ fn rebuild_appearance(
 fn patch_matches(patch: &DimensionPropertyPatch, snapshot: &DimensionPropertySnapshot) -> bool {
     match patch {
         DimensionPropertyPatch::Locked(value) => *value == snapshot.locked,
+        DimensionPropertyPatch::Measure(value) => Some(*value) == snapshot.measure,
         DimensionPropertyPatch::OffsetPt(value) => *value == snapshot.offset_pt,
         DimensionPropertyPatch::Appearance(value) => value == &snapshot.appearance,
         DimensionPropertyPatch::ResetCaptionPosition => !snapshot.caption_moved,

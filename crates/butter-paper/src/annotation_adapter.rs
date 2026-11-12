@@ -4435,6 +4435,54 @@ impl AnnotationAdapter {
             .remove_page_scale(target, page_count)
     }
 
+    /// The selected markups that a Measure switch changes, each with
+    /// whether it measures now.
+    pub fn measure_candidates(
+        &self,
+        document_id: u64,
+        ids: &[MarkupId],
+    ) -> Vec<(MarkupId, u32, bool)> {
+        self.documents
+            .get(&document_id)
+            .map(|document| document.measure_candidates(ids))
+            .unwrap_or_default()
+    }
+
+    /// Turns measuring on or off for the markups among `ids`, as one
+    /// undoable change; a measurement made measures at its page's scale (or
+    /// paper size), with the measuring tool's caption style.
+    pub fn set_measure(
+        &mut self,
+        document_id: u64,
+        ids: &[MarkupId],
+        measure: bool,
+    ) -> Result<usize, AnnotationError> {
+        let pages = self
+            .measure_candidates(document_id, ids)
+            .into_iter()
+            .map(|(_, page_index, _)| page_index)
+            .collect::<std::collections::BTreeSet<_>>();
+        let calibrations = pages
+            .into_iter()
+            .map(|page_index| {
+                (
+                    page_index,
+                    self.measurement_calibration(document_id, page_index),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let polylength = caption_tool_style(&self.tool_properties(AnnotationTool::Polylength))?;
+        let area = caption_tool_style(&self.tool_properties(AnnotationTool::Area))?;
+        let path_text = move |kind: MeasurementPathKind| match kind {
+            MeasurementPathKind::Polylength => polylength.clone(),
+            MeasurementPathKind::Area => area.clone(),
+        };
+        let Some(document) = self.documents.get_mut(&document_id) else {
+            return Ok(0);
+        };
+        document.set_measure(ids, measure, &calibrations, &path_text)
+    }
+
     pub fn length_calibration(&self) -> Option<&LengthCalibration> {
         self.page_length_calibration(0)
     }

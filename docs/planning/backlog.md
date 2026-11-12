@@ -44,7 +44,16 @@ alone do not establish these behaviours.
   takes a typed angle and segment length while drawing (seen in Revu 21);
   compare before extending typed sizes.
 - Revu measurement tools not yet here, by usefulness: Perimeter, Area
-  Cutout, Count, Diameter, Radius, Angle, Volume.
+  Cutout, Count, Diameter, Radius, Angle, Volume. Most fit the Measure
+  switch ([interactions](interactions.md#measure)) as a choice of what a
+  shape measures (Polygon: area or perimeter; Ellipse: diameter or radius;
+  a three-point Polyline: angle); Count needs a tool of its own.
+- Measure follow-ups: the Measure switches and a page's removed scale last
+  only while the app or document is open; Enter does not apply the Scale
+  panel; keyboard focus on the toolbar's Scale does not darken the page
+  outline as hovering does; a Dimension turned into a Length takes Length's
+  fixed 10-point leader. Revu has not yet opened a markup whose Measure was
+  switched here.
 - Scale regions: a sheet with views at several scales (a 1/8" plan beside
   1/4" details) needs Revu's viewports, a scale per region. Page scale is
   page-wide, and a PDF's partial viewports are read as page-wide.

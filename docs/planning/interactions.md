@@ -6,9 +6,9 @@ reference; entries marked *native* are deliberate departures from it.
 ## Tools
 
 - Shortcuts: Select `V`, Pan `Space` (hold), Text `T`, Rectangle `R`, Ellipse
-  `E`, Arc `Shift+C`, Line `L`, Arrow `A`, Dimension `Shift+L`, Length
-  `Shift+Alt+L`, Polylength `Shift+Alt+Q`, Area `Shift+Alt+A`, Polyline
-  `Shift+N`, Polygon `Shift+P`, Pen `P`, Highlight `H`, Cloud `C`, Cloud+
+  `E`, Arc `Shift+C`, Line `L`, Arrow `A`, Dimension `Shift+L`, Polyline
+  `Shift+N`, Polygon `Shift+P` (with Measure off; with it on: Dimension `Shift+Alt+L`, Polyline `Shift+Alt+Q`, Polygon
+  `Shift+Alt+A`), Pen `P`, Highlight `H`, Cloud `C`, Cloud+
   `K`, Callout `Q`, Image `I`, Snapshot `G`. `Shift+T`, or Edit PDF in the
   page's right-click menu (ticked while on), turns Edit PDF on and off
   ([Editing page content](#editing-page-content)). Tool shortcuts
@@ -55,14 +55,40 @@ visibly apart on screen.
 
 Shift constrains while drawing (lines and points horizontal or vertical from
 the last point, ellipse to a circle) and applies mid-drag. On a page without
-a scale, the first click of Length, Polylength or Area opens Page Scale for
-that page instead, saying why; once applied, the next click measures. Cancel
-measures at 1 in = 1 in, and that page does not ask again while the
-document is open.
+a scale, the first click of a Polyline or Polygon with Measure on opens Page
+Scale for that page instead, saying why; once applied, the next click
+measures. Cancel measures at 1 in = 1 in, and that page does not ask again
+while the document is open.
+
+## Measure
+
+Dimension, Polyline and Polygon have a Measure switch, at the top of the
+tool's properties and in a selected one's. On, they draw Revu's
+measurements: a Dimension a Length, a Polyline a Polylength (its total
+length), a Polygon an Area. The rail button and the properties title keep
+the tool's own name; their tooltips say what Measure draws.
+
+- Dimension's starts on: each press draws a Length where its page has a
+  scale and a Dimension with typed text where it has none. Polyline's and
+  Polygon's start off. The switches are the app's, kept while it is open;
+  a rail button chooses its tool as its switch was last set, and a
+  shortcut sets it.
+- Turning Measure on in a tool's properties for a page without a scale drops
+  down the Scale panel to choose one, the toolbar's switch showing on until
+  it closes.
+- A selected markup's switch turns it into the other kind, as one undoable
+  change for every such markup selected; locked ones are left. Each keeps
+  its id, place in the stacking order, points and appearance. Measured, it
+  measures at its page's scale (paper size without one, and the Scale panel
+  opens); a Length turned back into a Dimension keeps its line and its
+  caption as text. Saved, it is written as the other kind under its own
+  `/NM`.
+- Adding or changing a page's scale never turns plain markups into
+  measurements; it remeasures the measurements already there.
 
 On a page with a scale, once a markup's first point is placed a box beside
 the pointer shows its size in the page's real unit and the page's scale:
-Length and Angle for Line, Arrow, Length, Dimension and each segment of
+Length and Angle for Line, Arrow, Dimension (measured or not) and each segment of
 Polyline, Polygon, Polylength and Area; Width and Height for Rectangle and
 Ellipse (across and up the screen, on a turned page too). Typing a number
 fixes the size in the highlighted field, AutoCAD-style; what is not typed
@@ -652,12 +678,36 @@ Acrobat and Preview do.
 
 ## Page scale
 
-Page Scale (the rail's first Measure button, the page's context menu, the
-status bar's scale, or a selected measurement's Change button) sets the
-scale a page is drawn at. Length, Polylength and Area measure through it; a
-page without one measures paper size (1 in = 1 in).
+The view toolbar's Scale, beside Edit, is the current page's scale: a
+switch, and a menu showing the scale (`1:100`, cut short with an ellipsis
+when long; the tooltip names it in full). Measurements measure through it;
+a page without one measures paper size (1 in = 1 in).
 
-- The dialog names the page, its paper (`Page 2 of 16 · ARCH D, 36 × 24 in`)
+- The current page is the one the page navigator shows. The switch and its
+  menu act on it alone; its tooltip names it (`Page 3 · 1:100. Switch off to
+  remove page 3's scale.`).
+- Off removes the page's scale, as one undoable change, and the menu keeps
+  showing it, dimmed: on brings it back without asking, while the document
+  is open. Measurements already made keep their values. The status bar says
+  what changed (`Removed the scale from page 3. Switch Scale on to bring
+  back 1:100.`).
+- On, for a page never scaled (`Not set`), drops down the Page Scale panel,
+  the switch showing on until it closes; closed without Apply, it is off
+  again.
+- The menu, the page's context menu (Set page scale…, and Remove page scale
+  when it has one), the status bar's scale, a selected measurement's Change
+  button and a Measure switch drop down the same panel, under the toolbar's
+  Scale. The menu closes it again; so do its X, Cancel, Escape (after a
+  list open in it) and a press outside it, which only closes it.
+- Narrow, the switch shows a ruler for its label and the menu only its
+  arrow.
+- More than one page in view, the current page has a 2-point outline just
+  outside its edge, in the theme's text colour (35% in light, 60% in dark),
+  not the paper's. Over the toolbar's Scale, or with its panel open, the
+  outline darkens, and with the panel open it marks every page Apply would
+  change (`1-8` as it is typed).
+
+- The panel names the page, its paper (`Page 2 of 16 · ARCH D, 36 × 24 in`)
   and its current scale.
 - Scale is a searchable list of standard scales: metric (1:1 to 1:5000),
   architectural (12" = 1'-0" to 1/32" = 1'-0") and engineering (1" = 10' to
@@ -671,11 +721,11 @@ page without one measures paper size (1 in = 1 in).
   stated for another sheet is converted: `1:100 @ A1` on an A3 page is 1:200.
   A page without a scale starts at the one it states most; nothing applies
   until Apply.
-- Calibrate hides the dialog to click both ends of a length you know. Ends
+- Calibrate hides the panel to click both ends of a length you know. Ends
   snap as a Length's do, Shift keeps the line straight, and the line follows
   the pointer with its paper length (its length at the page's scale, when it
   has one). The first click may be on any page: the scale is then for that
-  page. Esc or Back returns to the dialog as it was. The dialog asks for the
+  page. Esc or Back returns to the panel as it was. The panel asks for the
   line's real length, focused (prefilled with what it measures now, when the
   page has a scale); a length may be typed as drawings write it (`36'-6"`) or
   with its own unit (`3600 mm`). Within 3% of a standard scale, it offers
@@ -691,8 +741,8 @@ page without one measures paper size (1 in = 1 in).
 - Apply to, in documents of more than one page: this page, all pages, or
   pages like `1-3, 5` (typed straight away).
 - Apply is one undoable change, and remeasures the measurements on those
-  pages. No scale removes the scale; measurements already made keep their
-  values. An unchanged dialog changes nothing, keeping even what it cannot
+  pages. No scale removes the scale, as the switch does; measurements
+  already made keep their values. An unchanged panel changes nothing, keeping even what it cannot
   show (a different vertical scale, an unlisted precision).
 - The status bar shows the current page's scale once it has one, or while a
   measuring tool is armed; clicking it opens Page Scale.

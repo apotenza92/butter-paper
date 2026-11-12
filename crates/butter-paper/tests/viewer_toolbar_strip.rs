@@ -16,9 +16,10 @@ use butter_paper::{
     },
     viewer_toolbar_strip::{
         EDIT_PDF_COMPACT_SLOT_REMS, EDIT_PDF_ID, EDIT_PDF_SLOT_MIN_REMS, FIT_BUTTON_GROUP_ID,
-        FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, VIEWER_TOOLBAR_CONTENT_ID,
-        VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID, VIEWER_TOOLBAR_MIN_REMS,
-        VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarFit, ViewerToolbarStrip, viewer_toolbar_rems,
+        FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, ScaleToolbarState, VIEWER_SCALE_ID,
+        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
+        VIEWER_TOOLBAR_MIN_REMS, VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarFit, ViewerToolbarStrip,
+        viewer_toolbar_rems,
     },
     zoom_control::{
         DEFAULT_VIEWER_ZOOM, MAX_VIEWER_ZOOM, MIN_VIEWER_ZOOM, ZOOM_GROUP_ID, ZOOM_IN_ID,
@@ -1431,9 +1432,18 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
     cx: &mut TestAppContext,
 ) {
     let (cx, entities) = open_harness(cx);
-    entities
-        .toolbar
-        .update(cx, |toolbar, cx| toolbar.set_edit_pdf(Some(false), cx));
+    entities.toolbar.update(cx, |toolbar, cx| {
+        toolbar.set_edit_pdf(Some(false), cx);
+        // The longest scale the menu shows is cut short to its width.
+        toolbar.set_scale(
+            Some(ScaleToolbarState {
+                page_number: 9_999,
+                on: true,
+                label: Some("1/32\" = 1'-0\"".into()),
+            }),
+            cx,
+        );
+    });
     let minimum = 16. * VIEWER_TOOLBAR_MIN_REMS;
     for width in [1400., 1100., 900., minimum + 64., minimum] {
         set_width(cx, &entities.harness, width);
@@ -1471,7 +1481,12 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
                 "the Edit PDF slot shrank at {width}"
             );
         }
-        assert!(edit_pdf.left() >= toolbar.left() && edit_pdf.right() <= controls.left());
+        let scale = bounds(cx, VIEWER_SCALE_ID);
+        assert!(edit_pdf.left() >= toolbar.left() && edit_pdf.right() <= scale.left());
+        assert!(
+            scale.right() <= controls.left(),
+            "the Scale overlaps the view controls at {width}: scale={scale:?}, controls={controls:?}"
+        );
         assert!(controls.right() <= toolbar.right());
     }
 }

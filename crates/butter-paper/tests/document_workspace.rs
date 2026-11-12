@@ -55,15 +55,14 @@ use butter_paper::document_workspace::DOCUMENT_RECOVERY_REBASE_RETRY_ID;
 use butter_paper::document_workspace::{
     ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
     DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
-    DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_AREA_TOOL_ID,
-    DOCUMENT_ARROW_TOOL_ID, DOCUMENT_CALLOUT_TOOL_ID, DOCUMENT_CLOUD_PLUS_TOOL_ID,
-    DOCUMENT_CLOUD_TOOL_ID, DOCUMENT_DIMENSION_TOOL_ID, DOCUMENT_DIRTY_CLOSE_CANCEL_ID,
-    DOCUMENT_DIRTY_CLOSE_DISCARD_ID, DOCUMENT_DIRTY_CLOSE_ID, DOCUMENT_DIRTY_CLOSE_SAVE_ID,
-    DOCUMENT_ELLIPSE_TOOL_ID, DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID, DOCUMENT_HIGHLIGHT_TOOL_ID,
-    DOCUMENT_IMAGE_TOOL_ID, DOCUMENT_LENGTH_TOOL_ID, DOCUMENT_LINE_TOOL_ID,
-    DOCUMENT_OPEN_ERROR_ALERT_ID, DOCUMENT_OPEN_ERROR_DISMISS_ID, DOCUMENT_OPEN_PROGRESS_ID,
-    DOCUMENT_OPEN_STATUS_ID, DOCUMENT_PAGE_ID, DOCUMENT_PEN_TOOL_ID, DOCUMENT_POLYGON_TOOL_ID,
-    DOCUMENT_POLYLENGTH_TOOL_ID, DOCUMENT_POLYLINE_TOOL_ID,
+    DOCUMENT_ARC_PREVIEW_MARKER_ID, DOCUMENT_ARC_TOOL_ID, DOCUMENT_ARROW_TOOL_ID,
+    DOCUMENT_CALLOUT_TOOL_ID, DOCUMENT_CLOUD_PLUS_TOOL_ID, DOCUMENT_CLOUD_TOOL_ID,
+    DOCUMENT_DIMENSION_TOOL_ID, DOCUMENT_DIRTY_CLOSE_CANCEL_ID, DOCUMENT_DIRTY_CLOSE_DISCARD_ID,
+    DOCUMENT_DIRTY_CLOSE_ID, DOCUMENT_DIRTY_CLOSE_SAVE_ID, DOCUMENT_ELLIPSE_TOOL_ID,
+    DOCUMENT_HIGHLIGHT_COLOR_GREEN_ID, DOCUMENT_HIGHLIGHT_TOOL_ID, DOCUMENT_IMAGE_TOOL_ID,
+    DOCUMENT_LINE_TOOL_ID, DOCUMENT_OPEN_ERROR_ALERT_ID, DOCUMENT_OPEN_ERROR_DISMISS_ID,
+    DOCUMENT_OPEN_PROGRESS_ID, DOCUMENT_OPEN_STATUS_ID, DOCUMENT_PAGE_ID, DOCUMENT_PEN_TOOL_ID,
+    DOCUMENT_POLYGON_TOOL_ID, DOCUMENT_POLYLINE_TOOL_ID,
     DOCUMENT_PUBLICATION_WARNING_CLOSE_CANCEL_ID, DOCUMENT_PUBLICATION_WARNING_CLOSE_CONTINUE_ID,
     DOCUMENT_PUBLICATION_WARNING_CLOSE_ID, DOCUMENT_RECOVERY_ALERT_ID,
     DOCUMENT_RECOVERY_PREPARATION_ALERT_ID, DOCUMENT_RECOVERY_PREPARATION_RETRY_ID,
@@ -85,19 +84,19 @@ use butter_paper::document_workspace::{
     DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
     DocumentOpenOrigin, DocumentSaveFailureKind, DocumentSaveFailureOperation, DocumentSaveRoute,
     DocumentTabTransferEvent, DocumentWorkspace, FitPage, FitWidth,
-    GeneratedTemplateRequestDisposition, NativeDocumentOpener, NativeDocumentResource,
-    NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus, NavigateNextPage,
-    NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, PdfDocumentSaver,
-    PdfiumWorkerBackend, RAIL_OVERFLOW_TOOLTIP, RasterSurface, RotatePageRight, Save, SaveAs,
-    SaveDestination, SaveDocumentRequest, SavedNativeDocument, SetPageScale, SinglePageView,
-    StartupRecoveryAvailability, StartupRecoveryItem, ThumbnailSurface, VIEWPORT_OPEN_DOCUMENT_ID,
-    ViewerFitPreset, ViewerRenderQuality, ZoomIn, ZoomOut, annotation_resize_cursor_style,
-    document_annotation_layer_id, document_session_close_id, document_session_tab_id,
-    document_thumbnail_id, document_viewer_error_id, document_viewer_page_id,
-    document_viewer_quality_id, document_viewer_retry_id, document_viewer_tile_id,
-    init_document_workspace_actions, register_document_workspace_global_actions,
-    resolve_document_save_route, save_as_command_label, save_as_prompt_spec,
-    straight_line_arrowhead_points,
+    GeneratedTemplateRequestDisposition, MeasureFamily, NativeDocumentOpener,
+    NativeDocumentResource, NativeDocumentSaveStatus, NativeDocumentSaver, NativeDocumentStatus,
+    NavigateNextPage, NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument,
+    PdfDocumentSaver, PdfiumWorkerBackend, RAIL_OVERFLOW_TOOLTIP, RasterSurface, RotatePageRight,
+    Save, SaveAs, SaveDestination, SaveDocumentRequest, SavedNativeDocument, SetPageScale,
+    SinglePageView, StartupRecoveryAvailability, StartupRecoveryItem, ThumbnailSurface,
+    VIEWPORT_OPEN_DOCUMENT_ID, ViewerFitPreset, ViewerRenderQuality, ZoomIn, ZoomOut,
+    annotation_resize_cursor_style, document_annotation_layer_id, document_session_close_id,
+    document_session_tab_id, document_thumbnail_id, document_viewer_error_id,
+    document_viewer_page_id, document_viewer_quality_id, document_viewer_retry_id,
+    document_viewer_tile_id, init_document_workspace_actions,
+    register_document_workspace_global_actions, resolve_document_save_route, save_as_command_label,
+    save_as_prompt_spec, straight_line_arrowhead_points,
 };
 use butter_paper::engineering_visual_property_inspector::{
     ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID, ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID,
@@ -130,8 +129,7 @@ use butter_paper::page_geometry::{
 };
 use butter_paper::page_scale_catalog::STANDARD_SCALES;
 use butter_paper::page_scale_control::{
-    PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID, PAGE_SCALE_TRIGGER_ID, PageScalePages,
-    ScaleChoice,
+    PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID, PageScalePages, ScaleChoice,
 };
 use butter_paper::page_view_control::{CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID};
 use butter_paper::page_view_control::{PageViewMode, WheelBehavior};
@@ -4313,7 +4311,7 @@ fn set_page_scale_command_opens_the_dialog_for_the_current_page(cx: &mut TestApp
     // update; the control once read the workspace back and panicked.
     cx.dispatch_action(SetPageScale);
     cx.run_until_parked();
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(page_scale_panel_open(&workspace, cx));
     let control = workspace
         .read_with(cx, |workspace, _| workspace.page_scale_control())
         .expect("the command creates the page scale control");
@@ -7295,7 +7293,9 @@ fn workspace_tool_shortcuts_match_electron_and_preserve_modified_key_collisions(
         ("shift-alt-a", AnnotationTool::Area),
         ("l", AnnotationTool::Line),
         ("shift-l", AnnotationTool::Dimension),
-        ("shift-alt-l", AnnotationTool::Length),
+        // A Dimension measures where its page has a scale; this page has
+        // none.
+        ("shift-alt-l", AnnotationTool::Dimension),
         ("shift-n", AnnotationTool::Polyline),
         ("h", AnnotationTool::Highlight),
         ("k", AnnotationTool::CloudPlus),
@@ -13881,8 +13881,8 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
         Ok(Some(scale.clone())),
         "an unchanged dialog keeps the page's scale exactly"
     );
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
-    cx.update(|window, cx| window.close_dialog(cx));
+    assert!(page_scale_panel_open(&workspace, cx));
+    close_page_scale_panel(&workspace, cx);
 
     workspace
         .update(cx, |workspace, cx| {
@@ -17027,9 +17027,9 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
         })
         .unwrap();
     cx.simulate_mouse_move(hot, None, Modifiers::default());
-
-    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
-    let page_scale_trigger = cx.debug_bounds(PAGE_SCALE_TRIGGER_ID).unwrap();
+    let page_scale_trigger = cx
+        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID)
+        .unwrap();
     cx.simulate_click(page_scale_trigger.center(), Modifiers::default());
     let page_scale_control = workspace
         .read_with(cx, |workspace, _| workspace.page_scale_control())
@@ -17066,11 +17066,11 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
     );
     cx.update(|window, cx| {
         page_scale_control.update(cx, |control, cx| {
-            // Abandoning the line returns to the dialog; close it too.
+            // Abandoning the line returns to the panel; close it too.
             assert!(control.cancel_pick(window, cx));
+            assert!(control.is_open());
+            control.close(cx);
         });
-        assert!(window.has_active_dialog(cx));
-        window.close_dialog(cx);
     });
     cx.run_until_parked();
     cx.simulate_mouse_move(hot, None, Modifiers::default());
@@ -21721,8 +21721,8 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(request.document_id, cx)),
-        Some(AnnotationTool::Length),
-        "the frozen Electron Shift+Alt+L shortcut must select Length in the workspace context"
+        Some(AnnotationTool::Dimension),
+        "Shift+Alt+L chooses Dimension with Measure on: a Dimension until the page has a scale"
     );
     let shortcut_selected = workspace
         .read_with(cx, |workspace, cx| {
@@ -21733,10 +21733,10 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         (shortcut_selected.revision, shortcut_selected.undo_depth),
         (0, 0)
     );
-    scroll_annotation_target_into_view(cx, DOCUMENT_LENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_DIMENSION_TOOL_ID);
     let length_tool = cx
-        .debug_bounds(DOCUMENT_LENGTH_TOOL_ID)
-        .expect("the real Length tool must render");
+        .debug_bounds(DOCUMENT_DIMENSION_TOOL_ID)
+        .expect("the real Dimension tool must render");
     let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
     assert!(rail.contains(&length_tool.center()));
     cx.simulate_click(length_tool.center(), Modifiers::default());
@@ -21867,7 +21867,9 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         })
         .unwrap();
     cx.simulate_click(to_view(400., 400.), Modifiers::default());
-    cx.simulate_click(to_view(402., 400.), Modifiers::default());
+    // Just inside two PDF points: projecting through the laid-out page
+    // rounds by up to a twentieth of a point.
+    cx.simulate_click(to_view(401.9, 400.), Modifiers::default());
     let minimum_rejected = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -21876,7 +21878,7 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
     assert_eq!(
         minimum_rejected.lengths.len(),
         2,
-        "exactly two PDF points is a no-op"
+        "two PDF points or less is a no-op"
     );
     assert!(!workspace.read_with(cx, |workspace, cx| {
         workspace.length_placement_pending(request.document_id, cx)
@@ -21942,10 +21944,8 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-
-    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
     let trigger = cx
-        .debug_bounds(PAGE_SCALE_TRIGGER_ID)
+        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID)
         .expect("the real Set Page Scale button must render");
     cx.simulate_click(trigger.center(), Modifiers::default());
     assert_eq!(
@@ -21957,7 +21957,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
         "the real trigger must target the active stable document before opening the dialog"
     );
     cx.run_until_parked();
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(page_scale_panel_open(&workspace, cx));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -21969,7 +21969,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(!page_scale_panel_open(&workspace, cx));
     assert!(control.read_with(cx, |control, _| control.is_picking()));
     assert!(cx.debug_bounds(PAGE_SCALE_PICK_HINT_ID).is_some());
     assert!(cx.debug_bounds(PAGE_SCALE_PICK_CANCEL_ID).is_some());
@@ -21992,7 +21992,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
     );
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(page_scale_panel_open(&workspace, cx));
     let (start, end) = control.read_with(cx, |control, _| control.points());
     let start = start.unwrap();
     let end = end.unwrap();
@@ -22068,7 +22068,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
         "the calibration must remain current-page scoped"
     );
 
-    cx.update(|window, cx| window.close_dialog(cx));
+    close_page_scale_panel(&workspace, cx);
     workspace
         .update(cx, |workspace, cx| {
             workspace.set_annotation_tool(request.document_id, AnnotationTool::Length, cx)
@@ -22295,7 +22295,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
             (after.revision, after.undo_depth, after.dirty),
             (0, 0, false)
         );
-        cx.update(|window, cx| window.close_dialog(cx));
+        close_page_scale_panel(&workspace, cx);
 
         if case_name == "anisotropic" {
             workspace.update_in(cx, |workspace, window, cx| {
@@ -22322,7 +22322,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 "a target-only change must apply the exact original scale elsewhere"
             );
             assert_eq!((expanded.revision, expanded.undo_depth), (1, 1));
-            cx.update(|window, cx| window.close_dialog(cx));
+            close_page_scale_panel(&workspace, cx);
         }
 
         if case_name == "arbitrary-decimal" {
@@ -22348,7 +22348,7 @@ fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_inpu
                 (edited.revision, edited.undo_depth, edited.dirty),
                 (1, 1, true)
             );
-            cx.update(|window, cx| window.close_dialog(cx));
+            close_page_scale_panel(&workspace, cx);
         }
     }
 }
@@ -22387,7 +22387,7 @@ fn page_scale_dialog_custom_ratio_fraction_precision_and_page_range_are_one_revi
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(page_scale_panel_open(&workspace, cx));
     let control = workspace
         .read_with(cx, |workspace, _| workspace.page_scale_control())
         .unwrap();
@@ -22446,7 +22446,7 @@ fn page_scale_dialog_custom_ratio_fraction_precision_and_page_range_are_one_revi
         "the page range must leave the untargeted current page alone"
     );
 
-    cx.update(|window, cx| window.close_dialog(cx));
+    close_page_scale_panel(&workspace, cx);
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.open_page_scale_dialog(request.document_id, 1, window, cx)
     });
@@ -22459,7 +22459,7 @@ fn page_scale_dialog_custom_ratio_fraction_precision_and_page_range_are_one_revi
         control.read_with(cx, |control, _| control.display()),
         (ScaleUnit::Ft, ScalePrecision::fraction(16).unwrap())
     );
-    cx.update(|window, cx| window.close_dialog(cx));
+    close_page_scale_panel(&workspace, cx);
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace
@@ -22679,6 +22679,159 @@ fn page_scale_dialog_no_scale_removes_the_scale_and_keeps_measurements(cx: &mut 
     );
 }
 
+#[gpui::test]
+fn the_scale_switch_removes_brings_back_and_asks_for_a_page_scale(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{ScaleRequest, ScaleToolbarState};
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let scale = STANDARD_SCALES[standard("1:100")].page_scale(
+        0,
+        ScaleUnit::M,
+        ScalePrecision::decimal(0.01).unwrap(),
+    );
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("scale-switch.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))
+                .with_page_scales(vec![scale.clone()])),
+            cx,
+        )
+    });
+    let document_id = request.document_id;
+    let shown = |cx: &mut gpui::VisualTestContext| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.viewer_toolbar().read(cx).scale().cloned()
+        })
+    };
+    let scales = |cx: &mut gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap()
+            .page_scales
+    };
+    let press = |cx: &mut gpui::VisualTestContext, request: ScaleRequest| {
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.handle_scale_request(request, window, cx)
+        });
+    };
+    let state = |on: bool, label: Option<&str>| {
+        Some(ScaleToolbarState {
+            page_number: 1,
+            on,
+            label: label.map(Into::into),
+        })
+    };
+    assert_eq!(shown(cx), state(true, Some("1:100")));
+
+    // Off removes the page's scale, as one undoable change, and the switch
+    // keeps the scale it brings back.
+    press(cx, ScaleRequest::Toggle);
+    assert!(scales(cx).is_empty());
+    assert_eq!(shown(cx), state(false, Some("1:100")));
+    // On brings it back without asking.
+    press(cx, ScaleRequest::Toggle);
+    assert_eq!(scales(cx), vec![scale.clone()]);
+    assert_eq!(shown(cx), state(true, Some("1:100")));
+    let open = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .page_scale_control()
+                .is_some_and(|control| control.read(cx).is_open())
+        })
+    };
+    assert!(!open(cx), "bringing a scale back asks nothing");
+    for _ in 0..2 {
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.undo_annotations(document_id, cx)
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        scales(cx),
+        vec![scale.clone()],
+        "each switch is one undo step"
+    );
+}
+
+#[gpui::test]
+fn the_scale_switch_on_a_page_never_scaled_opens_the_panel_and_shows_on_while_it_is_open(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::viewer_toolbar_strip::{ScaleRequest, ScaleToolbarState};
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("scale-switch-unset.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let shown = |cx: &mut gpui::VisualTestContext| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.viewer_toolbar().read(cx).scale().cloned()
+        })
+    };
+    let state = |on: bool| {
+        Some(ScaleToolbarState {
+            page_number: 1,
+            on,
+            label: None,
+        })
+    };
+    assert_eq!(shown(cx), state(false));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.handle_scale_request(ScaleRequest::Toggle, window, cx)
+    });
+    assert!(page_scale_panel_open(&workspace, cx));
+    assert_eq!(shown(cx), state(true), "on while the panel chooses a scale");
+    close_page_scale_panel(&workspace, cx);
+    assert_eq!(
+        shown(cx),
+        state(false),
+        "closing the panel unchosen leaves it off"
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(request.document_id, cx))
+            .unwrap()
+            .page_scales
+            .is_empty()
+    );
+}
+
 #[test]
 fn page_scale_dialog_recalibrates_existing_lengths_in_one_history_revision() {
     let original = LengthCalibration::from_scale(72., 1., "m", 2, false)
@@ -22798,6 +22951,182 @@ fn page_scale_dialog_save_as_round_trips_scale_without_a_length_annotation() {
     assert!(reopened_scale.same_persisted_scale_as(&scale));
     assert!(reopened.lengths().is_empty());
     std::fs::remove_file(target).unwrap();
+}
+
+/// Every markup a Revu file opens with, as a save request's snapshot.
+fn snapshot_of_persistence(session: &PdfPersistenceSession) -> AnnotationSnapshot {
+    AnnotationSnapshot {
+        revision: 1,
+        saved_revision: 0,
+        dirty: true,
+        selected_id: None,
+        annotation_order: session.annotation_order().to_vec(),
+        rectangles: session.rectangles().to_vec(),
+        ellipses: session.ellipses().to_vec(),
+        arcs: session.arcs().to_vec(),
+        redacts: session.redacts().to_vec(),
+        pens: session.pens().to_vec(),
+        straight_lines: session.straight_lines().to_vec(),
+        vertex_paths: session.vertex_paths().to_vec(),
+        clouds: session.clouds().to_vec(),
+        cloud_pluses: session.cloud_pluses().to_vec(),
+        dimensions: session.dimensions().to_vec(),
+        callouts: session.callouts().to_vec(),
+        measurement_paths: session.measurement_paths().to_vec(),
+        text_boxes: session.text_boxes().to_vec(),
+        lengths: session.lengths().to_vec(),
+        images: session.images().to_vec(),
+        snapshots: session.snapshots().to_vec(),
+        page_scales: session.page_scales().to_vec(),
+        page_length_calibrations: session
+            .page_length_calibrations()
+            .iter()
+            .map(|(page, calibration)| (*page, calibration.clone()))
+            .collect(),
+        page_rotations: Vec::new(),
+        page_text_edits: Vec::new(),
+        form_field_edits: Vec::new(),
+        page_table_edits: Vec::new(),
+        page_content_moves: Vec::new(),
+        page_content_explodes: Vec::new(),
+        page_bases: Vec::new(),
+        pages_to_keep_when_saved: Vec::new(),
+        page_slots: Vec::new(),
+        undo_depth: 1,
+        redo_depth: 0,
+    }
+}
+
+fn save_snapshot_as(source: &Path, target: &Path, annotations: AnnotationSnapshot) {
+    PdfDocumentSaver::new(Arc::new(SuccessfulOpener))
+        .save(&SaveDocumentRequest {
+            document_id: DocumentId::new(42),
+            generation: 1,
+            source_path: source.to_path_buf(),
+            destination: save_as_destination(source, target),
+            current_page: 0,
+            annotation_revision: 1,
+            annotations,
+            expected_source_sha256: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn markups_measure_turned_save_as_the_other_kind_under_their_revu_ids() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let scratch = |name: &str| {
+        manifest_dir.join(format!(
+            "target/test-scratch/measure-turned-{name}-{}.pdf",
+            std::process::id()
+        ))
+    };
+
+    // Revu's Polyline and Polygon, measured.
+    let source = manifest_dir.join("tests/fixtures/bluebeam/revu-shapes.pdf");
+    let session = PdfPersistenceSession::open(&source).unwrap();
+    let calibration = LengthCalibration::from_scale(72., 1., "ft", 2, true).unwrap();
+    let mut annotations = snapshot_of_persistence(&session);
+    let plain = std::mem::take(&mut annotations.vertex_paths);
+    assert_eq!(plain.len(), 2);
+    for path in &plain {
+        annotations.measurement_paths.push(
+            MeasurementPathAnnotation::new(
+                path.id.clone(),
+                path.page_index,
+                path.points().to_vec(),
+                match path.kind {
+                    VertexPathKind::Polyline => MeasurementPathKind::Polylength,
+                    VertexPathKind::Polygon => MeasurementPathKind::Area,
+                },
+                calibration.clone(),
+                path.appearance.clone(),
+            )
+            .unwrap(),
+        );
+    }
+    let measured = scratch("measured");
+    save_snapshot_as(&source, &measured, annotations);
+    let reopened = PdfPersistenceSession::open(&measured).unwrap();
+    assert!(reopened.vertex_paths().is_empty());
+    let mut kinds = reopened
+        .measurement_paths()
+        .iter()
+        .map(|path| (path.id.clone(), path.kind))
+        .collect::<Vec<_>>();
+    kinds.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut expected = plain
+        .iter()
+        .map(|path| {
+            (
+                path.id.clone(),
+                match path.kind {
+                    VertexPathKind::Polyline => MeasurementPathKind::Polylength,
+                    VertexPathKind::Polygon => MeasurementPathKind::Area,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(kinds, expected, "measured under the same Revu ids");
+    assert_eq!(reopened.annotation_order(), session.annotation_order());
+    std::fs::remove_file(measured).unwrap();
+
+    // Revu's Polylength, Area and Lengths, no longer measured.
+    let source = manifest_dir.join("tests/fixtures/bluebeam/revu-measure-text-media.pdf");
+    let session = PdfPersistenceSession::open(&source).unwrap();
+    let mut annotations = snapshot_of_persistence(&session);
+    let measured_paths = std::mem::take(&mut annotations.measurement_paths);
+    let lengths = std::mem::take(&mut annotations.lengths);
+    for path in &measured_paths {
+        annotations.vertex_paths.push(
+            VertexPathAnnotation::new(
+                path.id.clone(),
+                path.page_index,
+                path.points().to_vec(),
+                match path.kind {
+                    MeasurementPathKind::Polylength => VertexPathKind::Polyline,
+                    MeasurementPathKind::Area => VertexPathKind::Polygon,
+                },
+                path.appearance.clone(),
+            )
+            .unwrap(),
+        );
+    }
+    for length in &lengths {
+        annotations.dimensions.push(
+            butter_paper::annotation_model::DimensionAnnotation::new(
+                length.id.clone(),
+                length.page_index,
+                length.start,
+                length.end,
+                10.,
+                length.caption(),
+                length.appearance.clone(),
+            )
+            .unwrap(),
+        );
+    }
+    let plain = scratch("plain");
+    save_snapshot_as(&source, &plain, annotations);
+    let reopened = PdfPersistenceSession::open(&plain).unwrap();
+    assert!(reopened.measurement_paths().is_empty());
+    assert!(reopened.lengths().is_empty());
+    assert_eq!(reopened.vertex_paths().len(), measured_paths.len());
+    assert_eq!(
+        reopened.dimensions().len(),
+        session.dimensions().len() + lengths.len()
+    );
+    for length in &lengths {
+        let dimension = reopened
+            .dimensions()
+            .iter()
+            .find(|dimension| dimension.id == length.id)
+            .expect("each Length reopens as a Dimension under its Revu id");
+        assert_eq!(dimension.content(), length.caption());
+    }
+    assert_eq!(reopened.annotation_order(), session.annotation_order());
+    std::fs::remove_file(plain).unwrap();
 }
 
 #[test]
@@ -22954,8 +23283,10 @@ fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
-    let page_scale_trigger = cx.debug_bounds(PAGE_SCALE_TRIGGER_ID).unwrap().center();
+    let page_scale_trigger = cx
+        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID)
+        .unwrap()
+        .center();
     cx.simulate_click(page_scale_trigger, Modifiers::default());
     let control = workspace
         .read_with(cx, |workspace, _| workspace.page_scale_control())
@@ -22987,7 +23318,7 @@ fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
         "the second end must be on the first end's page"
     );
     assert!(matches!(press(cx, 1, 144.), (Some(_), Some(_))));
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(page_scale_panel_open(&workspace, cx));
     assert_eq!(
         control.read_with(cx, |control, _| control.choice()),
         ScaleChoice::Measured
@@ -24152,12 +24483,11 @@ fn measurement_enter_commits_hover_endpoint_without_a_click(cx: &mut TestAppCont
         workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    for id in [DOCUMENT_POLYLENGTH_TOOL_ID, DOCUMENT_AREA_TOOL_ID] {
-        assert!(
-            cx.debug_bounds(id).is_some(),
-            "{id} must be a real GPUI Component Button with a stable rendered id",
-        );
-    }
+    // Polylength and Area are Polyline and Polygon with Measure on.
+    workspace.update(cx, |workspace, _| {
+        workspace.set_measure_preference_for_test(MeasureFamily::Polyline, true);
+        workspace.set_measure_preference_for_test(MeasureFamily::Polygon, true);
+    });
 
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let project = |layer: gpui::Bounds<gpui::Pixels>, x: f32, y: f32| {
@@ -24172,13 +24502,13 @@ fn measurement_enter_commits_hover_endpoint_without_a_click(cx: &mut TestAppCont
     for (tool, control, clicks, hover) in [
         (
             AnnotationTool::Polylength,
-            DOCUMENT_POLYLENGTH_TOOL_ID,
+            DOCUMENT_POLYLINE_TOOL_ID,
             vec![(120., 620.)],
             (192., 620.),
         ),
         (
             AnnotationTool::Area,
-            DOCUMENT_AREA_TOOL_ID,
+            DOCUMENT_POLYGON_TOOL_ID,
             vec![(120., 360.), (192., 360.)],
             (192., 432.),
         ),
@@ -24335,12 +24665,11 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         workspace.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    for id in [DOCUMENT_POLYLENGTH_TOOL_ID, DOCUMENT_AREA_TOOL_ID] {
-        assert!(
-            cx.debug_bounds(id).is_some(),
-            "{id} must be a real GPUI Component Button with a stable rendered id",
-        );
-    }
+    // Polylength and Area are Polyline and Polygon with Measure on.
+    workspace.update(cx, |workspace, _| {
+        workspace.set_measure_preference_for_test(MeasureFamily::Polyline, true);
+        workspace.set_measure_preference_for_test(MeasureFamily::Polygon, true);
+    });
 
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let project = |layer: gpui::Bounds<gpui::Pixels>, x: f32, y: f32| {
@@ -24352,11 +24681,8 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         point(origin.x + px(x * scale), origin.y + px((792. - y) * scale))
     };
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLENGTH_TOOL_ID);
-    let polylength_button = cx
-        .debug_bounds(DOCUMENT_POLYLENGTH_TOOL_ID)
-        .unwrap()
-        .center();
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
+    let polylength_button = cx.debug_bounds(DOCUMENT_POLYLINE_TOOL_ID).unwrap().center();
     cx.simulate_click(polylength_button, Modifiers::default());
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
@@ -24405,8 +24731,8 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     );
     let polylength_id = after_polylength.measurement_paths[0].id.clone();
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_AREA_TOOL_ID);
-    let area_button = cx.debug_bounds(DOCUMENT_AREA_TOOL_ID).unwrap().center();
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYGON_TOOL_ID);
+    let area_button = cx.debug_bounds(DOCUMENT_POLYGON_TOOL_ID).unwrap().center();
     cx.simulate_click(area_button, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let layer = cx.debug_bounds(layer_id).unwrap();
@@ -24639,8 +24965,8 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
         None
     );
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_AREA_TOOL_ID);
-    let area_button = cx.debug_bounds(DOCUMENT_AREA_TOOL_ID).unwrap().center();
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYGON_TOOL_ID);
+    let area_button = cx.debug_bounds(DOCUMENT_POLYGON_TOOL_ID).unwrap().center();
     cx.simulate_click(area_button, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let layer = cx.debug_bounds(layer_id).unwrap();
@@ -29959,10 +30285,14 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
         Some(scale.clone()),
     );
 
+    workspace.update(cx, |workspace, _| {
+        workspace.set_measure_preference_for_test(MeasureFamily::Polyline, true);
+        workspace.set_measure_preference_for_test(MeasureFamily::Polygon, true);
+    });
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let polylength_tool = cx
-        .debug_bounds(DOCUMENT_POLYLENGTH_TOOL_ID)
+        .debug_bounds(DOCUMENT_POLYLINE_TOOL_ID)
         .expect("the real GPUI Component Polylength button must render");
     cx.simulate_click(polylength_tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -30020,9 +30350,9 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     );
     let polylength_id = after_polylength.measurement_paths[0].id.clone();
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_AREA_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_POLYGON_TOOL_ID);
     let area_tool = cx
-        .debug_bounds(DOCUMENT_AREA_TOOL_ID)
+        .debug_bounds(DOCUMENT_POLYGON_TOOL_ID)
         .expect("the real GPUI Component Area button must render");
     cx.simulate_click(area_tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -31672,10 +32002,10 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         })
         .expect("the real document must retain one page calibration");
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    scroll_annotation_target_into_view(cx, DOCUMENT_LENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_DIMENSION_TOOL_ID);
     let length_button = cx
-        .debug_bounds(DOCUMENT_LENGTH_TOOL_ID)
-        .expect("the real GPUI Component Length button must render");
+        .debug_bounds(DOCUMENT_DIMENSION_TOOL_ID)
+        .expect("the real GPUI Component Dimension button must render");
     cx.simulate_click(length_button.center(), Modifiers::default());
     cx.simulate_click(to_view(127., 150.), Modifiers::default());
     let length_start_decision = workspace
@@ -40877,10 +41207,8 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
             .any(|pixel| pixel != first_pixel),
         "the canonical Snapshot crop must retain real spatially varied pixels"
     );
-
-    scroll_annotation_target_into_view(cx, PAGE_SCALE_TRIGGER_ID);
     let page_scale_trigger = cx
-        .debug_bounds(PAGE_SCALE_TRIGGER_ID)
+        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID)
         .expect("the real Set Page Scale trigger must render");
     cx.simulate_click(page_scale_trigger.center(), Modifiers::default());
     let page_scale_control = workspace
@@ -40891,7 +41219,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         Some((document_id, 0))
     );
     cx.run_until_parked();
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(page_scale_panel_open(&workspace, cx));
 
     // VisualTestContext does not expose modal descendants. Use the accepted
     // retained PageScaleControl seams for pick, input, and apply after proving
@@ -40901,7 +41229,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(!cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(!page_scale_panel_open(&workspace, cx));
     assert!(page_scale_control.read_with(cx, |control, _| control.is_picking()));
     assert!(cx.debug_bounds(PAGE_SCALE_PICK_HINT_ID).is_some());
     let layer_bounds = cx
@@ -40933,7 +41261,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert!(cx.debug_bounds(PAGE_SCALE_PICK_HINT_ID).is_some());
     cx.simulate_click(to_view(calibration_end), Modifiers::default());
     cx.run_until_parked();
-    assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+    assert!(page_scale_panel_open(&workspace, cx));
     let (picked_start, picked_end) =
         page_scale_control.read_with(cx, |control, _| control.points());
     assert!(same_pdf_point(picked_start.unwrap(), calibration_start));
@@ -40956,7 +41284,7 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
         })
         .unwrap();
     assert!(page_scale_control.update(cx, |control, cx| control.apply(cx)));
-    cx.update(|window, cx| window.close_dialog(cx));
+    close_page_scale_panel(&workspace, cx);
     cx.run_until_parked();
     let applied_scale = workspace
         .read_with(cx, |workspace, cx| workspace.page_scale(document_id, 0, cx))
@@ -40985,10 +41313,10 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
     assert_eq!(after_scale.undo_depth, before_scale.undo_depth + 1);
     assert!(after_scale.dirty);
 
-    scroll_annotation_target_into_view(cx, DOCUMENT_LENGTH_TOOL_ID);
+    scroll_annotation_target_into_view(cx, DOCUMENT_DIMENSION_TOOL_ID);
     let length_tool = cx
-        .debug_bounds(DOCUMENT_LENGTH_TOOL_ID)
-        .expect("the real GPUI Component Length tool must render");
+        .debug_bounds(DOCUMENT_DIMENSION_TOOL_ID)
+        .expect("the real GPUI Component Dimension tool must render");
     cx.simulate_click(length_tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let layer_bounds = cx
@@ -46467,15 +46795,26 @@ fn tool_creates_with(
     let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
     let at = |dx: f32, dy: f32| point(viewport.origin.x + px(dx), viewport.origin.y + px(dy));
     let before = annotation_count(&workspace, document_id, cx);
-    if matches!(
-        tool,
-        AnnotationTool::Length | AnnotationTool::Polylength | AnnotationTool::Area
-    ) {
-        // A measuring tool's first click on a page without a scale asks for
-        // one; Cancel measures paper size, and that page does not ask again.
+    if tool == AnnotationTool::Length {
+        // A Dimension with Measure on draws a Length only on a page with a
+        // scale, and never asks for one.
+        workspace
+            .update(cx, |workspace, cx| {
+                workspace.set_length_calibration(
+                    document_id,
+                    LengthCalibration::from_scale(72., 1., "m", 2, true).unwrap(),
+                    cx,
+                )
+            })
+            .unwrap();
+    }
+    if matches!(tool, AnnotationTool::Polylength | AnnotationTool::Area) {
+        // A Polyline or Polygon with Measure on asks for a scale on its first
+        // click on a page without one; Cancel measures paper size, and that
+        // page does not ask again.
         cx.simulate_click(at(80., 80.), Modifiers::default());
         cx.run_until_parked();
-        assert!(cx.update(|window, cx| window.has_active_dialog(cx)));
+        assert!(page_scale_panel_open(&workspace, cx));
         let asked = workspace
             .read_with(cx, |workspace, _| workspace.page_scale_control())
             .and_then(|control| {
@@ -46491,7 +46830,7 @@ fn tool_creates_with(
             "{tool:?} must ask for this page's scale"
         );
         assert_eq!(annotation_count(&workspace, document_id, cx), before);
-        cx.update(|window, cx| window.close_dialog(cx));
+        close_page_scale_panel(&workspace, cx);
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
@@ -48181,4 +48520,29 @@ fn from_the_page_turns_a_box_on_the_page_into_a_signature_not_a_snapshot(cx: &mu
     // it says no signature was found there.
     assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_MODE_IMAGE_ID).is_some());
     assert!(cx.debug_bounds(DOCUMENT_SIGNATURE_ERROR_ALERT_ID).is_some());
+}
+
+/// Whether the Page Scale panel is showing.
+fn page_scale_panel_open(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    cx: &mut gpui::VisualTestContext,
+) -> bool {
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .page_scale_control()
+            .is_some_and(|control| control.read(cx).is_open())
+    })
+}
+
+/// Closes the Page Scale panel as its X does.
+fn close_page_scale_panel(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    cx: &mut gpui::VisualTestContext,
+) {
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .expect("the Page Scale panel was opened");
+    control.update(cx, |control, cx| control.close(cx));
+    cx.run_until_parked();
 }
