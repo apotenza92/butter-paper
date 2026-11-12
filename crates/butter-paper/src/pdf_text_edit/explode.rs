@@ -230,7 +230,7 @@ fn inline_form(
     };
     // The page no longer draws a form exploded where it drew it once: it
     // leaves the page's resources, and the file, rather than travel unused.
-    let drawn_name = match operation.operands.last() {
+    let drawn_name = match page.operations.operands_of(operation).last() {
         Some(Operand::Name(name)) => Some(name.clone()),
         _ => None,
     };
@@ -239,7 +239,7 @@ fn inline_form(
             op != draw.op
                 && other.operator.as_slice() == b"Do"
                 && matches!(page.owners[other.stream], StreamOwner::Page)
-                && matches!(other.operands.last(), Some(Operand::Name(other)) if *other == name)
+                && matches!(page.operations.operands_of(other).last(), Some(Operand::Name(other)) if *other == name)
         });
         if !drawn_elsewhere
             && let Some(mut xobjects) = get_dict(document, &resources, b"XObject").cloned()
@@ -416,7 +416,8 @@ pub(super) fn renamed_content(
             .cloned()
     };
     let mut splices = Vec::new();
-    for operation in &operations {
+    for operation in operations.iter() {
+        let operands = operations.operands_of(operation);
         let operator = operation.operator.as_slice();
         // Which operand names a resource, of which category.
         let named = match operator {
@@ -425,8 +426,7 @@ pub(super) fn renamed_content(
             b"gs" => Some((0, b"ExtGState".as_slice())),
             b"cs" | b"CS" => Some((0, b"ColorSpace".as_slice())),
             b"sh" => Some((0, b"Shading".as_slice())),
-            b"scn" | b"SCN" => operation
-                .operands
+            b"scn" | b"SCN" => operands
                 .len()
                 .checked_sub(1)
                 .map(|last| (last, b"Pattern".as_slice())),
@@ -434,7 +434,7 @@ pub(super) fn renamed_content(
             b"BI" => {
                 // An inline image naming a renamed colour space cannot be
                 // rewritten byte for byte.
-                let names_renamed = operation.operands.iter().any(|operand| match operand {
+                let names_renamed = operands.iter().any(|operand| match operand {
                     Operand::Name(name) => renamed(b"ColorSpace", name).is_some(),
                     _ => false,
                 });
@@ -450,7 +450,7 @@ pub(super) fn renamed_content(
         let Some((slot, category)) = named else {
             continue;
         };
-        let Some(Operand::Name(name)) = operation.operands.get(slot) else {
+        let Some(Operand::Name(name)) = operands.get(slot) else {
             continue;
         };
         let Some(new_name) = renamed(category, name) else {
@@ -458,7 +458,7 @@ pub(super) fn renamed_content(
         };
         // The operator rewritten: its names and numbers.
         let mut text = String::new();
-        for (index, operand) in operation.operands.iter().enumerate() {
+        for (index, operand) in operands.iter().enumerate() {
             match operand {
                 Operand::Name(name) if index == slot => text.push_str(&format_name(&new_name)),
                 Operand::Name(name) => text.push_str(&format_name(name)),

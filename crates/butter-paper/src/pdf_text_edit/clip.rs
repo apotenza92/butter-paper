@@ -189,7 +189,7 @@ fn show_operator(page: &ExtractedPage, show: &ShowOp) -> Result<Vec<u8>, TextEdi
                 )
                 .as_bytes(),
             );
-            let Some(Operand::Str(text)) = operation.operands.last() else {
+            let Some(Operand::Str(text)) = page.operations.operands_of(operation).last() else {
                 return Err(TextEditError::ReadOnly("the text cannot be copied".into()));
             };
             out.push(b'<');
@@ -226,7 +226,7 @@ fn kept_stream(
     let mut out = Vec::new();
     let mut names = BTreeSet::new();
     let note_names = |names: &mut BTreeSet<Vec<u8>>, op: usize| {
-        for operand in &page.operations[op].operands {
+        for operand in page.operations.operands(op) {
             if let Operand::Name(name) = operand {
                 names.insert(name.clone());
             }
@@ -364,7 +364,7 @@ fn kept_stream(
                 } else if operator == b"\"" {
                     // Its spacing lasts, as kept text after it is spaced so.
                     if let [Operand::Number(word), Operand::Number(character), ..] =
-                        operation.operands.as_slice()
+                        page.operations.operands_of(operation)
                     {
                         out.extend_from_slice(
                             format!(
@@ -535,7 +535,7 @@ pub(super) fn write_pastes(
     }
     let operations = parse_operations(&streams, limits)?;
     let (mut depth, mut lowest) = (0_i64, 0_i64);
-    for operation in &operations {
+    for operation in operations.iter() {
         match operation.operator.as_slice() {
             b"q" => depth += 1,
             b"Q" => {

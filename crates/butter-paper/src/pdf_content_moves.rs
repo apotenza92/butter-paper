@@ -646,6 +646,45 @@ pub struct PageObject {
     /// picks the lettering whole, Alt the piece alone.
     #[serde(default, skip_serializing_if = "is_first")]
     pub cluster: u32,
+    /// The plain colour it is filled with, as RGBA (its opacity in alpha),
+    /// when it is filled with one: not a pattern, a shading or a blend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<[u8; 4]>,
+    /// The plain colour it is stroked in, as RGBA, when it is stroked with
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<[u8; 4]>,
+    /// It is filled by the even-odd rule, so where its subpaths overlap
+    /// twice is a hole.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub even_odd: bool,
+    /// It is filled or stroked with a pattern (tiles or a shading), which
+    /// no one colour shows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub patterned: bool,
+    /// How its stroke is drawn, when not as a solid line with butt ends
+    /// and mitred corners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<LineStyle>,
+}
+
+/// How a stroke is drawn: its dash pattern and phase in page space (no
+/// pattern for a solid line), and its cap and join styles as the PDF
+/// numbers them (0 butt or mitre, 1 round, 2 square or bevel).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct LineStyle {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dash: Vec<f64>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub phase: f64,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub cap: u8,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub join: u8,
+}
+
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
 }
 
 fn is_drawing(kind: &ContentKind) -> bool {

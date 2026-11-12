@@ -566,6 +566,11 @@ impl WorkerResponse {
 pub trait PdfBackend {
     type Document;
 
+    /// Tidies `document` while no request waits: what can wait (closing
+    /// what an edit replaced) is done here, off the path of the requests
+    /// that follow.
+    fn idle(&mut self, _document: &mut Self::Document) {}
+
     fn open(
         &mut self,
         source: SourceHandleId,
@@ -891,6 +896,13 @@ where
             limits,
             cancellation,
             documents: HashMap::new(),
+        }
+    }
+
+    /// Lets each document tidy up while no request waits.
+    pub fn idle(&mut self) {
+        for document in self.documents.values_mut() {
+            self.backend.idle(document);
         }
     }
 
@@ -2392,7 +2404,18 @@ where
             }
         })?;
 
-    for incoming in receiver {
+    loop {
+        let incoming = match receiver.try_recv() {
+            Ok(incoming) => incoming,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                state.idle();
+                match receiver.recv() {
+                    Ok(incoming) => incoming,
+                    Err(_) => break,
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+        };
         let response = match incoming {
             Ok(request) => state.handle(request),
             Err(error) => failed(RequestId(0), None, error),

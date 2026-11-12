@@ -17,7 +17,11 @@ provide permission to commit, push or publish.
 Test while working: `cargo test --workspace` and `cargo xtask check`. Releasing
 runs no tests; do not add a repeated test gate to the release command.
 
-1. Run `cargo xtask version X.Y.Z` (or `X.Y.Z-beta.N`).
+1. Run `cargo xtask version X.Y.Z` (or `X.Y.Z-beta.N`). Versions tick over
+   as decimals do: no part but the major passes 9, so after 0.4.9 comes 0.5.0
+   and after 0.9.9 comes 1.0.0, never 0.4.10. The command refuses a version
+   with a part past 9 and names the one to use. (Tags v0.0.10 to v0.0.19
+   predate this rule.)
 2. Edit the new `CHANGELOG.md` section.
 3. Commit and push to `main` within the authorized release scope.
 4. Run `cargo xtask release`.

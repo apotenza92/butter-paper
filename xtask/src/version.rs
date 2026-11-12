@@ -61,6 +61,30 @@ impl Version {
     pub fn tag(self) -> String {
         format!("v{self}")
     }
+
+    /// The version as it counts with no part past 9, as decimals tick:
+    /// 0.4.10 is 0.5.0, 0.10.0 is 1.0.0. The major version has no limit.
+    /// Some early tags (v0.0.10 to v0.0.19) predate this rule.
+    pub fn ticked(self) -> Self {
+        if self.patch > 9 {
+            return Self {
+                minor: self.minor + 1,
+                patch: 0,
+                beta: self.beta.map(|_| 1),
+                ..self
+            }
+            .ticked();
+        }
+        if self.minor > 9 {
+            return Self {
+                major: self.major + 1,
+                minor: 0,
+                patch: 0,
+                beta: self.beta.map(|_| 1),
+            };
+        }
+        self
+    }
 }
 
 impl fmt::Display for Version {
@@ -103,6 +127,13 @@ pub fn run(args: &mut Args) -> Result {
         .ok_or("usage: cargo xtask version X.Y.Z[-beta.N]")?;
     args.finish()?;
     let version = Version::parse(&value)?;
+    // Each part ticks over at 9, as decimals do: after 0.4.9 comes 0.5.0.
+    let ticked = version.ticked();
+    if ticked != version {
+        return Err(format!(
+            "{version} has a part past 9; versions tick over as decimals do: use {ticked}"
+        ));
+    }
     set(version)?;
     let changelog = start_changelog_section(version)?;
     println!("Version set to {version}.");
@@ -222,6 +253,17 @@ mod tests {
         ] {
             assert!(Version::parse(value).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn versions_tick_over_at_nine() {
+        let ticked = |value: &str| Version::parse(value).unwrap().ticked().to_string();
+        assert_eq!(ticked("0.4.9"), "0.4.9");
+        assert_eq!(ticked("0.4.10"), "0.5.0");
+        assert_eq!(ticked("0.9.10"), "1.0.0");
+        assert_eq!(ticked("0.10.0"), "1.0.0");
+        assert_eq!(ticked("12.3.4"), "12.3.4");
+        assert_eq!(ticked("0.4.10-beta.3"), "0.5.0-beta.1");
     }
 
     #[test]

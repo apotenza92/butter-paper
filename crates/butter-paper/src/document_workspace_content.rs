@@ -123,15 +123,54 @@ pub(super) struct SpritePiece {
 }
 
 /// A dragged path as the page draws it: its outline where the base page
-/// draws it (in `rect`), its line width in points, whether it is filled,
-/// and its colour as the page showed it.
+/// draws it (in `rect`), its line width in points, and the colours it is
+/// filled and stroked in: the PDF's own, or as the page showed it.
 #[derive(Clone)]
 pub(super) struct SpriteInk {
     pub outline: Vec<Vec<[f64; 2]>>,
     pub rect: [f64; 4],
     pub width: f64,
-    pub filled: bool,
-    pub colour: gpui::Rgba,
+    pub fill: Option<gpui::Rgba>,
+    pub stroke: Option<gpui::Rgba>,
+    pub even_odd: bool,
+    pub line: crate::pdf_content_moves::LineStyle,
+}
+
+impl SpriteInk {
+    /// `object` drawn in the colours the PDF gives it, or, where it gives
+    /// none (a pattern, transparency), in `shown`, the colour the page
+    /// showed it in: its fill's if filled, else its stroke's.
+    fn of(object: PageObject, shown: Option<gpui::Rgba>) -> Option<Self> {
+        let rgba = |[r, g, b, a]: [u8; 4]| gpui::Rgba {
+            r: f32::from(r) / 255.,
+            g: f32::from(g) / 255.,
+            b: f32::from(b) / 255.,
+            a: f32::from(a) / 255.,
+        };
+        // A pattern turns as its picture, which shows it.
+        if object.patterned {
+            return None;
+        }
+        let stroked = object.reach > 0.;
+        let own =
+            (!object.filled || object.fill.is_some()) && (!stroked || object.stroke.is_some());
+        let (fill, stroke) = if own {
+            (object.fill.map(rgba), object.stroke.map(rgba))
+        } else if object.filled {
+            (Some(shown?), None)
+        } else {
+            (None, Some(shown?))
+        };
+        Some(Self {
+            outline: object.points(),
+            rect: object.rect,
+            width: object.reach * 2.,
+            fill,
+            stroke,
+            even_odd: object.even_odd,
+            line: object.line.unwrap_or_default(),
+        })
+    }
 }
 
 /// Where a dragged piece goes: its picture's bounds and how far it is
@@ -149,8 +188,20 @@ pub(super) enum SpritePaintPiece {
     /// A picture in its bounds, turned (degrees anticlockwise) about their
     /// centre.
     Picture([f64; 4], f64, std::sync::Arc<gpui::RenderImage>),
-    /// A path's subpaths, line width in points, fill and colour.
-    Path(Vec<Vec<(f64, f64)>>, f64, bool, gpui::Rgba),
+    /// A path, drawn as the page draws it.
+    Path(SpritePath),
+}
+
+/// A dragged path where it is now, in page space: its subpaths, how it is
+/// filled and how it is stroked (line width and dashes in points).
+#[derive(Clone)]
+pub(super) struct SpritePath {
+    pub subpaths: Vec<Vec<(f64, f64)>>,
+    pub fill: Option<gpui::Rgba>,
+    pub even_odd: bool,
+    pub stroke: Option<gpui::Rgba>,
+    pub width: f64,
+    pub line: crate::pdf_content_moves::LineStyle,
 }
 
 /// A sprite as painted: each piece where it is now.
@@ -1454,8 +1505,22 @@ impl DocumentWorkspace {
             self.take_content_sprite(drag.document_id, drag.page_index, cx);
             // A move soon shows the worker's picture of the selection; so
             // does a resize or turn of one too large to cut from the page.
+            // A resize or turn cut from it soon shows the worker's picture
+            // of its images and patterns, drawn by themselves: cut from
+            // the page, they carry what is drawn over them (labels on an
+            // aerial photo), which stays put when they are dropped.
             if matches!(drag.mode, DragMode::Move) || self.content_sprite.is_none() {
-                self.draw_content_sprite(drag.document_id, drag.page_index, cx);
+                self.draw_content_sprite(drag.document_id, drag.page_index, None, cx);
+            } else if let Some(pictures) = self.content_sprite.as_ref().map(|sprite| {
+                sprite
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.ink.is_none())
+                    .filter_map(|piece| Some((piece.group, piece.item?)))
+                    .collect::<Vec<_>>()
+            }) && !pictures.is_empty()
+            {
+                self.draw_content_sprite(drag.document_id, drag.page_index, Some(pictures), cx);
             }
         }
         drag.moved = true;
@@ -1638,13 +1703,7 @@ impl DocumentWorkspace {
                     a.y.max(b.y) + 1.,
                 ];
                 let (image, colour) = piece_image(&sources, scale, logical, ink, mask.as_ref())?;
-                let ink = object.zip(colour).map(|(object, colour)| SpriteInk {
-                    outline: object.points(),
-                    rect: object.rect,
-                    width: object.reach * 2.,
-                    filled: object.filled,
-                    colour,
-                });
+                let ink = object.and_then(|object| SpriteInk::of(object, colour));
                 Some(SpritePiece {
                     from,
                     group,
@@ -1685,6 +1744,7 @@ impl DocumentWorkspace {
         &mut self,
         document_id: DocumentId,
         page_index: u32,
+        only: Option<Vec<(usize, usize)>>,
         cx: &mut Context<Self>,
     ) {
         let Some(selection) = self.content_selection.as_ref().filter(|selection| {
@@ -1699,7 +1759,17 @@ impl DocumentWorkspace {
         else {
             return;
         };
-        let items = Self::clip_items(selection);
+        // The items drawn: all, or `only` those (group, item).
+        let mut items = Self::clip_items(selection);
+        if let Some(only) = &only {
+            let mut kept = selection
+                .groups
+                .iter()
+                .enumerate()
+                .flat_map(|(group, items)| (0..items.len()).map(move |item| (group, item)))
+                .map(|piece| only.contains(&piece));
+            items.retain(|_| kept.next().unwrap_or(false));
+        }
         let Some(session) = self.session(document_id, cx) else {
             return;
         };
@@ -1798,20 +1868,23 @@ impl DocumentWorkspace {
                     }
                     return;
                 };
-                workspace.use_drawn_sprite(document_id, page_index, from, image, cx);
+                workspace.use_drawn_sprite(document_id, page_index, from, image, only, cx);
             });
         })
         .detach();
     }
 
     /// Paints the worker's picture of the selection in place of the one
-    /// cut from the page, unless it has been dropped by now.
+    /// cut from the page, unless it has been dropped by now: of the whole
+    /// selection, or of `only` its pieces (group, item), which it replaces
+    /// while the rest stay drawn as they are.
     fn use_drawn_sprite(
         &mut self,
         document_id: DocumentId,
         page_index: u32,
         from: [f64; 4],
         image: std::sync::Arc<gpui::RenderImage>,
+        only: Option<Vec<(usize, usize)>>,
         cx: &mut Context<Self>,
     ) {
         let dragging = self.content_drag.is_some_and(|drag| {
@@ -1826,6 +1899,34 @@ impl DocumentWorkspace {
             defer_drop_images(vec![image], cx);
             return;
         }
+        let drawn = SpritePiece {
+            from,
+            group: 0,
+            item: None,
+            image,
+            ink: None,
+            whole: true,
+        };
+        if let Some(only) = only {
+            let Some(sprite) = self.content_sprite.as_mut() else {
+                defer_drop_images(vec![drawn.image], cx);
+                return;
+            };
+            let (replaced, mut kept) = std::mem::take(&mut sprite.pieces)
+                .into_iter()
+                .partition::<Vec<_>, _>(|piece| {
+                    piece
+                        .item
+                        .is_some_and(|item| only.contains(&(piece.group, item)))
+                });
+            // Under the paths drawn as outlines, as a drawing's photo or
+            // hatch usually is.
+            kept.insert(0, drawn);
+            sprite.pieces = kept;
+            drop_sprite_images(replaced, cx);
+            cx.notify();
+            return;
+        }
         let had_picture = self.content_sprite.is_some();
         if let Some(sprite) = self.content_sprite.take() {
             drop_sprite_images(sprite.pieces, cx);
@@ -1833,14 +1934,7 @@ impl DocumentWorkspace {
         self.content_sprite = Some(ContentSprite {
             document_id,
             page_index,
-            pieces: vec![SpritePiece {
-                from,
-                group: 0,
-                item: None,
-                image,
-                ink: None,
-                whole: true,
-            }],
+            pieces: vec![drawn],
             dropped: None,
             sent: false,
             replied: false,
@@ -1999,20 +2093,31 @@ impl DocumentWorkspace {
                 .into_iter()
                 .zip(&sprite.pieces)
                 .map(|(target, piece)| match (target, &piece.ink) {
-                    (SpriteTarget::Placed(placement), Some(ink)) => SpritePaintPiece::Path(
-                        ink.outline
-                            .iter()
-                            .map(|subpath| {
-                                subpath
-                                    .iter()
-                                    .map(|&[x, y]| placement.map(ink.rect, (x, y)))
-                                    .collect()
-                            })
-                            .collect(),
-                        ink.width,
-                        ink.filled,
-                        ink.colour,
-                    ),
+                    (SpriteTarget::Placed(placement), Some(ink)) => {
+                        // A resize scales the stroke as it scales the path.
+                        let scale = (placement.scale[0] * placement.scale[1]).abs().sqrt();
+                        let mut line = ink.line.clone();
+                        for length in line.dash.iter_mut().chain([&mut line.phase]) {
+                            *length *= scale;
+                        }
+                        SpritePaintPiece::Path(SpritePath {
+                            subpaths: ink
+                                .outline
+                                .iter()
+                                .map(|subpath| {
+                                    subpath
+                                        .iter()
+                                        .map(|&[x, y]| placement.map(ink.rect, (x, y)))
+                                        .collect()
+                                })
+                                .collect(),
+                            fill: ink.fill,
+                            even_odd: ink.even_odd,
+                            stroke: ink.stroke,
+                            width: ink.width * scale,
+                            line,
+                        })
+                    }
                     (SpriteTarget::Picture(to, turned), _) => {
                         SpritePaintPiece::Picture(to, turned, piece.image.clone())
                     }
@@ -3421,6 +3526,228 @@ fn mapped_rect([a, b, c, d, e, f]: [f64; 6], rect: [f64; 4]) -> [f64; 4] {
         })
 }
 
+/// The most dashes a dragged path is drawn with, which keeps each frame
+/// quick; past it the path is drawn solid, its dashes too fine to tell
+/// apart.
+const MAX_SPRITE_DASHES: usize = 2_000;
+
+/// A dash pattern repeating in fewer pixels than this shows as solid.
+const MIN_DASH_PERIOD: f32 = 2.;
+
+/// A dragged path's fill and stroke as the screen draws them, its subpaths
+/// in window pixels and `pixels_per_point` the page's scale: the fill,
+/// then the stroke over it.
+fn sprite_path_shapes(
+    path: &SpritePath,
+    subpaths: &[Vec<(f32, f32)>],
+    pixels_per_point: f64,
+) -> Vec<(gpui::Path<Pixels>, gpui::Rgba)> {
+    use gpui::{FillOptions, FillRule, LineCap, LineJoin, PathBuilder, PathStyle, StrokeOptions};
+    let at = |(x, y): (f32, f32)| gpui::point(gpui::px(x), gpui::px(y));
+    let mut shapes = Vec::new();
+    if let Some(colour) = path.fill {
+        let rule = if path.even_odd {
+            FillRule::EvenOdd
+        } else {
+            FillRule::NonZero
+        };
+        let mut builder = PathBuilder::fill()
+            .with_style(PathStyle::Fill(FillOptions::default().with_fill_rule(rule)));
+        for subpath in subpaths {
+            let Some((&first, rest)) = subpath.split_first() else {
+                continue;
+            };
+            builder.move_to(at(first));
+            for &corner in rest {
+                builder.line_to(at(corner));
+            }
+            builder.close();
+        }
+        if let Ok(built) = builder.build() {
+            shapes.push((built, colour));
+        }
+    }
+    if let Some(colour) = path.stroke {
+        let pixels = pixels_per_point as f32;
+        // A width of 0 is the thinnest line the screen can draw.
+        let width = (path.width as f32 * pixels).max(1.);
+        let cap = match path.line.cap {
+            1 => LineCap::Round,
+            2 => LineCap::Square,
+            _ => LineCap::Butt,
+        };
+        let options = StrokeOptions::default()
+            .with_line_width(width)
+            .with_line_cap(cap)
+            .with_line_join(match path.line.join {
+                1 => LineJoin::Round,
+                2 => LineJoin::Bevel,
+                _ => LineJoin::MiterClip,
+            })
+            .with_miter_limit(10.);
+        let dash = path
+            .line
+            .dash
+            .iter()
+            .map(|length| *length as f32 * pixels)
+            .collect::<Vec<_>>();
+        let pieces = dashed_subpaths(
+            subpaths,
+            &dash,
+            path.line.phase as f32 * pixels,
+            cap != LineCap::Butt,
+        );
+        let mut builder =
+            PathBuilder::stroke(gpui::px(width)).with_style(PathStyle::Stroke(options));
+        for (piece, closed) in &pieces {
+            let Some((&first, rest)) = piece.split_first() else {
+                continue;
+            };
+            builder.move_to(at(first));
+            if rest.is_empty() {
+                // A dot: a hair's length, to show.
+                builder.line_to(at((first.0 + 0.5, first.1)));
+            }
+            for &corner in rest {
+                builder.line_to(at(corner));
+            }
+            if *closed {
+                builder.close();
+            }
+        }
+        if let Ok(built) = builder.build() {
+            shapes.push((built, colour));
+        }
+    }
+    shapes
+}
+
+/// `subpaths` (in window pixels) as their stroke draws them: each dash of
+/// `dash` (lengths in pixels, starting `phase` into it) a piece of its own,
+/// and whether a piece is a closed subpath, which joins its ends. A
+/// dash of no length is a dot when the line's ends are `capped`, else
+/// nothing. A solid line, or one whose dashes are past counting, is its
+/// subpaths, closed where they end where they start.
+fn dashed_subpaths(
+    subpaths: &[Vec<(f32, f32)>],
+    dash: &[f32],
+    phase: f32,
+    capped: bool,
+) -> Vec<(Vec<(f32, f32)>, bool)> {
+    let solid = || {
+        subpaths
+            .iter()
+            .map(|subpath| match subpath.as_slice() {
+                [first, .., last] if subpath.len() > 2 && first == last => {
+                    (subpath[..subpath.len() - 1].to_vec(), true)
+                }
+                _ => (subpath.clone(), false),
+            })
+            .collect::<Vec<_>>()
+    };
+    // An odd pattern repeats to be even, as the PDF reads it.
+    let odd = !dash.len().is_multiple_of(2);
+    let period = dash.iter().sum::<f32>() * if odd { 2. } else { 1. };
+    let fine = period.is_finite() && period >= MIN_DASH_PERIOD;
+    if dash.is_empty() || !fine || dash.iter().any(|length| !length.is_finite()) {
+        return solid();
+    }
+    let length = |subpath: &Vec<(f32, f32)>| {
+        subpath
+            .windows(2)
+            .map(|pair| (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1))
+            .sum::<f32>()
+    };
+    let total = subpaths.iter().map(length).sum::<f32>();
+    let pattern_len = if odd { dash.len() * 2 } else { dash.len() };
+    if total / period * pattern_len as f32 > MAX_SPRITE_DASHES as f32 {
+        return solid();
+    }
+    let lengths = (0..pattern_len)
+        .map(|index| dash[index % dash.len()])
+        .collect::<Vec<_>>();
+    let mut pieces = Vec::new();
+    for subpath in subpaths {
+        // Each subpath starts the pattern afresh, `phase` into it.
+        let mut index = 0;
+        let mut left = lengths[0];
+        let mut skip = phase.rem_euclid(period);
+        while skip > 0. {
+            if skip < left {
+                left -= skip;
+                break;
+            }
+            skip -= left;
+            index = (index + 1) % pattern_len;
+            left = lengths[index];
+        }
+        let mut current: Vec<(f32, f32)> = Vec::new();
+        let on = |index: usize| index.is_multiple_of(2);
+        if on(index)
+            && let Some(&first) = subpath.first()
+        {
+            current.push(first);
+        }
+        for pair in subpath.windows(2) {
+            let (from, to) = (pair[0], pair[1]);
+            let span = (to.0 - from.0).hypot(to.1 - from.1);
+            let mut along = 0.;
+            while span - along > left {
+                along += left;
+                let t = along / span;
+                let point = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+                if on(index) {
+                    current.push(point);
+                    end_dash(
+                        &mut pieces,
+                        &mut current,
+                        capped,
+                        (to.0 - from.0, to.1 - from.1),
+                    );
+                } else {
+                    current.push(point);
+                }
+                index = (index + 1) % pattern_len;
+                left = lengths[index];
+                if !on(index) {
+                    current.clear();
+                }
+            }
+            left -= span - along;
+            if on(index) {
+                current.push(to);
+            }
+        }
+        if on(index) {
+            let direction = match subpath.as_slice() {
+                [.., a, b] => (b.0 - a.0, b.1 - a.1),
+                _ => (1., 0.),
+            };
+            end_dash(&mut pieces, &mut current, capped, direction);
+        }
+    }
+    pieces
+}
+
+/// Ends the dash `current`, adding it to `pieces`: a dash of no length,
+/// heading `direction`, is a dot when the line's ends are capped.
+fn end_dash(
+    pieces: &mut Vec<(Vec<(f32, f32)>, bool)>,
+    current: &mut Vec<(f32, f32)>,
+    capped: bool,
+    direction: (f32, f32),
+) {
+    let dash = std::mem::take(current);
+    let long = dash.windows(2).any(|pair| pair[0] != pair[1]);
+    if long {
+        pieces.push((dash, false));
+    } else if capped && let Some(&at) = dash.first() {
+        let norm = direction.0.hypot(direction.1).max(f32::EPSILON);
+        let step = (direction.0 / norm * 0.01, direction.1 / norm * 0.01);
+        pieces.push((vec![at, (at.0 + step.0, at.1 + step.1)], false));
+    }
+}
+
 /// Paints a dragged picture on its page: each piece's picture where the
 /// piece is now.
 pub(super) fn content_sprite_element(
@@ -3456,35 +3783,24 @@ pub(super) fn content_sprite_element(
                     for piece in &sprite.pieces {
                         let ([left, bottom, right, top], turned, image) = match piece {
                             SpritePaintPiece::Picture(to, turned, image) => (to, turned, image),
-                            // A path is drawn as the page draws it.
-                            SpritePaintPiece::Path(subpaths, width, filled, colour) => {
-                                let mut builder = if *filled {
-                                    gpui::PathBuilder::fill()
-                                } else {
-                                    gpui::PathBuilder::stroke(px(
-                                        (width * pixels_per_point).max(1.) as f32,
-                                    ))
-                                };
-                                for subpath in subpaths {
-                                    let Some((&first, rest)) = subpath.split_first() else {
-                                        continue;
-                                    };
-                                    builder.move_to(project(first));
-                                    if rest.is_empty() {
-                                        // A dot: a hair's length, to show.
-                                        let mut dot = project(first);
-                                        dot.x += px(0.5);
-                                        builder.line_to(dot);
-                                    }
-                                    for &corner in rest {
-                                        builder.line_to(project(corner));
-                                    }
-                                    if *filled {
-                                        builder.close();
-                                    }
-                                }
-                                if let Ok(path) = builder.build() {
-                                    window.paint_path(path, *colour);
+                            SpritePaintPiece::Path(path) => {
+                                let subpaths = path
+                                    .subpaths
+                                    .iter()
+                                    .map(|subpath| {
+                                        subpath
+                                            .iter()
+                                            .map(|&point| {
+                                                let point = project(point);
+                                                (f32::from(point.x), f32::from(point.y))
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .collect::<Vec<_>>();
+                                for (built, colour) in
+                                    sprite_path_shapes(path, &subpaths, pixels_per_point)
+                                {
+                                    window.paint_path(built, colour);
                                 }
                                 continue;
                             }
@@ -3631,8 +3947,48 @@ fn piece_image(
         }
     }
     // Only the path's own ink: what it frames or crosses stays on the page.
-    if let Some(mask) = mask {
-        let keep = mask.raster(to_pixels, (x0, y0), (width, height));
+    let keep = mask.map(|mask| mask.raster(to_pixels, (x0, y0), (width, height)));
+    // A path's colour, as the page shows it: the colour most of its pixels
+    // show (a fill's, or a line's core), before the paper is taken away,
+    // not what is drawn over its edges, such as a table cell's border. A
+    // fill hides what is under it, so it is drawn in its colour however
+    // light (white too); a line too faint to say keeps its picture.
+    let colour = mask
+        .zip(keep.as_ref())
+        .filter(|_| ink)
+        .and_then(|(mask, keep)| {
+            let solidity = |pixel: &[u8]| 255 - u32::from(pixel[0].min(pixel[1]).min(pixel[2]));
+            let bucket = |pixel: &[u8]| {
+                (u32::from(pixel[0]) >> 3) << 10
+                    | (u32::from(pixel[1]) >> 3) << 5
+                    | u32::from(pixel[2]) >> 3
+            };
+            let mut counts: std::collections::HashMap<u32, (u64, [u64; 3])> =
+                std::collections::HashMap::new();
+            for (pixel, _) in pixels
+                .chunks_exact(4)
+                .zip(keep)
+                .filter(|(pixel, keep)| **keep && (mask.filled || solidity(pixel) >= 8))
+            {
+                let (count, sum) = counts.entry(bucket(pixel)).or_default();
+                *count += 1;
+                for (total, channel) in sum.iter_mut().zip(&pixel[..3]) {
+                    *total += u64::from(*channel);
+                }
+            }
+            // Ties go to the lighter: a fill, not what is drawn over its edge.
+            let (count, sum) = counts
+                .into_values()
+                .max_by_key(|(count, sum)| (*count, sum.iter().sum::<u64>() / *count))?;
+            let [b, g, r] = sum.map(|total| (total / count) as u8);
+            (mask.filled || solidity(&[b, g, r]) >= 128).then(|| gpui::Rgba {
+                r: f32::from(r) / 255.,
+                g: f32::from(g) / 255.,
+                b: f32::from(b) / 255.,
+                a: 1.,
+            })
+        });
+    if let Some(keep) = &keep {
         for (pixel, keep) in pixels.chunks_exact_mut(4).zip(keep) {
             if !keep {
                 pixel.copy_from_slice(&[255, 255, 255, 255]);
@@ -3655,24 +4011,6 @@ fn piece_image(
             pixel[3] = alpha;
         }
     }
-    // A path's colour: its solid ink's, weighed by how solid (BGRA).
-    let colour = mask.filter(|_| ink).and_then(|_| {
-        let mut sum = [0_u64; 3];
-        let mut weight = 0_u64;
-        for pixel in pixels.chunks_exact(4).filter(|pixel| pixel[3] >= 128) {
-            let alpha = u64::from(pixel[3]);
-            for (total, channel) in sum.iter_mut().zip(&pixel[..3]) {
-                *total += u64::from(*channel) * alpha;
-            }
-            weight += alpha;
-        }
-        (weight > 0).then(|| gpui::Rgba {
-            r: (sum[2] / weight) as f32 / 255.,
-            g: (sum[1] / weight) as f32 / 255.,
-            b: (sum[0] / weight) as f32 / 255.,
-            a: 1.,
-        })
-    });
     let buffer = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
         width as u32,
         height as u32,
@@ -4022,5 +4360,205 @@ mod tests {
         assert_eq!(pixels[0][3], 0);
         assert_eq!(pixels[1], [0, 0, 0, 255]);
         assert_eq!(pixels[2], [0, 0, 0, 127]);
+    }
+
+    /// A dragged path is drawn in the PDF's own fill and stroke colours;
+    /// only where the PDF gives none is the colour the page showed used.
+    #[test]
+    fn a_dragged_path_is_drawn_in_its_own_fill_and_stroke() {
+        let shown = gpui::Rgba {
+            r: 0.5,
+            g: 0.5,
+            b: 0.5,
+            a: 1.,
+        };
+        let cell = PageObject {
+            kind: ContentKind::Drawing,
+            rect: [0., 0., 10., 10.],
+            outline: vec![vec![[0., 0.], [10., 0.], [10., 10.], [0., 10.], [0., 0.]]],
+            reach: 0.5,
+            filled: true,
+            fill: Some([200, 200, 200, 255]),
+            stroke: Some([0, 0, 0, 128]),
+            ..PageObject::default()
+        };
+        let ink = SpriteInk::of(cell.clone(), Some(shown)).unwrap();
+        let byte = |colour: Option<gpui::Rgba>| colour.map(|colour| (colour.r * 255.).round());
+        assert_eq!(byte(ink.fill), Some(200.), "its own fill");
+        assert_eq!(byte(ink.stroke), Some(0.), "and its own border");
+        assert_eq!(ink.width, 1.);
+        assert_eq!(
+            ink.stroke.map(|stroke| (stroke.a * 255.).round()),
+            Some(128.)
+        );
+        // A pattern fill: the colour the page showed, as a fill alone.
+        let patterned = PageObject {
+            fill: None,
+            ..cell.clone()
+        };
+        let ink = SpriteInk::of(patterned.clone(), Some(shown)).unwrap();
+        assert_eq!((byte(ink.fill), ink.stroke.is_none()), (Some(128.), true));
+        // Nothing to go on: its picture.
+        assert!(SpriteInk::of(patterned.clone(), None).is_none());
+        // A pattern the PDF names: its picture, which shows the pattern.
+        let tiled = PageObject {
+            patterned: true,
+            ..patterned
+        };
+        assert!(SpriteInk::of(tiled, Some(shown)).is_none());
+    }
+
+    /// A dashed line is drawn dash by dash, each subpath starting the
+    /// pattern afresh, `phase` into it; dots show only with capped ends.
+    #[test]
+    fn a_dragged_dashed_line_keeps_its_dashes() {
+        let line = vec![vec![(0., 0.), (10., 0.)]];
+        let dashes = |dash: &[f32], phase: f32, capped: bool| {
+            dashed_subpaths(&line, dash, phase, capped)
+                .into_iter()
+                .map(|(piece, closed)| {
+                    assert!(!closed);
+                    let xs = piece.iter().map(|point| point.0).collect::<Vec<_>>();
+                    (xs[0], *xs.last().unwrap())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            dashes(&[3., 1.], 0., false),
+            [(0., 3.), (4., 7.), (8., 10.)]
+        );
+        assert_eq!(
+            dashes(&[3., 1.], 1., false),
+            [(0., 2.), (3., 6.), (7., 10.)]
+        );
+        // An odd pattern repeats: 2 on, 2 off.
+        assert_eq!(dashes(&[2.], 0., false), [(0., 2.), (4., 6.), (8., 10.)]);
+        // Dots of no length: caps show them, butt ends do not.
+        assert!(dashes(&[0., 5.], 0., false).is_empty());
+        assert_eq!(dashes(&[0., 5.], 0., true).len(), 2);
+        // A dash turns a corner as one piece.
+        let corner = dashed_subpaths(&[vec![(0., 0.), (2., 0.), (2., 2.)]], &[3., 1.], 0., false);
+        assert_eq!(corner[0].0, vec![(0., 0.), (2., 0.), (2., 1.)]);
+        // Solid, a closed subpath joins its ends.
+        let square = vec![vec![(0., 0.), (1., 0.), (1., 1.), (0., 0.)]];
+        assert_eq!(
+            dashed_subpaths(&square, &[], 0., false),
+            [(vec![(0., 0.), (1., 0.), (1., 1.)], true)]
+        );
+        // Dashes too many to draw: solid.
+        let long = vec![vec![(0., 0.), (1e6, 0.)]];
+        assert_eq!(dashed_subpaths(&long, &[3., 3.], 0., false).len(), 1);
+        assert_eq!(dashed_subpaths(&line, &[0.5, 0.5], 0., false).len(), 1);
+        assert_eq!(dashed_subpaths(&long, &[0., 0.], 0., false).len(), 1);
+    }
+
+    /// A dragged path is filled by its own rule, so a hole stays a hole,
+    /// and stroked with its scaled width.
+    #[test]
+    fn a_dragged_path_keeps_its_holes() {
+        let colour = gpui::Rgba {
+            r: 0.,
+            g: 0.,
+            b: 0.,
+            a: 1.,
+        };
+        let ring = SpritePath {
+            subpaths: vec![
+                vec![(0., 0.), (10., 0.), (10., 10.), (0., 10.)],
+                vec![(2., 2.), (8., 2.), (8., 8.), (2., 8.)],
+            ],
+            fill: Some(colour),
+            even_odd: true,
+            stroke: Some(colour),
+            width: 1.,
+            line: crate::pdf_content_moves::LineStyle {
+                dash: vec![1., 1.],
+                cap: 1,
+                ..Default::default()
+            },
+        };
+        let shapes = |ring: &SpritePath| {
+            let subpaths = ring
+                .subpaths
+                .iter()
+                .map(|subpath| subpath.iter().map(|&(x, y)| (x as f32, y as f32)).collect())
+                .collect::<Vec<_>>();
+            sprite_path_shapes(ring, &subpaths, 1.)
+        };
+        let holed = shapes(&ring);
+        assert_eq!(holed.len(), 2, "a fill and a stroke");
+        assert!((filled_area(&holed[0].0) - 64.).abs() < 0.5, "a ring");
+        let solid = shapes(&SpritePath {
+            even_odd: false,
+            ..ring.clone()
+        });
+        assert!((filled_area(&solid[0].0) - 100.).abs() < 0.5, "a square");
+    }
+
+    /// The area a filled path's triangles cover.
+    fn filled_area(path: &gpui::Path<Pixels>) -> f32 {
+        path.vertices
+            .chunks(3)
+            .map(|triangle| {
+                let [a, b, c] = [0, 1, 2].map(|index| {
+                    let point = triangle[index].xy_position;
+                    (f32::from(point.x), f32::from(point.y))
+                });
+                ((b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1)).abs() / 2.
+            })
+            .sum()
+    }
+
+    /// A dragged or turned fill is drawn in its colour as the page shows
+    /// it: a mid-grey table cell stays mid-grey, not black.
+    #[test]
+    fn a_dragged_fill_keeps_the_colour_the_page_shows() {
+        let filled = PieceMask {
+            subpaths: vec![vec![(-1., -1.), (5., -1.), (5., 3.), (-1., 3.)]],
+            reach: 0.,
+            filled: true,
+        };
+        // The cell's border, another drawing, on its edge.
+        let colour = |value: u8| {
+            piece_image(
+                &[tile(
+                    [[0, value, value, value], [0, value, value, value]],
+                    1,
+                )],
+                1.,
+                [0., 0., 4., 2.],
+                true,
+                Some(&filled),
+            )
+            .unwrap()
+            .1
+        };
+        let grey = colour(120).expect("a solid fill has a colour");
+        assert!((grey.r - 120. / 255.).abs() < 0.01, "{grey:?}");
+        assert!((grey.g - grey.r).abs() < 0.01 && (grey.b - grey.r).abs() < 0.01);
+        assert_eq!(colour(0).map(|black| black.r), Some(0.));
+        assert_eq!(colour(60).map(|dark| (dark.r * 255.).round()), Some(60.));
+        // A light fill, and a white one, are drawn in their colour too.
+        assert_eq!(
+            colour(230).map(|light| (light.r * 255.).round()),
+            Some(230.)
+        );
+        assert_eq!(colour(255).map(|white| white.r), Some(1.));
+        // A faint line is too faint to say, and keeps its picture.
+        let line = PieceMask {
+            filled: false,
+            reach: 1.,
+            ..filled
+        };
+        let faint = piece_image(
+            &[tile([[230; 4]; 2], 1)],
+            1.,
+            [0., 0., 4., 2.],
+            true,
+            Some(&line),
+        )
+        .unwrap()
+        .1;
+        assert_eq!(faint, None);
     }
 }
