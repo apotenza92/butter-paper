@@ -267,29 +267,54 @@ impl DocumentWorkspace {
                     workspace.clear_content_selection(cx);
                     return;
                 }
+                // Escape finishes the text being typed, keeping it, as a click
+                // away does.
                 if workspace.pending_text_box_editor.is_some() {
-                    if !workspace.cancel_pending_composite_text_editor(window, cx) {
-                        let existing_text_box = workspace
+                    let new_text_box =
+                        workspace
                             .pending_text_box_editor
                             .as_ref()
                             .is_some_and(|editor| {
-                                matches!(
+                                matches!(editor.target, PendingTextEditorTarget::NewTextBox { .. })
+                            });
+                    // A Text Box keeps a draft it cannot save for recovery; a
+                    // caption's (Callout, Cloud+, Dimension) is dropped.
+                    let caption =
+                        workspace
+                            .pending_text_box_editor
+                            .as_ref()
+                            .is_some_and(|editor| {
+                                !matches!(
                                     editor.target,
-                                    PendingTextEditorTarget::ExistingTextBox { .. }
+                                    PendingTextEditorTarget::NewTextBox { .. }
+                                        | PendingTextEditorTarget::ExistingTextBox { .. }
                                 )
                             });
-                        match workspace.commit_pending_text_box(cx) {
-                            Ok(_) => {
-                                if existing_text_box {
-                                    workspace.workspace_focus.focus(window, cx);
-                                } else {
-                                    workspace.text_box_return_focus.focus(window, cx);
-                                }
+                    match workspace.commit_pending_text_box(cx) {
+                        Ok(_) => {
+                            if new_text_box {
+                                workspace.text_box_return_focus.focus(window, cx);
+                            } else {
+                                workspace.workspace_focus.focus(window, cx);
                             }
-                            Err(error) => {
-                                workspace.text_box_commit_error = Some(error);
-                                cx.notify();
+                        }
+                        // Text that cannot be kept (a Dimension's non-ASCII
+                        // caption) is dropped, leaving the markup as it was,
+                        // and the status bar says why.
+                        Err(error) if caption => {
+                            if let Some(editor) = workspace.pending_text_box_editor.take() {
+                                workspace
+                                    .annotation_statuses
+                                    .insert(editor.document_id, error);
                             }
+                            workspace.pending_text_box_subscriptions.clear();
+                            workspace.text_box_commit_error = None;
+                            workspace.workspace_focus.focus(window, cx);
+                            cx.notify();
+                        }
+                        Err(error) => {
+                            workspace.text_box_commit_error = Some(error);
+                            cx.notify();
                         }
                     }
                     return;

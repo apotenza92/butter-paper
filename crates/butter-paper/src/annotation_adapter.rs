@@ -472,7 +472,13 @@ impl AnnotationTool {
     pub fn tooltip_label(self) -> String {
         self.shortcut().map_or_else(
             || self.label().to_owned(),
-            |shortcut| format!("{} ({shortcut})", self.label()),
+            |shortcut| {
+                format!(
+                    "{} ({})",
+                    self.label(),
+                    crate::shortcut_label::shortcut_label(shortcut)
+                )
+            },
         )
     }
 
@@ -1221,6 +1227,9 @@ pub struct AnnotationAdapter {
     object_snap_tracking_result: Option<ObjectSnapTrackingResult>,
     relationship_snap_guides: Vec<RelationshipSnapGuide>,
     semantic_snap_page_sizes: HashMap<(u64, u32), (f64, f64)>,
+    /// Each page as last shown (turn, bounds and zoom), where a Dimension's
+    /// offset handle is placed so hit testing matches its painting.
+    observed_page_views: HashMap<(u64, u32), crate::annotation_model::PageTransform>,
     semantic_snap_page_grids: HashMap<(u64, u32), PageGridDefinition>,
     semantic_snap_page_content: HashMap<(u64, u32), Arc<SemanticSnapIndex>>,
     retained_annotation_obstacles: HashMap<u64, Vec<RetainedAnnotationObstacle>>,
@@ -2316,6 +2325,18 @@ impl AnnotationAdapter {
             (document_id, page_index),
             (width_pdf_points, height_pdf_points),
         );
+    }
+
+    /// Records how a page is shown. Unlike the observed zoom it never
+    /// cancels a gesture: it only places Dimension offset handles.
+    pub fn observe_page_view(
+        &mut self,
+        document_id: u64,
+        page_index: u32,
+        view: crate::annotation_model::PageTransform,
+    ) {
+        self.observed_page_views
+            .insert((document_id, page_index), view);
     }
 
     pub fn set_semantic_snap_page_grid(
@@ -6607,6 +6628,10 @@ impl AnnotationAdapter {
         if self.tool != AnnotationTool::Select {
             return Ok(None);
         }
+        let view = self
+            .observed_page_views
+            .get(&(document_id, page_index))
+            .copied();
         let selected = document.selected_id();
         let hit = selected
             .and_then(|selected| {
@@ -6622,6 +6647,7 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     self.observed_pixels_per_point.0,
+                    view,
                 )
                 .map(|index| (annotation.id.clone(), index))
             })
@@ -6641,6 +6667,7 @@ impl AnnotationAdapter {
                             point,
                             tolerance_pt,
                             self.observed_pixels_per_point.0,
+                            view,
                         )
                         .map(|index| (annotation.id.clone(), index))
                     })
@@ -7930,6 +7957,9 @@ impl AnnotationAdapter {
                     point,
                     tolerance_pt,
                     self.observed_pixels_per_point.0,
+                    self.observed_page_views
+                        .get(&(document_id, page_index))
+                        .copied(),
                 ) {
                     document.select(&id);
                     let expected_revision = document.snapshot().revision;
@@ -10689,9 +10719,11 @@ impl AnnotationAdapter {
                 )?;
                 let edit = match kind {
                     CalloutPointerEditKind::TextBoxResize(handle) => {
-                        let text_box = original
-                            .text_box
-                            .rotated_resize_from_handle(0., handle, point);
+                        let text_box = original.text_box.rotated_resize_from_handle(
+                            0.,
+                            handle,
+                            handle.outset_pointer(point, original.text_box_border_inset_pt()),
+                        );
                         AnnotationEdit::SetCalloutTextBox(text_box)
                     }
                     CalloutPointerEditKind::LeaderPoint(point_index) => {
@@ -11823,6 +11855,84 @@ impl AnnotationAdapter {
                 leader_points,
             },
         })?;
+        Ok(())
+    }
+
+    /// Restyles a Callout from its properties, refitting its box to the new
+    /// text size, as one undoable change.
+    pub fn set_callout_appearance(
+        &mut self,
+        document_id: u64,
+        id: &MarkupId,
+        appearance: CalloutAppearance,
+    ) -> Result<(), AnnotationError> {
+        let mut restyled = self
+            .callout(document_id, id)
+            .ok_or(AnnotationError::NoSelection)?
+            .clone();
+        restyled.appearance = appearance.clone();
+        let text_box = callout_fitted_text_box(&restyled, restyled.content());
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetCalloutAppearance {
+                    appearance,
+                    text_box,
+                },
+            })?;
+        Ok(())
+    }
+
+    /// Restyles a Cloud+ from its properties, refitting its caption and
+    /// rerouting its leader, as one undoable change.
+    pub fn set_cloud_plus_style_with_routing_supplement(
+        &mut self,
+        document_id: u64,
+        id: &MarkupId,
+        appearance: CloudPlusAppearance,
+        border_effect_intensity: f64,
+        caption_supplement: &AnnotationSelectionSupplement,
+    ) -> Result<(), AnnotationError> {
+        let annotation = self
+            .cloud_plus(document_id, id)
+            .ok_or(AnnotationError::NoSelection)?;
+        let cloud_appearance_path = (annotation.border_effect_intensity()
+            == border_effect_intensity)
+            .then(|| annotation.cloud_appearance_path().map(<[_]>::to_vec))
+            .flatten();
+        let restyled = CloudPlusAnnotation::new(
+            annotation.id.clone(),
+            annotation.page_index,
+            annotation.cloud_points().to_vec(),
+            border_effect_intensity,
+            annotation.leader_points().to_vec(),
+            annotation.text_box,
+            annotation.content(),
+            appearance.clone(),
+        )?
+        .with_cloud_appearance_path(cloud_appearance_path)?;
+        let routing_context = self.cloud_plus_routing_context(
+            document_id,
+            restyled.page_index,
+            Some(id),
+            caption_supplement,
+        );
+        let (text_box, leader_points) =
+            cloud_plus_text_layout(&restyled, restyled.content(), &routing_context)?;
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit: AnnotationEdit::SetCloudPlusStyle {
+                    appearance,
+                    border_effect_intensity,
+                    text_box,
+                    leader_points,
+                },
+            })?;
         Ok(())
     }
 
@@ -14112,9 +14222,11 @@ impl AnnotationAdapter {
             let mut text_box = original.text_box;
             match kind {
                 CalloutPointerEditKind::TextBoxResize(handle) => {
-                    text_box = original
-                        .text_box
-                        .rotated_resize_from_handle(0., *handle, *current);
+                    text_box = original.text_box.rotated_resize_from_handle(
+                        0.,
+                        *handle,
+                        handle.outset_pointer(*current, original.text_box_border_inset_pt()),
+                    );
                     if let Ok(resized) = original.resized_text_box(text_box) {
                         leader_points = resized.leader_points().to_vec();
                     }
@@ -15933,15 +16045,20 @@ fn hit_selected_dimension_control(
     point: PdfPoint,
     tolerance: f64,
     observed_pixels_per_point: f64,
+    view: Option<crate::annotation_model::PageTransform>,
 ) -> Option<(MarkupId, DimensionPointerEditKind)> {
     let selected = document.selected_id()?;
     let annotation = document
         .dimensions()
         .iter()
         .find(|annotation| annotation.page_index == page_index && &annotation.id == selected)?;
-    if let Some(index) =
-        hit_dimension_handle(annotation, point, tolerance, observed_pixels_per_point)
-    {
+    if let Some(index) = hit_dimension_handle(
+        annotation,
+        point,
+        tolerance,
+        observed_pixels_per_point,
+        view,
+    ) {
         let kind = match index {
             0 => DimensionPointerEditKind::Start,
             1 => DimensionPointerEditKind::End,
@@ -15961,10 +16078,13 @@ fn hit_dimension_handle(
     point: PdfPoint,
     tolerance: f64,
     observed_pixels_per_point: f64,
+    view: Option<crate::annotation_model::PageTransform>,
 ) -> Option<usize> {
+    // The page as last painted gives the current zoom even before a press
+    // has reported it.
+    let pixels_per_point = view.map_or(observed_pixels_per_point, |view| view.pixels_per_point());
     let handle_tolerance = tolerance.max(
-        crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
-            / observed_pixels_per_point.max(f64::EPSILON),
+        crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX / pixels_per_point.max(f64::EPSILON),
     );
     measurement_endpoint_at(
         annotation.start,
@@ -15975,7 +16095,13 @@ fn hit_dimension_handle(
         handle_tolerance,
     )
     .map(usize::from)
-    .or_else(|| (distance(annotation.caption_center(), point) <= handle_tolerance).then_some(2))
+    .or_else(|| {
+        (distance(
+            annotation.offset_handle_point_in_view(pixels_per_point, view),
+            point,
+        ) <= handle_tolerance)
+            .then_some(2)
+    })
 }
 
 fn hit_selected_callout_control(
@@ -16065,7 +16191,7 @@ fn hit_cloud_plus_handle(
     }
     if let Some(handle) = RectangleResizeHandle::ALL.into_iter().rev().find(|handle| {
         distance(
-            axis_aligned_resize_handle_point(annotation.text_box, *handle),
+            handle.inset_point(annotation.text_box, annotation.text_box_border_inset_pt()),
             point,
         ) <= handle_tolerance
     }) {
@@ -16104,7 +16230,7 @@ fn hit_callout_handle(
     }
     if let Some(handle) = RectangleResizeHandle::ALL.into_iter().rev().find(|handle| {
         distance(
-            axis_aligned_resize_handle_point(annotation.text_box, *handle),
+            handle.inset_point(annotation.text_box, annotation.text_box_border_inset_pt()),
             point,
         ) <= handle_tolerance
     }) {
@@ -16302,9 +16428,11 @@ fn resolve_cloud_plus_pointer_edit(
             .points;
         }
         CloudPlusPointerEditKind::TextBoxResize(handle) => {
-            text_box = original
-                .text_box
-                .rotated_resize_from_handle(0., handle, current);
+            text_box = original.text_box.rotated_resize_from_handle(
+                0.,
+                handle,
+                handle.outset_pointer(current, original.text_box_border_inset_pt()),
+            );
             leader_points = route_cloud_plus_leader(
                 &cloud_points,
                 &original.scallop_path(),
@@ -18135,8 +18263,9 @@ mod tests {
         let restored = adapter.snapshot(7).unwrap();
 
         adapter.set_semantic_snap_settings(snapping_off).unwrap();
-        adapter.pointer_down(7, 0, 5, point(70., 40.), 4.).unwrap();
-        adapter.pointer_move(5, point(80., 50.)).unwrap();
+        // The measured line, away from the offset handle under the caption.
+        adapter.pointer_down(7, 0, 5, point(45., 40.), 4.).unwrap();
+        adapter.pointer_move(5, point(55., 50.)).unwrap();
         assert_eq!(
             adapter.document_scene(7, 0).dimensions[0].feedback,
             SceneInteractionFeedback::Move {
@@ -18147,7 +18276,7 @@ mod tests {
         adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
         assert_eq!(adapter.snapshot(7).unwrap(), restored);
 
-        let offset_handle = original.caption_center();
+        let offset_handle = original.offset_handle_point(1.);
         adapter.pointer_down(7, 0, 3, offset_handle, 4.).unwrap();
         adapter.set_selected_dimension_offset(7, 30.).unwrap();
         let stale_revision = adapter.snapshot(7).unwrap().revision;
@@ -18200,20 +18329,27 @@ mod tests {
         for (point, index) in [
             (original.start, 0),
             (original.end, 1),
-            (original.caption_center(), 2),
+            (original.offset_handle_point(1.), 2),
         ] {
             assert_eq!(
                 adapter.hover_dimension_handle(7, 0, point, 1.).unwrap(),
                 Some((id.clone(), index)),
             );
         }
+        assert_eq!(
+            adapter
+                .hover_dimension_handle(7, 0, original.caption_center(), 1.)
+                .unwrap(),
+            None,
+            "the caption's middle is its text, not the offset handle",
+        );
         assert_eq!(adapter.snapshot(7).unwrap(), before);
         assert_eq!(adapter.history_depths(7), history_before);
 
         adapter.clear_selection(7);
         assert_eq!(
             adapter
-                .hover_dimension_handle(7, 0, original.caption_center(), 1.)
+                .hover_dimension_handle(7, 0, original.offset_handle_point(1.), 1.)
                 .unwrap(),
             Some((id.clone(), 2)),
             "an unlocked unselected Dimension exposes its visible hover controls",
@@ -18528,6 +18664,62 @@ mod tests {
             PointerPhaseOutcome::SelectionChanged(Some(id))
         );
         assert_eq!(adapter.history_depths(7), history_before);
+    }
+
+    #[test]
+    fn a_thick_callout_border_handle_sits_on_its_line_and_drags_without_a_jump() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = MarkupId::new("callout:thick-border").unwrap();
+        let appearance = CalloutAppearance::new(
+            StraightLineAppearance::new("#ff0000", 6., 1., StrokeStyle::Solid).unwrap(),
+            TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+        )
+        .unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Callout(
+                CalloutAnnotation::new(
+                    id.clone(),
+                    0,
+                    vec![point(20., 20.), point(60., 40.), point(100., 40.)],
+                    PdfRect::new(100., 20., 80., 40.).unwrap(),
+                    "Note",
+                    appearance,
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        let original = adapter.snapshot(7).unwrap().callouts[0].clone();
+        assert_eq!(original.text_box_border_inset_pt(), 3.);
+        // The border's line runs 3 pt inside the box: the East handle is on it.
+        let east = RectangleResizeHandle::East.inset_point(original.text_box, 3.);
+        assert_eq!(east, point(177., 40.));
+        assert_eq!(
+            adapter.hover_callout_handle(7, 0, east, 4.).unwrap(),
+            Some((
+                id.clone(),
+                RectangleResizeHandle::ALL
+                    .iter()
+                    .position(|handle| *handle == RectangleResizeHandle::East)
+                    .unwrap()
+            ))
+        );
+
+        // A press on the handle, held still, leaves the box where it was.
+        adapter.pointer_down(7, 0, 1, east, 4.).unwrap();
+        adapter.pointer_move(1, east).unwrap();
+        assert_eq!(
+            adapter.document_scene(7, 0).callouts[0].text_box,
+            original.text_box
+        );
+        // Dragging it 10 pt moves the edge 10 pt.
+        adapter.pointer_up(1, point(187., 40.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().callouts[0].text_box,
+            PdfRect::new(100., 20., 90., 40.).unwrap()
+        );
     }
 
     #[test]

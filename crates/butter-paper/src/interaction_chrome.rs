@@ -271,7 +271,7 @@ fn paint_handle_now(
     window: &mut Window,
 ) {
     if degrees.rem_euclid(90.).abs() <= f64::EPSILON {
-        if let Some(quad) = handle_quad(center, state, hot) {
+        if let Some(quad) = handle_quad(center, state, hot, window.scale_factor()) {
             window.paint_quad(quad);
         }
         return;
@@ -281,19 +281,47 @@ fn paint_handle_now(
     }
 }
 
+/// `value` moved to the centre of the device pixel it falls in.
+pub(super) fn snap_to_device_pixel_centre(value: Pixels, scale: f32) -> Pixels {
+    px(((f32::from(value) * scale).floor() + 0.5) / scale)
+}
+
+/// `width` as a whole, odd number of device pixels (at least one).
+///
+/// A box's line and its handles are both odd and centred on the same device
+/// pixel, so the line runs through the middle of each handle: an even line
+/// beside an odd handle (or the reverse) is half a pixel off it.
+pub(super) fn odd_device_width(width: Pixels, scale: f32) -> Pixels {
+    let device = (f32::from(width) * scale).round().max(1.);
+    let device = if device % 2. == 0. {
+        device + 1.
+    } else {
+        device
+    };
+    px(device / scale)
+}
+
 /// An upright handle, as one quad: white with a state-coloured border, or
-/// filled while hot.
-fn handle_quad(center: Point<Pixels>, state: ChromeState, hot: bool) -> Option<gpui::PaintQuad> {
+/// filled while hot. Centred on a device pixel, an odd number of them wide,
+/// as box lines are.
+fn handle_quad(
+    center: Point<Pixels>,
+    state: ChromeState,
+    hot: bool,
+    scale: f32,
+) -> Option<gpui::PaintQuad> {
     let style = chrome_style(state);
     let size = style.handle?;
     let hot = hot && state != ChromeState::Locked;
-    let half = (size + if hot { 2. } else { 0. }) / 2.;
+    let side = odd_device_width(px(size + if hot { 2. } else { 0. }), scale);
+    let half = side / 2.;
+    let center = gpui::point(
+        snap_to_device_pixel_centre(center.x, scale),
+        snap_to_device_pixel_centre(center.y, scale),
+    );
     Some(
         fill(
-            Bounds::new(
-                center - gpui::point(px(half), px(half)),
-                gpui::size(px(half * 2.), px(half * 2.)),
-            ),
+            Bounds::new(center - gpui::point(half, half), gpui::size(side, side)),
             if hot { style.colour } else { halo_colour() },
         )
         .border_widths(px(if hot { 2. } else { style.width }))

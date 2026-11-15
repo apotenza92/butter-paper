@@ -5,23 +5,21 @@
 //! those controls.
 
 use crate::accessible_button::close_icon_button;
-use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use crate::document_workspace::{DocumentId, PenAnnotationDefaults};
-use crate::property_controls::{PropertyInspectorPanel, PropertySliderInput};
+use crate::property_controls::{
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertyResetConfirm, PropertyResetIds, PropertySliderInput, property_body,
+    property_color_and_size, property_row, property_slider_row, subscribe_property_color,
+};
 use gpui::{
     App, AppContext as _, ClickEvent, Context, EventEmitter, Hsla, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
-    Disableable as _, WindowExt as _,
-    accordion::Accordion,
-    button::{Button, ButtonVariants as _},
-    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
-    dialog::DialogFooter,
-    form::Field,
+    color_picker::ColorPickerState,
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 pub const HIGHLIGHT_DEFAULTS_PANEL_ID: &str = "highlight-defaults-panel";
@@ -40,6 +38,7 @@ pub const HIGHLIGHT_DEFAULTS_RESET_ID: &str = "highlight-defaults-panel-reset";
 pub const HIGHLIGHT_DEFAULTS_RESET_BUTTON_ID: &str = "highlight-defaults-panel-reset-button";
 pub const HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID: &str = "highlight-defaults-panel-reset-cancel";
 pub const HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID: &str = "highlight-defaults-panel-reset-confirm";
+pub const HIGHLIGHT_DEFAULTS_RESET_POPOVER_ID: &str = "highlight-defaults-panel-reset-popover";
 
 const DEFAULT_HIGHLIGHT_COLOUR: &str = "#ffff00";
 const DEFAULT_HIGHLIGHT_WIDTH_PT: f64 = 12.;
@@ -59,8 +58,6 @@ pub struct HighlightDefaultsPanel {
     defaults: PenAnnotationDefaults,
     disabled: bool,
     syncing: bool,
-    appearance_open: bool,
-    reset_open: bool,
     width: gpui::Entity<InputState>,
     width_slider: gpui::Entity<SliderState>,
     opacity: gpui::Entity<InputState>,
@@ -98,7 +95,7 @@ impl HighlightDefaultsPanel {
             )
         });
 
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe(&width_slider, |this, _, event: &SliderEvent, cx| {
                 let SliderEvent::Change(value) = event else {
                     return;
@@ -157,24 +154,26 @@ impl HighlightDefaultsPanel {
                 defaults.opacity = opacity;
                 this.emit_change(defaults, cx);
             }),
-            cx.subscribe(&colour, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(Some(colour)) = event else {
+        ];
+        subscriptions.extend(subscribe_property_color(
+            &colour,
+            cx,
+            |this: &mut Self, cx| {
+                let Some(colour) = this.colour.read(cx).value() else {
                     return;
                 };
                 let mut defaults = this.defaults.clone();
-                defaults.color = rgb_hex(*colour);
+                defaults.color = rgb_hex(colour);
                 defaults.opacity = f64::from(colour.a);
                 this.emit_change(defaults, cx);
-            }),
-        ];
+            },
+        ));
 
         Self {
             document_id: None,
             defaults,
             disabled: false,
             syncing: false,
-            appearance_open: true,
-            reset_open: false,
             width,
             width_slider,
             opacity,
@@ -237,14 +236,6 @@ impl HighlightDefaultsPanel {
         self.disabled
     }
 
-    pub const fn is_appearance_open(&self) -> bool {
-        self.appearance_open
-    }
-
-    pub const fn is_reset_open(&self) -> bool {
-        self.reset_open
-    }
-
     pub fn width_input(&self) -> gpui::Entity<InputState> {
         self.width.clone()
     }
@@ -282,9 +273,7 @@ impl EventEmitter<HighlightDefaultsEvent> for HighlightDefaultsPanel {}
 impl Render for HighlightDefaultsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let controls_disabled = self.disabled || self.document_id.is_none();
-        let panel = cx.entity().downgrade();
-        let accordion_panel = panel.clone();
-        let reset_panel = panel.clone();
+        let reset_panel = cx.entity().downgrade();
         // Closing only hides the panel, so it stays available while the
         // panel's controls are inert.
         let close = close_icon_button(HIGHLIGHT_DEFAULTS_CLOSE_ID, "Close Highlight properties")
@@ -292,85 +281,65 @@ impl Render for HighlightDefaultsPanel {
                 cx.emit(HighlightDefaultsEvent::Close);
             }));
 
-        let appearance = v_flex()
-            .id(HIGHLIGHT_DEFAULTS_APPEARANCE_ID)
-            .debug_selector(|| HIGHLIGHT_DEFAULTS_APPEARANCE_ID.into())
-            .gap_3()
-            .child(colour_field(
-                &self.colour,
-                &self.defaults.color,
-                self.defaults.opacity,
-                controls_disabled,
+        let appearance = PropertyGroup::new()
+            .row(property_row(
+                "Line",
+                property_color_and_size(
+                    div()
+                        .id(HIGHLIGHT_DEFAULTS_COLOUR_ID)
+                        .debug_selector(|| HIGHLIGHT_DEFAULTS_COLOUR_ID.into())
+                        .child(
+                            PropertyColor::new(
+                                HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID,
+                                "Highlight colour",
+                                &self.colour,
+                            )
+                            .disabled(controls_disabled),
+                        ),
+                    div()
+                        .id(HIGHLIGHT_DEFAULTS_WIDTH_ID)
+                        .debug_selector(|| HIGHLIGHT_DEFAULTS_WIDTH_ID.into())
+                        .child(
+                            PropertyNumericInput::new(
+                                "highlight-defaults-panel-width-input",
+                                "Line width",
+                                &self.width,
+                            )
+                            .suffix("pt")
+                            .disabled(controls_disabled),
+                        ),
+                ),
             ))
-            .child(
-                Field::new().label("Stroke width").child(
-                    PropertySliderInput::new("Stroke width", &self.width_slider, &self.width)
-                        .row_id(HIGHLIGHT_DEFAULTS_WIDTH_ID)
-                        .suffix("pt")
-                        .disabled(controls_disabled),
-                ),
-            )
-            .child(
-                Field::new().label("Opacity").child(
-                    PropertySliderInput::new("Opacity", &self.opacity_slider, &self.opacity)
-                        .row_id(HIGHLIGHT_DEFAULTS_OPACITY_ID)
-                        .slider_id(HIGHLIGHT_DEFAULTS_OPACITY_SLIDER_ID)
-                        .input_id(HIGHLIGHT_DEFAULTS_OPACITY_INPUT_ID)
-                        .suffix("%")
-                        .disabled(controls_disabled),
-                ),
-            );
+            .row(property_slider_row(
+                "Opacity",
+                PropertySliderInput::new("Opacity", &self.opacity_slider, &self.opacity)
+                    .row_id(HIGHLIGHT_DEFAULTS_OPACITY_ID)
+                    .slider_id(HIGHLIGHT_DEFAULTS_OPACITY_SLIDER_ID)
+                    .input_id(HIGHLIGHT_DEFAULTS_OPACITY_INPUT_ID)
+                    .suffix("%")
+                    .disabled(controls_disabled),
+            ));
 
-        let reset = v_flex()
-            .id(HIGHLIGHT_DEFAULTS_RESET_ID)
-            .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_ID.into())
-            .gap_2()
-            .child(
-                Button::new(HIGHLIGHT_DEFAULTS_RESET_BUTTON_ID)
-                    .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_BUTTON_ID.into())
-                    .accessibility_id(HIGHLIGHT_DEFAULTS_RESET_BUTTON_ID)
-                    .outline()
-                    .label("Reset properties…")
-                    .disabled(controls_disabled)
-                    .on_click(move |_, window, cx| {
-                        let Some(document_id) = reset_panel
-                            .read_with(cx, |panel, _| {
-                                if panel.disabled || panel.syncing {
-                                    None
-                                } else {
-                                    panel.document_id
-                                }
-                            })
-                            .ok()
-                            .flatten()
-                        else {
-                            return;
-                        };
-                        open_reset_confirmation(reset_panel.clone(), document_id, window, cx);
-                    }),
-            );
-
-        let accordion = Accordion::new("highlight-defaults-panel-sections")
-            .bordered(false)
-            .multiple(true)
-            .disabled(self.disabled)
-            .item(|item| {
-                item.open(self.appearance_open)
-                    .title("Appearance")
-                    .child(appearance)
-            })
-            .item(|item| item.open(self.reset_open).title("Reset").child(reset))
-            .on_toggle_click(move |open, _, cx| {
-                let _ = accordion_panel.update(cx, |panel, cx| {
-                    let appearance_open = open.contains(&0);
-                    let reset_open = open.contains(&1);
-                    if panel.appearance_open != appearance_open || panel.reset_open != reset_open {
-                        panel.appearance_open = appearance_open;
-                        panel.reset_open = reset_open;
-                        cx.notify();
+        let reset = PropertyResetConfirm::new(
+            PropertyResetIds {
+                root: HIGHLIGHT_DEFAULTS_RESET_ID,
+                button: HIGHLIGHT_DEFAULTS_RESET_BUTTON_ID,
+                popover: HIGHLIGHT_DEFAULTS_RESET_POPOVER_ID,
+                cancel: HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID,
+                confirm: HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID,
+            },
+            format!("{:?}", self.document_id),
+            "Reset Highlight to yellow, 12 pt and 100% opacity?",
+            {
+                let captured = self.document_id;
+                move |_, cx| {
+                    if let Some(document_id) = captured {
+                        apply_reset(&reset_panel, document_id, cx);
                     }
-                });
-            });
+                }
+            },
+        )
+        .disabled(controls_disabled);
 
         PropertyInspectorPanel::new(
             HIGHLIGHT_DEFAULTS_PANEL_ID,
@@ -384,102 +353,39 @@ impl Render for HighlightDefaultsPanel {
                 .id(HIGHLIGHT_DEFAULTS_ACCORDION_ID)
                 .debug_selector(|| HIGHLIGHT_DEFAULTS_ACCORDION_ID.into())
                 .w_full()
-                .child(accordion),
+                .child(
+                    property_body()
+                        .child(
+                            div()
+                                .id(HIGHLIGHT_DEFAULTS_APPEARANCE_ID)
+                                .debug_selector(|| HIGHLIGHT_DEFAULTS_APPEARANCE_ID.into())
+                                .child(appearance),
+                        )
+                        .child(reset),
+                ),
         )
     }
 }
 
-fn colour_field(
-    state: &gpui::Entity<ColorPickerState>,
-    canonical_colour: &str,
-    canonical_opacity: f64,
-    disabled: bool,
-) -> gpui::AnyElement {
-    let control = if disabled {
-        Button::new(HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID)
-            .debug_selector(|| HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID.into())
-            .accessibility_id(HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID)
-            .label(format!(
-                "{} · {:.0}%",
-                canonical_colour,
-                canonical_opacity * 100.
-            ))
-            .disabled(true)
-            .into_any_element()
-    } else {
-        div()
-            .id(HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID)
-            .debug_selector(|| HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID.into())
-            // The stock featured swatches repeat colours in its full palette,
-            // producing duplicate colour-derived accessibility IDs on macOS.
-            // Use the supported palette-only configuration; no component fork.
-            .child(
-                ColorPicker::new(state)
-                    .featured_colors(Vec::new())
-                    .label(canonical_colour.to_uppercase()),
-            )
-            .into_any_element()
-    };
-
-    Field::new()
-        .label("Colour")
-        .child(
-            div()
-                .id(HIGHLIGHT_DEFAULTS_COLOUR_ID)
-                .debug_selector(|| HIGHLIGHT_DEFAULTS_COLOUR_ID.into())
-                .child(control),
-        )
-        .into_any_element()
-}
-
-fn open_reset_confirmation(
-    panel: gpui::WeakEntity<HighlightDefaultsPanel>,
+/// Resets the Highlight defaults, if the panel still shows the document the
+/// confirmation named.
+fn apply_reset(
+    panel: &gpui::WeakEntity<HighlightDefaultsPanel>,
     captured_document_id: DocumentId,
-    window: &mut Window,
     cx: &mut App,
 ) {
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let panel = panel.clone();
-        alert
-            .close_button(false)
-            .title("Reset Highlight properties?")
-            .description("Reset the Highlight defaults to yellow, 12 pt and 100% opacity.")
-            .footer(
-                DialogFooter::new()
-                    .child(dialog_close_button(
-                        Button::new(HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID)
-                            .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID.into())
-                            .accessibility_id(HIGHLIGHT_DEFAULTS_RESET_CANCEL_ID)
-                            .outline()
-                            .label("Cancel"),
-                    ))
-                    .child(dialog_action_button(
-                        Button::new(HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID)
-                            .debug_selector(|| HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID.into())
-                            .accessibility_id(HIGHLIGHT_DEFAULTS_RESET_CONFIRM_ID)
-                            .primary()
-                            .label("Reset"),
-                    )),
-            )
-            .on_ok(move |_, _, cx| {
-                panel
-                    .update(cx, |panel, cx| {
-                        if !can_apply_reset(
-                            panel.document_id,
-                            captured_document_id,
-                            panel.disabled,
-                            panel.syncing,
-                        ) {
-                            return true;
-                        }
-                        cx.emit(HighlightDefaultsEvent::Change {
-                            document_id: captured_document_id,
-                            defaults: default_highlight_defaults(),
-                        });
-                        true
-                    })
-                    .unwrap_or(true)
-            })
+    let _ = panel.update(cx, |panel, cx| {
+        if can_apply_reset(
+            panel.document_id,
+            captured_document_id,
+            panel.disabled,
+            panel.syncing,
+        ) {
+            cx.emit(HighlightDefaultsEvent::Change {
+                document_id: captured_document_id,
+                defaults: default_highlight_defaults(),
+            });
+        }
     });
 }
 

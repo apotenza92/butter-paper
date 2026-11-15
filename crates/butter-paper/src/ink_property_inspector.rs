@@ -5,23 +5,20 @@
 
 use crate::annotation_model::{BlendMode, InkTool, MarkupId, PenAppearance};
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertySliderInput, canonical_picker_opacity, format_property_number,
-    format_property_percentage, parse_property_percentage, property_color_picker,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertySliderInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
+    property_lock_toggle, property_row, property_slider_row, subscribe_property_color,
 };
 use gpui::{
-    AnyElement, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
-    Disableable as _,
-    accordion::Accordion,
-    button::Button,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
+    color_picker::ColorPickerState,
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
-    switch::Switch,
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 use crate::document_workspace::DocumentId;
@@ -29,13 +26,10 @@ use crate::document_workspace::DocumentId;
 pub const INK_PROPERTY_INSPECTOR_ID: &str = "ink-property-inspector";
 pub const INK_INSPECTOR_HEADER_ID: &str = "ink-property-inspector-header";
 pub const INK_INSPECTOR_SCROLL_ID: &str = "ink-property-inspector-scroll";
-pub const INK_INSPECTOR_ACCORDION_ID: &str = "ink-property-inspector-sections";
-pub const INK_INSPECTOR_DETAILS_ID: &str = "ink-property-inspector-details";
 pub const INK_INSPECTOR_APPEARANCE_ID: &str = "ink-property-inspector-appearance";
 pub const INK_INSPECTOR_LOCKED_ID: &str = "ink-property-inspector-locked";
 pub const INK_INSPECTOR_COLOR_ID: &str = "ink-property-inspector-color";
 pub const INK_INSPECTOR_COLOR_TRIGGER_ID: &str = "ink-property-inspector-color-trigger";
-pub const INK_INSPECTOR_APPLY_COLOR_ID: &str = "ink-property-inspector-apply-color";
 pub const INK_INSPECTOR_WIDTH_ID: &str = "ink-property-inspector-width";
 pub const INK_INSPECTOR_OPACITY_ID: &str = "ink-property-inspector-opacity";
 pub const INK_INSPECTOR_OPACITY_TRACK_ID: &str = "ink-property-inspector-opacity-track";
@@ -77,7 +71,6 @@ pub struct InkPropertyInspector {
     syncing: bool,
     open: bool,
     embedded: bool,
-    open_sections: [bool; 2],
     width: gpui::Entity<InputState>,
     width_slider: gpui::Entity<SliderState>,
     opacity: gpui::Entity<SliderState>,
@@ -115,7 +108,7 @@ impl InkPropertyInspector {
             )
         });
         let opacity_input_for_slider = opacity_input.clone();
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             crate::property_controls::subscribe_property_slider(
                 &width_slider,
                 &width,
@@ -177,19 +170,17 @@ impl InkPropertyInspector {
                     this.emit_patch(InkPropertyPatch::Opacity(opacity), cx);
                 },
             ),
-            cx.subscribe(&color, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(_) = event;
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
         ];
+        subscriptions.extend(subscribe_property_color(
+            &color,
+            cx,
+            |this: &mut Self, cx| this.apply_preview_color(cx),
+        ));
         Self {
             snapshot: None,
             syncing: false,
             open: false,
             embedded: false,
-            open_sections: [true, true],
             width,
             width_slider,
             opacity,
@@ -335,75 +326,28 @@ impl Render for InkPropertyInspector {
         let mutation_disabled = snapshot.mutation_disabled;
         let property_disabled = mutation_disabled || snapshot.locked;
         let lock_control = cx.entity().downgrade();
-        let section_control = cx.entity().downgrade();
-        let open_sections = self.open_sections;
-
-        let details = v_flex()
-            .id(INK_INSPECTOR_DETAILS_ID)
-            .debug_selector(|| INK_INSPECTOR_DETAILS_ID.into())
-            .gap_3()
-            .child(
-                Field::new().child(
-                    div()
-                        .id(INK_INSPECTOR_LOCKED_ID)
-                        .debug_selector(|| INK_INSPECTOR_LOCKED_ID.into())
-                        .child(
-                            Switch::new("ink-property-inspector-locked-switch")
-                                .label("Locked")
-                                .checked(snapshot.locked)
-                                .disabled(mutation_disabled)
-                                .on_click(move |locked, _, cx| {
-                                    let _ = lock_control.update(cx, |inspector, cx| {
-                                        inspector.emit_patch(InkPropertyPatch::Locked(*locked), cx);
-                                    });
-                                }),
-                        ),
-                ),
-            );
-        let appearance = v_flex()
-            .id(INK_INSPECTOR_APPEARANCE_ID)
-            .debug_selector(|| INK_INSPECTOR_APPEARANCE_ID.into())
-            .gap_3()
-            .child(color_field(
-                &self.color,
-                snapshot.appearance.color(),
-                snapshot.appearance.opacity(),
-                property_disabled,
-                cx.entity().downgrade(),
-            ))
-            .child(
-                Field::new().label("Line width").child(
-                    PropertySliderInput::new("Line width", &self.width_slider, &self.width)
-                        .input_id(INK_INSPECTOR_WIDTH_ID)
+        let line = property_row(
+            "Line",
+            div()
+                .id(INK_INSPECTOR_COLOR_ID)
+                .debug_selector(|| INK_INSPECTOR_COLOR_ID.into())
+                .child(property_color_and_size(
+                    PropertyColor::new(INK_INSPECTOR_COLOR_TRIGGER_ID, "Line colour", &self.color)
+                        .disabled(property_disabled),
+                    PropertyNumericInput::new(INK_INSPECTOR_WIDTH_ID, "Line width", &self.width)
                         .suffix("pt")
                         .disabled(property_disabled),
-                ),
-            )
-            .child(
-                Field::new().label("Opacity").child(
-                    PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
-                        .row_id(INK_INSPECTOR_OPACITY_ID)
-                        .slider_id(INK_INSPECTOR_OPACITY_TRACK_ID)
-                        .input_id(INK_INSPECTOR_OPACITY_INPUT_ID)
-                        .suffix("%")
-                        .disabled(property_disabled),
-                ),
-            );
-        let accordion = Accordion::new(INK_INSPECTOR_ACCORDION_ID)
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(open_sections[0]).title("Details").child(details))
-            .item(|item| {
-                item.open(open_sections[1])
-                    .title("Appearance")
-                    .child(appearance)
-            })
-            .on_toggle_click(move |open, _, cx| {
-                let _ = section_control.update(cx, |inspector, cx| {
-                    inspector.open_sections = [open.contains(&0), open.contains(&1)];
-                    cx.notify();
-                });
-            });
+                )),
+        );
+        let opacity = property_slider_row(
+            "Opacity",
+            PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
+                .row_id(INK_INSPECTOR_OPACITY_ID)
+                .slider_id(INK_INSPECTOR_OPACITY_TRACK_ID)
+                .input_id(INK_INSPECTOR_OPACITY_INPUT_ID)
+                .suffix("%")
+                .disabled(property_disabled),
+        );
         PropertyInspectorPanel::new(
             INK_PROPERTY_INSPECTOR_ID,
             INK_INSPECTOR_HEADER_ID,
@@ -413,59 +357,24 @@ impl Render for InkPropertyInspector {
                 InkTool::Highlight => "Highlight",
             },
         )
-        .child(accordion)
-        .into_any_element()
-    }
-}
-
-fn color_field(
-    state: &gpui::Entity<ColorPickerState>,
-    canonical_color: &str,
-    canonical_opacity: f64,
-    disabled: bool,
-    inspector: gpui::WeakEntity<InkPropertyInspector>,
-) -> AnyElement {
-    let control = if disabled {
-        Button::new(INK_INSPECTOR_COLOR_TRIGGER_ID)
-            .debug_selector(|| INK_INSPECTOR_COLOR_TRIGGER_ID.into())
-            .label(format!(
-                "{} · {:.0}%",
-                canonical_color,
-                canonical_opacity * 100.
-            ))
-            .disabled(true)
-            .into_any_element()
-    } else {
-        div()
-            .id(INK_INSPECTOR_COLOR_TRIGGER_ID)
-            .debug_selector(|| INK_INSPECTOR_COLOR_TRIGGER_ID.into())
-            .child(property_color_picker(state, "Colour"))
-            .into_any_element()
-    };
-    Field::new()
-        .label("Colour")
+        .header_lock(property_lock_toggle(
+            INK_INSPECTOR_LOCKED_ID,
+            snapshot.locked,
+            mutation_disabled,
+            move |locked, _, cx| {
+                let _ = lock_control.update(cx, |inspector, cx| {
+                    inspector.emit_patch(InkPropertyPatch::Locked(locked), cx);
+                });
+            },
+        ))
         .child(
-            div()
-                .id(INK_INSPECTOR_COLOR_ID)
-                .debug_selector(|| INK_INSPECTOR_COLOR_ID.into())
-                .child(control)
-                .child(
-                    div()
-                        .id(INK_INSPECTOR_APPLY_COLOR_ID)
-                        .debug_selector(|| INK_INSPECTOR_APPLY_COLOR_ID.into())
-                        .child(
-                            Button::new("ink-property-inspector-apply-color-button")
-                                .label("Apply colour")
-                                .disabled(disabled)
-                                .on_click(move |_, _, cx| {
-                                    let _ = inspector.update(cx, |inspector, cx| {
-                                        inspector.apply_preview_color(cx);
-                                    });
-                                }),
-                        ),
-                ),
+            property_body()
+                .id(INK_INSPECTOR_APPEARANCE_ID)
+                .debug_selector(|| INK_INSPECTOR_APPEARANCE_ID.into())
+                .child(PropertyGroup::new().row(line).row(opacity)),
         )
         .into_any_element()
+    }
 }
 
 fn rgb_hex(color: gpui::Hsla) -> String {

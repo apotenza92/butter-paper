@@ -32,7 +32,7 @@ reference; entries marked *native* are deliberate departures from it.
 | Tool | Gesture | Finish |
 | --- | --- | --- |
 | Rectangle, Ellipse, Line, Arrow, Redact, Cloud | Drag, or click then click | Release past 3px, or the second click; Escape cancels |
-| Length, Dimension | Drag, or click then click | Release past 3px, or the second click; Dimension then edits its text |
+| Length, Dimension | Drag, or click then click | Release past 3px, or the second click; Dimension then edits its text on the page |
 | Polyline, Polygon | Click per point | Double-click or Enter; click the start marker (within 10px) to close. A Polygon with Cloud outline on is created as a Cloud |
 | Polylength, Area | Click per point | Double-click or Enter; Escape discards |
 | Cloud+ | Drag, or click then click | Release past 3px, or the second click; then type its caption |
@@ -132,7 +132,13 @@ tooltip expands the instructions when the window truncates them.
   knobs remain visible while moving, rotating or resizing, including when
   snapping is enabled; creation previews show no handles. Handles and knobs
   draw above every markup on the page, so a markup drawn later never hides
-  the selection's.
+  the selection's. Each handle is centred on the line it moves: a box's
+  line is centred on its box edge (as the PDF draws it), and a Callout's or
+  Cloud+'s caption border runs half its width inside the box, so its
+  handles sit there and dragging one moves the box edge with no jump.
+  Upright box lines and handles are drawn an odd number of device pixels
+  wide on the same pixel centre, so the line runs through each handle's
+  middle at any zoom.
 - Cut, Copy and Paste work on selected markups from the keyboard, the Edit
   menu and the page's right-click menu (which first selects an unselected
   markup under the pointer). The clipboard is shared by every window, so
@@ -219,13 +225,30 @@ tooltip expands the instructions when the window truncates them.
   starts one a second click finishes, by the same rightwards and leftwards
   rule; Shift or Alt with it adds or removes. The pointer is a crosshair
   and nothing under it is highlighted while it is held.
-- Double-clicking a text box, or the caption of a Callout or Cloud+, edits
-  it in place (*native*: no properties panel). A Callout or Cloud+ caption
-  box fits its text and stays against its leader; a new Callout's box sits
-  beyond the drag end, away from the arrow tip. Dimension text and rotated
-  text boxes, which cannot be edited where they sit, edit in a sidebar
-  text panel holding only the text. Double-clicking other markups opens
-  properties.
+- The cursor is what a press does. Over a selected markup's text (a Text
+  Box, the caption of a Callout, Cloud+ or Dimension) it is an I-beam, and
+  a press there edits that text on the page with the caret where it landed;
+  dragging selects text. Handles, resize bands and the rest of the markup
+  keep their resize, rotate and move cursors and drags, so an unselected
+  markup is selected by the first click and its text edited by the next.
+  A selected Dimension's caption is moved from its edge, up to 6px outside
+  its text. Its offset handle sits centred just below the caption's text,
+  in the text's own turned frame, 12px clear of it at any zoom (just above
+  instead where below would leave the page), or at the line's middle when
+  the caption is empty or moved off, so no handle covers the text. A turned Text Box and a Dimension caption are edited in an
+  upright box over where the text sits.
+- A Callout or Cloud+ caption box fits its text and stays against its
+  leader; a new Callout's box sits beyond the drag end, away from the arrow
+  tip.
+- Escape or a click away finishes the text and keeps it, for every markup
+  with text; an empty new Text Box is discarded.
+- Double-clicking a markup opens its properties. While text is being edited,
+  a double-click in it selects a word, as in any text field.
+- Every markup with text (Text Box, Callout, Cloud+, Dimension) shows it in
+  a Text field in its properties, kept in step with the page. The field
+  commits when it is left or on Cmd/Ctrl+Enter, as one undoable change. A
+  Callout's and Cloud+'s properties also set its line, font, opacity and
+  (Cloud+) fill and cloud intensity; a new style refits the caption box.
 - Select All works on the current page. Locked markups cannot be moved,
   resized or deleted.
 

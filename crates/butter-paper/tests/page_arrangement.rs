@@ -1031,8 +1031,8 @@ fn the_page_scale_panel_drops_from_the_scale_and_closes_like_a_popup(cx: &mut Te
         "the panel drops below the Scale"
     );
     assert!(
-        (panel.left() - scale.left()).abs() <= px(1.),
-        "and lines up with it"
+        (panel.right() - scale.right()).abs() <= px(1.),
+        "and ends at its right edge"
     );
     assert!(panel.right() <= viewport.width && panel.bottom() <= viewport.height);
 

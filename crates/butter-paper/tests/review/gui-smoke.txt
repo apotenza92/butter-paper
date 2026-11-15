@@ -79,4 +79,30 @@ expect-hidden 0 document-signature-box-prompt
 shot sign-dialog
 os-click-id 0 document-sign-cancel
 expect-dialog 0 closed
+
+# Reset to defaults: a popover beside its button, not a dialog; Cancel,
+# Escape and a press beside it close it.
+key 0 r
+wait 300
+os-click-id 0 document-workspace-rail-actions
+wait 800
+os-click-id 0 tool-defaults-panel-reset-button
+wait 600
+expect-shown 0 tool-defaults-panel-reset-popover
+expect-dialog 0 closed
+shot reset-popover
+os-click-id 0 tool-defaults-panel-reset-cancel
+wait 400
+expect-hidden 0 tool-defaults-panel-reset-popover
+os-click-id 0 tool-defaults-panel-reset-button
+wait 600
+key 0 escape
+wait 400
+expect-hidden 0 tool-defaults-panel-reset-popover
+expect-tool 0 Rectangle
+os-click-id 0 tool-defaults-panel-reset-button
+wait 600
+os-click-beside 0 tool-defaults-panel-reset-popover
+wait 400
+expect-hidden 0 tool-defaults-panel-reset-popover
 quit

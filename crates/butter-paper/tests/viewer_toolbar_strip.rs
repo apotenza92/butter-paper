@@ -15,9 +15,8 @@ use butter_paper::{
         PageViewControl, PageViewMode, SINGLE_PAGE_PRIMARY_ID, SINGLE_PAGE_SPLIT_ID,
     },
     viewer_toolbar_strip::{
-        EDIT_PDF_COMPACT_SLOT_REMS, EDIT_PDF_ID, EDIT_PDF_SLOT_MIN_REMS, FIT_BUTTON_GROUP_ID,
-        FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, ScaleToolbarState, VIEWER_SCALE_ID,
-        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
+        EDIT_PDF_ID, FIT_BUTTON_GROUP_ID, FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, ScaleToolbarState,
+        VIEWER_SCALE_ID, VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
         VIEWER_TOOLBAR_MIN_REMS, VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarFit, ViewerToolbarStrip,
         viewer_toolbar_rems,
     },
@@ -1453,40 +1452,90 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
         let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-        let controls = bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID);
+
+        let pages = bounds(cx, butter_paper::page_navigator::PAGE_NAVIGATOR_ID);
+        let zoom = bounds(cx, butter_paper::zoom_control::ZOOM_OUT_ID);
+        let layout = bounds(
+            cx,
+            butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
+        );
         let edit_pdf = bounds(cx, EDIT_PDF_ID);
+        let scale = bounds(cx, VIEWER_SCALE_ID);
         assert_eq!(
             content.size.width, toolbar.size.width,
             "the toolbar scrolls at {width}"
         );
-        // Centred while the Edit PDF slot's width is free either side;
-        // narrower, the space opposite gives way and they move right. Narrower
-        // still, Edit PDF is its icon alone, in a slot that holds it.
+        // Ordered by complexity: pages, zoom, page layout, Edit PDF, Scale.
+        assert!(pages.right() <= zoom.left(), "pages before zoom at {width}");
+        assert!(
+            zoom.right() <= layout.left(),
+            "zoom before layout at {width}"
+        );
+        assert!(
+            layout.right() <= edit_pdf.left(),
+            "layout before Edit PDF at {width}"
+        );
+        assert!(
+            edit_pdf.right() <= scale.left(),
+            "Edit PDF before Scale at {width}"
+        );
+        assert!(scale.right() <= toolbar.right() - px(6.));
+        // The page navigator's frame keeps the edge inset that matches the
+        // group gap.
+        assert!(
+            pages.left() - toolbar.left() >= px(6.) && pages.left() - toolbar.left() <= px(12.),
+            "pages at the left edge at {width}: {pages:?}"
+        );
         let labelled =
             toolbar.size.width >= px(16. * viewer_toolbar_rems(ViewerToolbarFit::Full, false, 4));
-        let room = px(16.
-            * if labelled {
-                EDIT_PDF_SLOT_MIN_REMS
-            } else {
-                EDIT_PDF_COMPACT_SLOT_REMS
-            });
-        if toolbar.size.width >= controls.size.width + room * 2. {
+        if labelled {
+            // Full: zoom and the layout as far from the pages as from the
+            // switches; the switches pinned right.
+            let before = bounds(cx, butter_paper::viewer_toolbar_strip::VIEWER_ZOOM_GROUP_ID)
+                .left()
+                - bounds(
+                    cx,
+                    butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID,
+                )
+                .right();
+            let after = edit_pdf.left() - layout.right();
             assert!(
-                (controls.center().x - toolbar.center().x).abs() <= px(0.5),
-                "controls off centre at {width}: toolbar={toolbar:?}, controls={controls:?}"
+                (before - after).abs() <= px(1.),
+                "zoom and layout not midway at {width}: {before:?} vs {after:?}"
+            );
+            assert_eq!(
+                scale.right(),
+                toolbar.right() - px(6.),
+                "switches pinned right at {width}"
             );
         } else {
+            // Compact: packed from the left at the group gap.
             assert!(
-                controls.left() - toolbar.left() >= room - px(0.5),
-                "the Edit PDF slot shrank at {width}"
+                edit_pdf.left() - layout.right() <= px(12.),
+                "compact switches pack after the layout at {width}: layout={layout:?}, edit={edit_pdf:?}"
             );
         }
-        let scale = bounds(cx, VIEWER_SCALE_ID);
-        assert!(edit_pdf.left() >= toolbar.left() && edit_pdf.right() <= scale.left());
-        assert!(
-            scale.right() <= controls.left(),
-            "the Scale overlaps the view controls at {width}: scale={scale:?}, controls={controls:?}"
-        );
-        assert!(controls.right() <= toolbar.right());
+    }
+}
+
+#[gpui::test]
+fn the_zoom_percentage_keeps_one_width_at_every_zoom(cx: &mut TestAppContext) {
+    let (cx, entities) = open_harness(cx);
+    let mut widths = Vec::new();
+    for zoom in [0.0625, 0.25, 1., 1.29, 64.] {
+        entities
+            .zoom
+            .update(cx, |control, cx| control.set_zoom(zoom, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        widths.push((
+            zoom,
+            bounds(cx, ZOOM_MENU_ID).size.width,
+            bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID).left(),
+        ));
+    }
+    let (_, width, left) = widths[0];
+    for (zoom, w, l) in &widths {
+        assert_eq!(*w, width, "the percentage resized at {zoom}: {widths:?}");
+        assert_eq!(*l, left, "the toolbar shifted at {zoom}: {widths:?}");
     }
 }

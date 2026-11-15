@@ -1248,6 +1248,11 @@ impl DocumentViewerState {
         self.plan.as_ref()
     }
 
+    /// The device scale the last plan was made at.
+    pub fn device_scale(&self) -> f32 {
+        self.device_scale
+    }
+
     pub fn scroll_handle(&self) -> ScrollHandle {
         self.scroll_handle.clone()
     }

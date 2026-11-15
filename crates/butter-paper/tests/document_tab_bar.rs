@@ -25,10 +25,7 @@ use butter_paper::{
     generated_document::{GeneratedDocumentRequest, GeneratedPattern},
     page_view_control::{PageViewControl, PageViewMode},
     template_preview::TemplatePreview,
-    viewer_toolbar_strip::{
-        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
-        ViewerToolbarStrip,
-    },
+    viewer_toolbar_strip::{VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_ID, ViewerToolbarStrip},
     zoom_control::{DEFAULT_VIEWER_ZOOM, ZoomControl},
 };
 use gpui::{
@@ -163,11 +160,22 @@ fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, Harne
 
 /// The viewer toolbar content fills the strip, or holds its controls at
 /// their intrinsic width where the strip is narrower.
+/// The toolbar's width, or its controls' when they need more: from its
+/// start to the last group, and the edge inset after it.
 fn viewer_toolbar_required_width(cx: &mut gpui::VisualTestContext) -> Pixels {
+    let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
+    let last = [
+        butter_paper::viewer_toolbar_strip::VIEWER_SCALE_ID,
+        butter_paper::viewer_toolbar_strip::EDIT_PDF_ID,
+        butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
+    ]
+    .into_iter()
+    .find_map(|id| cx.debug_bounds(id))
+    .expect("the toolbar lays out its groups");
     bounds(cx, VIEWER_TOOLBAR_ID)
         .size
         .width
-        .max(bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID).size.width)
+        .max(last.right() + px(6.) - content.left())
 }
 
 fn bounds(cx: &mut gpui::VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
@@ -842,7 +850,11 @@ fn keyboard_reorder_starts_with_a_stable_rendered_polite_status_seam(cx: &mut Te
     );
     assert_eq!(
         DOCUMENT_TAB_REORDER_DESCRIPTION,
-        "Drag to reorder. Press Alt+Shift+Left or Alt+Shift+Right to move this tab."
+        if cfg!(target_os = "macos") {
+            "Drag to reorder. Press ⌥⇧← or ⌥⇧→ to move this tab."
+        } else {
+            "Drag to reorder. Press Alt+Shift+Left or Alt+Shift+Right to move this tab."
+        }
     );
     let status = bounds(cx, DOCUMENT_TAB_REORDER_STATUS_ID);
     assert_eq!(status.size, gpui::size(px(1.), px(1.)));

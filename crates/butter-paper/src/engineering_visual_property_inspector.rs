@@ -4,24 +4,24 @@
 
 use crate::annotation_model::{MarkupId, RectangleAppearance};
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertyNumericInput, PropertySliderInput, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage,
-    property_color_picker,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertySliderInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
+    property_lock_toggle, property_number, property_row, property_slider_row,
+    subscribe_property_color,
 };
 use gpui::{
-    AnyElement, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
     Disableable as _,
-    accordion::Accordion,
-    button::Button,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
+    color_picker::ColorPickerState,
+    h_flex,
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
     switch::Switch,
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 use crate::document_workspace::DocumentId;
@@ -33,8 +33,6 @@ pub const ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID: &str =
     "engineering-visual-property-inspector-aspect-locked";
 pub const ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID: &str =
     "engineering-visual-property-inspector-color-trigger";
-pub const ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID: &str =
-    "engineering-visual-property-inspector-apply-color";
 pub const ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID: &str =
     "engineering-visual-property-inspector-width";
 pub const ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID: &str =
@@ -43,8 +41,6 @@ pub const ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID: &str =
     "engineering-visual-property-inspector-intensity";
 pub const ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID: &str =
     "engineering-visual-property-inspector-fill-color";
-pub const ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID: &str =
-    "engineering-visual-property-inspector-apply-fill";
 pub const ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID: &str =
     "engineering-visual-property-inspector-no-fill";
 pub const ENGINEERING_VISUAL_INSPECTOR_WIDTH_PX: f32 = 300.;
@@ -163,7 +159,6 @@ pub struct EngineeringVisualPropertyInspector {
     syncing: bool,
     open: bool,
     embedded: bool,
-    open_sections: [bool; 2],
     width: gpui::Entity<InputState>,
     width_slider: gpui::Entity<SliderState>,
     intensity: gpui::Entity<InputState>,
@@ -171,7 +166,6 @@ pub struct EngineeringVisualPropertyInspector {
     opacity_input: gpui::Entity<InputState>,
     color: gpui::Entity<ColorPickerState>,
     fill_color: gpui::Entity<ColorPickerState>,
-    fill_preview_available: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -217,7 +211,7 @@ impl EngineeringVisualPropertyInspector {
             )
         });
         let opacity_input_for_slider = opacity_input.clone();
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             crate::property_controls::subscribe_property_slider(
                 &width_slider,
                 &width,
@@ -297,25 +291,22 @@ impl EngineeringVisualPropertyInspector {
                     this.emit_patch(EngineeringVisualPropertyPatch::Opacity(opacity), cx);
                 },
             ),
-            cx.subscribe(&color, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(_) = event;
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
-            cx.subscribe(&fill_color, |this, _, _: &ColorPickerEvent, cx| {
-                if !this.syncing {
-                    this.fill_preview_available = true;
-                    cx.notify();
-                }
-            }),
         ];
+        subscriptions.extend(subscribe_property_color(
+            &color,
+            cx,
+            |this: &mut Self, cx| this.apply_preview_color(cx),
+        ));
+        subscriptions.extend(subscribe_property_color(
+            &fill_color,
+            cx,
+            |this: &mut Self, cx| this.apply_preview_fill(cx),
+        ));
         Self {
             snapshot: None,
             syncing: false,
             open: false,
             embedded: false,
-            open_sections: [true, true],
             width,
             width_slider,
             intensity,
@@ -323,7 +314,6 @@ impl EngineeringVisualPropertyInspector {
             opacity_input,
             color,
             fill_color,
-            fill_preview_available: false,
             _subscriptions: subscriptions,
         }
     }
@@ -390,7 +380,6 @@ impl EngineeringVisualPropertyInspector {
             fill.a = appearance.fill_opacity() as f32;
             self.fill_color
                 .update(cx, |picker, cx| picker.set_value(fill, window, cx));
-            self.fill_preview_available = false;
         }
         self.opacity.update(cx, |slider, cx| {
             slider.set_value((snapshot.values.opacity() * 100.) as f32, window, cx);
@@ -431,9 +420,6 @@ impl EngineeringVisualPropertyInspector {
     }
 
     fn apply_preview_fill(&mut self, cx: &mut Context<Self>) {
-        if !self.fill_preview_available {
-            return;
-        }
         let Some(appearance) = self
             .snapshot
             .as_ref()
@@ -449,7 +435,6 @@ impl EngineeringVisualPropertyInspector {
             opacity: canonical_picker_opacity(color.a, appearance.fill_opacity()),
         };
         self.emit_patch(patch, cx);
-        self.fill_preview_available = false;
     }
 
     fn apply_preview_color(&mut self, cx: &mut Context<Self>) {
@@ -508,234 +493,155 @@ impl Render for EngineeringVisualPropertyInspector {
         let kind = snapshot.values.kind();
         let disabled = snapshot.mutation_disabled || snapshot.locked;
         let lock_control = cx.entity().downgrade();
-        let section_control = cx.entity().downgrade();
-        let details = v_flex()
-            .gap_3()
-            .child(Field::new().label("Type").child(div().child(kind.label())))
-            .child(
-                Field::new().child(
-                    div()
-                        .id(ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID)
-                        .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID.into())
-                        .child(
-                            Switch::new("engineering-visual-property-inspector-locked-switch")
-                                .label("Locked")
-                                .checked(snapshot.locked)
-                                .disabled(snapshot.mutation_disabled)
-                                .on_click(move |locked, _, cx| {
-                                    let _ = lock_control.update(cx, |inspector, cx| {
-                                        inspector.emit_patch(
-                                            EngineeringVisualPropertyPatch::Locked(*locked),
-                                            cx,
-                                        );
-                                    });
-                                }),
-                        ),
-                ),
-            );
+        let mut rows = PropertyGroup::new();
         // An image's or Snapshot's proportions, kept as it is resized from
         // a corner.
-        let details = match snapshot.values {
-            EngineeringVisualPropertyValues::Image { aspect_locked, .. }
-            | EngineeringVisualPropertyValues::Snapshot { aspect_locked, .. } => {
-                let aspect_control = cx.entity().downgrade();
-                let description = match snapshot.values.kind() {
-                    EngineeringVisualPropertyKind::Snapshot => {
-                        "Resizing keeps the Snapshot's shape."
-                    }
-                    _ => "Resizing keeps the image's shape.",
-                };
-                details.child(
-                    Field::new().description(description).child(
-                        div()
-                            .id(ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID)
-                            .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID.into())
-                            .child(
-                                Switch::new(
-                                    "engineering-visual-property-inspector-aspect-locked-switch",
-                                )
-                                .label("Lock proportions")
-                                .checked(aspect_locked)
-                                .disabled(disabled)
-                                .on_click(move |locked, _, cx| {
-                                    let _ = aspect_control.update(cx, |inspector, cx| {
-                                        inspector.emit_patch(
-                                            EngineeringVisualPropertyPatch::AspectLocked(*locked),
-                                            cx,
-                                        );
-                                    });
-                                }),
-                            ),
+        if let EngineeringVisualPropertyValues::Image { aspect_locked, .. }
+        | EngineeringVisualPropertyValues::Snapshot { aspect_locked, .. } = snapshot.values
+        {
+            let aspect_control = cx.entity().downgrade();
+            rows = rows.row(property_row(
+                "Keep shape",
+                div()
+                    .id(ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID)
+                    .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_ASPECT_LOCKED_ID.into())
+                    .child(
+                        Switch::new("engineering-visual-property-inspector-aspect-locked-switch")
+                            .checked(aspect_locked)
+                            .disabled(disabled)
+                            .tooltip(match kind {
+                                EngineeringVisualPropertyKind::Snapshot => {
+                                    "Resizing keeps the Snapshot's proportions"
+                                }
+                                _ => "Resizing keeps the image's proportions",
+                            })
+                            .on_click(move |locked, _, cx| {
+                                let _ = aspect_control.update(cx, |inspector, cx| {
+                                    inspector.emit_patch(
+                                        EngineeringVisualPropertyPatch::AspectLocked(*locked),
+                                        cx,
+                                    );
+                                });
+                            }),
                     ),
-                )
-            }
-            _ => details,
-        };
-        let mut appearance = v_flex().gap_3();
-        if let Some(value) = snapshot.values.appearance() {
-            appearance = appearance
-                .child(color_field(
-                    &self.color,
-                    value.stroke_color(),
-                    disabled,
-                    cx.entity().downgrade(),
-                ))
-                .child(
-                    Field::new().label("Line width").child(
-                        PropertySliderInput::new("Line width", &self.width_slider, &self.width)
-                            .input_id(ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID)
-                            .suffix("pt")
-                            .disabled(disabled),
-                    ),
-                );
+            ));
         }
-        appearance = appearance.child(
-            Field::new().label("Opacity").child(
-                PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
-                    .slider_id(ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID)
-                    .input_id(ENGINEERING_VISUAL_INSPECTOR_OPACITY_INPUT_ID)
-                    .suffix("%")
+        if snapshot.values.appearance().is_some() {
+            rows = rows.row(property_row(
+                "Line",
+                property_color_and_size(
+                    PropertyColor::new(
+                        ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID,
+                        "Line colour",
+                        &self.color,
+                    )
                     .disabled(disabled),
-            ),
-        );
+                    PropertyNumericInput::new(
+                        ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID,
+                        "Line width",
+                        &self.width,
+                    )
+                    .suffix("pt")
+                    .disabled(disabled),
+                ),
+            ));
+        }
+        rows = rows.row(property_slider_row(
+            "Opacity",
+            PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
+                .slider_id(ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID)
+                .input_id(ENGINEERING_VISUAL_INSPECTOR_OPACITY_INPUT_ID)
+                .suffix("%")
+                .disabled(disabled),
+        ));
         if let EngineeringVisualPropertyValues::Cloud {
             appearance: cloud, ..
         } = &snapshot.values
         {
-            let fill_preview_available = self.fill_preview_available;
             let has_fill = cloud.fill_color().is_some();
-            let apply_fill = cx.entity().downgrade();
-            let remove_fill = cx.entity().downgrade();
-            let fill_control = if disabled {
-                Button::new(ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID)
-                    .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID.into())
-                    .label(format!("Fill: {}", cloud.fill_color().unwrap_or("none")))
-                    .disabled(true)
-                    .into_any_element()
-            } else {
-                div()
-                    .id(ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID)
-                    .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID.into())
-                    .child(property_color_picker(&self.fill_color, "Fill"))
-                    .into_any_element()
-            };
-            appearance = appearance.child(
-                Field::new().label("Fill").child(
-                    div()
-                        .child(fill_control)
+            let fill_control = cx.entity().downgrade();
+            rows = rows
+                .row(property_row(
+                    "Fill",
+                    h_flex()
+                        .w_full()
+                        .gap_3()
+                        .items_center()
                         .child(
                             div()
-                                .id(ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID)
-                                .debug_selector(|| {
-                                    ENGINEERING_VISUAL_INSPECTOR_APPLY_FILL_ID.into()
-                                })
+                                .id(ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID)
+                                .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID.into())
+                                .flex_none()
                                 .child(
-                                    Button::new(
-                                        "engineering-visual-property-inspector-apply-fill-button",
+                                    Switch::new(
+                                        "engineering-visual-property-inspector-fill-switch",
                                     )
-                                    .label("Apply fill")
-                                    .disabled(disabled || !fill_preview_available)
+                                    .checked(has_fill)
+                                    .disabled(disabled)
+                                    .tooltip(if has_fill {
+                                        "Remove the fill"
+                                    } else {
+                                        "Fill it"
+                                    })
                                     .on_click(
-                                        move |_, _, cx| {
-                                            let _ = apply_fill.update(cx, |inspector, cx| {
-                                                inspector.apply_preview_fill(cx)
+                                        move |fill, _, cx| {
+                                            let _ = fill_control.update(cx, |inspector, cx| {
+                                                if *fill {
+                                                    inspector.apply_preview_fill(cx)
+                                                } else {
+                                                    inspector.emit_patch(
+                                                        EngineeringVisualPropertyPatch::FillColor(
+                                                            None,
+                                                        ),
+                                                        cx,
+                                                    )
+                                                }
                                             });
                                         },
                                     ),
                                 ),
                         )
+                        // Picking a colour fills it.
                         .child(
-                            Button::new(ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID)
-                                .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_NO_FILL_ID.into())
-                                .label("No fill")
-                                .disabled(disabled || !has_fill)
-                                .on_click(move |_, _, cx| {
-                                    let _ = remove_fill.update(cx, |inspector, cx| {
-                                        inspector.emit_patch(
-                                            EngineeringVisualPropertyPatch::FillColor(None),
-                                            cx,
-                                        )
-                                    });
-                                }),
+                            PropertyColor::new(
+                                ENGINEERING_VISUAL_INSPECTOR_FILL_COLOR_ID,
+                                "Fill colour",
+                                &self.fill_color,
+                            )
+                            .disabled(disabled),
                         ),
-                ),
-            );
-            appearance = appearance.child(
-                Field::new().label("Intensity").child(
-                    PropertyNumericInput::new(
-                        ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
-                        "Intensity",
-                        &self.intensity,
-                    )
-                    .disabled(disabled),
-                ),
-            );
+                ))
+                .row(property_row(
+                    "Intensity",
+                    property_number(
+                        PropertyNumericInput::new(
+                            ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
+                            "Intensity",
+                            &self.intensity,
+                        )
+                        .disabled(disabled),
+                    ),
+                ));
         }
-        let open_sections = self.open_sections;
-        let accordion = Accordion::new("engineering-visual-property-inspector-sections")
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(open_sections[0]).title("Details").child(details))
-            .item(|item| {
-                item.open(open_sections[1])
-                    .title("Appearance")
-                    .child(appearance)
-            })
-            .on_toggle_click(move |open, _, cx| {
-                let _ = section_control.update(cx, |inspector, cx| {
-                    inspector.open_sections = [open.contains(&0), open.contains(&1)];
-                    cx.notify();
-                });
-            });
         PropertyInspectorPanel::new(
             ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID,
             ENGINEERING_VISUAL_INSPECTOR_HEADER_ID,
             ENGINEERING_VISUAL_INSPECTOR_SCROLL_ID,
-            format!("{} properties", kind.label()),
+            kind.label(),
         )
-        .child(accordion)
+        .header_lock(property_lock_toggle(
+            ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID,
+            snapshot.locked,
+            snapshot.mutation_disabled,
+            move |locked, _, cx| {
+                let _ = lock_control.update(cx, |inspector, cx| {
+                    inspector.emit_patch(EngineeringVisualPropertyPatch::Locked(locked), cx);
+                });
+            },
+        ))
+        .child(property_body().child(rows))
         .into_any_element()
     }
-}
-
-fn color_field(
-    state: &gpui::Entity<ColorPickerState>,
-    canonical_color: &str,
-    disabled: bool,
-    inspector: gpui::WeakEntity<EngineeringVisualPropertyInspector>,
-) -> AnyElement {
-    let control = if disabled {
-        Button::new(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID)
-            .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID.into())
-            .label(format!("Color: {canonical_color}"))
-            .disabled(true)
-            .into_any_element()
-    } else {
-        div()
-            .id(ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID)
-            .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID.into())
-            .child(property_color_picker(state, "Colour"))
-            .into_any_element()
-    };
-    Field::new()
-        .label("Colour")
-        .child(
-            div().child(control).child(
-                div()
-                    .id(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
-                    .debug_selector(|| ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID.into())
-                    .child(
-                        Button::new("engineering-visual-property-inspector-apply-color-button")
-                            .label("Apply colour")
-                            .disabled(disabled)
-                            .on_click(move |_, _, cx| {
-                                let _ = inspector
-                                    .update(cx, |inspector, cx| inspector.apply_preview_color(cx));
-                            }),
-                    ),
-            ),
-        )
-        .into_any_element()
 }
 
 fn rgb_hex(color: gpui::Hsla) -> String {

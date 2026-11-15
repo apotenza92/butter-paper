@@ -35,6 +35,10 @@ use butter_paper::annotation_model::{
 };
 use butter_paper::cad_view_control::{CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID};
 use butter_paper::canvas_cursors::move_cursor;
+use butter_paper::caption_property_inspector::{
+    CaptionPropertyEvent, CaptionPropertyPatch, CaptionPropertyValues, CaptionStyleEdit,
+    edit_caption_values,
+};
 use butter_paper::dimension_property_inspector::{
     DIMENSION_INSPECTOR_FONT_SIZE_ID, DIMENSION_INSPECTOR_LOCKED_ID, DIMENSION_INSPECTOR_OFFSET_ID,
     DIMENSION_INSPECTOR_OPACITY_ID, DIMENSION_INSPECTOR_STROKE_COLOR_ID,
@@ -99,11 +103,10 @@ use butter_paper::document_workspace::{
     save_as_prompt_spec, straight_line_arrowhead_points,
 };
 use butter_paper::engineering_visual_property_inspector::{
-    ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID, ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID,
-    ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID, ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID,
-    ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID, ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID,
-    ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID, EngineeringVisualPropertyEvent,
-    EngineeringVisualPropertyKind, EngineeringVisualPropertyPatch,
+    ENGINEERING_VISUAL_INSPECTOR_COLOR_TRIGGER_ID, ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
+    ENGINEERING_VISUAL_INSPECTOR_LOCKED_ID, ENGINEERING_VISUAL_INSPECTOR_OPACITY_TRACK_ID,
+    ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID, ENGINEERING_VISUAL_PROPERTY_INSPECTOR_ID,
+    EngineeringVisualPropertyEvent, EngineeringVisualPropertyKind, EngineeringVisualPropertyPatch,
 };
 use butter_paper::generated_document::{
     GeneratedDocumentRequest, GeneratedDocumentStore, GeneratedPattern,
@@ -113,9 +116,9 @@ use butter_paper::highlight_compositor::{
 };
 use butter_paper::image_asset_decode::{DecodedImageFormat, decode_image_path};
 use butter_paper::ink_property_inspector::{
-    INK_INSPECTOR_APPLY_COLOR_ID, INK_INSPECTOR_COLOR_ID, INK_INSPECTOR_COLOR_TRIGGER_ID,
-    INK_INSPECTOR_LOCKED_ID, INK_INSPECTOR_OPACITY_ID, INK_INSPECTOR_OPACITY_TRACK_ID,
-    INK_INSPECTOR_WIDTH_ID, INK_PROPERTY_INSPECTOR_ID,
+    INK_INSPECTOR_COLOR_ID, INK_INSPECTOR_COLOR_TRIGGER_ID, INK_INSPECTOR_LOCKED_ID,
+    INK_INSPECTOR_OPACITY_ID, INK_INSPECTOR_OPACITY_TRACK_ID, INK_INSPECTOR_WIDTH_ID,
+    INK_PROPERTY_INSPECTOR_ID,
 };
 use butter_paper::local_signature::{DrawnSignature, NormalizedSignaturePoint};
 use butter_paper::measurement_property_inspector::{
@@ -141,8 +144,8 @@ use butter_paper::pdf_file_authority::SaveAsTargetAuthority;
 use butter_paper::pdf_file_authority::SaveTargetErrorKind;
 use butter_paper::rectangle_property_inspector::{
     ELLIPSE_INSPECTOR_FILL_COLOR_ID, ELLIPSE_INSPECTOR_FILL_ENABLED_ID,
-    ELLIPSE_INSPECTOR_FILL_OPACITY_ID, ELLIPSE_INSPECTOR_HEIGHT_ID, ELLIPSE_INSPECTOR_LOCKED_ID,
-    ELLIPSE_INSPECTOR_OPACITY_ID, ELLIPSE_INSPECTOR_ROTATION_ID, ELLIPSE_INSPECTOR_STROKE_COLOR_ID,
+    ELLIPSE_INSPECTOR_HEIGHT_ID, ELLIPSE_INSPECTOR_LOCKED_ID, ELLIPSE_INSPECTOR_OPACITY_ID,
+    ELLIPSE_INSPECTOR_ROTATION_ID, ELLIPSE_INSPECTOR_STROKE_COLOR_ID,
     ELLIPSE_INSPECTOR_STROKE_STYLE_ID, ELLIPSE_INSPECTOR_STROKE_WIDTH_ID,
     ELLIPSE_INSPECTOR_WIDTH_ID, ELLIPSE_INSPECTOR_X_ID, ELLIPSE_INSPECTOR_Y_ID,
     ELLIPSE_PROPERTY_INSPECTOR_ID, RECTANGLE_INSPECTOR_FILL_COLOR_ID,
@@ -158,21 +161,19 @@ use butter_paper::session_manifest::{
     SessionManifestStore, SessionRecoveryDocument, SessionRecoverySnapshot, SessionSnapshot,
 };
 use butter_paper::straight_line_property_inspector::{
-    STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID, STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID,
-    STRAIGHT_LINE_INSPECTOR_LOCKED_ID, STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID,
-    STRAIGHT_LINE_INSPECTOR_WIDTH_ID, STRAIGHT_LINE_PROPERTY_INSPECTOR_ID,
-    StraightLinePropertyEvent, StraightLinePropertyPatch,
+    STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID, STRAIGHT_LINE_INSPECTOR_LOCKED_ID,
+    STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID, STRAIGHT_LINE_INSPECTOR_WIDTH_ID,
+    STRAIGHT_LINE_PROPERTY_INSPECTOR_ID, StraightLinePropertyEvent, StraightLinePropertyPatch,
 };
 use butter_paper::template_manager::PersistentTemplateManager;
 use butter_paper::text_box_property_inspector::{
     TEXT_BOX_INSPECTOR_ALIGNMENT_CENTER_ID, TEXT_BOX_INSPECTOR_ALIGNMENT_LEFT_ID,
-    TEXT_BOX_INSPECTOR_APPLY_COLOR_ID, TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID,
-    TEXT_BOX_INSPECTOR_LOCKED_ID, TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID, TEXT_BOX_INSPECTOR_SIZE_ID,
+    TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID, TEXT_BOX_INSPECTOR_LOCKED_ID,
+    TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID, TEXT_BOX_INSPECTOR_SIZE_ID,
     TEXT_BOX_PROPERTY_INSPECTOR_ID, TextBoxPropertyEvent, TextBoxPropertyPatch,
 };
 use butter_paper::vertex_path_property_inspector::{
-    PathPropertyKind, VERTEX_PATH_INSPECTOR_APPLY_FILL_ID, VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID,
-    VERTEX_PATH_INSPECTOR_FILL_COLOR_ID, VERTEX_PATH_INSPECTOR_LOCKED_ID,
+    PathPropertyKind, VERTEX_PATH_INSPECTOR_FILL_COLOR_ID, VERTEX_PATH_INSPECTOR_LOCKED_ID,
     VERTEX_PATH_INSPECTOR_NO_FILL_ID, VERTEX_PATH_INSPECTOR_OPACITY_ID,
     VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID, VERTEX_PATH_INSPECTOR_WIDTH_ID,
     VERTEX_PATH_PROPERTY_INSPECTOR_ID, VertexPathPropertyEvent, VertexPathPropertyPatch,
@@ -2252,12 +2253,9 @@ fn engineering_visual_apply_color(
     let input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string(color.into()));
+    // Committing the hex value closes the picker and applies the colour.
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
-        .expect("the explicit Apply color Button must remain rendered");
-    cx.simulate_click(apply.center(), Modifiers::default());
 }
 
 fn engineering_visual_enter_number(
@@ -2390,12 +2388,9 @@ fn straight_line_apply_color(
     let input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string(color.into()));
+    // Committing the hex value closes the picker and applies the colour.
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
-        .expect("the explicit Apply color Button must remain rendered");
-    cx.simulate_click(apply.center(), Modifiers::default());
 }
 
 fn straight_line_enter_width(
@@ -2494,16 +2489,10 @@ fn vertex_path_preview_color(
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
 }
 
-fn vertex_path_click_apply(cx: &mut gpui::VisualTestContext, fill: bool) {
+/// The colour a preview committed is already applied: committing the hex
+/// value closes the picker, which applies it. Only redraws.
+fn vertex_path_click_apply(cx: &mut gpui::VisualTestContext, _fill: bool) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(if fill {
-            VERTEX_PATH_INSPECTOR_APPLY_FILL_ID
-        } else {
-            VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID
-        })
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
 }
 
 fn vertex_path_enter_width(
@@ -3517,10 +3506,14 @@ fn rendered_engineering_pointer_point(
         match selector {
             "dimension.endpoint.start" => annotation.start,
             "dimension.endpoint.end" => annotation.end,
-            "dimension.offset" => PdfPoint {
-                x: (offset_start.x + offset_end.x) * 0.5,
-                y: (offset_start.y + offset_end.y) * 0.5,
-            },
+            "dimension.offset" => {
+                let layer_id =
+                    Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+                let layer = cx.debug_bounds(layer_id).unwrap();
+                let scale =
+                    (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+                annotation.offset_handle_point(f64::from(scale))
+            }
             "dimension.body" => PdfPoint {
                 x: offset_start.x + (offset_end.x - offset_start.x) * 0.25,
                 y: offset_start.y + (offset_end.y - offset_start.y) * 0.25,
@@ -3548,9 +3541,10 @@ fn rendered_engineering_pointer_point(
                 RectangleResizeHandle::SouthWest.point(annotation.text_box)
             }
             "callout.textBox.resize.w" => RectangleResizeHandle::West.point(annotation.text_box),
+            // The box moves from its padding; its letters edit the text.
             "callout.text-box" => PdfPoint {
-                x: annotation.text_box.x + annotation.text_box.width * 0.5,
-                y: annotation.text_box.y + annotation.text_box.height * 0.5,
+                x: annotation.text_box.x + annotation.text_box.width * 0.25,
+                y: annotation.text_box.y + annotation.text_box.height - 1.,
             },
             "callout.body" => PdfPoint {
                 x: (annotation.leader_points[0].x + annotation.leader_points[1].x) * 0.5,
@@ -11355,17 +11349,14 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     let color_input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| color_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string("#00ff0066".into()));
-    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
+    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE}"));
     assert_eq!(
         revision(&workspace, cx),
         before_color,
         "ColorPicker preview must be history-free"
     );
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
+    // Committing the hex value closes the picker and applies the colour.
+    cx.simulate_keystrokes("enter");
     assert_eq!(revision(&workspace, cx), (1, 1, 0));
     let color_applied = workspace
         .read_with(cx, |workspace, cx| {
@@ -11380,16 +11371,6 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     assert_eq!(
         color_applied.arcs[0].appearance.stroke_style(),
         StrokeStyle::Dashed
-    );
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
-    assert_eq!(
-        revision(&workspace, cx),
-        (1, 1, 0),
-        "Apply no-op must be history-free"
     );
 
     engineering_visual_enter_number(
@@ -11431,10 +11412,6 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     assert_eq!(revision(&workspace, cx), (4, 4, 0));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
     let locked_width = cx
         .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_WIDTH_ID)
         .unwrap();
@@ -11486,15 +11463,12 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
     let color_input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| color_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string("#abcdef".into()));
-    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
+    // An uncommitted preview, dismissed, applies nothing.
+    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} escape"));
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(request.document_id, &cloud.id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(ENGINEERING_VISUAL_INSPECTOR_APPLY_COLOR_ID)
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
     assert_eq!(
         revision(&workspace, cx),
         (5, 5, 0),
@@ -11713,16 +11687,6 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
         color_applied.straight_lines[0].appearance.stroke_style(),
         StrokeStyle::Dashed
     );
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx
-        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
-    assert_eq!(
-        revision(&workspace, cx),
-        (1, 1, 0),
-        "Apply no-op must be history-free"
-    );
 
     straight_line_enter_width(cx, &workspace, "3.25");
     assert_eq!(revision(&workspace, cx), (2, 2, 0));
@@ -11736,10 +11700,6 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
         cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID)
             .is_some()
     );
-    let apply = cx
-        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
     let width = cx.debug_bounds(STRAIGHT_LINE_INSPECTOR_WIDTH_ID).unwrap();
     cx.simulate_click(width.center(), Modifiers::default());
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} 9 enter"));
@@ -11794,7 +11754,8 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
     let color_input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| color_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string("#abcdef".into()));
-    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
+    // An uncommitted preview, dismissed, applies nothing.
+    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} escape"));
     assert!(workspace.update(cx, |workspace, cx| {
         workspace.select_annotation(request.document_id, &arrow.id, cx)
     }));
@@ -11809,10 +11770,6 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
         resynced.appearance,
         StraightLineAppearance::default_for(LineKind::Arrow)
     );
-    let apply = cx
-        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
-        .unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
     assert_eq!(
         revision(&workspace, cx),
         (5, 5, 0),
@@ -11989,11 +11946,9 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(
         VERTEX_PATH_PROPERTY_INSPECTOR_ID,
         VERTEX_PATH_INSPECTOR_LOCKED_ID,
         VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID,
-        VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID,
         VERTEX_PATH_INSPECTOR_WIDTH_ID,
         VERTEX_PATH_INSPECTOR_OPACITY_ID,
         VERTEX_PATH_INSPECTOR_FILL_COLOR_ID,
-        VERTEX_PATH_INSPECTOR_APPLY_FILL_ID,
         VERTEX_PATH_INSPECTOR_NO_FILL_ID,
     ] {
         assert!(cx.debug_bounds(id).is_some(), "Polygon must render {id}");
@@ -12022,13 +11977,8 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(
         })
     };
 
+    // Committing the hex value closes the picker and applies the colour.
     vertex_path_preview_color(cx, &workspace, false, "#abcdef80");
-    assert_eq!(
-        authority(&workspace, cx),
-        (0, 0),
-        "ColorPicker Change is preview-only"
-    );
-    vertex_path_click_apply(cx, false);
     assert_eq!(authority(&workspace, cx), (1, 1));
     let coloured = workspace
         .read_with(cx, |workspace, cx| {
@@ -12041,8 +11991,6 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(
     vertex_path_enter_opacity(cx, &workspace, "60");
     assert_eq!(authority(&workspace, cx), (3, 3));
     vertex_path_preview_color(cx, &workspace, true, "#00ff0080");
-    assert_eq!(authority(&workspace, cx), (3, 3));
-    vertex_path_click_apply(cx, true);
     assert_eq!(authority(&workspace, cx), (4, 4));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let no_fill = cx.debug_bounds(VERTEX_PATH_INSPECTOR_NO_FILL_ID).unwrap();
@@ -12129,7 +12077,25 @@ fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(
     vertex_path_toggle_lock(cx);
     assert_eq!(authority(&workspace, cx), (7, 7));
 
-    vertex_path_preview_color(cx, &workspace, true, "#aa5500");
+    // An uncommitted fill preview, left open while the selection changes.
+    let fill_picker = workspace
+        .read_with(cx, |workspace, _| {
+            workspace.vertex_path_property_inspector()
+        })
+        .unwrap()
+        .read_with(cx, |inspector, _| inspector.fill_color_picker());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let fill_trigger = cx
+        .debug_bounds(VERTEX_PATH_INSPECTOR_FILL_COLOR_ID)
+        .unwrap();
+    cx.simulate_click(fill_trigger.center(), Modifiers::default());
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let fill_input = fill_picker.read_with(cx, |picker, _| picker.hex_input().clone());
+    cx.update(|window, cx| fill_input.read(cx).focus_handle(cx).focus(window, cx));
+    cx.write_to_clipboard(ClipboardItem::new_string("#aa5500".into()));
+    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE}"));
+    assert_eq!(authority(&workspace, cx), (7, 7));
     assert!(
         workspace.update(cx, |workspace, cx| workspace.select_annotation(
             request.document_id,
@@ -13237,17 +13203,8 @@ fn ink_property_inspector_targets_exact_single_ink_and_commits_identity_bound_hi
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(!picker.read_with(cx, |picker, _| picker.is_open()));
     assert!(cx.update(|window, cx| picker.read(cx).focus_handle(cx).is_focused(window)));
-    let preview_only = workspace
-        .read_with(cx, |workspace, cx| {
-            workspace.annotation_snapshot(request.document_id, cx)
-        })
-        .unwrap();
-    assert_eq!((preview_only.revision, preview_only.undo_depth), (0, 0));
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply_color = cx
-        .debug_bounds(INK_INSPECTOR_APPLY_COLOR_ID)
-        .expect("the real Apply color Button must render");
-    cx.simulate_click(apply_color.center(), Modifiers::default());
+    // Committing the hex value closed the picker and applied the colour;
+    // reopening and dismissing it changes nothing.
     let color_applied = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -13259,16 +13216,6 @@ fn ink_property_inspector_targets_exact_single_ink_and_commits_identity_bound_hi
         PenAppearance::new("#00ff00", 1., 0.4).unwrap()
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply_color = cx.debug_bounds(INK_INSPECTOR_APPLY_COLOR_ID).unwrap();
-    cx.simulate_click(apply_color.center(), Modifiers::default());
-    assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace
-            .annotation_snapshot(request.document_id, cx)
-            .unwrap()
-            .revision),
-        1,
-        "reapplying the synchronized preview must be a no-op"
-    );
 
     let width = cx.debug_bounds(INK_INSPECTOR_WIDTH_ID).unwrap();
     cx.simulate_click(width.center(), Modifiers::default());
@@ -13340,7 +13287,7 @@ fn ink_property_inspector_targets_exact_single_ink_and_commits_identity_bound_hi
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    for id in [INK_INSPECTOR_APPLY_COLOR_ID, INK_INSPECTOR_LOCKED_ID] {
+    for id in [INK_INSPECTOR_COLOR_TRIGGER_ID, INK_INSPECTOR_LOCKED_ID] {
         let bounds = cx
             .debug_bounds(id)
             .unwrap_or_else(|| panic!("the disabled {id} control must remain rendered"));
@@ -13519,16 +13466,16 @@ fn text_box_property_inspector_uses_real_controls_and_exact_single_selection(
     let hex_input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| hex_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string("#2563eb99".into()));
-    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
+    cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE}"));
     let preview = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
     assert_eq!((preview.revision, preview.undo_depth), (0, 0));
+    // Committing the hex value closes the picker and applies the colour.
+    cx.simulate_keystrokes("enter");
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(TEXT_BOX_INSPECTOR_APPLY_COLOR_ID).unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
     let color_applied = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -14375,7 +14322,6 @@ fn shared_shape_property_inspector_ellipse_renders_and_commits_identity_bound_hi
         ELLIPSE_INSPECTOR_STROKE_STYLE_ID,
         ELLIPSE_INSPECTOR_FILL_ENABLED_ID,
         ELLIPSE_INSPECTOR_FILL_COLOR_ID,
-        ELLIPSE_INSPECTOR_FILL_OPACITY_ID,
         ELLIPSE_INSPECTOR_X_ID,
         ELLIPSE_INSPECTOR_Y_ID,
         ELLIPSE_INSPECTOR_WIDTH_ID,
@@ -17720,7 +17666,10 @@ fn path_feedback_workspace_paints_vertex_handles_without_model_mutation(cx: &mut
                 .mode()
         });
         workspace.update(cx, |workspace, cx| {
-            workspace.set_view_configuration(request.document_id, mode, zoom, cx)
+            workspace.set_view_configuration(request.document_id, mode, zoom, cx);
+            // Zoomed about the view centre, the page top can leave the view;
+            // bring it back so every grab point is painted.
+            workspace.set_viewport_scroll(request.document_id, 0., 0., cx);
         });
         for (id, points, _locked) in &fixtures {
             assert!(
@@ -17911,7 +17860,10 @@ fn shape_feedback_workspace_paints_resize_handles_and_locked_rotation_omission(
                 .mode()
         });
         workspace.update(cx, |workspace, cx| {
-            workspace.set_view_configuration(request.document_id, mode, zoom, cx)
+            workspace.set_view_configuration(request.document_id, mode, zoom, cx);
+            // Zoomed about the view centre, the page top can leave the view;
+            // bring it back so every grab point is painted.
+            workspace.set_viewport_scroll(request.document_id, 0., 0., cx);
         });
         for (id, points, locked, rotation_rect) in &fixtures {
             assert!(
@@ -19504,21 +19456,67 @@ fn universal_paired_layout_and_selected_sliders_use_real_controls(cx: &mut TestA
                 let left = cx.debug_bounds(left).unwrap();
                 let right = cx.debug_bounds(right).unwrap();
                 assert_eq!(left.top(), right.top(), "paired controls share a row");
+                if target_width < 300. {
+                    // Too narrow beside the label: the pair moves below it,
+                    // still side by side, and starts at the panel's left edge.
+                    assert!(left.left() < panel.left() + px(40.), "pair below its label");
+                    assert!(left.size.width >= px(80.), "room for each value");
+                }
                 assert_eq!(left.size, right.size, "equal column frames");
                 assert_eq!(right.left() - left.right(), px(12.));
                 assert!(left.left() > panel.left() && right.right() < panel.right());
             }
+            let track = cx
+                .debug_bounds(if is_ellipse {
+                    "ellipse-property-inspector-rotation-slider"
+                } else {
+                    "rectangle-property-inspector-rotation-slider"
+                })
+                .unwrap();
+            if target_width < 300. {
+                // Too narrow beside its label: the slider row moves below it
+                // and keeps a usable track.
+                assert!(
+                    track.left() < panel.left() + px(40.),
+                    "slider below its label"
+                );
+                assert!(track.size.width >= px(80.), "a usable slider track");
+            } else {
+                assert!(
+                    track.left() > panel.left() + px(60.),
+                    "slider beside its label"
+                );
+            }
+            // Opacity comes before the Fill switch, and Fill opacity shows
+            // with or without a fill.
+            let (opacity_id, fill_id, fill_opacity_id) = if is_ellipse {
+                (
+                    ELLIPSE_INSPECTOR_OPACITY_ID,
+                    ELLIPSE_INSPECTOR_FILL_ENABLED_ID,
+                    ELLIPSE_INSPECTOR_FILL_OPACITY_ID,
+                )
+            } else {
+                (
+                    RECTANGLE_INSPECTOR_OPACITY_ID,
+                    RECTANGLE_INSPECTOR_FILL_ENABLED_ID,
+                    RECTANGLE_INSPECTOR_FILL_OPACITY_ID,
+                )
+            };
+            let opacity = cx.debug_bounds(opacity_id).unwrap();
+            let fill = cx.debug_bounds(fill_id).unwrap();
+            let fill_opacity = cx.debug_bounds(fill_opacity_id).unwrap();
+            assert!(opacity.bottom() <= fill.top(), "Opacity above Fill");
+            assert!(
+                fill.bottom() <= fill_opacity.top(),
+                "Fill opacity below Fill"
+            );
         }
+        // Line width is a number beside the line colour; rotation keeps
+        // its slider.
         for (track_id, rotation) in if is_ellipse {
-            [
-                ("ellipse-property-inspector-width-slider", false),
-                ("ellipse-property-inspector-rotation-slider", true),
-            ]
+            [("ellipse-property-inspector-rotation-slider", true)]
         } else {
-            [
-                ("rectangle-property-inspector-width-slider", false),
-                ("rectangle-property-inspector-rotation-slider", true),
-            ]
+            [("rectangle-property-inspector-rotation-slider", true)]
         } {
             let (slider, input) = inspector.read_with(cx, |inspector, _| {
                 if rotation {
@@ -21429,28 +21427,20 @@ fn existing_text_box_pointer_move_resize_enter_escape_commit_history_and_lock_us
                 .text_boxes[0]
                 .layout_rect
         });
-        let pdf_x = (rect.x + rect.width / 2.) as f32;
-        let pdf_y = (rect.y + rect.height / 2.) as f32;
+        // On its first line's letters, where a click edits the text.
+        let pdf_x = (rect.x + 10.) as f32;
+        let pdf_y = (rect.y + rect.height - 8.) as f32;
         let body = point(
             layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2. + pdf_x * scale),
             layer.origin.y
                 + px((f32::from(layer.size.height) - 792. * scale) / 2. + (792. - pdf_y) * scale),
         );
-        // Real double-click delivery includes the first click that selects a deselected box.
+        // The first click selects a deselected box; a click in its selected
+        // text edits it (one already selected edits at once, and the second
+        // click lands in its editor).
         cx.simulate_click(body, Modifiers::default());
-        cx.simulate_event(MouseDownEvent {
-            button: MouseButton::Left,
-            position: body,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            button: MouseButton::Left,
-            position: body,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(body, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     };
     double_click(cx);
@@ -24930,7 +24920,6 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
     assert_eq!(area_inspector.kind, PathPropertyKind::Area);
     for id in [
         VERTEX_PATH_INSPECTOR_FILL_COLOR_ID,
-        VERTEX_PATH_INSPECTOR_APPLY_FILL_ID,
         VERTEX_PATH_INSPECTOR_NO_FILL_ID,
     ] {
         assert!(cx.debug_bounds(id).is_some(), "Area must render {id}");
@@ -25784,20 +25773,12 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
             origin.x + px((text_box.x + text_box.width * 0.5) as f32 * scale),
             origin.y + px((792. - (text_box.y + text_box.height * 0.5) as f32) * scale),
         );
+        // The first click selects the Cloud+; a click in its selected
+        // caption edits it (a selected one edits at once, and the second
+        // click lands in its editor).
         cx.simulate_click(caption, Modifiers::default());
-        cx.simulate_event(MouseDownEvent {
-            button: MouseButton::Left,
-            position: caption,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            button: MouseButton::Left,
-            position: caption,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(caption, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     };
 
@@ -25905,23 +25886,15 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert!(after_escape.cloud_pluses[0].same_persisted_state_as(&after_redo.cloud_pluses[0]));
     assert_eq!(
-        (
-            after_escape.revision,
-            after_escape.undo_depth,
-            after_escape.redo_depth
-        ),
-        (
-            after_redo.revision,
-            after_redo.undo_depth,
-            after_redo.redo_depth
-        ),
-        "Escape must discard an existing Cloud+ caption draft without history"
+        after_escape.cloud_pluses[0].content(),
+        "temporary",
+        "Escape keeps an existing Cloud+ caption edit"
     );
-    assert!(
-        after_escape.selected_id.is_none(),
-        "Escape must clear the composite selection"
+    assert_eq!(
+        after_escape.undo_depth,
+        after_redo.undo_depth + 1,
+        "Escape keeps the edit as one undo step"
     );
 
     open_existing_editor(cx);
@@ -25931,8 +25904,9 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
         workspace
             .read_with(cx, |workspace, cx| workspace
                 .annotation_snapshot(request.document_id, cx))
-            .unwrap(),
-        after_redo,
+            .unwrap()
+            .undo_depth,
+        after_escape.undo_depth,
         "an unchanged existing Cloud+ caption submit must not create history"
     );
 }
@@ -26037,13 +26011,13 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     assert_eq!(created.dimensions[0].content(), "");
     assert_eq!(created.dimensions[0].dimension_line_offset(), 24.);
     let editor = cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).unwrap();
-    let text_panel = cx
-        .debug_bounds("document-workspace-text-editor")
-        .expect("a Dimension caption edits in the sidebar text panel");
-    assert!(text_panel.contains(&editor.center()));
     assert!(
-        cx.debug_bounds("document-workspace-rotate-left").is_none(),
-        "the text panel holds only the text, not unrelated document actions"
+        cx.debug_bounds("document-workspace-text-editor").is_none(),
+        "a Dimension caption is typed on the page, not in a side panel"
+    );
+    assert!(
+        editor.contains(&project(180., 324.)),
+        "the editor sits over the caption: {editor:?}"
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
@@ -26130,8 +26104,10 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     };
     let hot_start = painted_handles_at(cx, unselected_start);
     let ordinary_end = painted_handles_at(cx, hover_project(edited.dimensions[0].end));
-    let ordinary_offset =
-        painted_handles_at(cx, hover_project(edited.dimensions[0].caption_center()));
+    let ordinary_offset = painted_handles_at(
+        cx,
+        hover_project(edited.dimensions[0].offset_handle_point(f64::from(hover_scale))),
+    );
     assert_eq!(
         hot_start.len(),
         1,
@@ -26233,7 +26209,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     let original_geometry = (edited.dimensions[0].start, edited.dimensions[0].end);
     let original_order = edited.annotation_order.clone();
 
-    let double_click_caption = |cx: &mut gpui::VisualTestContext| {
+    let click_caption = |cx: &mut gpui::VisualTestContext| {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let scene = workspace.read_with(cx, |workspace, cx| {
             workspace.annotation_scene(request.document_id, 0, cx)
@@ -26268,22 +26244,12 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
             layer.contains(&caption),
             "the current selected Dimension caption must project inside the current annotation layer",
         );
-        cx.simulate_event(MouseDownEvent {
-            button: MouseButton::Left,
-            position: caption,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            button: MouseButton::Left,
-            position: caption,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-        });
+        // A click in the selected Dimension's caption, beside the offset
+        // handle's square at its centre, edits it in place.
+        cx.simulate_click(caption + point(px(9.), px(0.)), Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     };
-    double_click_caption(cx);
+    click_caption(cx);
     assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
     let existing_editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
@@ -26329,7 +26295,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         workspace.text_box_commit_error().is_none()
     }));
 
-    double_click_caption(cx);
+    click_caption(cx);
     let escape_editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
         .expect("the Escape Dimension Textarea must own focus");
@@ -26348,17 +26314,17 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
-    let mut expected_after_escape = before_escape.clone();
-    expected_after_escape.selected_id = None;
+    let after_escape = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
     assert_eq!(
-        workspace
-            .read_with(cx, |workspace, cx| {
-                workspace.annotation_snapshot(request.document_id, cx)
-            })
-            .unwrap(),
-        expected_after_escape,
-        "Escape must discard the existing Dimension caption edit and clear selection"
+        after_escape.dimensions[0].content(),
+        "temporary",
+        "Escape keeps the existing Dimension caption edit"
     );
+    assert_eq!(after_escape.undo_depth, before_escape.undo_depth + 1);
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
         None
@@ -26371,7 +26337,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
             cx,
         ))
     );
-    double_click_caption(cx);
+    click_caption(cx);
     let invalid_editor_focus = workspace
         .read_with(cx, |workspace, cx| workspace.pending_text_box_focus(cx))
         .expect("the invalid Dimension Textarea must own focus");
@@ -26394,7 +26360,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
             .read_with(cx, |workspace, cx| workspace
                 .annotation_snapshot(request.document_id, cx))
             .unwrap(),
-        before_escape
+        after_escape
     );
     assert!(cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some());
     assert!(workspace.read_with(cx, |workspace, _| {
@@ -26410,8 +26376,8 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
                 workspace.annotation_snapshot(request.document_id, cx)
             })
             .unwrap(),
-        expected_after_escape,
-        "Escape after a rejected Dimension caption must clear selection without mutation"
+        after_escape,
+        "Escape after a rejected Dimension caption drops the edit without mutation"
     );
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -26420,7 +26386,6 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
             workspace.annotation_snapshot(request.document_id, cx)
         })
         .unwrap();
-    assert!(before_properties_click.selected_id.is_none());
     assert!(
         workspace.update(cx, |workspace, cx| workspace.select_annotation(
             request.document_id,
@@ -26806,11 +26771,9 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         .debug_bounds("dimension.offset")
         .expect("selected Dimension must expose its rendered offset handle");
     assert!(offset.size.width >= px(8.) && offset.size.height >= px(8.));
-    let (dimension_start, dimension_end) = edited.dimensions[0].dimension_line_points();
-    let offset_center = project(
-        ((dimension_start.x + dimension_end.x) * 0.5) as f32,
-        ((dimension_start.y + dimension_end.y) * 0.5) as f32,
-    );
+    let handle = edited.dimensions[0].offset_handle_point(f64::from(scale));
+    let offset_center = project(handle.x as f32, handle.y as f32);
+
     let moved_offset = point(offset_center.x, offset_center.y - px(18.));
     cx.simulate_mouse_down(offset_center, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(moved_offset, Some(MouseButton::Left), Modifiers::default());
@@ -26837,7 +26800,8 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         .unwrap();
     assert_eq!(pointer_edited.revision, edited.revision + 1);
     assert_eq!(pointer_edited.dimensions[0].id, edited.dimensions[0].id);
-    assert_eq!(pointer_edited.dimensions[0].content(), "clear width");
+    // Escape kept the "temporary" caption typed above.
+    assert_eq!(pointer_edited.dimensions[0].content(), "temporary");
     assert_eq!(
         pointer_edited.dimensions[0].appearance,
         edited.dimensions[0].appearance
@@ -26859,6 +26823,472 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         request.document_id,
         "dimension.endpoint.start",
     );
+}
+
+#[gpui::test]
+fn a_new_dimension_keeps_its_typed_text_when_clicking_away_on_the_page(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.simulate_resize(size(px(1200.), px(900.)));
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("dimension.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| workspace_focus.focus(window, cx));
+    cx.simulate_keystrokes("shift-l");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    let project =
+        |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    cx.simulate_click(project(100., 300.), Modifiers::default());
+    cx.simulate_click(project(260., 300.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some(),
+        "drawing a Dimension opens its text"
+    );
+    cx.simulate_keystrokes("1 2 0 0 space m m");
+
+    // Clicking empty page finishes the text, as for a Text Box.
+    cx.simulate_click(project(300., 600.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(request.document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(snapshot.dimensions.len(), 1);
+    assert_eq!(snapshot.dimensions[0].content(), "1200 mm");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None,
+        "the text panel closes once the text is kept"
+    );
+}
+
+/// A workspace with one blank page open, sized like a laptop window, and
+/// a projection from PDF points to window pixels.
+fn markup_text_workspace(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    DocumentId,
+    &mut gpui::VisualTestContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.simulate_resize(size(px(1200.), px(900.)));
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("markup-text.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    (workspace, request.document_id, cx)
+}
+
+fn page_projection(
+    cx: &mut gpui::VisualTestContext,
+    document_id: DocumentId,
+) -> impl Fn(f32, f32) -> Point<Pixels> + use<> {
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+        layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+    );
+    move |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale))
+}
+
+fn hover_cursor(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    cx: &mut gpui::VisualTestContext,
+    at: Point<Pixels>,
+) -> gpui::CursorStyle {
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_mouse_move(at + point(px(1.), px(0.)), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    workspace.read_with(cx, |workspace, _| workspace.viewport_cursor())
+}
+
+fn create_test_text_box(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+) -> MarkupId {
+    let id = MarkupId::new("markup-text:text-box").unwrap();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.create_text_box(
+                document_id,
+                TextBoxAnnotation::new(
+                    id.clone(),
+                    0,
+                    PdfRect::new(300., 300., 160., 60.).unwrap(),
+                    "baseline text",
+                    TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+                )
+                .unwrap(),
+                cx,
+            )
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    id
+}
+
+/// The cursor is what a press does: an unselected Text Box's text moves it
+/// and a click selects it; once selected its text shows the I-beam and a
+/// press there puts the caret where it landed; its edge still resizes.
+#[gpui::test]
+fn a_selected_markups_text_shows_an_ibeam_and_a_press_there_edits_it(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    let id = create_test_text_box(&workspace, document_id, cx);
+    let project = page_projection(cx, document_id);
+    // On "baseline text", its first line under the box's top edge.
+    let text = project(330., 352.);
+
+    assert_ne!(
+        hover_cursor(&workspace, cx, text),
+        gpui::CursorStyle::IBeam,
+        "an unselected Text Box's text moves it"
+    );
+    cx.simulate_click(text, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None,
+        "the first click selects; it does not edit"
+    );
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace
+                .annotation_snapshot(document_id, cx))
+            .unwrap()
+            .selected_id,
+        Some(id.clone())
+    );
+
+    // The right edge resizes, selected or not, and never edits.
+    let edge = project(460., 352.);
+    assert_ne!(hover_cursor(&workspace, cx, edge), gpui::CursorStyle::IBeam);
+    cx.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        project(480., 330.),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(project(480., 330.), MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let resized = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert!(
+        (resized.text_boxes[0].layout_rect.width - 180.).abs() < 0.5,
+        "the edge resizes: {:?}",
+        resized.text_boxes[0].layout_rect
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None
+    );
+
+    assert_eq!(
+        hover_cursor(&workspace, cx, text),
+        gpui::CursorStyle::IBeam,
+        "a selected Text Box's text shows the I-beam"
+    );
+    cx.simulate_mouse_down(text, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(text, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let input = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+        .expect("a press in the selected text edits it");
+    let selected = input.read_with(cx, |input, _| input.selected_range());
+    assert!(
+        selected.is_empty() && selected.start > 0 && selected.start < "baseline text".len(),
+        "the caret lands where the press did, not around all the text: {selected:?}"
+    );
+    assert!(
+        cx.debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID).is_some(),
+        "the text is edited on the page"
+    );
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_none(),
+        "editing text opens no panel"
+    );
+}
+
+/// Double-clicking a markup, text or not, opens its properties and never
+/// starts editing its text.
+#[gpui::test]
+fn double_clicking_a_markup_opens_its_properties_without_editing_text(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    create_test_text_box(&workspace, document_id, cx);
+    let project = page_projection(cx, document_id);
+    let text = project(330., 330.);
+    for click_count in [1, 2] {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: text,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: text,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None,
+        "a double-click does not edit the text"
+    );
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_some(),
+        "a double-click opens the markup's properties"
+    );
+}
+
+/// Escape keeps a new Dimension's typed text, typed on the page; a click in
+/// the selected Dimension's caption edits it there again, and its offset
+/// handle, beside the caption, drags the line without editing.
+#[gpui::test]
+fn a_dimensions_text_is_typed_on_the_page_and_escape_keeps_it(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    cx.simulate_keystrokes("shift-l");
+    let project = page_projection(cx, document_id);
+    cx.simulate_click(project(100., 300.), Modifiers::default());
+    cx.simulate_click(project(260., 300.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some(),
+        "drawing a Dimension opens its text"
+    );
+    let editor = cx
+        .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
+        .expect("a Dimension's text is typed on the page");
+    let caption = project(180., 324.);
+    assert!(
+        editor.contains(&caption),
+        "the editor sits over the caption: {editor:?} {caption:?}"
+    );
+    assert!(cx.debug_bounds("document-workspace-text-editor").is_none());
+    cx.simulate_keystrokes("1 2 0 0");
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        snapshot.dimensions[0].content(),
+        "1200",
+        "Escape keeps the text"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None
+    );
+
+    // Select it, then a press in its caption edits the caption in place.
+    let id = snapshot.dimensions[0].id.clone();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // The offset handle sits centred just below the caption's text, so all
+    // of the caption, its middle too, is text.
+    let pixels_per_point = f64::from(f32::from(project(101., 300.).x - project(100., 300.).x));
+    let handle = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(document_id, 0, cx).dimensions[0]
+            .offset_handle_point(pixels_per_point)
+    });
+    let handle = project(handle.x as f32, handle.y as f32);
+    assert!(
+        handle.y > caption.y + px(15.) && (handle.x - caption.x).abs() < px(1.),
+        "the handle is centred below the caption: {handle:?} {caption:?}"
+    );
+    for (x, y) in [(0., 0.), (-8., 0.), (8., 0.), (0., -3.), (0., 3.)] {
+        assert_eq!(
+            hover_cursor(&workspace, cx, caption + point(px(x), px(y))),
+            gpui::CursorStyle::IBeam,
+            "the caption's text at {x},{y} shows the I-beam"
+        );
+    }
+    let handle_cursor = hover_cursor(&workspace, cx, handle);
+    assert_ne!(handle_cursor, gpui::CursorStyle::IBeam);
+    assert_ne!(
+        handle_cursor,
+        gpui::CursorStyle::Arrow,
+        "the handle shows its drag cursor"
+    );
+
+    cx.simulate_mouse_down(caption, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(caption, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("1200".to_owned()),
+        "a press in the caption's middle edits it"
+    );
+    let editor = cx
+        .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_ID)
+        .expect("the caption is edited on the page");
+    assert!(editor.contains(&caption));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    // The handle drags the offset and opens no editor.
+    let before_drag = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let raised = point(handle.x, handle.y - px(18.));
+    cx.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(raised, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(raised, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let dragged = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert!(
+        dragged.dimensions[0].dimension_line_offset()
+            > before_drag.dimensions[0].dimension_line_offset() + 5.,
+        "dragging the handle up moves the dimension line out: {} -> {}",
+        before_drag.dimensions[0].dimension_line_offset(),
+        dragged.dimensions[0].dimension_line_offset()
+    );
+    assert_eq!(dragged.dimensions[0].content(), "1200");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None,
+        "dragging the handle edits no text"
+    );
+}
+
+/// A Dimension's text shows in its properties' Text field, and an edit
+/// there, finished with Enter, changes the Dimension as one undo step.
+#[gpui::test]
+fn a_dimensions_text_field_shows_and_changes_its_text(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    cx.simulate_keystrokes("shift-l");
+    let project = page_projection(cx, document_id);
+    cx.simulate_click(project(100., 300.), Modifiers::default());
+    cx.simulate_click(project(260., 300.), Modifiers::default());
+    cx.simulate_keystrokes("1 2 0 0 enter");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let id = before.dimensions[0].id.clone();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &id,
+            cx
+        ))
+    );
+    toggle_document_actions(cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let inspector = workspace
+        .read_with(cx, |workspace, _| workspace.dimension_property_inspector())
+        .expect("a selected Dimension shows its properties");
+    let input = inspector.read_with(cx, |inspector, _| inspector.content_input());
+    assert_eq!(
+        input.read_with(cx, |input, _| input.value().to_string()),
+        "1200"
+    );
+    assert!(
+        cx.debug_bounds(butter_paper::dimension_property_inspector::DIMENSION_INSPECTOR_TEXT_ID)
+            .is_some(),
+        "the Text field shows"
+    );
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| input.set_value("1250", window, cx));
+        input.read(cx).focus_handle(cx).focus(window, cx);
+    });
+    cx.simulate_keystrokes("enter");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after.dimensions[0].content(), "1250");
+    assert_eq!(after.undo_depth, before.undo_depth + 1);
 }
 
 #[gpui::test]
@@ -31519,6 +31949,42 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
             .abs()
             <= 0.000_1
     );
+    // Restyled from its properties, the Callout saves its new style.
+    let restyled = edit_caption_values(
+        &CaptionPropertyValues::Callout(edited.callouts[0].appearance.clone()),
+        &CaptionStyleEdit {
+            line_color: Some("#1d4ed8".into()),
+            line_width: Some(2.),
+            text_color: Some("#0f766e".into()),
+            font_size: Some(16.),
+            opacity: Some(0.8),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace.apply_caption_property_event(
+                &CaptionPropertyEvent {
+                    document_id,
+                    annotation_id: callout_id.clone(),
+                    expected_revision: edited.revision,
+                    patch: CaptionPropertyPatch::Values(Box::new(restyled)),
+                },
+                cx,
+            ))
+            .unwrap()
+    );
+    let edited = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        edited.callouts[0].appearance.line().stroke_color(),
+        "#1d4ed8"
+    );
+    assert_eq!(edited.callouts[0].appearance.text().font_size_pt(), 16.);
 
     workspace
         .update(cx, |workspace, cx| {
@@ -31774,6 +32240,49 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
             workspace.translate_selected_cloud_plus_text_box(document_id, 18., -12., cx)
         })
         .expect("the retained Cloud+ text box must move and reroute its leader");
+    // Restyled from its properties, the Cloud+ saves its new style, fill and
+    // cloud intensity.
+    let restyle_from = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let current = &restyle_from.cloud_pluses[0];
+    let next_intensity = if current.border_effect_intensity() == 1. {
+        2.
+    } else {
+        1.
+    };
+    let restyled = edit_caption_values(
+        &CaptionPropertyValues::CloudPlus {
+            appearance: current.appearance.clone(),
+            intensity: current.border_effect_intensity(),
+        },
+        &CaptionStyleEdit {
+            line_color: Some("#1d4ed8".into()),
+            line_width: Some(2.),
+            text_color: Some("#0f766e".into()),
+            font_size: Some(16.),
+            opacity: Some(0.8),
+            fill_color: Some(Some("#fde68a".into())),
+            fill_opacity: Some(0.6),
+            intensity: Some(next_intensity),
+        },
+    )
+    .unwrap();
+    assert!(
+        workspace
+            .update(cx, |workspace, cx| workspace.apply_caption_property_event(
+                &CaptionPropertyEvent {
+                    document_id,
+                    annotation_id: cloud_plus_id.clone(),
+                    expected_revision: restyle_from.revision,
+                    patch: CaptionPropertyPatch::Values(Box::new(restyled)),
+                },
+                cx,
+            ))
+            .unwrap()
+    );
     let edited = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(document_id, cx)
@@ -31783,6 +32292,11 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     assert_eq!(edited_cloud_plus.id, cloud_plus_id);
     assert_eq!(edited_cloud_plus.cloud_points()[1], moved_vertex);
     assert_eq!(edited_cloud_plus.leader_points().len(), 3);
+    assert_eq!(edited_cloud_plus.border_effect_intensity(), next_intensity);
+    assert_eq!(
+        edited_cloud_plus.appearance.cloud().fill_color(),
+        Some("#fde68a")
+    );
     assert!(edited.dirty);
 
     workspace
@@ -47177,7 +47691,7 @@ fn viewport_scrollbars_stay_on_the_viewport_while_scrolling(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn existing_text_box_double_click_edits_in_place_without_opening_properties(
+fn a_click_in_a_selected_text_box_edits_it_in_place_without_opening_properties(
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
@@ -47229,29 +47743,19 @@ fn existing_text_box_double_click_edits_in_place_without_opening_properties(
         layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
         layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
     );
+    // On "baseline", the box's first line.
     let body = point(
-        origin.x + px(340. * scale),
-        origin.y + px((792. - 320.) * scale),
+        origin.x + px(320. * scale),
+        origin.y + px((792. - 332.) * scale),
     );
-    for click_count in [1, 2] {
-        cx.simulate_event(MouseDownEvent {
-            button: MouseButton::Left,
-            position: body,
-            modifiers: Modifiers::default(),
-            click_count,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            button: MouseButton::Left,
-            position: body,
-            modifiers: Modifiers::default(),
-            click_count,
-        });
+    // The first click selects the box; a click in its selected text edits it.
+    for _ in 0..2 {
+        cx.simulate_click(body, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
     let input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
-        .expect("double-click must open the Text Box editor");
+        .expect("a click in the selected text must open the Text Box editor");
     assert!(
         cx.debug_bounds("document-workspace-properties-sidebar")
             .is_none(),
@@ -48645,4 +49149,582 @@ fn close_page_scale_panel(
         .expect("the Page Scale panel was opened");
     control.update(cx, |control, cx| control.close(cx));
     cx.run_until_parked();
+}
+
+/// The toolbar's fit and layout buttons used to clear the page layout and
+/// make the next one a frame or more later. The frames between drew only
+/// the page's opening image, full width from its top: a flash. The first
+/// frame after each command must already draw the laid-out pages, and a
+/// Fit Width that changes nothing must leave the page where it was.
+#[gpui::test]
+fn fit_and_layout_commands_draw_their_final_view_in_the_first_frame(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("layout-flash.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let document_id = request.document_id;
+    let page_id = Box::leak(document_viewer_page_id(document_id, 0).into_boxed_str());
+    // The layout a later frame settles on: the test window gives no next
+    // frame, so its waiting refresh is run here.
+    let settle = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let scale = cx.update(|window, _| window.scale_factor());
+        workspace.update(cx, |workspace, cx| {
+            let (width, height) = workspace
+                .document_view_state(document_id, cx)
+                .and_then(|state| state.viewport_size())
+                .expect("the viewport is measured once drawn");
+            workspace
+                .refresh_viewport_async(document_id, width, height, scale, cx)
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    // One frame, as the screen shows the frame right after a click.
+    let first_frame = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.debug_bounds(page_id)
+    };
+
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.set_fit_preset(document_id, ViewerFitPreset::Width, cx));
+    });
+    settle(cx);
+    // Scrolled down into the page at Fit Width.
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.set_viewport_scroll(document_id, 0., 300., cx));
+    });
+    settle(cx);
+    let scrolled = cx
+        .debug_bounds(page_id)
+        .expect("the page is laid out at Fit Width");
+
+    // Fit Width again changes nothing, in the first frame or after.
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.set_fit_preset(document_id, ViewerFitPreset::Width, cx));
+    });
+    assert_eq!(first_frame(cx), Some(scrolled));
+    settle(cx);
+    assert_eq!(cx.debug_bounds(page_id), Some(scrolled));
+
+    // Fit Page, then each layout, lays the pages out in its first frame.
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx));
+    });
+    let fitted = first_frame(cx).expect("Fit Page draws the page in its first frame");
+    settle(cx);
+    assert_eq!(cx.debug_bounds(page_id), Some(fitted));
+    for mode in [PageViewMode::SinglePage, PageViewMode::Continuous] {
+        workspace.update(cx, |workspace, cx| {
+            assert!(workspace.set_page_view_mode(document_id, mode, cx));
+        });
+        let first = first_frame(cx).expect("a layout change draws the page in its first frame");
+        settle(cx);
+        assert_eq!(
+            cx.debug_bounds(page_id),
+            Some(first),
+            "{mode:?} moved after its first frame"
+        );
+    }
+}
+
+/// Places a Callout (`q`) or Cloud+ (`k`) with two clicks and keeps its
+/// default text, returning its id.
+fn place_caption_markup(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+    tool_key: &str,
+) -> MarkupId {
+    cx.simulate_keystrokes(tool_key);
+    let project = page_projection(cx, document_id);
+    cx.simulate_click(project(120., 420.), Modifiers::default());
+    cx.simulate_mouse_move(project(260., 520.), None, Modifiers::default());
+    cx.simulate_click(project(260., 520.), Modifiers::default());
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let id = if tool_key == "q" {
+        snapshot.callouts[0].id.clone()
+    } else {
+        snapshot.cloud_pluses[0].id.clone()
+    };
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::Select, cx)
+            .unwrap();
+        assert!(workspace.select_annotation(document_id, &id, cx));
+    });
+    toggle_document_actions(cx);
+    id
+}
+
+fn commit_caption_number(
+    cx: &mut gpui::VisualTestContext,
+    input: gpui::Entity<gpui_component::input::InputState>,
+    value: &str,
+) {
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.set_value(value.to_owned(), window, cx)
+        });
+        input.read(cx).focus_handle(cx).focus(window, cx);
+    });
+    cx.simulate_keystrokes("enter");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+#[gpui::test]
+fn a_selected_callout_shows_its_properties_and_they_change_its_text_style_and_lock(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::caption_property_inspector::{
+        CAPTION_INSPECTOR_LOCKED_ID, CAPTION_INSPECTOR_TEXT_ID, CAPTION_PROPERTY_INSPECTOR_ID,
+    };
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    let id = place_caption_markup(&workspace, document_id, cx, "q");
+    assert!(
+        cx.debug_bounds(CAPTION_PROPERTY_INSPECTOR_ID).is_some(),
+        "a selected Callout has a properties panel"
+    );
+    assert!(cx.debug_bounds(CAPTION_INSPECTOR_TEXT_ID).is_some());
+    let inspector = workspace
+        .read_with(cx, |workspace, _| workspace.caption_property_inspector())
+        .unwrap();
+    let text = inspector.read_with(cx, |inspector, _| inspector.content_input());
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        text.read_with(cx, |input, _| input.value().to_string()),
+        before.callouts[0].content()
+    );
+
+    // Typed in the panel, the text shows on the page once the field is left.
+    cx.update(|window, cx| {
+        text.update(cx, |input, cx| input.set_value("Check\nthis", window, cx));
+        text.read(cx).focus_handle(cx).focus(window, cx);
+    });
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let typed = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(typed.callouts[0].content(), "Check\nthis");
+    assert_eq!(typed.undo_depth, before.undo_depth + 1);
+
+    // Text changed on the page shows in the panel.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_markup_content(document_id, &id, "On the page".into(), cx)
+        })
+        .unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        text.read_with(cx, |input, _| input.value().to_string()),
+        "On the page"
+    );
+
+    // A bigger font refits the box, as one change.
+    let font_size = inspector.read_with(cx, |inspector, _| inspector.font_size_input());
+    let box_width = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .callouts[0]
+        .text_box
+        .width;
+    commit_caption_number(cx, font_size.clone(), "24");
+    let sized = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(sized.callouts[0].appearance.text().font_size_pt(), 24.);
+    assert!(sized.callouts[0].text_box.width > box_width);
+    let width = inspector.read_with(cx, |inspector, _| inspector.line_width_input());
+    commit_caption_number(cx, width, "3");
+    let widened = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(widened.callouts[0].appearance.line().stroke_width_pt(), 3.);
+    assert_eq!(widened.undo_depth, sized.undo_depth + 1);
+
+    // Locked, the panel changes nothing until it is unlocked.
+    let lock = cx.debug_bounds(CAPTION_INSPECTOR_LOCKED_ID).unwrap();
+    cx.simulate_click(lock.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let locked = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert!(locked.callouts[0].locked);
+    commit_caption_number(cx, font_size, "30");
+    let after_lock = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after_lock.callouts[0].appearance.text().font_size_pt(), 24.);
+    assert_eq!(after_lock.revision, locked.revision);
+}
+
+#[gpui::test]
+fn a_selected_cloud_plus_properties_change_its_intensity_line_and_text(cx: &mut TestAppContext) {
+    use butter_paper::caption_property_inspector::CAPTION_INSPECTOR_INTENSITY_ID;
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    place_caption_markup(&workspace, document_id, cx, "k");
+    assert!(
+        cx.debug_bounds(CAPTION_INSPECTOR_INTENSITY_ID).is_some(),
+        "a Cloud+ shows its cloud intensity"
+    );
+    let inspector = workspace
+        .read_with(cx, |workspace, _| workspace.caption_property_inspector())
+        .unwrap();
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let intensity = inspector.read_with(cx, |inspector, _| inspector.intensity_input());
+    let next_intensity = if before.cloud_pluses[0].border_effect_intensity() == 3. {
+        "1"
+    } else {
+        "3"
+    };
+    commit_caption_number(cx, intensity, next_intensity);
+    let width = inspector.read_with(cx, |inspector, _| inspector.line_width_input());
+    commit_caption_number(cx, width, "2.5");
+    let after = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    let cloud_plus = &after.cloud_pluses[0];
+    assert_eq!(
+        cloud_plus.border_effect_intensity(),
+        next_intensity.parse::<f64>().unwrap()
+    );
+    assert_eq!(cloud_plus.appearance.cloud().stroke_width_pt(), 2.5);
+    assert_eq!(cloud_plus.appearance.leader().stroke_width_pt(), 2.5);
+    assert_eq!(after.undo_depth, before.undo_depth + 2);
+    assert_eq!(cloud_plus.content(), before.cloud_pluses[0].content());
+}
+
+#[gpui::test]
+fn tool_reset_confirms_in_a_popover_beside_its_button(cx: &mut TestAppContext) {
+    use butter_paper::{
+        tool_defaults_panel::{
+            TOOL_DEFAULTS_RESET_BUTTON_ID, TOOL_DEFAULTS_RESET_CANCEL_ID,
+            TOOL_DEFAULTS_RESET_CONFIRM_ID, TOOL_DEFAULTS_RESET_POPOVER_ID, ToolDefaultsEvent,
+        },
+        tool_properties::ToolProperties,
+    };
+    use gpui::{Entity, VisualTestContext};
+    use gpui_component::WindowExt as _;
+    cx.update(gpui_component::init);
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("reset-popover.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let document_id = request.document_id;
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
+    cx.simulate_click(actions.center(), Modifiers::default());
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::Rectangle, cx)
+            .unwrap()
+    });
+    let mut changed = ToolProperties::for_tool(AnnotationTool::Rectangle);
+    changed.colour = "#123456".into();
+    changed.width_pt = 4.;
+    let change = |workspace: &Entity<DocumentWorkspace>, cx: &mut VisualTestContext| {
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .apply_tool_defaults_event(
+                    &ToolDefaultsEvent::Change {
+                        document_id,
+                        tool: AnnotationTool::Rectangle,
+                        properties: changed.clone(),
+                    },
+                    cx,
+                )
+                .unwrap()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    change(&workspace, cx);
+    let properties = |workspace: &Entity<DocumentWorkspace>, cx: &mut VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.tool_properties(document_id, AnnotationTool::Rectangle, cx)
+            })
+            .unwrap()
+    };
+    let open = |cx: &mut VisualTestContext| {
+        let button = cx.debug_bounds(TOOL_DEFAULTS_RESET_BUTTON_ID).unwrap();
+        cx.simulate_click(button.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let popover = cx
+            .debug_bounds(TOOL_DEFAULTS_RESET_POPOVER_ID)
+            .expect("the confirmation opens in a popover");
+        assert!(
+            !cx.update(|window, cx| window.has_active_dialog(cx)),
+            "no window-wide dialog"
+        );
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert!(
+            popover.left() >= px(0.)
+                && popover.top() >= px(0.)
+                && popover.right() <= viewport.width
+                && popover.bottom() <= viewport.height,
+            "the popover stays inside the window: {popover:?}"
+        );
+        assert!(
+            (popover.top() - button.bottom()).abs() < px(40.)
+                || (button.top() - popover.bottom()).abs() < px(40.),
+            "the popover sits beside its button: {popover:?} {button:?}"
+        );
+        assert!(
+            cx.update(butter_paper::overlay_state::press_owned_by_overlay),
+            "a press while it is open belongs to the popover"
+        );
+    };
+    let closed = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.debug_bounds(TOOL_DEFAULTS_RESET_POPOVER_ID).is_none()
+    };
+
+    // Cancel and Escape close it and change nothing.
+    open(cx);
+    let cancel = cx.debug_bounds(TOOL_DEFAULTS_RESET_CANCEL_ID).unwrap();
+    cx.simulate_click(cancel.center(), Modifiers::default());
+    assert!(closed(cx), "Cancel closes it");
+    assert_eq!(properties(&workspace, cx), changed);
+    open(cx);
+    cx.simulate_keystrokes("escape");
+    assert!(closed(cx), "Escape closes it");
+    assert_eq!(properties(&workspace, cx), changed);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .annotation_tool(document_id, cx)),
+        Some(AnnotationTool::Rectangle),
+        "Escape belongs to the popover, not the canvas"
+    );
+
+    // A press on the page only closes it: it draws nothing.
+    open(cx);
+    let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+    let start = point(layer.left() + px(40.), layer.top() + px(60.));
+    let end = point(layer.left() + px(140.), layer.top() + px(160.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    assert!(closed(cx), "a press elsewhere closes it");
+    assert_eq!(properties(&workspace, cx), changed);
+    let snapshot = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_snapshot(document_id, cx)
+    });
+    assert!(
+        snapshot.is_none_or(|snapshot| snapshot.rectangles.is_empty()),
+        "the closing press must not also draw"
+    );
+
+    // Enter confirms, as does Reset.
+    open(cx);
+    cx.simulate_keystrokes("enter");
+    assert!(closed(cx), "Enter confirms and closes it");
+    assert_eq!(
+        properties(&workspace, cx),
+        ToolProperties::for_tool(AnnotationTool::Rectangle)
+    );
+    change(&workspace, cx);
+    open(cx);
+    let confirm = cx.debug_bounds(TOOL_DEFAULTS_RESET_CONFIRM_ID).unwrap();
+    cx.simulate_click(confirm.center(), Modifiers::default());
+    assert!(closed(cx), "Reset closes it");
+    assert_eq!(
+        properties(&workspace, cx),
+        ToolProperties::for_tool(AnnotationTool::Rectangle)
+    );
+}
+
+#[gpui::test]
+fn a_rectangles_line_runs_through_the_centre_of_every_resize_handle(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("stroke-centred-handles.pdf"), cx)
+    });
+    let id = MarkupId::new("stroke-centred:rectangle").unwrap();
+    let rect = PdfRect::new(100., 550., 100., 60.).unwrap();
+    let width_pt = 6.;
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(
+                opened_document(Arc::new(AtomicBool::new(false))).with_annotations(vec![
+                    Annotation::Rectangle(RectangleAnnotation {
+                        id: id.clone(),
+                        page_index: 0,
+                        rect,
+                        rotation_degrees: 0.,
+                        appearance: RectangleAppearance::new(
+                            "#ff0000",
+                            width_pt,
+                            None::<String>,
+                            1.,
+                        )
+                        .unwrap(),
+                        locked: false,
+                    }),
+                ]),
+            ),
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+        })
+        .unwrap();
+    for zoom in [60., 100., 150.] {
+        let mode = workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(request.document_id, cx)
+                .unwrap()
+                .mode()
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_view_configuration(request.document_id, mode, zoom, cx);
+            workspace.set_viewport_scroll(request.document_id, 0., 0., cx);
+        });
+        assert!(workspace.update(cx, |workspace, cx| {
+            workspace.select_annotation(request.document_id, &id, cx)
+        }));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
+        let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+        let origin = point(
+            layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
+            layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
+        );
+        let device_scale = cx.update(|window, _| window.scale_factor());
+        let quads = cx.update(|window, _| window.painted_quads());
+        // The line: the quad whose border is the rectangle's 6 pt line.
+        let line_width = width_pt as f32 * scale * device_scale;
+        let line = quads
+            .iter()
+            .find(|quad| (quad.border_widths.top.0 - line_width).abs() <= 1.)
+            .unwrap_or_else(|| panic!("the rectangle's line is painted at zoom {zoom}"));
+        let half = line.border_widths.top.0 / 2.;
+        let line_left = line.bounds.origin.x.0 + half;
+        let line_top = line.bounds.origin.y.0 + half;
+        let line_right = line.bounds.origin.x.0 + line.bounds.size.width.0 - half;
+        let line_bottom = line.bounds.origin.y.0 + line.bounds.size.height.0 - half;
+        for handle in RectangleResizeHandle::ALL {
+            let at = handle.point(rect);
+            let center = (
+                (f32::from(origin.x) + at.x as f32 * scale) * device_scale,
+                (f32::from(origin.y) + (792. - at.y as f32) * scale) * device_scale,
+            );
+            let painted = quads
+                .iter()
+                .find(|quad| {
+                    let qx = quad.bounds.origin.x.0 + quad.bounds.size.width.0 / 2.;
+                    let qy = quad.bounds.origin.y.0 + quad.bounds.size.height.0 / 2.;
+                    (qx - center.0).abs() <= 1.
+                        && (qy - center.1).abs() <= 1.
+                        && quad.bounds.size.width.0 < 20. * device_scale
+                })
+                .unwrap_or_else(|| panic!("{handle:?} handle painted at zoom {zoom}"));
+            let qx = painted.bounds.origin.x.0 + painted.bounds.size.width.0 / 2.;
+            let qy = painted.bounds.origin.y.0 + painted.bounds.size.height.0 / 2.;
+            // The line through the handle's centre: on its side's line.
+            let on_line = |value: f32, edge: f32| (value - edge).abs() < 0.01;
+            if handle.affects_west() {
+                assert!(
+                    on_line(qx, line_left),
+                    "{handle:?} at {zoom}: {qx} vs {line_left}"
+                );
+            }
+            if handle.affects_east() {
+                assert!(
+                    on_line(qx, line_right),
+                    "{handle:?} at {zoom}: {qx} vs {line_right}"
+                );
+            }
+            if handle.affects_north() {
+                assert!(
+                    on_line(qy, line_top),
+                    "{handle:?} at {zoom}: {qy} vs {line_top}"
+                );
+            }
+            if handle.affects_south() {
+                assert!(
+                    on_line(qy, line_bottom),
+                    "{handle:?} at {zoom}: {qy} vs {line_bottom}"
+                );
+            }
+        }
+    }
 }

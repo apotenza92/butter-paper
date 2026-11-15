@@ -274,9 +274,8 @@ impl DocumentWorkspace {
                             .focus(|style| style.opacity(1.))
                             .debug_selector(move || close_selector.clone())
                             .accessibility_id(close_accessibility_id)
-                            .rounded(cx.theme().radius_full())
                             .ghost()
-                            .small()
+                            .xsmall()
                             .icon(IconName::Close)
                             .tooltip(close_label.clone())
                             .disabled(saving)
@@ -669,8 +668,12 @@ impl DocumentWorkspace {
         let tab_bar_click_control = cx.entity().downgrade();
         let tab_bar_click_ids = session_tab_ids.clone();
         let tab_bar_focus_handles = self.session_tab_focus_handles.clone();
+        // Stock segmented tabs, shadcn's default: a muted track, with the
+        // active document raised on it. The track is as wide as its tabs and
+        // gives way, scrolling, when they don't fit.
         let native_session_tabs = TabBar::new("document-workspace-session-tabs-component")
-            .outline()
+            .segmented()
+            .min_w_0()
             .track_scroll(&self.session_tab_scroll)
             .max_width(px(190.))
             // The pinned option is unconditional; the application supplies the
@@ -860,11 +863,12 @@ impl DocumentWorkspace {
                                 .id(DOCUMENT_TAB_DRAG_GHOST_ID)
                                 .debug_selector(|| DOCUMENT_TAB_DRAG_GHOST_ID.into())
                                 .px_3()
-                                .h(px(28.))
+                                .h(px(24.))
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .rounded_md()
+                                // A raised tab, lifted off the track.
+                                .rounded(cx.theme().radius)
                                 .border_1()
                                 .border_color(cx.theme().border)
                                 .bg(cx.theme().background)
@@ -988,7 +992,15 @@ impl DocumentWorkspace {
                             });
                         });
                     })
-                    .child(native_session_tabs),
+                    .child(
+                        h_flex().w_full().min_w_0().child(
+                            h_flex()
+                                .id(DOCUMENT_SESSION_TAB_TRACK_ID)
+                                .debug_selector(|| DOCUMENT_SESSION_TAB_TRACK_ID.into())
+                                .min_w_0()
+                                .child(native_session_tabs),
+                        ),
+                    ),
             )
             .children(overflow_lane)
             .child(document_actions)

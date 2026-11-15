@@ -4,6 +4,53 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Editing text
+
+- Every markup with text (Text Box, Callout, Cloud+, Dimension) is edited
+  where it sits: over a selected markup's text the pointer is an I-beam, and
+  a press puts the caret there. A new Dimension goes straight to its text.
+- Escape or a click away keeps the text, for every markup with text.
+- Double-clicking a markup opens its properties.
+- Each of those markups shows its text in a Text field in its properties,
+  kept in step with the page. It commits when you leave it or press
+  Cmd/Ctrl+Enter, as one undoable change.
+
+### Properties
+
+- The properties panels share one layout, with Lock as an icon button in
+  the header.
+- On macOS, shortcuts are shown with the Mac's symbols (⌥⇧Q).
+- Callout and Cloud+ have their own properties: line, font, opacity, and for
+  Cloud+ fill and cloud intensity.
+- Opacity sits above Fill. Fill opacity always shows, and is greyed out
+  while Fill is off.
+- X and Y, and W and H, sit side by side, below their label when the panel
+  is too narrow for both values. Sliders move below their label in a
+  narrow panel too.
+- Reset to defaults asks in a small popup beside its button instead of a
+  full-window dialog.
+- Long colour names end in an ellipsis and show in full on hover.
+
+### Toolbar and tabs
+
+- The toolbar groups by kind: pages on the left, zoom and page layout in the
+  middle (spaced evenly between the sides), and the Edit and Scale switches
+  on the right. When narrow, everything packs to the left with fixed gaps.
+- The zoom percentage keeps one width, so the toolbar no longer shifts as
+  you zoom.
+- The Page Scale panel lines up with the right edge of the Scale switch.
+- Document tabs use the standard segmented style; closing, reordering and
+  moving a tab to a new window work as before.
+
+### Canvas
+
+- Fit, page layout and single-page commands draw the new view in their first
+  frame instead of flashing the old one.
+- Dialogs fade in smoothly instead of flashing at full strength.
+- A Dimension's offset handle sits centred below its text, or above it near
+  the bottom of the page.
+- Resize handles are centred on the edge they move.
+
 ## [0.5.1]
 
 ### Measuring

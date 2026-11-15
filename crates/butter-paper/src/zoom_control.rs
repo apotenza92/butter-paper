@@ -26,6 +26,8 @@ pub const MAX_VIEWER_ZOOM: f64 = 64.;
 pub const DEFAULT_VIEWER_ZOOM: f64 = 1.;
 /// Zoom In and Zoom Out step to the next whole step of this much zoom.
 pub const ZOOM_STEP: f64 = 0.1;
+/// The zoom percentage button's fixed width, in rems: "6400%" and its caret.
+pub const ZOOM_PERCENTAGE_REMS: f32 = 5.5;
 pub const ZOOM_PRESETS: [f64; 14] = [
     0.0625, 0.1, 0.25, 0.5, 0.75, 1., 1.25, 1.5, 2., 4., 8., 16., 32., 64.,
 ];
@@ -236,7 +238,9 @@ impl Render for ZoomControl {
 
         let percentage = Button::new(ZOOM_MENU_ID)
             .ghost()
-            .min_w_16()
+            // One width for every zoom, the widest ("6400%") included, so
+            // zooming never resizes the group or shifts the toolbar.
+            .w(gpui::rems(ZOOM_PERCENTAGE_REMS))
             .debug_selector(|| ZOOM_MENU_ID.into())
             .accessibility_id(ZOOM_MENU_ID)
             .label(displayed_percentage.clone())

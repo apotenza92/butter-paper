@@ -207,7 +207,7 @@ fn active_workspace_has_zoom_and_page_modes_without_cad_activation() {
 }
 
 #[test]
-fn both_workspace_tab_paths_use_stock_outline_without_visual_overrides() {
+fn both_workspace_tab_paths_use_stock_segmented_tabs_without_visual_overrides() {
     let source = workspace_source();
     let bars: Vec<String> = Regex::new(
         r#"TabBar::new\("document-workspace-session-tabs-component"\)((?s:.)*?)\.children\("#,
@@ -221,8 +221,10 @@ fn both_workspace_tab_paths_use_stock_outline_without_visual_overrides() {
         2,
         "cover loaded and empty/loading workspace paths"
     );
+    // shadcn's default Tabs: the stock segmented track, the active tab
+    // raised on it.
     for style in bars {
-        assert!(style.contains(".outline()"));
+        assert!(style.contains(".segmented()"));
         assert!(
             style.contains(".menu(false)"),
             "keep the measured external overflow control"
@@ -231,10 +233,10 @@ fn both_workspace_tab_paths_use_stock_outline_without_visual_overrides() {
             style.contains(".max_width(px(190.))"),
             "retain document label truncation"
         );
-        assert!(!matches(r"\.(pill|segmented|bg|p_0)\(", &style));
+        assert!(!matches(r"\.(pill|outline|underline|bg|p_0)\(", &style));
         assert!(
             !source.contains(".button_states("),
-            "tabs keep the stock Outline states"
+            "tabs keep the stock segmented states"
         );
     }
 }
@@ -253,7 +255,7 @@ fn close_controls_overlay_naturally_sized_labels_without_a_reserved_suffix() {
     assert!(matches(r"\.opacity\(0\.\)", label));
     // Revealing the close button keeps the label's leading anchor and
     // truncates against the close lane instead of re-centring.
-    assert!(label.contains(".when(revealed, |this| this.pr_6())"));
+    assert!(label.contains(".when(revealed, |this| this.pr(px(SESSION_TAB_CLOSE_LANE)))"));
     assert!(!label.contains(".text_center()"));
     assert!(label.contains("IconName::Asterisk"));
     assert!(label.contains(".rounded_full()"));
@@ -289,7 +291,8 @@ fn tab_close_buttons_are_stock_ghost_icon_buttons() {
     );
     for style in closes {
         assert!(style.contains(".ghost()"));
-        assert!(style.contains(".rounded(cx.theme().radius_full())"));
+        // The stock extra-small size fits the segmented tab's raised area.
+        assert!(style.contains(".xsmall()"));
         assert!(!matches(r"\.(custom|bg|border_color)\(", &style));
     }
 }

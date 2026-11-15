@@ -178,7 +178,9 @@ changes it; history is in git.
 - Controls are stock gpui-component controls; the property toolkit in
   `property_controls.rs` composes them. Canvas, renderers, annotation layers
   and the scroll area are domain UI.
-- Document tabs: stock Outline appearance; width follows the
+- Document tabs: stock Segmented appearance, shadcn's default Tabs: a muted
+  track as wide as its tabs (it takes the strip and scrolls when they don't
+  fit), with the active document raised on it; width follows the
   title up to 190px; the close button is hidden at rest and appears on hover
   or focus over the end of the title, which keeps its position and truncates.
   Open, New and template controls stay pinned right at one size and spacing,
@@ -186,9 +188,9 @@ changes it; history is in git.
   never narrower than a three-column rail: its divider continues the rail's
   edge from three tool columns and stays put below that (Recovery and Update
   sit just before it); an overflow menu
-  appears only when tabs overflow. Close buttons use the stock small ghost icon
-  Button with the theme full radius for circular hover, pressed and focus
-  backgrounds. Filenames keep their leading position when close appears;
+  appears only when tabs overflow. Close buttons use the stock extra-small
+  ghost icon Button, centred in a square lane at the end of the tab's raised
+  area with equal clearance on three sides. Filenames keep their leading position when close appears;
   only the trailing truncation changes.
 - Recovery and save problems live in a conditional Recovery button beside
   Open/New, with a warning icon and item count. Its bounded, scrollable panel
