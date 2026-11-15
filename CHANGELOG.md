@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.2]
+
 ### Editing text
 
 - Every markup with text (Text Box, Callout, Cloud+, Dimension) is edited
