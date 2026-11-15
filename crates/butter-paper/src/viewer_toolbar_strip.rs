@@ -40,8 +40,13 @@ pub const VIEWER_SCALE_MENU_ID: &str = "viewer-scale-menu";
 const SCALE_VALUE_REMS: f32 = 5.75;
 /// A signed document's signatures button, at the trailing edge.
 pub const VIEWER_SIGNATURES_ID: &str = "viewer-signatures";
-/// The zoom, fit and page-view controls, centred in the toolbar.
+/// The zoom and page-layout controls, centred in the toolbar.
 pub const VIEWER_TOOLBAR_CONTROLS_ID: &str = "viewer-toolbar-controls";
+/// The frames of the page navigator and of the zoom controls.
+pub const VIEWER_PAGES_GROUP_ID: &str = "viewer-pages-group";
+pub const VIEWER_ZOOM_GROUP_ID: &str = "viewer-zoom-group";
+/// The fit and page-view controls, beside the zoom.
+pub const VIEWER_PAGE_LAYOUT_ID: &str = "viewer-page-layout";
 /// The least width of the slot of the Edit PDF switch and the Scale, in
 /// rems. The view controls stay centred while the space opposite is as wide;
 /// in a narrower toolbar that space gives way first, and the controls move
@@ -54,7 +59,7 @@ pub const EDIT_PDF_COMPACT_SLOT_REMS: f32 = 13.;
 pub const TOOLBAR_ICON_SLOT_REMS: f32 = 2.5;
 /// The zoom, fit and page-view controls other than the page navigator, with
 /// the frames of the zoom and page groups.
-const VIEW_CONTROLS_REMS: f32 = 26.;
+const VIEW_CONTROLS_REMS: f32 = 26.5;
 
 /// What a toolbar of a given width has room for. The whole toolbar turns
 /// compact at once: the Edit PDF switch shows an icon in place of its
@@ -465,11 +470,12 @@ impl ViewerToolbarStrip {
             (None, _) => format!("Page {page} has no scale. Switch on to set one."),
         }
         .into();
+        let shortcut = crate::shortcut_label::shortcut_label("Shift+Alt+S");
         let menu_tooltip: SharedString = match &scale.label {
             Some(label) if scale.on => {
-                format!("Page {page}'s scale: {label}. Change it… (Shift+Alt+S)")
+                format!("Page {page}'s scale: {label}. Change it… ({shortcut})")
             }
-            _ => format!("Set page {page}'s scale… (Shift+Alt+S)"),
+            _ => format!("Set page {page}'s scale… ({shortcut})"),
         }
         .into();
         let switch = Switch::new("viewer-scale-toggle")
@@ -787,10 +793,11 @@ impl Render for ViewerToolbarStrip {
         // spaces keep the view controls centred. All scroll with the
         // controls when the strip is narrow.
         let edit_pdf = self.edit_pdf.map(|on| {
+            let shortcut = crate::shortcut_label::shortcut_label("Shift+T");
             let tooltip = if on {
-                "Stop editing the PDF's text, drawings and images (Shift+T)"
+                format!("Stop editing the PDF's text, drawings and images ({shortcut})")
             } else {
-                "Edit the PDF's text, drawings and images (Shift+T)"
+                format!("Edit the PDF's text, drawings and images ({shortcut})")
             };
             let switch = Switch::new("viewer-edit-pdf-switch")
                 .checked(on)
@@ -843,33 +850,21 @@ impl Render for ViewerToolbarStrip {
                 .scale
                 .clone()
                 .map(|scale| self.render_scale_control(scale, fit, disabled, cx));
-            // Padded inside: the slot and the trailing space grow alike. The
-            // slot's least width is stated, so it always holds the controls
-            // and their padding.
             h_flex()
-                .flex_1()
+                .gap_1p5()
                 .flex_shrink_0()
-                .min_w(rems(match fit {
-                    ViewerToolbarFit::Full => EDIT_PDF_SLOT_MIN_REMS,
-                    ViewerToolbarFit::Compact => EDIT_PDF_COMPACT_SLOT_REMS,
-                }))
+                .whitespace_nowrap()
+                .items_center()
                 .child(
-                    h_flex()
-                        .px_1()
-                        .gap_1p5()
-                        .flex_shrink_0()
-                        .whitespace_nowrap()
-                        .items_center()
-                        .child(
-                            div()
-                                .id(EDIT_PDF_ID)
-                                .debug_selector(|| EDIT_PDF_ID.into())
-                                .child(control),
-                        )
-                        .children(scale),
+                    div()
+                        .id(EDIT_PDF_ID)
+                        .debug_selector(|| EDIT_PDF_ID.into())
+                        .child(control),
                 )
+                .children(scale)
         });
-        let has_edit_pdf = edit_pdf.is_some();
+        let full = fit == ViewerToolbarFit::Full;
+        let has_switches = edit_pdf.is_some() || self.signatures.is_some();
 
         // The shield alone, coloured by the verdict; its tooltip says what
         // it means, and a click lists the signatures.
@@ -959,7 +954,26 @@ impl Render for ViewerToolbarStrip {
                             .flex_shrink_0()
                             .justify_center()
                             .items_center()
-                            .children(edit_pdf)
+                            // Ordered by complexity. Full: the pages at the
+                            // left, the Edit PDF and Scale switches at the
+                            // right, and zoom with the page layout between them,
+                            // as far from each (two equal spacers grow alike).
+                            // Compact: the same order, packed from the left at
+                            // the group gap.
+                            .child(h_flex().flex_shrink_0().items_center().pl_1p5().when_some(
+                                self.page_navigator.clone(),
+                                |slot, navigator| {
+                                    slot.child(
+                                        toolbar_group(cx)
+                                            .id(VIEWER_PAGES_GROUP_ID)
+                                            .debug_selector(|| VIEWER_PAGES_GROUP_ID.into())
+                                            .px_1()
+                                            .flex_shrink_0()
+                                            .child(navigator),
+                                    )
+                                },
+                            ))
+                            .when(full, |content| content.child(h_flex().flex_1()))
                             .child(
                                 h_flex()
                                     .id(VIEWER_TOOLBAR_CONTROLS_ID)
@@ -968,58 +982,70 @@ impl Render for ViewerToolbarStrip {
                                     .justify_center()
                                     .items_center()
                                     .gap_1p5()
-                                    // Match the shell's standard edge inset; controls keep
-                                    // their intrinsic sizes and scroll rather than shrink.
-                                    .px_1()
+                                    // The edge inset matches the gap between groups;
+                                    // controls keep their intrinsic sizes and scroll
+                                    // rather than shrink.
+                                    .px_1p5()
                                     .py_1()
                                     .when_some(self.zoom_control.clone(), |toolbar, control| {
                                         toolbar.child(
-                                            toolbar_group(cx).px_1().flex_shrink_0().child(control),
-                                        )
-                                    })
-                                    .when_some(self.page_navigator.clone(), |toolbar, navigator| {
-                                        toolbar.child(
                                             toolbar_group(cx)
+                                                .id(VIEWER_ZOOM_GROUP_ID)
+                                                .debug_selector(|| VIEWER_ZOOM_GROUP_ID.into())
                                                 .px_1()
                                                 .flex_shrink_0()
-                                                .child(navigator),
+                                                .child(control),
                                         )
                                     })
-                                    .child(h_flex().flex_shrink_0().child(fit_controls))
                                     .child(
                                         h_flex()
+                                            .id(VIEWER_PAGE_LAYOUT_ID)
+                                            .debug_selector(|| VIEWER_PAGE_LAYOUT_ID.into())
                                             .flex_shrink_0()
-                                            .child(self.continuous_control.clone()),
-                                    )
-                                    .when_some(
-                                        self.single_page_control.clone(),
-                                        |toolbar, control| {
-                                            toolbar.child(h_flex().flex_shrink_0().child(control))
-                                        },
-                                    )
-                                    .when_some(
-                                        self.cad_view_control.clone(),
-                                        |toolbar, control| {
-                                            toolbar.child(h_flex().flex_shrink_0().child(control))
-                                        },
+                                            .items_center()
+                                            .gap_1p5()
+                                            .child(h_flex().flex_shrink_0().child(fit_controls))
+                                            .child(
+                                                h_flex()
+                                                    .flex_shrink_0()
+                                                    .child(self.continuous_control.clone()),
+                                            )
+                                            .when_some(
+                                                self.single_page_control.clone(),
+                                                |toolbar, control| {
+                                                    toolbar.child(
+                                                        h_flex().flex_shrink_0().child(control),
+                                                    )
+                                                },
+                                            )
+                                            .when_some(
+                                                self.cad_view_control.clone(),
+                                                |toolbar, control| {
+                                                    toolbar.child(
+                                                        h_flex().flex_shrink_0().child(control),
+                                                    )
+                                                },
+                                            ),
                                     ),
                             )
-                            .when(has_edit_pdf || signed, |content| {
-                                // Grows as the Edit PDF slot does, so the
-                                // controls are centred, but gives way first
-                                // when narrow, down to the signatures
-                                // button it holds.
-                                content.child(
-                                    h_flex()
-                                        .flex_1()
-                                        .flex_shrink_0()
-                                        .justify_end()
-                                        .when(signed, |slot| {
-                                            slot.min_w(rems(TOOLBAR_ICON_SLOT_REMS))
-                                        })
-                                        .children(signatures),
-                                )
-                            }),
+                            .when(full, |content| content.child(h_flex().flex_1()))
+                            .child(
+                                // The switches: at the right when full, packed
+                                // after the page layout when compact. The
+                                // signatures button keeps the trailing edge.
+                                h_flex()
+                                    .when(!full, |slot| slot.flex_1())
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .gap_1p5()
+                                    // The edge inset, unless the slot is empty
+                                    // and the page layout's own inset ends the
+                                    // toolbar.
+                                    .when(has_switches, |slot| slot.pr_1p5())
+                                    .children(edit_pdf)
+                                    .when(!full, |slot| slot.child(h_flex().flex_1()))
+                                    .children(signatures),
+                            ),
                     ),
             )
     }

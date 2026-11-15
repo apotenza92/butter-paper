@@ -9,7 +9,7 @@ const STATUS_MESSAGE_SHOWN: std::time::Duration = std::time::Duration::from_secs
 
 /// The modifier that draws a selection box from anywhere.
 const BOX_HINT: &str = if cfg!(target_os = "macos") {
-    "Cmd+drag: box anywhere"
+    "Command-drag: box anywhere"
 } else {
     "Ctrl+drag: box anywhere"
 };
@@ -111,10 +111,18 @@ impl DocumentWorkspace {
         } else if let Some(tool) = tool {
             let help = match tool {
                 AnnotationTool::Select if cfg!(target_os = "macos") => {
-                    "Click to select · Drag to lasso · Click empty space to start a box · Cmd+drag: box anywhere"
+                    "Click to select · Drag to lasso · Click empty space to start a box · Command-drag: box anywhere"
                 }
                 AnnotationTool::Select => {
                     "Click to select · Drag to lasso · Click empty space to start a box · Ctrl+drag: box anywhere"
+                }
+                AnnotationTool::Polyline
+                | AnnotationTool::Polygon
+                | AnnotationTool::Polylength
+                | AnnotationTool::Area
+                    if cfg!(target_os = "macos") =>
+                {
+                    "Click points · Return or double-click to finish · Esc to cancel"
                 }
                 AnnotationTool::Polyline
                 | AnnotationTool::Polygon
@@ -146,10 +154,12 @@ impl DocumentWorkspace {
             "Open a PDF or create a document to start".to_owned()
         };
         let wide = window.viewport_size().width >= window.rem_size() * 65.;
-        let navigation = if wide {
-            "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Ctrl while scrolling to zoom"
-        } else {
+        let navigation = if !wide {
             "Space + drag: pan · Pinch: zoom"
+        } else if cfg!(target_os = "macos") {
+            "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Control while scrolling to zoom"
+        } else {
+            "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Ctrl while scrolling to zoom"
         };
         let details = if self.pan_tool_active || self.pending_text_box_editor.is_some() {
             None
@@ -169,6 +179,9 @@ impl DocumentWorkspace {
                 ),
                 Some(AnnotationTool::CloudPlus) => Some(
                     "Drag and release to draw a rectangular cloud, or click one corner and then the other. Then type its text. For a cloud of any shape, turn on Cloud outline in the Polygon tool's properties.",
+                ),
+                Some(AnnotationTool::Polygon) if cfg!(target_os = "macos") => Some(
+                    "Click each corner, then press Return, double-click, or click the starting point to finish. With Cloud outline on in its properties, the polygon is drawn as a cloud.",
                 ),
                 Some(AnnotationTool::Polygon) => Some(
                     "Click each corner, then press Enter, double-click, or click the starting point to finish. With Cloud outline on in its properties, the polygon is drawn as a cloud.",
@@ -219,7 +232,11 @@ impl DocumentWorkspace {
                 )
             })
         });
-        let navigation_tooltip = "Hold Space and drag to pan. Two-finger trackpad scrolling always scrolls. Pinch or Ctrl + trackpad scroll zooms. Mouse-wheel behaviour follows the view dropdown; Ctrl + wheel does the opposite.";
+        let navigation_tooltip = if cfg!(target_os = "macos") {
+            "Hold Space and drag to pan. Two-finger trackpad scrolling always scrolls. Pinch or Control + trackpad scroll zooms. Mouse-wheel behaviour follows the view dropdown; Control + wheel does the opposite."
+        } else {
+            "Hold Space and drag to pan. Two-finger trackpad scrolling always scrolls. Pinch or Ctrl + trackpad scroll zooms. Mouse-wheel behaviour follows the view dropdown; Ctrl + wheel does the opposite."
+        };
         let accessible_help = format!("{context_tooltip}. {navigation_tooltip}");
         let message = self
             .status_message

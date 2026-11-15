@@ -85,6 +85,8 @@ pub use word::{
 };
 #[path = "document_workspace_empty.rs"]
 mod empty;
+#[path = "document_workspace_markup_text.rs"]
+mod markup_text;
 #[path = "document_workspace_settings_popovers.rs"]
 mod settings_popovers;
 #[path = "document_workspace_status_bar.rs"]
@@ -128,6 +130,10 @@ use crate::{
     accessible_button::{accessible_disclosure_button, accessible_icon_button, close_icon_button},
     adaptive_performance::{AdaptivePerformanceSnapshot, ViewerRenderDiagnostics},
     cad_view_control::CadViewOrganisation as ControlCadOrganisation,
+    caption_property_inspector::{
+        CaptionPropertyEvent, CaptionPropertyInspector, CaptionPropertyPatch,
+        CaptionPropertySnapshot, CaptionPropertyValues,
+    },
     continuous_view_control::ContinuousViewControl,
     dimension_property_inspector::{
         DimensionPropertyEvent, DimensionPropertyInspector, DimensionPropertyPatch,
@@ -778,6 +784,9 @@ pub const DOCUMENT_RECOVERY_PREPARATION_CONFIRM_ID: &str =
     "document-workspace-recovery-preparation-confirm";
 pub const DOCUMENT_RECOVERY_REBASE_RETRY_ID: &str = "document-workspace-recovery-rebase-retry";
 pub const DOCUMENT_SESSION_TABS_ID: &str = "document-workspace-session-tabs";
+/// The segmented tabs' track: as wide as its tabs, and no wider than the
+/// strip, where it scrolls.
+pub const DOCUMENT_SESSION_TAB_TRACK_ID: &str = "document-session-tab-track";
 pub const DOCUMENT_SESSION_TAB_MIN_WIDTH: f32 = 96.;
 pub const DOCUMENT_TAB_DRAG_GHOST_ID: &str = "document-workspace-tab-drag-ghost";
 pub const DOCUMENT_DIRTY_CLOSE_ID: &str = "document-workspace-dirty-close";
@@ -2779,6 +2788,8 @@ enum ActiveInspectorKind {
     Ink,
     EngineeringVisual,
     TextBox,
+    /// A Callout or Cloud+.
+    Caption,
     Measurement,
     Dimension,
     EditPdfContent,
@@ -2848,7 +2859,6 @@ pub struct DocumentWorkspace {
     /// Layout paired with that painted offset; pending zoom plans are not yet visible.
     viewport_painted_layouts: HashMap<DocumentId, Vec<PageLayout>>,
     active_annotation_pointer: Option<ActiveAnnotationPointer>,
-    properties_click_candidate: Option<PropertiesClickCandidate>,
     pending_close_document_id: Option<DocumentId>,
     pending_publication_warning_generation: Option<u64>,
     close_after_save_document_id: Option<DocumentId>,
@@ -2902,6 +2912,11 @@ pub struct DocumentWorkspace {
     hovered_annotation: Option<(DocumentId, u32, MarkupId)>,
     hot_annotation_handle: Option<(DocumentId, u32, MarkupId, usize)>,
     select_hover_hit: Option<(DocumentId, u32, HitTarget)>,
+    /// The selected markup whose text the pointer is over: the I-beam, and a
+    /// press there edits the text.
+    markup_text_hover: Option<(DocumentId, u32, MarkupId)>,
+    /// A press in a markup's text, held to select it.
+    markup_text_drag: Option<markup_text::MarkupTextDrag>,
     pending_image_hover: Option<(DocumentId, u32, PdfPoint)>,
     /// Where the press that began a two-point placement the workspace drives
     /// (Length, Dimension, Text Box) was. Releasing it past the drag threshold finishes
@@ -3126,7 +3141,12 @@ pub struct DocumentWorkspace {
     vertex_path_property_inspector_open: bool,
     text_box_property_inspector: Option<Entity<TextBoxPropertyInspector>>,
     text_box_property_subscription: Option<Subscription>,
+    /// The Text Box, Callout, Cloud+ and Dimension properties' Text fields.
+    property_text_subscriptions: Vec<Subscription>,
     text_box_property_inspector_open: bool,
+    caption_property_inspector: Option<Entity<CaptionPropertyInspector>>,
+    caption_property_subscription: Option<Subscription>,
+    caption_property_inspector_open: bool,
     measurement_property_inspector: Option<Entity<MeasurementPropertyInspector>>,
     measurement_property_subscription: Option<Subscription>,
     measurement_property_inspector_open: bool,
@@ -3239,14 +3259,6 @@ struct ActiveAnnotationPointer {
     page_index: u32,
     pointer_id: u64,
     placement_pending: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PropertiesClickCandidate {
-    document_id: DocumentId,
-    page_index: u32,
-    markup_id: MarkupId,
-    was_selected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4188,6 +4200,9 @@ struct PendingTextBoxPresentation {
     /// The existing Text Box edited in place; the layer hides its committed
     /// text while the editor draws the live value over it.
     existing_id: Option<MarkupId>,
+    /// A Dimension's caption breaks its line; its editor covers the line
+    /// with the paper so the text being typed reads as the caption does.
+    paper_backed: bool,
 }
 
 #[derive(Clone)]
@@ -4223,6 +4238,7 @@ fn validate_existing_text_editor_authority(
 
 // At most one pending target exists, so the large style variant is not boxed.
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
 enum PendingTextEditorTarget {
     NewTextBox {
         id: MarkupId,
@@ -4666,7 +4682,6 @@ impl DocumentWorkspace {
             viewport_painted_scroll: HashMap::new(),
             viewport_painted_layouts: HashMap::new(),
             active_annotation_pointer: None,
-            properties_click_candidate: None,
             pending_close_document_id: None,
             pending_publication_warning_generation: None,
             close_after_save_document_id: None,
@@ -4698,6 +4713,8 @@ impl DocumentWorkspace {
             hovered_annotation: None,
             hot_annotation_handle: None,
             select_hover_hit: None,
+            markup_text_hover: None,
+            markup_text_drag: None,
             pending_image_hover: None,
             placement_press: None,
             text_box_placement: None,
@@ -4833,7 +4850,11 @@ impl DocumentWorkspace {
             vertex_path_property_inspector_open: false,
             text_box_property_inspector: None,
             text_box_property_subscription: None,
+            property_text_subscriptions: Vec::new(),
             text_box_property_inspector_open: false,
+            caption_property_inspector: None,
+            caption_property_subscription: None,
+            caption_property_inspector_open: false,
             measurement_property_inspector: None,
             measurement_property_subscription: None,
             measurement_property_inspector_open: false,
@@ -7962,6 +7983,10 @@ impl DocumentWorkspace {
         Ok(true)
     }
 
+    pub fn dimension_property_inspector(&self) -> Option<Entity<DimensionPropertyInspector>> {
+        self.dimension_property_inspector.clone()
+    }
+
     pub fn text_box_property_inspector(&self) -> Option<Entity<TextBoxPropertyInspector>> {
         self.text_box_property_inspector.clone()
     }
@@ -7991,6 +8016,12 @@ impl DocumentWorkspace {
             },
         );
         self.text_box_property_subscription = Some(subscription);
+        self.property_text_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &crate::property_controls::PropertyTextEditEvent, cx| {
+                workspace.apply_property_text_edit(event, cx);
+            },
+        ));
         self.text_box_property_inspector = Some(inspector.clone());
         inspector
     }
@@ -8005,6 +8036,160 @@ impl DocumentWorkspace {
         self.ensure_text_box_property_inspector(window, cx)
             .update(cx, |inspector, cx| inspector.set_open(open, cx));
         cx.notify();
+    }
+
+    pub fn caption_property_inspector(&self) -> Option<Entity<CaptionPropertyInspector>> {
+        self.caption_property_inspector.clone()
+    }
+
+    fn ensure_caption_property_inspector(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<CaptionPropertyInspector> {
+        if let Some(inspector) = &self.caption_property_inspector {
+            return inspector.clone();
+        }
+        let inspector = cx.new(|cx| {
+            let mut inspector = CaptionPropertyInspector::new(window, cx);
+            inspector.set_embedded();
+            inspector
+        });
+        self.caption_property_subscription = Some(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &CaptionPropertyEvent, cx| {
+                if let Err(error) = workspace.apply_caption_property_event(event, cx) {
+                    workspace
+                        .annotation_statuses
+                        .insert(event.document_id, error);
+                    cx.notify();
+                }
+            },
+        ));
+        self.property_text_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &crate::property_controls::PropertyTextEditEvent, cx| {
+                workspace.apply_property_text_edit(event, cx);
+            },
+        ));
+        self.caption_property_inspector = Some(inspector.clone());
+        inspector
+    }
+
+    pub fn set_caption_property_inspector_open(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.caption_property_inspector_open = open;
+        self.ensure_caption_property_inspector(window, cx)
+            .update(cx, |inspector, cx| inspector.set_open(open, cx));
+        cx.notify();
+    }
+
+    /// Applies a Callout's or Cloud+'s properties change to the markup they
+    /// were shown for, if the document has not changed since, as one
+    /// undoable change.
+    pub fn apply_caption_property_event(
+        &mut self,
+        event: &CaptionPropertyEvent,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        if self.active_document_id != Some(event.document_id)
+            || self.pending_close_document_id == Some(event.document_id)
+            || self.close_after_save_document_id == Some(event.document_id)
+            || self.pending_save_prompt_document_id() == Some(event.document_id)
+            || self
+                .pending_text_box_editor
+                .as_ref()
+                .is_some_and(|editor| editor.document_id == event.document_id)
+        {
+            return Ok(false);
+        }
+        let Some(session) = self.session(event.document_id, cx).cloned() else {
+            return Ok(false);
+        };
+        let (page_index, locked) = {
+            let state = session.read(cx);
+            if !matches!(state.status, NativeDocumentStatus::Ready)
+                || state.save_status == NativeDocumentSaveStatus::Saving
+                || state.pending_rotation_generation.is_some()
+            {
+                return Ok(false);
+            }
+            let Some(snapshot) = state.annotations.snapshot(event.document_id.value()) else {
+                return Ok(false);
+            };
+            if snapshot.revision != event.expected_revision {
+                return Ok(false);
+            }
+            let current = match state
+                .annotations
+                .primary_selected_annotation(event.document_id.value())
+            {
+                Some(Annotation::Callout(annotation)) if annotation.id == event.annotation_id => {
+                    (annotation.page_index, annotation.locked, false)
+                }
+                Some(Annotation::CloudPlus(annotation)) if annotation.id == event.annotation_id => {
+                    (annotation.page_index, annotation.locked, true)
+                }
+                _ => return Ok(false),
+            };
+            match &event.patch {
+                CaptionPropertyPatch::Locked(value) if *value == current.1 => return Ok(false),
+                CaptionPropertyPatch::Values(values) if values.is_cloud_plus() != current.2 => {
+                    return Ok(false);
+                }
+                _ => {}
+            }
+            (current.0, current.1)
+        };
+        let annotation_id = event.annotation_id.clone();
+        match &event.patch {
+            CaptionPropertyPatch::Locked(value) => {
+                let value = *value;
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.set_primary_selected_locked(id, &annotation_id, value)
+                })?;
+            }
+            CaptionPropertyPatch::Values(_) if locked => return Ok(false),
+            CaptionPropertyPatch::Values(values) => match values.as_ref() {
+                CaptionPropertyValues::Callout(appearance) => {
+                    let appearance = appearance.clone();
+                    self.update_annotation_history(
+                        event.document_id,
+                        cx,
+                        move |annotations, id| {
+                            annotations.set_callout_appearance(id, &annotation_id, appearance)
+                        },
+                    )?;
+                }
+                CaptionPropertyValues::CloudPlus {
+                    appearance,
+                    intensity,
+                } => {
+                    let appearance = appearance.clone();
+                    let intensity = *intensity;
+                    let caption_supplement =
+                        self.annotation_caption_selection_paths(event.document_id, page_index, cx);
+                    self.update_annotation_history(
+                        event.document_id,
+                        cx,
+                        move |annotations, id| {
+                            annotations.set_cloud_plus_style_with_routing_supplement(
+                                id,
+                                &annotation_id,
+                                appearance,
+                                intensity,
+                                &caption_supplement,
+                            )
+                        },
+                    )?;
+                }
+            },
+        }
+        Ok(true)
     }
 
     pub fn apply_text_box_property_event(
@@ -8627,27 +8812,6 @@ impl DocumentWorkspace {
         Some(*rect)
     }
 
-    fn pending_new_text_box_editor_bounds(&self) -> Option<Bounds<Pixels>> {
-        let editor = self.pending_text_box_editor.as_ref()?;
-        let PendingTextEditorTarget::NewTextBox {
-            rect, interaction, ..
-        } = &editor.target
-        else {
-            return None;
-        };
-        let local = interaction.transform.rect_to_local_pixels(*rect);
-        Some(Bounds::new(
-            point(
-                interaction.bounds.origin.x + px(local.x as f32),
-                interaction.bounds.origin.y + px(local.y as f32),
-            ),
-            size(
-                px((local.width as f32).max(24.)),
-                px((local.height as f32).max(18.)),
-            ),
-        ))
-    }
-
     pub fn text_box_return_focus(&self) -> FocusHandle {
         self.text_box_return_focus.clone()
     }
@@ -8986,8 +9150,8 @@ impl DocumentWorkspace {
         Ok(())
     }
 
-    /// The existing Text Box the open editor changes in place on the canvas.
-    /// Rotated boxes keep the properties editor: the canvas editor is upright.
+    /// The existing Text Box the open editor changes in place on the canvas;
+    /// a turned box is edited upright over where it sits.
     fn inline_existing_text_box<'a>(
         &self,
         document_id: DocumentId,
@@ -8998,7 +9162,7 @@ impl DocumentWorkspace {
             .read(cx)
             .annotations
             .exact_selected_text_box(document_id.value())
-            .filter(|text_box| &text_box.id == id && text_box.rotation_degrees() == 0.)
+            .filter(|text_box| &text_box.id == id)
     }
 
     fn begin_pending_composite_text_editor(
@@ -9108,43 +9272,6 @@ impl DocumentWorkspace {
         self.pending_text_box_subscriptions.push(input_subscription);
         input.update(cx, |input, cx| input.select_all(window, cx));
         input_focus.focus(window, cx);
-        cx.notify();
-        true
-    }
-
-    fn cancel_pending_composite_text_editor(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.pending_text_box_editor.as_ref().is_some_and(|editor| {
-            matches!(
-                editor.target,
-                PendingTextEditorTarget::Callout { .. }
-                    | PendingTextEditorTarget::ExistingCallout { .. }
-                    | PendingTextEditorTarget::NewCloudPlus { .. }
-                    | PendingTextEditorTarget::ExistingCloudPlus { .. }
-                    | PendingTextEditorTarget::NewDimension { .. }
-                    | PendingTextEditorTarget::ExistingDimension { .. }
-            )
-        }) {
-            return false;
-        }
-        let editor = self
-            .pending_text_box_editor
-            .take()
-            .expect("the checked composite editor remains retained");
-        self.pending_text_box_subscriptions.clear();
-        self.text_box_commit_error = None;
-        if let Some(session) = self.session(editor.document_id, cx).cloned() {
-            session.update(cx, |session, cx| {
-                session
-                    .annotations
-                    .clear_selection(editor.document_id.value());
-                cx.notify();
-            });
-        }
-        self.workspace_focus.focus(window, cx);
         cx.notify();
         true
     }
@@ -11618,8 +11745,29 @@ impl DocumentWorkspace {
                 .configure(session.view_state.mode(), session.view_state.zoom_percent());
             cx.notify();
         });
+        self.replan_viewport_now(document_id, cx);
         cx.notify();
         true
+    }
+
+    /// Lays the view out again at once, so the first frame a view command
+    /// paints already has its final zoom and position. Left to the next
+    /// frame, the frames between show no layout, only the page's opening
+    /// image, which flashes. Before the viewport is first measured it waits
+    /// for that, as a newly opened document does.
+    fn replan_viewport_now(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let Some(((width, height), device_scale)) =
+            self.session(document_id, cx).and_then(|session| {
+                let session = session.read(cx);
+                matches!(session.status, NativeDocumentStatus::Ready)
+                    .then(|| session.view_state.viewport_size())
+                    .flatten()
+                    .map(|size| (size, session.viewer.device_scale()))
+            })
+        else {
+            return;
+        };
+        let _ = self.refresh_viewport_async(document_id, width, height, device_scale, cx);
     }
 
     fn active_ready_document_id(&self, cx: &App) -> Option<DocumentId> {
@@ -11961,6 +12109,7 @@ impl DocumentWorkspace {
                 .configure(mode, session.view_state.zoom_percent());
             cx.notify();
         });
+        self.replan_viewport_now(document_id, cx);
         cx.notify();
         true
     }
@@ -11997,6 +12146,7 @@ impl DocumentWorkspace {
             session.viewer.invalidate_layout();
             cx.notify();
         });
+        self.replan_viewport_now(document_id, cx);
         cx.notify();
         true
     }
@@ -16346,6 +16496,12 @@ impl DocumentWorkspace {
             },
         );
         self.dimension_property_subscription = Some(subscription);
+        self.property_text_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &crate::property_controls::PropertyTextEditEvent, cx| {
+                workspace.apply_property_text_edit(event, cx);
+            },
+        ));
         self.dimension_property_inspector = Some(inspector.clone());
         inspector
     }
@@ -18788,17 +18944,27 @@ impl DocumentWorkspace {
         }
         if self.pending_text_box_editor.is_some() {
             if self
-                .pending_new_text_box_editor_bounds()
+                .pending_text_editor_window_bounds(cx)
                 .is_some_and(|bounds| bounds.contains(&position))
             {
                 return false;
             }
-            if matches!(
-                self.pending_text_box_editor
-                    .as_ref()
-                    .map(|editor| &editor.target),
-                Some(PendingTextEditorTarget::NewTextBox { .. })
-            ) {
+            // Clicking away keeps the text: anywhere for a Text Box typed on
+            // the page, and on the document for text edited in the side
+            // panel (a Dimension, Callout or Cloud+ caption), where the page
+            // press would otherwise leave the panel's input focused.
+            let on_document = self
+                .active_document_id
+                .and_then(|document_id| self.viewport_bounds.get(&document_id))
+                .is_some_and(|bounds| bounds.contains(&position));
+            if on_document
+                || matches!(
+                    self.pending_text_box_editor
+                        .as_ref()
+                        .map(|editor| &editor.target),
+                    Some(PendingTextEditorTarget::NewTextBox { .. })
+                )
+            {
                 if let Err(error) = self.commit_pending_text_box(cx) {
                     self.text_box_commit_error = Some(error);
                 } else {
@@ -18926,6 +19092,17 @@ impl DocumentWorkspace {
             }
         }
         let box_armed = box_armed || force_box;
+        // A press in the selected markup's text, where the pointer shows the
+        // I-beam, edits that text with the caret where it landed.
+        if tool == AnnotationTool::Select
+            && !box_armed
+            && click_count == 1
+            && !modifiers.shift
+            && !modifiers.alt
+            && self.begin_markup_text_press(interaction, point, window, cx)
+        {
+            return true;
+        }
         // In Edit PDF mode, page content takes a press no markup or form
         // field does.
         if !box_armed
@@ -19094,7 +19271,6 @@ impl DocumentWorkspace {
                 |annotations, document_id| annotations.reset_rotation(document_id, &id),
             );
             self.active_annotation_pointer = None;
-            self.properties_click_candidate = None;
             match reset {
                 Ok(_) => {
                     self.annotation_statuses.remove(&interaction.document_id);
@@ -19119,35 +19295,22 @@ impl DocumentWorkspace {
                     return true;
                 }
             };
+            // Double-clicking a markup opens its properties; its text is
+            // edited by a click in it once it is selected.
+            let caption_paths =
+                self.caption_press_paths(interaction.document_id, interaction.page_index, cx);
             let markup_hit = session
                 .read(cx)
                 .annotations
-                .hover_markup_id(
+                .hover_markup_id_with_selection_paths(
                     interaction.document_id.value(),
                     interaction.page_index,
                     point,
                     tolerance,
+                    &caption_paths,
                 )
                 .ok()
                 .flatten();
-            let click_candidate = self.properties_click_candidate.take();
-            let already_selected = markup_hit.as_ref().is_some_and(|id| {
-                click_candidate
-                    .as_ref()
-                    .filter(|candidate| {
-                        candidate.document_id == interaction.document_id
-                            && candidate.page_index == interaction.page_index
-                            && candidate.markup_id == *id
-                    })
-                    .map(|candidate| candidate.was_selected)
-                    .unwrap_or_else(|| {
-                        session
-                            .read(cx)
-                            .annotations
-                            .selected_ids(interaction.document_id.value())
-                            == std::slice::from_ref(id)
-                    })
-            });
             if let Some(id) = markup_hit.as_ref() {
                 session.update(cx, |session, cx| {
                     session
@@ -19156,6 +19319,7 @@ impl DocumentWorkspace {
                     cx.notify();
                 });
             }
+            // A rotation knob's double-click turns its markup upright instead.
             let outcome = self.update_annotation_history_with_result(
                 interaction.document_id,
                 cx,
@@ -19177,71 +19341,16 @@ impl DocumentWorkspace {
                     cx.notify();
                     return true;
                 }
-                Ok(PointerPhaseOutcome::SelectionChanged(Some(id))) => {
+                Ok(PointerPhaseOutcome::SelectionChanged(_) | PointerPhaseOutcome::Ignored)
+                    if markup_hit.is_some() =>
+                {
                     self.active_annotation_pointer = None;
                     self.annotation_statuses.remove(&interaction.document_id);
-                    let target = if session
-                        .read(cx)
-                        .annotations
-                        .exact_selected_dimension(interaction.document_id.value())
-                        .is_some()
-                    {
-                        PendingTextEditorTarget::ExistingDimension { id }
-                    } else if session
-                        .read(cx)
-                        .annotations
-                        .exact_selected_cloud_plus(interaction.document_id.value())
-                        .is_some()
-                    {
-                        PendingTextEditorTarget::ExistingCloudPlus { id }
-                    } else if session
-                        .read(cx)
-                        .annotations
-                        .exact_selected_callout(interaction.document_id.value())
-                        .is_some()
-                    {
-                        PendingTextEditorTarget::ExistingCallout { id }
-                    } else {
-                        PendingTextEditorTarget::ExistingTextBox { id }
-                    };
-                    // Text Boxes, Callouts and Cloud+ edit their text where it
-                    // sits; Dimensions and rotated Text Boxes edit in the sidebar.
-                    let edits_inline = match &target {
-                        PendingTextEditorTarget::ExistingTextBox { id } => self
-                            .inline_existing_text_box(interaction.document_id, id, cx)
-                            .is_some(),
-                        PendingTextEditorTarget::ExistingCloudPlus { .. }
-                        | PendingTextEditorTarget::ExistingCallout { .. } => true,
-                        _ => false,
-                    };
-                    if !edits_inline {
-                        self.right_rail_actions_open = properties_double_click_sidebar_open(
-                            already_selected,
-                            self.right_rail_actions_open,
-                        );
-                    }
-                    let _ = self.begin_pending_composite_text_editor(
-                        interaction.document_id,
-                        interaction.page_index,
-                        target,
-                        window,
-                        cx,
-                    );
+                    self.right_rail_actions_open = true;
                     cx.notify();
                     return true;
                 }
-                Ok(PointerPhaseOutcome::Ignored) => {
-                    if markup_hit.is_some() {
-                        self.active_annotation_pointer = None;
-                        self.annotation_statuses.remove(&interaction.document_id);
-                        self.right_rail_actions_open = properties_double_click_sidebar_open(
-                            already_selected,
-                            self.right_rail_actions_open,
-                        );
-                        cx.notify();
-                        return true;
-                    }
-                }
+                Ok(PointerPhaseOutcome::Ignored) => {}
                 Ok(_) => {
                     return true;
                 }
@@ -19420,39 +19529,6 @@ impl DocumentWorkspace {
         ) {
             return false;
         }
-        if tool == AnnotationTool::Select && click_count == 1 {
-            let selection_supplement = self.annotation_caption_selection_paths(
-                interaction.document_id,
-                interaction.page_index,
-                cx,
-            );
-            self.properties_click_candidate = interaction
-                .transform
-                .tolerance_points(4.)
-                .ok()
-                .and_then(|tolerance| {
-                    let session = session.read(cx);
-                    let annotations = &session.annotations;
-                    let markup_id = annotations
-                        .hover_markup_id_with_selection_paths(
-                            interaction.document_id.value(),
-                            interaction.page_index,
-                            point,
-                            tolerance,
-                            &selection_supplement,
-                        )
-                        .ok()
-                        .flatten()?;
-                    let was_selected = annotations.selected_ids(interaction.document_id.value())
-                        == std::slice::from_ref(&markup_id);
-                    Some(PropertiesClickCandidate {
-                        document_id: interaction.document_id,
-                        page_index: interaction.page_index,
-                        markup_id,
-                        was_selected,
-                    })
-                });
-        }
         let retained_pointer = self.active_annotation_pointer.filter(|active| {
             active.placement_pending
                 && active.document_id == interaction.document_id
@@ -19559,11 +19635,8 @@ impl DocumentWorkspace {
         }
         let image_select_after_placement = tool == AnnotationTool::Image
             && session.read(cx).annotations.image_select_after_placement();
-        let selection_supplement = self.annotation_caption_selection_paths(
-            interaction.document_id,
-            interaction.page_index,
-            cx,
-        );
+        let selection_supplement =
+            self.caption_press_paths(interaction.document_id, interaction.page_index, cx);
         let hover_handle_select = (tool == AnnotationTool::Select)
             .then(|| {
                 let (_, _, hot_id, hot_index) =
@@ -19943,7 +20016,9 @@ impl DocumentWorkspace {
             .annotations
             .active_selection_marquee(document_id.value())
             .is_some();
-        if marquee_active {
+        // While text is being typed a press anywhere else only finishes it,
+        // so nothing under the pointer offers anything else.
+        if marquee_active || self.pending_text_box_editor.is_some() {
             return self.clear_hover_candidate(cx);
         }
         let tolerance = match interaction.transform.tolerance_points(4.) {
@@ -19988,9 +20063,13 @@ impl DocumentWorkspace {
             .ok()
             .flatten()
             .map(|(id, index)| (document_id, interaction.page_index, id, index));
-        let hot_handle = selected_rectangle_hot_handle.or(transform_hot_handle);
+        let markup_text_changed = self.update_markup_text_hover(interaction, Some(point), cx);
+        // Over the selected markup's text no handle is hot: a press edits.
+        let hot_handle = selected_rectangle_hot_handle
+            .or(transform_hot_handle)
+            .filter(|_| self.markup_text_hover.is_none());
         let selection_supplement =
-            self.annotation_caption_selection_paths(document_id, interaction.page_index, cx);
+            self.caption_press_paths(document_id, interaction.page_index, cx);
         let candidate = session
             .read(cx)
             .annotations
@@ -20026,7 +20105,8 @@ impl DocumentWorkspace {
                 && session.read(cx).annotations.tool() == AnnotationTool::Select
         });
         let text_hover_changed = self.update_text_selection_hover(interaction, text_point, cx);
-        let form_hover_changed = form_hover_changed || link_hover_changed || text_hover_changed;
+        let form_hover_changed =
+            form_hover_changed || link_hover_changed || text_hover_changed || markup_text_changed;
         if self.hovered_annotation != candidate
             || self.hot_annotation_handle != hot_handle
             || self.select_hover_hit != select_hit
@@ -20044,6 +20124,7 @@ impl DocumentWorkspace {
     }
 
     fn clear_hover_candidate(&mut self, cx: &mut Context<Self>) -> bool {
+        let markup_text = self.markup_text_hover.take();
         let hovered = self.hovered_annotation.take();
         let hot_handle = self.hot_annotation_handle.take();
         let select_hit = self.select_hover_hit.take();
@@ -20055,6 +20136,7 @@ impl DocumentWorkspace {
         let content_hover = self.content_hover.take();
         let handle_hover = self.content_handle_hover.take();
         if hovered.is_some()
+            || markup_text.is_some()
             || content_hover.is_some()
             || handle_hover.is_some()
             || text_hover.is_some()
@@ -20093,7 +20175,8 @@ impl DocumentWorkspace {
             self.pan_drag = None;
             return false;
         }
-        if self.update_column_drag(position, cx)
+        if self.update_markup_text_drag(position, cx)
+            || self.update_column_drag(position, cx)
             || self.update_content_drag(position, modifiers, cx)
             || self.update_page_text_drag(position, cx)
             || self.update_text_selection_drag(position, cx)
@@ -20163,7 +20246,8 @@ impl DocumentWorkspace {
         if self.finish_link_press(position, cx) {
             return true;
         }
-        if self.finish_column_drag(cx)
+        if self.finish_markup_text_drag()
+            || self.finish_column_drag(cx)
             || self.finish_content_drag(cx)
             || self.finish_page_text_drag(cx)
             || self.finish_text_selection_drag(cx)
@@ -20999,6 +21083,31 @@ fn paint_shape_feedback(
     }
 }
 
+/// A box markup's line as a quad: its bounds and border width.
+///
+/// A quad's border is drawn inside its bounds, but a box markup's line is
+/// centred on its box, as the PDF draws it (`/Rect` is the box inflated by
+/// half the line) and as its handles sit. The line is an odd number of device
+/// pixels centred on the pixel each edge falls in, as handles are, so it runs
+/// through the middle of every handle.
+fn stroke_centred_outline(
+    rect: Bounds<Pixels>,
+    width: Pixels,
+    scale: f32,
+) -> (Bounds<Pixels>, Pixels) {
+    let width = interaction_chrome::odd_device_width(width, scale);
+    let half = width / 2.;
+    let snap = |value| interaction_chrome::snap_to_device_pixel_centre(value, scale);
+    let left = snap(rect.left()) - half;
+    let top = snap(rect.top()) - half;
+    let right = snap(rect.right()).max(snap(rect.left())) + half;
+    let bottom = snap(rect.bottom()).max(snap(rect.top())) + half;
+    (
+        Bounds::from_corners(point(left, top), point(right, bottom)),
+        width,
+    )
+}
+
 fn paint_ellipse_annotations(
     annotations: impl IntoIterator<Item = SceneRectangle>,
     page_bounds: Bounds<Pixels>,
@@ -21323,7 +21432,12 @@ fn paint_cloud_plus_annotation(
                 let index = cloud_count + resize_index;
                 if annotation.feedback.handle_visible(index) {
                     interaction_chrome::paint_feedback_handle(
-                        project(handle.point(annotation.text_box)),
+                        project(handle.inset_point(
+                            annotation.text_box,
+                            crate::annotation_model::caption_box_border_inset_pt(
+                                annotation.appearance.leader().stroke_width_pt(),
+                            ),
+                        )),
                         state,
                         hot_handle.is_some_and(|(id, hot)| id == &annotation.id && *hot == index),
                         window,
@@ -21427,22 +21541,6 @@ fn paint_dimension_annotation(
     if !length.is_finite() || length <= f64::EPSILON {
         return;
     }
-    let normal_x = -delta_y / length;
-    let normal_y = delta_x / length;
-    let offset_x = normal_x * annotation.dimension_line_offset;
-    let offset_y = normal_y * annotation.dimension_line_offset;
-    let dimension_start = PdfPoint {
-        x: annotation.start.x + offset_x,
-        y: annotation.start.y + offset_y,
-    };
-    let dimension_end = PdfPoint {
-        x: annotation.end.x + offset_x,
-        y: annotation.end.y + offset_y,
-    };
-    let caption_center = PdfPoint {
-        x: (dimension_start.x + dimension_end.x) * 0.5,
-        y: (dimension_start.y + dimension_end.y) * 0.5,
-    };
     let project = |sample: PdfPoint| {
         let local = transform.point_to_local_pixels(sample);
         point(
@@ -21518,7 +21616,10 @@ fn paint_dimension_annotation(
         for (index, center) in [
             project(annotation.start),
             project(annotation.end),
-            project(caption_center),
+            project(
+                annotation
+                    .offset_handle_point_in_view(transform.pixels_per_point(), Some(*transform)),
+            ),
         ]
         .into_iter()
         .enumerate()
@@ -21682,9 +21783,10 @@ fn paint_redact_annotations(
             * f32::from(page_bounds.size.width)
             / page_size.0)
             .max(1.));
+        let (line_bounds, line_width) =
+            stroke_centred_outline(annotation_bounds, stroke_width, window.scale_factor());
         window.paint_quad(
-            outline(annotation_bounds, stroke_color, BorderStyle::Solid)
-                .border_widths(stroke_width),
+            outline(line_bounds, stroke_color, BorderStyle::Solid).border_widths(line_width),
         );
         paint_shape_feedback(
             &SceneRectangle {
@@ -21863,6 +21965,72 @@ fn pointer_debug_marker(
         .into_any_element()
 }
 
+/// The selected Dimension's offset handle: just below (or above) its
+/// caption's text by a fixed screen distance, so the marker is placed in
+/// pixels from the zoom-independent anchor rather than from a page fraction
+/// alone. The layer does not know the zoom, so whether the handle flips
+/// above at the page's edge is judged here at 1px per point.
+fn dimension_offset_debug_marker(
+    annotation: &SceneDimension,
+    transform: PageTransform,
+    page_size: (f32, f32),
+) -> gpui::AnyElement {
+    let (centre, beside) = crate::annotation_model::dimension_offset_handle_anchor(
+        annotation.start,
+        annotation.end,
+        annotation.dimension_line_offset,
+        &annotation.content,
+        annotation.appearance.text(),
+        annotation.caption_offset,
+        transform.rotation(),
+    );
+    let (anchor, shift) = beside
+        .map(|beside| {
+            let judged = annotation.offset_handle_point_in_view(1., Some(transform));
+            let sign = if (judged.x - centre.x) * beside.down.0
+                + (judged.y - centre.y) * beside.down.1
+                >= 0.
+            {
+                1.
+            } else {
+                -1.
+            };
+            let distance = if sign > 0. {
+                beside.below_pt
+            } else {
+                beside.above_pt
+            };
+            let anchor = PdfPoint {
+                x: centre.x + beside.down.0 * distance * sign,
+                y: centre.y + beside.down.1 * distance * sign,
+            };
+            let local = transform.point_to_local_pixels(anchor);
+            let ahead = transform.point_to_local_pixels(PdfPoint {
+                x: anchor.x + beside.down.0 * sign,
+                y: anchor.y + beside.down.1 * sign,
+            });
+            let (dx, dy) = (ahead.x - local.x, ahead.y - local.y);
+            let length = dx.hypot(dy).max(f64::EPSILON);
+            let clearance = crate::annotation_model::DIMENSION_OFFSET_HANDLE_CLEARANCE_CSS_PX;
+            (anchor, (dx / length * clearance, dy / length * clearance))
+        })
+        .unwrap_or((centre, (0., 0.)));
+    let local = transform.point_to_local_pixels(anchor);
+    let (shift_x, shift_y) = shift;
+    let selector: SharedString = DIMENSION_OFFSET_HANDLE_ID.into();
+    let id = selector.clone();
+    gpui::div()
+        .id(id)
+        .debug_selector(move || selector.to_string())
+        .absolute()
+        .left(relative((local.x as f32 / page_size.0).clamp(0., 1.)))
+        .top(relative((local.y as f32 / page_size.1).clamp(0., 1.)))
+        .ml(px(shift_x as f32 - 4.))
+        .mt(px(shift_y as f32 - 4.))
+        .size(px(8.))
+        .into_any_element()
+}
+
 fn pointer_body_debug_marker(
     id: &'static str,
     points: impl IntoIterator<Item = PdfPoint>,
@@ -21941,14 +22109,8 @@ fn selected_engineering_debug_markers(
                 transform,
                 page_size,
             ));
-            markers.push(pointer_debug_marker(
-                DIMENSION_OFFSET_HANDLE_ID,
-                PdfPoint {
-                    x: (offset_start.x + offset_end.x) * 0.5,
-                    y: (offset_start.y + offset_end.y) * 0.5,
-                },
-                transform,
-                page_size,
+            markers.push(dimension_offset_debug_marker(
+                annotation, transform, page_size,
             ));
             markers.push(pointer_debug_marker(
                 DIMENSION_BODY_ID,
@@ -21965,7 +22127,12 @@ fn selected_engineering_debug_markers(
         markers.extend(RectangleResizeHandle::ALL.into_iter().map(|handle| {
             pointer_debug_marker(
                 callout_resize_handle_id(handle),
-                handle.point(annotation.text_box),
+                handle.inset_point(
+                    annotation.text_box,
+                    crate::annotation_model::caption_box_border_inset_pt(
+                        annotation.appearance.line().stroke_width_pt(),
+                    ),
+                ),
                 transform,
                 page_size,
             )
@@ -22948,6 +23115,17 @@ fn annotation_layer(
                                 pdf_page_size,
                                 painted_viewer,
                             );
+                            // Dimension offset handles are hit where they
+                            // are drawn, at this zoom and turn.
+                            if let Some(session) = workspace.session(document_id, cx).cloned() {
+                                session.update(cx, |session, _| {
+                                    session.annotations.observe_page_view(
+                                        document_id.value(),
+                                        page_index,
+                                        transform,
+                                    );
+                                });
+                            }
                             if workspace.record_form_page_transform(
                                 document_id,
                                 page_index,
@@ -23107,9 +23285,14 @@ fn annotation_layer(
                                 .max(1.));
                             match annotation.appearance.stroke_style() {
                                 StrokeStyle::Solid | StrokeStyle::Dashed => {
+                                    let (line_bounds, line_width) = stroke_centred_outline(
+                                        annotation_bounds,
+                                        stroke_width,
+                                        window.scale_factor(),
+                                    );
                                     window.paint_quad(
                                         outline(
-                                            annotation_bounds,
+                                            line_bounds,
                                             stroke_color,
                                             if annotation.appearance.stroke_style()
                                                 == StrokeStyle::Solid
@@ -23119,7 +23302,7 @@ fn annotation_layer(
                                                 BorderStyle::Dashed
                                             },
                                         )
-                                        .border_widths(stroke_width),
+                                        .border_widths(line_width),
                                     );
                                 }
                                 StrokeStyle::Dotted => {
@@ -23617,7 +23800,7 @@ fn annotation_layer(
                                     {
                                         if annotation.feedback.handle_visible(index) {
                                             interaction_chrome::paint_feedback_handle(
-                                                project(handle.point(annotation.text_box)),
+                                                project(handle.inset_point(annotation.text_box, crate::annotation_model::caption_box_border_inset_pt(annotation.appearance.line().stroke_width_pt()))),
                                                 state,
                                                 hot_handle.as_ref().is_some_and(
                                                     |(id, hot_index)| {
@@ -23993,7 +24176,14 @@ fn annotation_layer(
                                 }
                             }
                         }
-                        crate::annotation_model::SceneAnnotation::Dimension(annotation) => {
+                        crate::annotation_model::SceneAnnotation::Dimension(mut annotation) => {
+                            if painted_pending_text_box
+                                .as_ref()
+                                .is_some_and(|pending| pending.existing_id.as_ref() == Some(&annotation.id))
+                            {
+                                // The in-place editor draws the live text.
+                                annotation.content.clear();
+                            }
                             paint_dimension_annotation(
                                 annotation,
                                 &transform,
@@ -24397,6 +24587,7 @@ fn annotation_layer(
                         .h(bounds.size.height)
                         .min_w(px(24.))
                         .min_h(px(18.))
+                        .when(pending.paper_backed, |editor| editor.bg(gpui::white()))
                         .overflow_hidden()
                         .occlude()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -24711,13 +24902,6 @@ fn rail_tool_button(id: &'static str, label: &'static str, icon: &'static str) -
     )
 }
 
-const fn properties_double_click_sidebar_open(
-    was_selected_before_double_click: bool,
-    sidebar_open: bool,
-) -> bool {
-    !(was_selected_before_double_click && sidebar_open)
-}
-
 // A second click toggles the existing properties surface, without re-arming
 // the tool (or launching a second file picker). Keyboard activation stays a
 // normal single click; popovers retain their own stock trigger behaviour.
@@ -24804,7 +24988,10 @@ fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<String> {
         }
         // A Dimension measures by default; the Length shortcut also
         // measures on a page without a scale.
-        AnnotationTool::Dimension => "shows the line's length as its text (Shift+Alt+L)".to_owned(),
+        AnnotationTool::Dimension => format!(
+            "shows the line's length as its text ({})",
+            crate::shortcut_label::shortcut_label("Shift+Alt+L")
+        ),
         AnnotationTool::Polyline | AnnotationTool::Polygon => {
             let family = MeasureFamily::of(tool)?;
             let total = match family {
@@ -24814,7 +25001,7 @@ fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<String> {
             let shortcut = family
                 .tool(true)
                 .shortcut()
-                .map(|shortcut| format!(" ({shortcut})"))
+                .map(|shortcut| format!(" ({})", crate::shortcut_label::shortcut_label(shortcut)))
                 .unwrap_or_default();
             format!("shows lengths while drawing, and {total}{shortcut}")
         }
@@ -26225,7 +26412,7 @@ fn session_tab_overlay_label(
             .tooltip(|window, cx| {
                 gpui_component::tooltip::Tooltip::new("Unsaved changes").build(window, cx)
             })
-            .child(gpui_component::Icon::new(IconName::Asterisk).size(px(18.)))
+            .child(gpui_component::Icon::new(IconName::Asterisk).size(px(14.)))
     };
     gpui::div()
         .relative()
@@ -26252,7 +26439,7 @@ fn session_tab_overlay_label(
                 .absolute()
                 .inset_0()
                 .gap_1()
-                .when(revealed, |this| this.pr_6())
+                .when(revealed, |this| this.pr(px(SESSION_TAB_CLOSE_LANE)))
                 .children(dirty.then(|| indicator(format!("{group}-unsaved-indicator"))))
                 .child(
                     gpui::div()
@@ -26281,23 +26468,28 @@ fn session_tab_overlay_label(
         )
 }
 
-/// The stock small close button's size.
-const SESSION_TAB_CLOSE_SIZE: f32 = 24.;
+/// The stock extra-small close button's size.
+const SESSION_TAB_CLOSE_SIZE: f32 = 20.;
+/// The close button's lane: as wide as the segmented tab's raised area is
+/// high, so the button has equal clearance at its top, bottom and trailing
+/// edge.
+const SESSION_TAB_CLOSE_LANE: f32 = 24.;
 /// How far the unsaved-changes indicator reaches back over the tab's
-/// 12px leading padding, so its centre is 15px from the tab's inner left
-/// edge, as the close button's is from its inner right edge.
-const SESSION_TAB_INDICATOR_OVERHANG: f32 = 12. + SESSION_TAB_CLOSE_SIZE / 2. - 15.;
+/// 12px leading padding, so its centre is as far from the tab's inner left
+/// edge as the close button's is from its inner right edge.
+const SESSION_TAB_INDICATOR_OVERHANG: f32 =
+    12. + SESSION_TAB_CLOSE_SIZE / 2. - SESSION_TAB_CLOSE_LANE / 2.;
 
 fn session_tab_close_lane() -> gpui::Div {
-    // The pinned medium Outline tab is 32 physical px high with 1px borders.
-    // The stock small close button is 24px: this lane gives equal 4px outer
-    // clearance at the top, bottom and trailing edge, independent of text height.
+    // The stock medium segmented tab's raised area is 24px high; the
+    // extra-small close button (20px) sits in a square lane at its trailing
+    // edge, 2px clear of it all round, independent of text height.
     h_flex()
         .absolute()
         .right_0()
         .top_0()
         .h_full()
-        .w(px(32. - 2.))
+        .w(px(SESSION_TAB_CLOSE_LANE))
         .justify_center()
 }
 
@@ -26386,6 +26578,8 @@ impl Render for DocumentWorkspace {
                         | PendingTextEditorTarget::ExistingCloudPlus { .. }
                         | PendingTextEditorTarget::Callout { .. }
                         | PendingTextEditorTarget::ExistingCallout { .. }
+                        | PendingTextEditorTarget::NewDimension { .. }
+                        | PendingTextEditorTarget::ExistingDimension { .. }
                 )
             })
             .and_then(|editor| {
@@ -26409,6 +26603,7 @@ impl Render for DocumentWorkspace {
             self.ensure_straight_line_property_inspector(window, cx);
         let vertex_path_property_inspector = self.ensure_vertex_path_property_inspector(window, cx);
         let text_box_property_inspector = self.ensure_text_box_property_inspector(window, cx);
+        let caption_property_inspector = self.ensure_caption_property_inspector(window, cx);
         let measurement_property_inspector = self.ensure_measurement_property_inspector(window, cx);
         let dimension_property_inspector = self.ensure_dimension_property_inspector(window, cx);
         let page_scale_pick_instruction = page_scale_control.read(cx).pick_instruction();
@@ -26461,6 +26656,7 @@ impl Render for DocumentWorkspace {
             selected_ink,
             selected_engineering_visual,
             selected_text_box,
+            selected_caption,
             selected_measurement,
             highlight_defaults,
             _save_in_progress,
@@ -26571,6 +26767,25 @@ impl Render for DocumentWorkspace {
             };
             let selected_text_box = match selected_annotations.as_slice() {
                 [Annotation::TextBox(annotation)] => Some(annotation.clone()),
+                _ => None,
+            };
+            // A Callout's or Cloud+'s style and text, for its properties.
+            let selected_caption = match selected_annotations.as_slice() {
+                [Annotation::Callout(annotation)] => Some((
+                    annotation.id.clone(),
+                    CaptionPropertyValues::Callout(annotation.appearance.clone()),
+                    annotation.locked,
+                    annotation.content().to_owned(),
+                )),
+                [Annotation::CloudPlus(annotation)] => Some((
+                    annotation.id.clone(),
+                    CaptionPropertyValues::CloudPlus {
+                        appearance: annotation.appearance.clone(),
+                        intensity: annotation.border_effect_intensity(),
+                    },
+                    annotation.locked,
+                    annotation.content().to_owned(),
+                )),
                 _ => None,
             };
             let selected_measurement = match selected_annotations.as_slice() {
@@ -26934,6 +27149,7 @@ impl Render for DocumentWorkspace {
                 selected_ink,
                 selected_engineering_visual,
                 selected_text_box,
+                selected_caption,
                 selected_measurement,
                 highlight_defaults,
                 save_in_progress,
@@ -26960,44 +27176,53 @@ impl Render for DocumentWorkspace {
                 viewer_zoom_fallback,
             )
         };
-        let select_hover_cursor = self
-            .select_hover_hit
-            .as_ref()
-            .and_then(|(hover_document, hover_page, hit)| {
-                if *hover_document != document_id || *hover_page != current_page {
-                    return None;
-                }
-                let HitTarget::ResizeHandle { id, handle } = hit else {
-                    return None;
-                };
-                let rectangle = selected_rectangle
-                    .as_ref()
-                    .filter(|rectangle| &rectangle.id == id)?;
-                Some(rectangle_resize_cursor_style(
-                    *handle,
-                    rectangle.rotation_degrees,
-                ))
-            })
-            .or_else(|| {
-                let (hover_document, hover_page, id, index) =
-                    self.hot_annotation_handle.as_ref()?;
-                if *hover_document != document_id || *hover_page != current_page {
-                    return None;
-                }
-                annotation_resize_cursor_style(&annotation_scene, id, *index)
-            })
-            .or_else(|| {
-                // A movable body advertises its drag before selection too.
-                let (hover_document, hover_page, id) = self.hovered_annotation.as_ref()?;
-                (*hover_document == document_id
-                    && *hover_page == current_page
-                    && self
-                        .session(document_id, cx)?
-                        .read(cx)
-                        .annotations
-                        .annotation_is_movable(document_id.value(), id))
-                .then(|| crate::canvas_cursors::move_cursor(false))
-            });
+        // The selected markup's text first: a press there edits it.
+        let markup_text_cursor =
+            self.markup_text_hover
+                .as_ref()
+                .and_then(|(hover_document, hover_page, _)| {
+                    (*hover_document == document_id && *hover_page == current_page)
+                        .then_some(CursorStyle::IBeam)
+                });
+        let select_hover_cursor = markup_text_cursor.or_else(|| {
+            self.select_hover_hit
+                .as_ref()
+                .and_then(|(hover_document, hover_page, hit)| {
+                    if *hover_document != document_id || *hover_page != current_page {
+                        return None;
+                    }
+                    let HitTarget::ResizeHandle { id, handle } = hit else {
+                        return None;
+                    };
+                    let rectangle = selected_rectangle
+                        .as_ref()
+                        .filter(|rectangle| &rectangle.id == id)?;
+                    Some(rectangle_resize_cursor_style(
+                        *handle,
+                        rectangle.rotation_degrees,
+                    ))
+                })
+                .or_else(|| {
+                    let (hover_document, hover_page, id, index) =
+                        self.hot_annotation_handle.as_ref()?;
+                    if *hover_document != document_id || *hover_page != current_page {
+                        return None;
+                    }
+                    annotation_resize_cursor_style(&annotation_scene, id, *index)
+                })
+                .or_else(|| {
+                    // A movable body advertises its drag before selection too.
+                    let (hover_document, hover_page, id) = self.hovered_annotation.as_ref()?;
+                    (*hover_document == document_id
+                        && *hover_page == current_page
+                        && self
+                            .session(document_id, cx)?
+                            .read(cx)
+                            .annotations
+                            .annotation_is_movable(document_id.value(), id))
+                    .then(|| crate::canvas_cursors::move_cursor(false))
+                })
+        });
         // While dragging an item, keep the cursor the press began with.
         let select_hover_cursor = self
             .active_annotation_pointer
@@ -27080,6 +27305,21 @@ impl Render for DocumentWorkspace {
             {
                 dimension_property_inspector
                     .update(cx, |inspector, cx| inspector.sync(snapshot, window, cx));
+            }
+            // A Dimension's typed text shows in its Text field; a measured
+            // Length's caption is its measurement, and has none.
+            let content = self.session(document_id, cx).and_then(|session| {
+                session
+                    .read(cx)
+                    .annotations
+                    .exact_selected_dimension(document_id.value())
+                    .filter(|dimension| &dimension.id == id)
+                    .map(|dimension| dimension.content().to_owned())
+            });
+            if let Some(content) = content {
+                dimension_property_inspector.update(cx, |inspector, cx| {
+                    inspector.sync_content(&content, window, cx)
+                });
             }
         } else if dimension_property_inspector.read(cx).snapshot().is_some() {
             self.dimension_property_inspector_open = false;
@@ -27288,9 +27528,37 @@ impl Render for DocumentWorkspace {
                     inspector.sync(snapshot, window, cx);
                 });
             }
+            let content = text_box.content().to_owned();
+            text_box_property_inspector.update(cx, |inspector, cx| {
+                inspector.sync_content(&content, window, cx)
+            });
         } else if text_box_property_inspector.read(cx).snapshot().is_some() {
             self.text_box_property_inspector_open = false;
             text_box_property_inspector.update(cx, |inspector, cx| inspector.clear(cx));
+        }
+        if let Some((annotation_id, values, locked, content)) = selected_caption.as_ref() {
+            let snapshot = CaptionPropertySnapshot {
+                document_id,
+                annotation_id: annotation_id.clone(),
+                expected_revision: annotation_scene.revision,
+                values: values.clone(),
+                locked: *locked,
+                mutation_disabled: ink_mutation_disabled,
+            };
+            if caption_property_inspector
+                .read(cx)
+                .snapshot()
+                .is_none_or(|current| current != &snapshot)
+            {
+                caption_property_inspector
+                    .update(cx, |inspector, cx| inspector.sync(snapshot, window, cx));
+            }
+            caption_property_inspector.update(cx, |inspector, cx| {
+                inspector.sync_content(content, window, cx)
+            });
+        } else if caption_property_inspector.read(cx).snapshot().is_some() {
+            self.caption_property_inspector_open = false;
+            caption_property_inspector.update(cx, |inspector, cx| inspector.clear(cx));
         }
         if let Some((
             id,
@@ -27404,69 +27672,12 @@ impl Render for DocumentWorkspace {
             .as_ref()
             .filter(|editor| editor.document_id == document_id)
             .and_then(|editor| {
-                let (id, rect, style, interaction) = match &editor.target {
-                    PendingTextEditorTarget::ExistingTextBox { id } => {
-                        let text_box = self.inline_existing_text_box(editor.document_id, id, cx)?;
-                        (
-                            Some(id.clone()),
-                            text_box.layout_rect,
-                            text_box.style(),
-                            inline_editor_interaction.as_ref()?,
-                        )
-                    }
-                    PendingTextEditorTarget::Callout { id }
-                    | PendingTextEditorTarget::ExistingCallout { id } => {
-                        let callout = self
-                            .session(editor.document_id, cx)?
-                            .read(cx)
-                            .annotations
-                            .callout(editor.document_id.value(), id)?;
-                        let style = callout.appearance.text();
-                        let content = editor.input.read(cx).value();
-                        (
-                            Some(id.clone()),
-                            caption_editor_rect(
-                                crate::annotation_adapter::callout_fitted_text_box(
-                                    callout,
-                                    content.as_ref(),
-                                ),
-                                style,
-                                content.as_ref(),
-                            ),
-                            style,
-                            inline_editor_interaction.as_ref()?,
-                        )
-                    }
-                    PendingTextEditorTarget::NewCloudPlus { id }
-                    | PendingTextEditorTarget::ExistingCloudPlus { id } => {
-                        let cloud_plus = self
-                            .session(editor.document_id, cx)?
-                            .read(cx)
-                            .annotations
-                            .cloud_plus(editor.document_id.value(), id)?;
-                        let style = cloud_plus.appearance.text();
-                        (
-                            Some(id.clone()),
-                            caption_editor_rect(
-                                crate::annotation_adapter::cloud_plus_fitted_text_box(
-                                    cloud_plus,
-                                    editor.input.read(cx).value().as_ref(),
-                                ),
-                                style,
-                                editor.input.read(cx).value().as_ref(),
-                            ),
-                            style,
-                            inline_editor_interaction.as_ref()?,
-                        )
-                    }
-                    PendingTextEditorTarget::NewTextBox {
-                        rect,
-                        style,
-                        interaction,
-                        ..
-                    } => (None, *rect, style, interaction),
-                    _ => return None,
+                let interaction = match &editor.target {
+                    PendingTextEditorTarget::NewTextBox { interaction, .. } => *interaction,
+                    _ => inline_editor_interaction?,
                 };
+                let (id, rect, style) =
+                    self.pending_text_editor_layout(window.text_system(), cx)?;
                 let local = interaction.transform.rect_to_local_pixels(rect);
                 let editor_bounds = Some(Bounds::new(
                     point(
@@ -27477,31 +27688,23 @@ impl Render for DocumentWorkspace {
                     ),
                     size(px(local.width as f32), px(local.height as f32)),
                 ));
+                let paper_backed = matches!(
+                    &editor.target,
+                    PendingTextEditorTarget::NewDimension { .. }
+                        | PendingTextEditorTarget::ExistingDimension { .. }
+                );
                 Some(PendingTextBoxPresentation {
                     document_id: editor.document_id,
                     page_index: editor.page_index,
                     rect,
-                    style: style.clone(),
+                    style,
                     input: editor.input.clone(),
                     editor_bounds,
                     display_scale: interaction.transform.pixels_per_point() as f32,
                     existing_id: id,
+                    paper_backed,
                 })
             });
-        let pending_editor_inline = pending_text_box_presentation.is_some();
-        let pending_non_creation_editor =
-            self.pending_text_box_editor.as_ref().is_some_and(|editor| {
-                !matches!(&editor.target, PendingTextEditorTarget::NewTextBox { .. })
-            }) && !pending_editor_inline;
-        let pending_text_box_input = self
-            .pending_text_box_editor
-            .as_ref()
-            .filter(|editor| {
-                editor.document_id == document_id
-                    && !matches!(&editor.target, PendingTextEditorTarget::NewTextBox { .. })
-                    && !pending_editor_inline
-            })
-            .map(|editor| editor.input.clone());
         let semantic_snap_control = self.render_snap_settings_popover(
             save_busy,
             snap_grid_spacing_input,
@@ -27595,6 +27798,14 @@ impl Render for DocumentWorkspace {
                 initial_width: inspector_width,
                 width_range: inspector_range.clone(),
             })
+        } else if (inline_selection || self.caption_property_inspector_open)
+            && selected_caption.is_some()
+        {
+            Some(ActiveInspector {
+                kind: ActiveInspectorKind::Caption,
+                initial_width: inspector_width,
+                width_range: inspector_range.clone(),
+            })
         } else if (inline_selection || self.measurement_property_inspector_open)
             && selected_measurement.is_some()
         {
@@ -27676,6 +27887,9 @@ impl Render for DocumentWorkspace {
                     .expect("the ensured Text Box inspector must be retained")
                     .clone(),
             ),
+            Some(ActiveInspectorKind::Caption) => {
+                active_inspector_shell().child(caption_property_inspector.clone())
+            }
             Some(ActiveInspectorKind::Measurement) => active_inspector_shell().child(
                 self.measurement_property_inspector
                     .as_ref()
@@ -27729,6 +27943,9 @@ impl Render for DocumentWorkspace {
                             ActiveInspectorKind::TextBox => {
                                 workspace.set_text_box_property_inspector_open(false, window, cx);
                             }
+                            ActiveInspectorKind::Caption => {
+                                workspace.set_caption_property_inspector_open(false, window, cx);
+                            }
                             ActiveInspectorKind::Measurement => {
                                 workspace
                                     .set_measurement_property_inspector_open(false, window, cx);
@@ -27746,8 +27963,7 @@ impl Render for DocumentWorkspace {
         });
         let save_failure_title = format!("Couldn’t save “{title}”");
         let text_box_commit_error = self.text_box_commit_error.clone();
-        let properties_visible =
-            self.right_rail_actions_open || inspector_visible || pending_non_creation_editor;
+        let properties_visible = self.right_rail_actions_open || inspector_visible;
         // Preserve the user's open/width preferences while temporarily yielding
         // thumbnail space to properties and the viewer toolbar, which needs
         // more than the stock minimum canvas width to show all its controls.
@@ -27779,68 +27995,7 @@ impl Render for DocumentWorkspace {
             window,
             cx,
         );
-        // Text that cannot be edited where it sits (a Dimension caption or a
-        // rotated Text Box) is edited here instead.
-        let text_editor_title = match self
-            .pending_text_box_editor
-            .as_ref()
-            .map(|editor| &editor.target)
-        {
-            Some(
-                PendingTextEditorTarget::NewDimension { .. }
-                | PendingTextEditorTarget::ExistingDimension { .. },
-            ) => "Dimension text",
-            _ => "Text",
-        };
-        let supporting_actions = crate::property_controls::PropertyInspectorPanel::new(
-            "document-workspace-text-editor",
-            "document-workspace-text-editor-header",
-            "document-workspace-text-editor-scroll",
-            text_editor_title,
-        )
-        .header_trailing(
-            close_icon_button(
-                "document-workspace-text-editor-close",
-                "Finish editing text",
-            )
-            .on_click(cx.listener(|workspace, _, _, cx| {
-                if let Err(error) = workspace.commit_pending_text_box(cx) {
-                    workspace.text_box_commit_error = Some(error);
-                }
-                cx.notify();
-            })),
-        )
-        .child(
-            v_flex()
-                .w_full()
-                .gap_2()
-                .p_3()
-                .when_some(pending_text_box_input, |panel, input| {
-                    panel.child(
-                        gpui::div()
-                            .id(DOCUMENT_TEXT_BOX_EDITOR_ID)
-                            .debug_selector(|| DOCUMENT_TEXT_BOX_EDITOR_ID.into())
-                            .w_full()
-                            .h(px(96.))
-                            .child(Textarea::new(&input).aria_label("Text").h_full()),
-                    )
-                })
-                .when_some(
-                    self.annotation_statuses.get(&document_id).cloned(),
-                    |panel, status| {
-                        panel.child(
-                            gpui::div()
-                                .id(DOCUMENT_ANNOTATION_STATUS_ID)
-                                .debug_selector(|| DOCUMENT_ANNOTATION_STATUS_ID.into())
-                                .text_sm()
-                                .text_color(cx.theme().danger)
-                                .child(status),
-                        )
-                    },
-                ),
-        );
-        let supporting_actions = if combined_measurement_properties && !pending_non_creation_editor
-        {
+        let supporting_actions = if combined_measurement_properties {
             let title = match selected_measurement.as_ref().map(|selected| selected.1) {
                 Some(AnnotationKind::Area) => "Area",
                 Some(AnnotationKind::Length) => "Length",
@@ -27874,29 +28029,27 @@ impl Render for DocumentWorkspace {
                     ),
             )
             .into_any_element()
-        } else if inspector_visible && !pending_non_creation_editor {
+        } else if inspector_visible {
             gpui::div()
                 .w_full()
                 .h_full()
                 .min_h_0()
                 .child(inspector_shell)
                 .into_any_element()
-        } else if annotation_tool == AnnotationTool::Highlight && !pending_non_creation_editor {
+        } else if annotation_tool == AnnotationTool::Highlight {
             gpui::div()
                 .w_full()
                 .h_full()
                 .min_h_0()
                 .child(highlight_defaults_panel)
                 .into_any_element()
-        } else if !pending_non_creation_editor {
+        } else {
             gpui::div()
                 .w_full()
                 .h_full()
                 .min_h_0()
                 .child(tool_defaults_panel)
                 .into_any_element()
-        } else {
-            supporting_actions.into_any_element()
         };
         let supporting_actions = gpui::div()
             .on_prepaint(self.right_sidebar_sizing.measure())
@@ -28201,11 +28354,7 @@ impl Render for DocumentWorkspace {
             )
             .child(
                 resizable_panel()
-                    .visible(
-                        self.right_rail_actions_open
-                            || inspector_visible
-                            || pending_non_creation_editor,
-                    )
+                    .visible(self.right_rail_actions_open || inspector_visible)
                     .size(window.rem_size() * 18.75)
                     .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
                     .flex_none()
@@ -28450,10 +28599,9 @@ mod tests {
         AnnotationTool, Bounds, PendingTextEditorAuthority, ReconciledRecoveryAuthority,
         TextAlignment, TextBoxRichTextRun, apply_recovery_confirmation_result,
         apply_recovery_preparation_result, block_recovery_after_authority_conflict,
-        document_viewport_cursor_style, draw_tool_tooltip, point,
-        properties_double_click_sidebar_open, px, rectangle_resize_cursor_style,
-        replace_recovery_timeline_reconciled, size, split_text_box_rich_lines,
-        text_box_rich_line_x, validate_existing_text_editor_authority,
+        document_viewport_cursor_style, draw_tool_tooltip, point, px,
+        rectangle_resize_cursor_style, replace_recovery_timeline_reconciled, size,
+        split_text_box_rich_lines, text_box_rich_line_x, validate_existing_text_editor_authority,
     };
 
     #[test]
@@ -28496,6 +28644,7 @@ mod tests {
 
     #[test]
     fn draw_tool_tooltips_say_what_a_page_scale_adds_on_a_second_line() {
+        use crate::shortcut_label::shortcut_label;
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Rectangle),
             "Rectangle (R)\nPage scale: shows width and height while drawing"
@@ -28506,16 +28655,28 @@ mod tests {
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Polyline),
-            "Polyline (Shift+N)\nPage scale: shows lengths while drawing, and the total (Shift+Alt+Q)"
+            format!(
+                "Polyline ({})\nPage scale: shows lengths while drawing, and the total ({})",
+                shortcut_label("Shift+N"),
+                shortcut_label("Shift+Alt+Q")
+            )
         );
         // A measured tool reads as its family's plain tool.
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Area),
-            "Polygon (Shift+P)\nPage scale: shows lengths while drawing, and the area (Shift+Alt+A)"
+            format!(
+                "Polygon ({})\nPage scale: shows lengths while drawing, and the area ({})",
+                shortcut_label("Shift+P"),
+                shortcut_label("Shift+Alt+A")
+            )
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Dimension),
-            "Dimension (Shift+L)\nPage scale: shows the line's length as its text (Shift+Alt+L)"
+            format!(
+                "Dimension ({})\nPage scale: shows the line's length as its text ({})",
+                shortcut_label("Shift+L"),
+                shortcut_label("Shift+Alt+L")
+            )
         );
         // Tools a scale does not change keep a single line.
         assert_eq!(draw_tool_tooltip(AnnotationTool::Pen), "Pen (P)");
@@ -28532,14 +28693,6 @@ mod tests {
             .into_iter()
             .all(|tool| !draw_tool_tooltip(tool).contains("Measure"))
         );
-    }
-
-    #[test]
-    fn properties_double_click_collapses_only_the_same_selected_markup() {
-        assert!(!properties_double_click_sidebar_open(true, true));
-        assert!(properties_double_click_sidebar_open(true, false));
-        assert!(properties_double_click_sidebar_open(false, true));
-        assert!(properties_double_click_sidebar_open(false, false));
     }
 
     #[test]

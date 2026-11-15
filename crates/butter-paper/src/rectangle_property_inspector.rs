@@ -11,25 +11,25 @@
 
 use crate::annotation_model::{MarkupId, PdfRect, RectangleAppearance, StrokeStyle};
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertyNumericInput, PropertySliderInput, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage,
-    property_color_picker,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertySliderInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
+    property_lock_toggle, property_number_pair_row, property_row, property_slider_row,
+    subscribe_property_color,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IndexPath,
-    accordion::Accordion,
-    button::Button,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
+    color_picker::ColorPickerState,
+    h_flex,
     input::{InputEvent, InputState},
     select::{Select, SelectEvent, SelectState},
     slider::{SliderEvent, SliderState},
     switch::Switch,
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 use crate::document_workspace::DocumentId;
@@ -40,7 +40,6 @@ pub const RECTANGLE_INSPECTOR_HEADER_ID: &str = "rectangle-property-inspector-he
 pub const RECTANGLE_INSPECTOR_SCROLL_ID: &str = "rectangle-property-inspector-scroll";
 pub const RECTANGLE_INSPECTOR_EMPTY_ID: &str = "rectangle-property-inspector-empty";
 pub const RECTANGLE_INSPECTOR_ACCORDION_ID: &str = "rectangle-property-inspector-sections";
-pub const RECTANGLE_INSPECTOR_DETAILS_SECTION_ID: &str = "rectangle-property-inspector-details";
 pub const RECTANGLE_INSPECTOR_APPEARANCE_SECTION_ID: &str =
     "rectangle-property-inspector-appearance";
 pub const RECTANGLE_INSPECTOR_LAYOUT_SECTION_ID: &str = "rectangle-property-inspector-layout";
@@ -64,7 +63,6 @@ pub const ELLIPSE_INSPECTOR_HEADER_ID: &str = "ellipse-property-inspector-header
 pub const ELLIPSE_INSPECTOR_SCROLL_ID: &str = "ellipse-property-inspector-scroll";
 pub const ELLIPSE_INSPECTOR_EMPTY_ID: &str = "ellipse-property-inspector-empty";
 pub const ELLIPSE_INSPECTOR_ACCORDION_ID: &str = "ellipse-property-inspector-sections";
-pub const ELLIPSE_INSPECTOR_DETAILS_SECTION_ID: &str = "ellipse-property-inspector-details";
 pub const ELLIPSE_INSPECTOR_APPEARANCE_SECTION_ID: &str = "ellipse-property-inspector-appearance";
 pub const ELLIPSE_INSPECTOR_LAYOUT_SECTION_ID: &str = "ellipse-property-inspector-layout";
 pub const ELLIPSE_INSPECTOR_LOCKED_ID: &str = "ellipse-property-inspector-locked";
@@ -99,7 +97,6 @@ struct PropertyInspectorPresentation {
     scroll: &'static str,
     empty: &'static str,
     accordion: &'static str,
-    details: &'static str,
     appearance: &'static str,
     layout: &'static str,
     locked: &'static str,
@@ -126,7 +123,6 @@ const RECTANGLE_PRESENTATION: PropertyInspectorPresentation = PropertyInspectorP
     scroll: RECTANGLE_INSPECTOR_SCROLL_ID,
     empty: RECTANGLE_INSPECTOR_EMPTY_ID,
     accordion: RECTANGLE_INSPECTOR_ACCORDION_ID,
-    details: RECTANGLE_INSPECTOR_DETAILS_SECTION_ID,
     appearance: RECTANGLE_INSPECTOR_APPEARANCE_SECTION_ID,
     layout: RECTANGLE_INSPECTOR_LAYOUT_SECTION_ID,
     locked: RECTANGLE_INSPECTOR_LOCKED_ID,
@@ -153,7 +149,6 @@ const ELLIPSE_PRESENTATION: PropertyInspectorPresentation = PropertyInspectorPre
     scroll: ELLIPSE_INSPECTOR_SCROLL_ID,
     empty: ELLIPSE_INSPECTOR_EMPTY_ID,
     accordion: ELLIPSE_INSPECTOR_ACCORDION_ID,
-    details: ELLIPSE_INSPECTOR_DETAILS_SECTION_ID,
     appearance: ELLIPSE_INSPECTOR_APPEARANCE_SECTION_ID,
     layout: ELLIPSE_INSPECTOR_LAYOUT_SECTION_ID,
     locked: ELLIPSE_INSPECTOR_LOCKED_ID,
@@ -242,7 +237,6 @@ pub struct RectanglePropertyInspector {
     syncing: bool,
     open: bool,
     embedded: bool,
-    open_sections: [bool; 3],
     stroke_width: gpui::Entity<InputState>,
     stroke_width_slider: gpui::Entity<SliderState>,
     rotation_slider: gpui::Entity<SliderState>,
@@ -471,42 +465,48 @@ impl RectanglePropertyInspector {
                 this.emit_patch(RectanglePropertyPatch::FillOpacity(opacity), cx);
             },
         ));
-        subscriptions.push(
-            cx.subscribe(&stroke_color, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(Some(color)) = event else {
-                    return;
-                };
-                let Some(appearance) = this.snapshot.as_ref().map(|snapshot| &snapshot.appearance)
-                else {
+        subscriptions.extend(subscribe_property_color(
+            &stroke_color,
+            cx,
+            |this: &mut Self, cx| {
+                let (Some(color), Some(appearance)) = (
+                    this.stroke_color.read(cx).value(),
+                    this.snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.appearance.clone()),
+                ) else {
                     return;
                 };
                 this.emit_patch(
                     RectanglePropertyPatch::StrokeColorAndOpacity {
-                        color: opaque_hex(*color),
+                        color: opaque_hex(color),
                         opacity: canonical_picker_opacity(color.a, appearance.opacity()),
                     },
                     cx,
                 );
-            }),
-        );
-        subscriptions.push(
-            cx.subscribe(&fill_color, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(Some(color)) = event else {
-                    return;
-                };
-                let Some(appearance) = this.snapshot.as_ref().map(|snapshot| &snapshot.appearance)
-                else {
+            },
+        ));
+        subscriptions.extend(subscribe_property_color(
+            &fill_color,
+            cx,
+            |this: &mut Self, cx| {
+                let (Some(color), Some(appearance)) = (
+                    this.fill_color.read(cx).value(),
+                    this.snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.appearance.clone()),
+                ) else {
                     return;
                 };
                 this.emit_patch(
                     RectanglePropertyPatch::FillColorAndOpacity {
-                        color: opaque_hex(*color),
+                        color: opaque_hex(color),
                         opacity: canonical_picker_opacity(color.a, appearance.fill_opacity()),
                     },
                     cx,
                 );
-            }),
-        );
+            },
+        ));
         subscriptions.push(cx.subscribe_in(
             &stroke_style,
             window,
@@ -529,7 +529,6 @@ impl RectanglePropertyInspector {
             syncing: false,
             open: false,
             embedded: false,
-            open_sections: [true, true, true],
             stroke_width,
             stroke_width_slider,
             rotation_slider,
@@ -746,12 +745,11 @@ impl RectanglePropertyInspector {
         if self.snapshot.is_none() {
             return vec![ids.panel, ids.header, ids.empty];
         }
-        vec![
+        let mut ids = vec![
             ids.panel,
             ids.header,
             ids.scroll,
             ids.accordion,
-            ids.details,
             ids.locked,
             ids.appearance,
             ids.stroke_color,
@@ -760,14 +758,22 @@ impl RectanglePropertyInspector {
             ids.stroke_style,
             ids.fill_enabled,
             ids.fill_color,
-            ids.fill_opacity,
             ids.layout,
             ids.x,
             ids.y,
             ids.width,
             ids.height,
             ids.rotation,
-        ]
+        ];
+        // Fill opacity shows only once there is a fill.
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.appearance.fill_color().is_some())
+        {
+            ids.push(self.presentation.fill_opacity);
+        }
+        ids
     }
 
     fn handle_number_input(
@@ -867,255 +873,160 @@ impl Render for RectanglePropertyInspector {
         let mutation_disabled = snapshot.mutation_disabled;
         let property_disabled = mutation_disabled || snapshot.locked;
         let fill_enabled = snapshot.appearance.fill_color().is_some();
-        let section_state = self.open_sections;
-        let section_control = cx.entity().downgrade();
         let lock_control = cx.entity().downgrade();
         let fill_control = cx.entity().downgrade();
         let fill_color = self.fill_color.clone();
+        let number = |id: &'static str, label: &'static str, prefix: &'static str, state| {
+            PropertyNumericInput::new(id, label, state)
+                .prefix(prefix)
+                .disabled(property_disabled)
+        };
 
-        let details = v_flex()
-            .id(ids.details)
-            .debug_selector(move || ids.details.into())
-            .gap_3()
-            .child(
-                Field::new().child(
-                    div()
-                        .id(ids.locked)
-                        .debug_selector(move || ids.locked.into())
-                        .child(
-                            Switch::new(match ids.kind {
-                                RectangularShapePropertyKind::Rectangle => {
-                                    "rectangle-property-inspector-locked-switch"
-                                }
-                                RectangularShapePropertyKind::Ellipse => {
-                                    "ellipse-property-inspector-locked-switch"
-                                }
-                            })
-                            .label("Locked")
-                            .checked(snapshot.locked)
-                            .disabled(mutation_disabled)
-                            .on_click(move |locked, _, cx| {
-                                let _ = lock_control.update(cx, |inspector, cx| {
-                                    inspector
-                                        .emit_patch(RectanglePropertyPatch::Locked(*locked), cx);
-                                });
-                            }),
-                        ),
-                ),
-            );
-
-        let appearance = v_flex()
-            .id(ids.appearance)
-            .debug_selector(move || ids.appearance.into())
-            .gap_3()
-            .child(color_field(
-                ids.stroke_color,
-                "Colour",
-                &self.stroke_color,
-                property_disabled,
-                cx,
-            ))
-            .child(slider_field(
-                ids.opacity,
-                "Opacity",
-                &self.opacity,
-                &self.opacity_input,
-                property_disabled,
-            ))
-            .child(
-                Field::new().label("Line width").child(
-                    PropertySliderInput::new(
-                        "Line width",
-                        &self.stroke_width_slider,
-                        &self.stroke_width,
-                    )
-                    .slider_id(match ids.kind {
-                        RectangularShapePropertyKind::Rectangle => {
-                            "rectangle-property-inspector-width-slider"
-                        }
-                        RectangularShapePropertyKind::Ellipse => {
-                            "ellipse-property-inspector-width-slider"
-                        }
-                    })
-                    .input_id(ids.stroke_width)
-                    .suffix("pt")
-                    .disabled(property_disabled),
-                ),
-            )
-            .child(crate::property_controls::property_pair(
-                Field::new().label("Line style").child(
-                    div()
-                        .id(ids.stroke_style)
-                        .debug_selector(move || ids.stroke_style.into())
-                        .child(Select::new(&self.stroke_style).disabled(property_disabled)),
-                ),
-                v_flex()
-                    .gap_2()
-                    .child(color_field(
-                        ids.fill_color,
-                        "Fill colour",
-                        &self.fill_color,
-                        property_disabled || !fill_enabled,
-                        cx,
-                    ))
-                    .child(
-                        Field::new().child(
-                            div()
-                                .id(ids.fill_enabled)
-                                .debug_selector(move || ids.fill_enabled.into())
-                                .child(
-                                    Switch::new(match ids.kind {
-                                        RectangularShapePropertyKind::Rectangle => {
-                                            "rectangle-property-inspector-fill-enabled-switch"
-                                        }
-                                        RectangularShapePropertyKind::Ellipse => {
-                                            "ellipse-property-inspector-fill-enabled-switch"
-                                        }
-                                    })
-                                    .label("Fill")
-                                    .checked(fill_enabled)
-                                    .disabled(property_disabled)
-                                    .on_click(
-                                        move |enabled, _, cx| {
-                                            let color = fill_color
-                                                .read(cx)
-                                                .value()
-                                                .map(opaque_hex)
-                                                .unwrap_or_else(|| "#ffffff".into());
-                                            let patch = RectanglePropertyPatch::FillColor(
-                                                (*enabled).then_some(color),
-                                            );
-                                            let _ = fill_control.update(cx, |inspector, cx| {
-                                                inspector.emit_patch(patch, cx);
-                                            });
-                                        },
-                                    ),
-                                ),
-                        ),
-                    ),
-            ))
-            .child(slider_field(
-                ids.fill_opacity,
-                "Fill opacity",
-                &self.fill_opacity,
-                &self.fill_opacity_input,
-                property_disabled || !fill_enabled,
-            ));
-
-        let layout = v_flex()
-            .id(ids.layout)
-            .debug_selector(move || ids.layout.into())
-            .gap_3()
-            .child(crate::property_controls::property_pair(
-                number_field(ids.x, "X", &self.x, "pt", property_disabled),
-                number_field(ids.y, "Y", &self.y, "pt", property_disabled),
-            ))
-            .child(crate::property_controls::property_pair(
-                number_field(ids.width, "Width", &self.width, "pt", property_disabled),
-                number_field(ids.height, "Height", &self.height, "pt", property_disabled),
-            ))
-            .child(
-                Field::new().label("Rotation").child(
-                    PropertySliderInput::new("Rotation", &self.rotation_slider, &self.rotation)
-                        .slider_id(match ids.kind {
-                            RectangularShapePropertyKind::Rectangle => {
-                                "rectangle-property-inspector-rotation-slider"
-                            }
-                            RectangularShapePropertyKind::Ellipse => {
-                                "ellipse-property-inspector-rotation-slider"
-                            }
-                        })
-                        .input_id(ids.rotation)
-                        .suffix("°")
+        let appearance = PropertyGroup::new()
+            .row(property_row(
+                "Line",
+                property_color_and_size(
+                    PropertyColor::new(ids.stroke_color, "Line colour", &self.stroke_color)
+                        .disabled(property_disabled),
+                    PropertyNumericInput::new(ids.stroke_width, "Line width", &self.stroke_width)
+                        .suffix("pt")
                         .disabled(property_disabled),
                 ),
-            );
+            ))
+            .row(property_row(
+                "Style",
+                div()
+                    .id(ids.stroke_style)
+                    .debug_selector(move || ids.stroke_style.into())
+                    .child(Select::new(&self.stroke_style).disabled(property_disabled)),
+            ))
+            .row(property_slider_row(
+                "Opacity",
+                PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
+                    .row_id(ids.opacity)
+                    .suffix("%")
+                    .disabled(property_disabled),
+            ))
+            .row(property_row(
+                "Fill",
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div()
+                            .id(ids.fill_enabled)
+                            .debug_selector(move || ids.fill_enabled.into())
+                            .flex_none()
+                            .child(
+                                Switch::new(match ids.kind {
+                                    RectangularShapePropertyKind::Rectangle => {
+                                        "rectangle-property-inspector-fill-enabled-switch"
+                                    }
+                                    RectangularShapePropertyKind::Ellipse => {
+                                        "ellipse-property-inspector-fill-enabled-switch"
+                                    }
+                                })
+                                .checked(fill_enabled)
+                                .disabled(property_disabled)
+                                .tooltip(if fill_enabled {
+                                    "Remove the fill"
+                                } else {
+                                    "Fill it"
+                                })
+                                .on_click(
+                                    move |enabled, _, cx| {
+                                        let color = fill_color
+                                            .read(cx)
+                                            .value()
+                                            .map(opaque_hex)
+                                            .unwrap_or_else(|| "#ffffff".into());
+                                        let patch = RectanglePropertyPatch::FillColor(
+                                            (*enabled).then_some(color),
+                                        );
+                                        let _ = fill_control.update(cx, |inspector, cx| {
+                                            inspector.emit_patch(patch, cx);
+                                        });
+                                    },
+                                ),
+                            ),
+                    )
+                    // Picking a colour fills it.
+                    .child(
+                        PropertyColor::new(ids.fill_color, "Fill colour", &self.fill_color)
+                            .disabled(property_disabled),
+                    ),
+            ))
+            // Shown with no fill too, disabled, so the panel keeps its shape.
+            .row(property_slider_row(
+                "Fill opacity",
+                PropertySliderInput::new(
+                    "Fill opacity",
+                    &self.fill_opacity,
+                    &self.fill_opacity_input,
+                )
+                .row_id(ids.fill_opacity)
+                .suffix("%")
+                .disabled(property_disabled || !fill_enabled),
+            ));
 
-        let accordion = Accordion::new(ids.accordion)
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(section_state[0]).title("Details").child(details))
-            .item(|item| {
-                item.open(section_state[1])
-                    .title("Appearance")
-                    .child(appearance)
-            })
-            .item(|item| item.open(section_state[2]).title("Layout").child(layout))
-            .on_toggle_click(move |open, _, cx| {
-                let _ = section_control.update(cx, |inspector, cx| {
-                    inspector.open_sections =
-                        [open.contains(&0), open.contains(&1), open.contains(&2)];
-                    cx.notify();
-                });
-            });
+        let layout = PropertyGroup::new()
+            .row(property_number_pair_row(
+                "Position (pt)",
+                number(ids.x, "X", "X", &self.x),
+                number(ids.y, "Y", "Y", &self.y),
+            ))
+            .row(property_number_pair_row(
+                "Size (pt)",
+                number(ids.width, "Width", "W", &self.width),
+                number(ids.height, "Height", "H", &self.height),
+            ))
+            .row(property_slider_row(
+                "Rotation",
+                PropertySliderInput::new("Rotation", &self.rotation_slider, &self.rotation)
+                    .slider_id(match ids.kind {
+                        RectangularShapePropertyKind::Rectangle => {
+                            "rectangle-property-inspector-rotation-slider"
+                        }
+                        RectangularShapePropertyKind::Ellipse => {
+                            "ellipse-property-inspector-rotation-slider"
+                        }
+                    })
+                    .input_id(ids.rotation)
+                    .suffix("°")
+                    .disabled(property_disabled),
+            ));
 
         PropertyInspectorPanel::new(ids.panel, ids.header, ids.scroll, ids.title)
-            .child(accordion)
+            .header_lock(property_lock_toggle(
+                ids.locked,
+                snapshot.locked,
+                mutation_disabled,
+                move |locked, _, cx| {
+                    let _ = lock_control.update(cx, |inspector, cx| {
+                        inspector.emit_patch(RectanglePropertyPatch::Locked(locked), cx);
+                    });
+                },
+            ))
+            .child(
+                property_body()
+                    .id(ids.accordion)
+                    .debug_selector(move || ids.accordion.into())
+                    .child(
+                        div()
+                            .id(ids.appearance)
+                            .debug_selector(move || ids.appearance.into())
+                            .child(appearance),
+                    )
+                    .child(
+                        div()
+                            .id(ids.layout)
+                            .debug_selector(move || ids.layout.into())
+                            .child(layout),
+                    ),
+            )
             .into_any_element()
     }
-}
-
-fn number_field(
-    id: &'static str,
-    label: &'static str,
-    state: &gpui::Entity<InputState>,
-    suffix: &'static str,
-    disabled: bool,
-) -> AnyElement {
-    Field::new()
-        .label(label)
-        .child(
-            PropertyNumericInput::new(id, label, state)
-                .suffix(suffix)
-                .disabled(disabled),
-        )
-        .into_any_element()
-}
-
-fn slider_field(
-    id: &'static str,
-    label: &'static str,
-    state: &gpui::Entity<SliderState>,
-    input: &gpui::Entity<InputState>,
-    disabled: bool,
-) -> AnyElement {
-    Field::new()
-        .label(label)
-        .child(
-            PropertySliderInput::new(label, state, input)
-                .row_id(id)
-                .suffix("%")
-                .disabled(disabled),
-        )
-        .into_any_element()
-}
-
-fn color_field(
-    id: &'static str,
-    label: &'static str,
-    state: &gpui::Entity<ColorPickerState>,
-    disabled: bool,
-    cx: &App,
-) -> AnyElement {
-    let control = if disabled {
-        let value = state
-            .read(cx)
-            .value()
-            .map(opaque_hex)
-            .unwrap_or_else(|| "Unavailable".into());
-        Button::new(id)
-            .debug_selector(move || id.into())
-            .label(value)
-            .disabled(true)
-            .into_any_element()
-    } else {
-        div()
-            .id(id)
-            .debug_selector(move || id.into())
-            .child(property_color_picker(state, label))
-            .into_any_element()
-    };
-    Field::new().label(label).child(control).into_any_element()
 }
 
 fn opaque_hex(color: gpui::Hsla) -> String {

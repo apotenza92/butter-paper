@@ -3,23 +3,23 @@
 
 use crate::annotation_model::{MarkupId, MeasurementPathKind, RectangleAppearance, VertexPathKind};
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertySliderInput, canonical_picker_opacity, format_property_number,
-    format_property_percentage, parse_property_percentage, property_color_picker,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertySliderInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
+    property_lock_toggle, property_row, property_slider_row, subscribe_property_color,
 };
 use gpui::{
-    AnyElement, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
     Disableable as _,
-    accordion::Accordion,
-    button::Button,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
+    color_picker::ColorPickerState,
+    h_flex,
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
     switch::Switch,
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 use crate::document_workspace::DocumentId;
@@ -29,12 +29,9 @@ pub const VERTEX_PATH_INSPECTOR_LOCKED_ID: &str = "vertex-path-property-inspecto
 pub const VERTEX_PATH_INSPECTOR_MEASURE_ID: &str = "vertex-path-property-inspector-measure";
 pub const VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID: &str =
     "vertex-path-property-inspector-stroke-color";
-pub const VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID: &str =
-    "vertex-path-property-inspector-apply-stroke";
 pub const VERTEX_PATH_INSPECTOR_WIDTH_ID: &str = "vertex-path-property-inspector-width";
 pub const VERTEX_PATH_INSPECTOR_OPACITY_ID: &str = "vertex-path-property-inspector-opacity";
 pub const VERTEX_PATH_INSPECTOR_FILL_COLOR_ID: &str = "vertex-path-property-inspector-fill-color";
-pub const VERTEX_PATH_INSPECTOR_APPLY_FILL_ID: &str = "vertex-path-property-inspector-apply-fill";
 pub const VERTEX_PATH_INSPECTOR_NO_FILL_ID: &str = "vertex-path-property-inspector-no-fill";
 const VERTEX_PATH_INSPECTOR_HEADER_ID: &str = "vertex-path-property-inspector-header";
 const VERTEX_PATH_INSPECTOR_SCROLL_ID: &str = "vertex-path-property-inspector-scroll";
@@ -130,14 +127,12 @@ pub struct VertexPathPropertyInspector {
     syncing: bool,
     open: bool,
     embedded: bool,
-    open_sections: [bool; 2],
     width: gpui::Entity<InputState>,
     width_slider: gpui::Entity<SliderState>,
     opacity: gpui::Entity<SliderState>,
     opacity_input: gpui::Entity<InputState>,
     stroke_color: gpui::Entity<ColorPickerState>,
     fill_color: gpui::Entity<ColorPickerState>,
-    fill_preview_available: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -172,7 +167,7 @@ impl VertexPathPropertyInspector {
             ColorPickerState::new(window, cx).default_value(try_parse_color("#ffffff").unwrap())
         });
         let opacity_input_for_slider = opacity_input.clone();
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             crate::property_controls::subscribe_property_slider(
                 &width_slider,
                 &width,
@@ -237,31 +232,28 @@ impl VertexPathPropertyInspector {
                     this.emit_patch(VertexPathPropertyPatch::Opacity(opacity), cx);
                 },
             ),
-            cx.subscribe(&stroke_color, |this, _, _: &ColorPickerEvent, cx| {
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
-            cx.subscribe(&fill_color, |this, _, _: &ColorPickerEvent, cx| {
-                if !this.syncing {
-                    this.fill_preview_available = true;
-                    cx.notify();
-                }
-            }),
         ];
+        subscriptions.extend(subscribe_property_color(
+            &stroke_color,
+            cx,
+            |this: &mut Self, cx| this.apply_color(false, cx),
+        ));
+        subscriptions.extend(subscribe_property_color(
+            &fill_color,
+            cx,
+            |this: &mut Self, cx| this.apply_color(true, cx),
+        ));
         Self {
             snapshot: None,
             syncing: false,
             open: false,
             embedded: false,
-            open_sections: [true, true],
             width,
             width_slider,
             opacity,
             opacity_input,
             stroke_color,
             fill_color,
-            fill_preview_available: false,
             _subscriptions: subscriptions,
         }
     }
@@ -333,7 +325,6 @@ impl VertexPathPropertyInspector {
         fill.a = snapshot.appearance.fill_opacity() as f32;
         self.fill_color
             .update(cx, |state, cx| state.set_value(fill, window, cx));
-        self.fill_preview_available = false;
         self.opacity.update(cx, |state, cx| {
             state.set_value((snapshot.appearance.opacity() * 100.) as f32, window, cx)
         });
@@ -349,9 +340,6 @@ impl VertexPathPropertyInspector {
         cx.notify();
     }
     fn apply_color(&mut self, fill: bool, cx: &mut Context<Self>) {
-        if fill && !self.fill_preview_available {
-            return;
-        }
         let state = if fill {
             &self.fill_color
         } else {
@@ -375,9 +363,6 @@ impl VertexPathPropertyInspector {
             }
         };
         self.emit_patch(patch, cx);
-        if fill {
-            self.fill_preview_available = false;
-        }
     }
     fn emit_patch(&mut self, patch: VertexPathPropertyPatch, cx: &mut Context<Self>) {
         let Some(snapshot) = self.snapshot.as_ref() else {
@@ -412,203 +397,144 @@ impl Render for VertexPathPropertyInspector {
                 .into_any_element();
         };
         let disabled = snapshot.mutation_disabled || snapshot.locked;
-        let disabled_reason = if snapshot.locked {
-            "locked"
-        } else {
-            "unavailable while the document is busy"
-        };
         let weak = cx.entity().downgrade();
-        let weak_lock = weak.clone();
-        let weak_measure = weak.clone();
-        let weak_stroke = weak.clone();
-        let weak_fill = weak.clone();
-        let weak_none = weak.clone();
-        let weak_sections = weak.clone();
-        let details = v_flex()
-            .gap_3()
-            .child(
-                Field::new()
-                    .label("Type")
-                    .child(div().child(snapshot.kind.label())),
-            )
-            .child(
-                Field::new().child(
-                    div()
-                        .id(VERTEX_PATH_INSPECTOR_MEASURE_ID)
-                        .debug_selector(|| VERTEX_PATH_INSPECTOR_MEASURE_ID.into())
-                        .child(
-                            Switch::new("vertex-path-property-inspector-measure-switch")
-                                .label("Measure")
-                                .checked(snapshot.kind.measures())
-                                .disabled(disabled)
-                                .tooltip(if snapshot.kind.supports_fill() {
-                                    "Measure its area with the page scale (Area)"
-                                } else {
-                                    "Measure its total length with the page scale (Polylength)"
-                                })
-                                .on_click(move |measure, _, cx| {
-                                    let _ = weak_measure.update(cx, |this, cx| {
-                                        this.emit_patch(
-                                            VertexPathPropertyPatch::Measure(*measure),
-                                            cx,
-                                        )
-                                    });
-                                }),
-                        ),
-                ),
-            )
-            .child(
-                Field::new().child(
-                    div()
-                        .id(VERTEX_PATH_INSPECTOR_LOCKED_ID)
-                        .debug_selector(|| VERTEX_PATH_INSPECTOR_LOCKED_ID.into())
-                        .child(
-                            Switch::new("vertex-path-property-inspector-locked-switch")
-                                .label("Locked")
-                                .checked(snapshot.locked)
-                                .disabled(snapshot.mutation_disabled)
-                                .on_click(move |locked, _, cx| {
-                                    let _ = weak_lock.update(cx, |this, cx| {
-                                        this.emit_patch(
-                                            VertexPathPropertyPatch::Locked(*locked),
-                                            cx,
-                                        )
-                                    });
-                                }),
-                        ),
-                ),
+        let content_only = self.embedded
+            && matches!(
+                snapshot.kind,
+                PathPropertyKind::Polylength | PathPropertyKind::Area
             );
-        let mut appearance = v_flex()
-            .gap_3()
-            .child(color_control(
-                VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID,
-                "Colour",
-                &self.stroke_color,
-                disabled,
-                disabled_reason,
-            ))
-            .child(
+        let mut lock = Some({
+            let weak = weak.clone();
+            property_lock_toggle(
+                VERTEX_PATH_INSPECTOR_LOCKED_ID,
+                snapshot.locked,
+                snapshot.mutation_disabled,
+                move |locked, _, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.emit_patch(VertexPathPropertyPatch::Locked(locked), cx)
+                    });
+                },
+            )
+        });
+        let measure = {
+            let weak = weak.clone();
+            property_row(
+                "Measure",
                 div()
-                    .id(VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID)
-                    .debug_selector(|| VERTEX_PATH_INSPECTOR_APPLY_STROKE_ID.into())
+                    .id(VERTEX_PATH_INSPECTOR_MEASURE_ID)
+                    .debug_selector(|| VERTEX_PATH_INSPECTOR_MEASURE_ID.into())
                     .child(
-                        Button::new("vertex-path-apply-stroke-button")
-                            .label("Apply")
+                        Switch::new("vertex-path-property-inspector-measure-switch")
+                            .checked(snapshot.kind.measures())
                             .disabled(disabled)
-                            .on_click(move |_, _, cx| {
-                                let _ =
-                                    weak_stroke.update(cx, |this, cx| this.apply_color(false, cx));
+                            .tooltip(if snapshot.kind.supports_fill() {
+                                "Measure its area with the page scale (Area)"
+                            } else {
+                                "Measure its total length with the page scale (Polylength)"
+                            })
+                            .on_click(move |measure, _, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.emit_patch(VertexPathPropertyPatch::Measure(*measure), cx)
+                                });
                             }),
                     ),
             )
-            .child(
-                Field::new().label("Line width").child(
-                    PropertySliderInput::new("Line width", &self.width_slider, &self.width)
-                        .input_id(VERTEX_PATH_INSPECTOR_WIDTH_ID)
-                        .suffix("pt")
-                        .disabled(disabled),
-                ),
-            )
-            .child(
-                Field::new().label("Opacity").child(
-                    PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
-                        .slider_id(VERTEX_PATH_INSPECTOR_OPACITY_ID)
-                        .input_id(VERTEX_PATH_INSPECTOR_OPACITY_INPUT_ID)
-                        .suffix("%")
-                        .disabled(disabled),
-                ),
-            );
-        if snapshot.kind.supports_fill() {
-            let fill_preview_available = self.fill_preview_available;
-            let has_fill = snapshot.appearance.fill_color().is_some();
-            appearance = appearance
-                .child(color_control(
-                    VERTEX_PATH_INSPECTOR_FILL_COLOR_ID,
-                    "Fill",
-                    &self.fill_color,
-                    disabled,
-                    disabled_reason,
-                ))
-                .child(
-                    div()
-                        .id(VERTEX_PATH_INSPECTOR_APPLY_FILL_ID)
-                        .debug_selector(|| VERTEX_PATH_INSPECTOR_APPLY_FILL_ID.into())
-                        .child(
-                            Button::new("vertex-path-apply-fill-button")
-                                .label("Apply")
-                                .disabled(disabled || !fill_preview_available)
-                                .on_click(move |_, _, cx| {
-                                    let _ =
-                                        weak_fill.update(cx, |this, cx| this.apply_color(true, cx));
-                                }),
-                        ),
-                )
-                .child(
-                    Button::new(VERTEX_PATH_INSPECTOR_NO_FILL_ID)
-                        .debug_selector(|| VERTEX_PATH_INSPECTOR_NO_FILL_ID.into())
-                        .label("No fill")
-                        .disabled(disabled || !has_fill)
-                        .on_click(move |_, _, cx| {
-                            let _ = weak_none.update(cx, |this, cx| {
-                                this.emit_patch(VertexPathPropertyPatch::FillColor(None), cx)
-                            });
-                        }),
-                );
+        };
+        let mut top = PropertyGroup::new().row(measure);
+        if content_only && let Some(lock) = lock.take() {
+            // No header here, so the lock sits with the other rows.
+            top = top.row(property_row("Locked", lock));
         }
-        let open = self.open_sections;
-        let accordion = Accordion::new("vertex-path-property-inspector-sections")
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(open[0]).title("Details").child(details))
-            .item(|item| item.open(open[1]).title("Appearance").child(appearance))
-            .on_toggle_click(move |open, _, cx| {
-                let _ = weak_sections.update(cx, |this, cx| {
-                    this.open_sections = [open.contains(&0), open.contains(&1)];
-                    cx.notify();
-                });
-            });
-        PropertyInspectorPanel::new(
+        let mut appearance = PropertyGroup::new().row(property_row(
+            "Line",
+            property_color_and_size(
+                PropertyColor::new(
+                    VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID,
+                    "Line colour",
+                    &self.stroke_color,
+                )
+                .disabled(disabled),
+                PropertyNumericInput::new(
+                    VERTEX_PATH_INSPECTOR_WIDTH_ID,
+                    "Line width",
+                    &self.width,
+                )
+                .suffix("pt")
+                .disabled(disabled),
+            ),
+        ));
+        appearance = appearance.row(property_slider_row(
+            "Opacity",
+            PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
+                .slider_id(VERTEX_PATH_INSPECTOR_OPACITY_ID)
+                .input_id(VERTEX_PATH_INSPECTOR_OPACITY_INPUT_ID)
+                .suffix("%")
+                .disabled(disabled),
+        ));
+        if snapshot.kind.supports_fill() {
+            let has_fill = snapshot.appearance.fill_color().is_some();
+            let weak = weak.clone();
+            appearance = appearance.row(property_row(
+                "Fill",
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        div()
+                            .id(VERTEX_PATH_INSPECTOR_NO_FILL_ID)
+                            .debug_selector(|| VERTEX_PATH_INSPECTOR_NO_FILL_ID.into())
+                            .flex_none()
+                            .child(
+                                Switch::new("vertex-path-property-inspector-fill-switch")
+                                    .checked(has_fill)
+                                    .disabled(disabled)
+                                    .tooltip(if has_fill {
+                                        "Remove the fill"
+                                    } else {
+                                        "Fill it"
+                                    })
+                                    .on_click(move |fill, _, cx| {
+                                        let _ = weak.update(cx, |this, cx| {
+                                            if *fill {
+                                                this.apply_color(true, cx)
+                                            } else {
+                                                this.emit_patch(
+                                                    VertexPathPropertyPatch::FillColor(None),
+                                                    cx,
+                                                )
+                                            }
+                                        });
+                                    }),
+                            ),
+                    )
+                    // Picking a colour fills it.
+                    .child(
+                        PropertyColor::new(
+                            VERTEX_PATH_INSPECTOR_FILL_COLOR_ID,
+                            "Fill colour",
+                            &self.fill_color,
+                        )
+                        .disabled(disabled),
+                    ),
+            ));
+        }
+        let mut panel = PropertyInspectorPanel::new(
             VERTEX_PATH_PROPERTY_INSPECTOR_ID,
             VERTEX_PATH_INSPECTOR_HEADER_ID,
             VERTEX_PATH_INSPECTOR_SCROLL_ID,
-            format!("{} properties", snapshot.kind.label()),
+            snapshot.kind.label(),
         )
-        .content_only(
-            self.embedded
-                && matches!(
-                    snapshot.kind,
-                    PathPropertyKind::Polylength | PathPropertyKind::Area
-                ),
-        )
-        .child(accordion)
-        .into_any_element()
+        .content_only(content_only);
+        if let Some(lock) = lock {
+            panel = panel.header_lock(lock);
+        }
+        panel
+            .child(property_body().child(top).child(appearance))
+            .into_any_element()
     }
 }
 
-fn color_control(
-    id: &'static str,
-    label: &'static str,
-    state: &gpui::Entity<ColorPickerState>,
-    disabled: bool,
-    disabled_reason: &'static str,
-) -> AnyElement {
-    Field::new()
-        .label(label)
-        .child(if disabled {
-            Button::new(id)
-                .debug_selector(move || id.into())
-                .label(format!("{label}: {disabled_reason}"))
-                .disabled(true)
-                .into_any_element()
-        } else {
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .child(property_color_picker(state, label))
-                .into_any_element()
-        })
-        .into_any_element()
-}
 fn patch_matches(patch: &VertexPathPropertyPatch, snapshot: &VertexPathPropertySnapshot) -> bool {
     match patch {
         VertexPathPropertyPatch::Locked(v) => snapshot.locked == *v,

@@ -4,23 +4,20 @@
 
 use crate::annotation_model::{LineKind, MarkupId, StraightLineAppearance};
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertySliderInput, canonical_picker_opacity, format_property_number,
-    format_property_percentage, parse_property_percentage, property_color_picker,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertySliderInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
+    property_lock_toggle, property_row, property_slider_row, subscribe_property_color,
 };
 use gpui::{
-    AnyElement, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
-    Disableable as _,
-    accordion::Accordion,
-    button::Button,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
+    color_picker::ColorPickerState,
     input::{InputEvent, InputState},
     slider::{SliderEvent, SliderState},
-    switch::Switch,
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 use crate::document_workspace::DocumentId;
@@ -29,8 +26,6 @@ pub const STRAIGHT_LINE_PROPERTY_INSPECTOR_ID: &str = "straight-line-property-in
 pub const STRAIGHT_LINE_INSPECTOR_LOCKED_ID: &str = "straight-line-property-inspector-locked";
 pub const STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID: &str =
     "straight-line-property-inspector-color-trigger";
-pub const STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID: &str =
-    "straight-line-property-inspector-apply-color";
 pub const STRAIGHT_LINE_INSPECTOR_WIDTH_ID: &str = "straight-line-property-inspector-width";
 pub const STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID: &str =
     "straight-line-property-inspector-opacity-track";
@@ -73,7 +68,6 @@ pub struct StraightLinePropertyInspector {
     syncing: bool,
     open: bool,
     embedded: bool,
-    open_sections: [bool; 2],
     width: gpui::Entity<InputState>,
     width_slider: gpui::Entity<SliderState>,
     opacity: gpui::Entity<SliderState>,
@@ -112,7 +106,7 @@ impl StraightLinePropertyInspector {
             )
         });
         let opacity_input_for_slider = opacity_input.clone();
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             crate::property_controls::subscribe_property_slider(
                 &width_slider,
                 &width,
@@ -175,19 +169,17 @@ impl StraightLinePropertyInspector {
                     this.emit_patch(StraightLinePropertyPatch::Opacity(opacity), cx);
                 },
             ),
-            cx.subscribe(&color, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(_) = event;
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
         ];
+        subscriptions.extend(subscribe_property_color(
+            &color,
+            cx,
+            |this: &mut Self, cx| this.apply_preview_color(cx),
+        ));
         Self {
             snapshot: None,
             syncing: false,
             open: false,
             embedded: false,
-            open_sections: [true, true],
             width,
             width_slider,
             opacity,
@@ -326,131 +318,54 @@ impl Render for StraightLinePropertyInspector {
         };
         let disabled = snapshot.mutation_disabled || snapshot.locked;
         let lock_control = cx.entity().downgrade();
-        let section_control = cx.entity().downgrade();
-        let details = v_flex()
-            .gap_3()
-            .child(
-                Field::new()
-                    .label("Type")
-                    .child(div().child(match snapshot.kind {
-                        LineKind::Line => "Line",
-                        LineKind::Arrow => "Arrow",
-                    })),
-            )
-            .child(
-                Field::new().child(
-                    div()
-                        .id(STRAIGHT_LINE_INSPECTOR_LOCKED_ID)
-                        .debug_selector(|| STRAIGHT_LINE_INSPECTOR_LOCKED_ID.into())
-                        .child(
-                            Switch::new("straight-line-property-inspector-locked-switch")
-                                .label("Locked")
-                                .checked(snapshot.locked)
-                                .disabled(snapshot.mutation_disabled)
-                                .on_click(move |locked, _, cx| {
-                                    let _ = lock_control.update(cx, |inspector, cx| {
-                                        inspector.emit_patch(
-                                            StraightLinePropertyPatch::Locked(*locked),
-                                            cx,
-                                        );
-                                    });
-                                }),
-                        ),
-                ),
-            );
-        let appearance = v_flex()
-            .gap_3()
-            .child(color_field(
-                &self.color,
-                snapshot.appearance.stroke_color(),
-                disabled,
-                cx.entity().downgrade(),
-            ))
-            .child(
-                Field::new().label("Line width").child(
-                    PropertySliderInput::new("Line width", &self.width_slider, &self.width)
-                        .input_id(STRAIGHT_LINE_INSPECTOR_WIDTH_ID)
-                        .suffix("pt")
-                        .disabled(disabled),
-                ),
-            )
-            .child(
-                Field::new().label("Opacity").child(
-                    PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
-                        .slider_id(STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID)
-                        .input_id(STRAIGHT_LINE_INSPECTOR_OPACITY_INPUT_ID)
-                        .suffix("%")
-                        .disabled(disabled),
-                ),
-            );
-        let open_sections = self.open_sections;
-        let accordion = Accordion::new("straight-line-property-inspector-sections")
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(open_sections[0]).title("Details").child(details))
-            .item(|item| {
-                item.open(open_sections[1])
-                    .title("Appearance")
-                    .child(appearance)
-            })
-            .on_toggle_click(move |open, _, cx| {
-                let _ = section_control.update(cx, |inspector, cx| {
-                    inspector.open_sections = [open.contains(&0), open.contains(&1)];
-                    cx.notify();
-                });
-            });
+        let line = property_row(
+            "Line",
+            property_color_and_size(
+                PropertyColor::new(
+                    STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID,
+                    "Line colour",
+                    &self.color,
+                )
+                .disabled(disabled),
+                PropertyNumericInput::new(
+                    STRAIGHT_LINE_INSPECTOR_WIDTH_ID,
+                    "Line width",
+                    &self.width,
+                )
+                .suffix("pt")
+                .disabled(disabled),
+            ),
+        );
+        let opacity = property_slider_row(
+            "Opacity",
+            PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
+                .slider_id(STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID)
+                .input_id(STRAIGHT_LINE_INSPECTOR_OPACITY_INPUT_ID)
+                .suffix("%")
+                .disabled(disabled),
+        );
         PropertyInspectorPanel::new(
             STRAIGHT_LINE_PROPERTY_INSPECTOR_ID,
             STRAIGHT_LINE_INSPECTOR_HEADER_ID,
             STRAIGHT_LINE_INSPECTOR_SCROLL_ID,
             match snapshot.kind {
-                LineKind::Line => "Line properties",
-                LineKind::Arrow => "Arrow properties",
+                LineKind::Line => "Line",
+                LineKind::Arrow => "Arrow",
             },
         )
-        .child(accordion)
+        .header_lock(property_lock_toggle(
+            STRAIGHT_LINE_INSPECTOR_LOCKED_ID,
+            snapshot.locked,
+            snapshot.mutation_disabled,
+            move |locked, _, cx| {
+                let _ = lock_control.update(cx, |inspector, cx| {
+                    inspector.emit_patch(StraightLinePropertyPatch::Locked(locked), cx);
+                });
+            },
+        ))
+        .child(property_body().child(PropertyGroup::new().row(line).row(opacity)))
         .into_any_element()
     }
-}
-
-fn color_field(
-    state: &gpui::Entity<ColorPickerState>,
-    canonical_color: &str,
-    disabled: bool,
-    inspector: gpui::WeakEntity<StraightLinePropertyInspector>,
-) -> AnyElement {
-    let control = if disabled {
-        Button::new(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID)
-            .debug_selector(|| STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID.into())
-            .label(format!("Colour: {canonical_color}"))
-            .disabled(true)
-            .into_any_element()
-    } else {
-        div()
-            .id(STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID)
-            .debug_selector(|| STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID.into())
-            .child(property_color_picker(state, "Colour"))
-            .into_any_element()
-    };
-    Field::new()
-        .label("Colour")
-        .child(
-            div().child(control).child(
-                div()
-                    .id(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
-                    .debug_selector(|| STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID.into())
-                    .child(
-                        Button::new("straight-line-property-inspector-apply-color-button")
-                            .label("Apply colour")
-                            .disabled(disabled)
-                            .on_click(move |_, _, cx| {
-                                let _ = inspector
-                                    .update(cx, |inspector, cx| inspector.apply_preview_color(cx));
-                            }),
-                    ),
-            ),
-        )
-        .into_any_element()
 }
 
 fn rgb_hex(color: gpui::Hsla) -> String {

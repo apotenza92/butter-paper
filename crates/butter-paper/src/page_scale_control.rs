@@ -1132,12 +1132,19 @@ pub fn page_scale_panel(
     }
     let viewport = window.viewport_size();
     let margin = px(8.);
+    let width = px(480.).min(viewport.width - margin * 2.);
+    // The Scale sits at the toolbar's trailing end, so the panel drops from it
+    // ending at its right edge.
     let position = anchor.map_or_else(
         || point(margin, px(96.)),
-        |anchor| point(anchor.left(), anchor.bottom() + px(4.)),
+        |anchor| {
+            point(
+                (anchor.right() - width).max(margin),
+                anchor.bottom() + px(4.),
+            )
+        },
     );
     let max_height = (viewport.height - position.y - margin).max(px(160.));
-    let width = px(480.).min(viewport.width - margin * 2.);
     let content = panel_content(entity, cx)?;
     let focus = entity.read(cx).focus_handle.clone();
     let escape = entity.downgrade();

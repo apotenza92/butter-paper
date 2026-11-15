@@ -825,11 +825,14 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
     let viewport = cx
         .debug_bounds("document-workspace-native-session-tab-bar")
         .unwrap();
+    // Stock segmented tabs: the track sits at the strip's 12px inset, its
+    // first tab inside the track's 4px padding, and tabs 2px apart on it.
     let gap = second_bounds.left() - first_bounds.right();
+    assert_eq!(gap, px(2.), "segmented tabs sit 2px apart on their track");
     assert_eq!(
         first_bounds.left() - strip.left(),
-        gap,
-        "leading inset must match tab gap"
+        px(12. + 4.),
+        "the track sits at the strip's inset, the first tab in its padding"
     );
     assert!(
         viewport.right() > second_bounds.right(),
@@ -840,7 +843,7 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
             - cx.debug_bounds("document-tab-template-picker")
                 .unwrap()
                 .right(),
-        gap,
+        px(12.),
         "actions stay pinned to trailing inset even with two tabs"
     );
     assert!(
@@ -870,14 +873,18 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
                 butter_paper::document_workspace::document_session_close_id(id).into_boxed_str(),
             );
             let close = cx.debug_bounds(close_id).expect("close rendered");
+            // The segmented tab's raised area is 24px high; the close
+            // button sits in a square lane at its end, equally clear of it
+            // at the top, bottom and trailing edge.
+            let raised = px(24.);
             assert_eq!(
                 close.size.width, close.size.height,
-                "circular close needs a square frame"
+                "close needs a square frame"
             );
-            assert_eq!(close.size.width, px(24.), "stock small close target");
+            assert_eq!(close.size.width, px(20.), "stock extra-small close target");
             assert_eq!(
                 tab.right() - close.right(),
-                (tab.size.height - close.size.height) / 2.,
+                (raised - close.size.height) / 2.,
                 "close has equal top/bottom/trailing inset"
             );
             assert!(
@@ -885,8 +892,8 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
                 "close must share the tab's vertical centre"
             );
             assert!(
-                (close.center().x - (tab.right() - tab.size.height / 2.)).abs() <= px(0.5),
-                "close must be concentric with the tab end cap: tab={tab:?}, close={close:?}"
+                (close.center().x - (tab.right() - raised / 2.)).abs() <= px(0.5),
+                "close must sit centred in the raised area's end: tab={tab:?}, close={close:?}"
             );
             let label = cx.debug_bounds(label_id).expect("label rendered");
             cx.simulate_mouse_move(tab.center(), None, gpui::Modifiers::default());
@@ -929,6 +936,74 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
         cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
+}
+
+#[gpui::test]
+fn document_tabs_sit_on_a_segmented_track_that_hugs_them_and_scrolls_when_full(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::document_workspace::{
+        DOCUMENT_SESSION_TAB_TRACK_ID, document_session_close_id, document_session_tab_id,
+    };
+    cx.update(gpui_component::init);
+    let workspace =
+        cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
+    let ids = (0..2)
+        .map(|ix| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.open_path(PathBuf::from(format!("/tmp/track-sheet-{ix}.pdf")), cx)
+            })
+        })
+        .collect::<Vec<_>>();
+    cx.run_until_parked();
+    let observed = workspace.clone();
+    let (_, cx) = cx.add_window_view(move |window, cx| Root::new(workspace, window, cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let viewport = cx
+        .debug_bounds("document-workspace-native-session-tab-bar")
+        .unwrap();
+    let track = cx.debug_bounds(DOCUMENT_SESSION_TAB_TRACK_ID).unwrap();
+    let tab_bounds = |cx: &mut gpui::VisualTestContext, id| {
+        let selector: &'static str = Box::leak(document_session_tab_id(id).into_boxed_str());
+        cx.debug_bounds(selector).unwrap()
+    };
+    let first = tab_bounds(cx, ids[0]);
+    let last = tab_bounds(cx, ids[1]);
+    // shadcn's TabsList: the track is as wide as its tabs, padded 4px.
+    assert_eq!(first.left() - track.left(), px(4.));
+    assert_eq!(track.right() - last.right(), px(4.));
+    assert!(
+        track.right() < viewport.right() - px(100.),
+        "a few tabs leave the strip's spare room outside the track"
+    );
+    // Closing stays a separate target in the tab.
+    let close: &'static str = Box::leak(document_session_close_id(ids[1]).into_boxed_str());
+    cx.simulate_mouse_move(last.center(), None, gpui::Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let close = cx.debug_bounds(close).unwrap();
+    assert!(close.left() > last.center().x && close.right() <= last.right());
+
+    // Many tabs: the track takes the strip and scrolls inside it.
+    for ix in 2..14 {
+        observed.update(cx, |workspace, cx| {
+            workspace.open_path(PathBuf::from(format!("/tmp/track-sheet-{ix}.pdf")), cx)
+        });
+    }
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let viewport = cx
+        .debug_bounds("document-workspace-native-session-tab-bar")
+        .unwrap();
+    let track = cx.debug_bounds(DOCUMENT_SESSION_TAB_TRACK_ID).unwrap();
+    assert!(
+        track.left() >= viewport.left() && track.right() <= viewport.right(),
+        "the full track stays inside the strip: track={track:?}, strip={viewport:?}"
+    );
+    assert!(
+        cx.debug_bounds("document-tabs-overflow-lane").is_some(),
+        "the overflow menu appears once tabs don't fit"
+    );
 }
 
 #[gpui::test]
@@ -1197,38 +1272,46 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
             let first = cx.debug_bounds("viewer-zoom-controls").unwrap();
             let last = cx.debug_bounds("single-page-view-split").unwrap();
             let content = cx.debug_bounds(VIEWER_TOOLBAR_CONTENT_ID).unwrap();
-            // The Edit PDF switch leads the toolbar: the view controls centre
-            // when there is room for its slot either side of them, follow it
-            // when there is room for it once, and scroll with it otherwise.
+            // Ordered by complexity: the pages, zoom with the page layout,
+            // then the Edit PDF switch. With room, zoom and the layout sit as
+            // far from the pages as from the switches; without, the toolbar
+            // scrolls.
             let edit_pdf = cx.debug_bounds("viewer-edit-pdf").unwrap();
-            let slot = px(16. * butter_paper::viewer_toolbar_strip::EDIT_PDF_SLOT_MIN_REMS);
-            let controls = cx
-                .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
-                .unwrap()
-                .size
-                .width;
+            let layout = cx
+                .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID)
+                .unwrap();
             assert!(
-                edit_pdf.right() <= first.left(),
-                "Edit PDF switch overlaps at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, first={first:?}"
+                layout.right() <= edit_pdf.left() && last.right() <= edit_pdf.left(),
+                "Edit PDF switch overlaps at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, layout={layout:?}"
             );
-            if controls + slot * 2. <= toolbar.size.width {
-                // The controls' frames included.
-                let centre = cx
-                    .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
-                    .unwrap()
-                    .center()
-                    .x;
+            if content.size.width <= toolbar.size.width {
                 assert!(
-                    (centre - toolbar.center().x).abs() <= px(0.5),
-                    "toolbar controls not centred at width {width}: toolbar={toolbar:?}, content={content:?}, first={first:?}, last={last:?}",
+                    edit_pdf.right() <= toolbar.right(),
+                    "Edit PDF outside the toolbar at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}"
                 );
-            } else if controls + slot <= toolbar.size.width {
-                assert!(
-                    edit_pdf.left() >= toolbar.left() && last.right() <= toolbar.right(),
-                    "toolbar controls do not follow the Edit PDF switch at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, last={last:?}",
-                );
+                if toolbar.size.width
+                    >= px(16.
+                        * butter_paper::viewer_toolbar_strip::viewer_toolbar_rems(
+                            butter_paper::viewer_toolbar_strip::ViewerToolbarFit::Full,
+                            false,
+                            4,
+                        ))
+                {
+                    let pages = cx
+                        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID)
+                        .unwrap();
+                    let zoom = cx
+                        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_ZOOM_GROUP_ID)
+                        .unwrap();
+                    let before = zoom.left() - pages.right();
+                    let after = edit_pdf.left() - layout.right();
+                    assert!(
+                        (before - after).abs() <= px(1.),
+                        "zoom and layout not midway at width {width}: {before:?} vs {after:?}, first={first:?}"
+                    );
+                }
             } else {
-                let reveal_delta = (last.right() - toolbar.right()).max(px(0.));
+                let reveal_delta = (edit_pdf.right() - toolbar.right()).max(px(0.));
                 cx.simulate_event(gpui::ScrollWheelEvent {
                     position: toolbar.center(),
                     delta: gpui::ScrollDelta::Pixels(point(
@@ -1239,11 +1322,11 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
                     touch_phase: gpui::TouchPhase::Moved,
                 });
                 cx.update(|window, cx| window.draw(cx).clear(cx));
-                let revealed = cx.debug_bounds("single-page-view-split").unwrap();
+                let revealed = cx.debug_bounds("viewer-edit-pdf").unwrap();
                 let scroll = cx.debug_bounds("viewer-toolbar-scroll").unwrap();
                 assert!(
                     revealed.right() <= toolbar.right(),
-                    "vertical wheel must reveal final toolbar dropdown at width {width}: toolbar={toolbar:?}, scroll={scroll:?}, content={content:?}, revealed={revealed:?}",
+                    "vertical wheel must reveal the trailing switch at width {width}: toolbar={toolbar:?}, scroll={scroll:?}, content={content:?}, revealed={revealed:?}",
                 );
                 assert!(
                     revealed.left() >= toolbar.left(),

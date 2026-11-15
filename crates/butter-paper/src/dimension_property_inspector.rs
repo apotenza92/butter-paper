@@ -6,25 +6,24 @@ use crate::annotation_model::{
     DimensionAppearance, MarkupId, StraightLineAppearance, TextBoxStyle,
 };
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertyNumericInput, PropertySliderInput, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage,
-    property_color_picker,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertySliderInput, PropertyTextEditEvent, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
+    property_lock_toggle, property_number, property_row, property_slider_row,
+    subscribe_property_color,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _,
 };
 use gpui_component::{
     Disableable as _,
-    accordion::Accordion,
     button::Button,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
-    input::{InputEvent, InputState},
+    color_picker::ColorPickerState,
+    input::{Input, InputEvent, InputState},
     slider::{SliderEvent, SliderState},
     switch::Switch,
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 use crate::document_workspace::DocumentId;
@@ -38,6 +37,7 @@ pub const DIMENSION_INSPECTOR_FONT_SIZE_ID: &str = "dimension-property-font-size
 pub const DIMENSION_INSPECTOR_OPACITY_ID: &str = "dimension-property-opacity";
 pub const DIMENSION_INSPECTOR_STROKE_COLOR_ID: &str = "dimension-property-stroke-color";
 pub const DIMENSION_INSPECTOR_TEXT_COLOR_ID: &str = "dimension-property-text-color";
+pub const DIMENSION_INSPECTOR_TEXT_ID: &str = "dimension-property-text";
 const DIMENSION_INSPECTOR_HEADER_ID: &str = "dimension-property-inspector-header";
 const DIMENSION_INSPECTOR_SCROLL_ID: &str = "dimension-property-inspector-scroll";
 const DIMENSION_INSPECTOR_OPACITY_INPUT_ID: &str = "dimension-property-opacity-input";
@@ -87,7 +87,9 @@ pub struct DimensionPropertyInspector {
     syncing: bool,
     open: bool,
     embedded: bool,
-    open_sections: [bool; 2],
+    /// The Dimension's text as last synced, once the workspace has given it.
+    content_baseline: Option<String>,
+    content: gpui::Entity<InputState>,
     offset: gpui::Entity<InputState>,
     width: gpui::Entity<InputState>,
     width_slider: gpui::Entity<SliderState>,
@@ -142,7 +144,7 @@ impl DimensionPropertyInspector {
             )
         });
         let opacity_input_for_slider = opacity_input.clone();
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             crate::property_controls::subscribe_property_slider(
                 &width_slider,
                 &width,
@@ -210,23 +212,35 @@ impl DimensionPropertyInspector {
                     });
                 },
             ),
-            cx.subscribe(&stroke_color, |this, _, _: &ColorPickerEvent, cx| {
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
-            cx.subscribe(&text_color, |this, _, _: &ColorPickerEvent, cx| {
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
         ];
+        // A caption is one line: Enter commits it.
+        let content = cx.new(|cx| InputState::new(window, cx));
+        subscriptions.push(cx.subscribe_in(
+            &content,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    this.emit_content(cx);
+                }
+            },
+        ));
+        subscriptions.extend(subscribe_property_color(
+            &stroke_color,
+            cx,
+            |this: &mut Self, cx| this.apply_color(false, cx),
+        ));
+        subscriptions.extend(subscribe_property_color(
+            &text_color,
+            cx,
+            |this: &mut Self, cx| this.apply_color(true, cx),
+        ));
         Self {
             snapshot: None,
             syncing: false,
             open: false,
             embedded: false,
-            open_sections: [true, true],
+            content_baseline: None,
+            content,
             offset,
             width,
             width_slider,
@@ -255,9 +269,51 @@ impl DimensionPropertyInspector {
         }
     }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.content_baseline = None;
         if self.snapshot.take().is_some() {
             cx.notify();
         }
+    }
+    /// Shows the selected Dimension's text in the Text field. The workspace
+    /// calls this after `sync`, and again whenever the text changes; a
+    /// measured Length shows no Text field.
+    pub fn sync_content(&mut self, content: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.content_baseline.as_deref() == Some(content) {
+            return;
+        }
+        self.syncing = true;
+        self.content.update(cx, |input, cx| {
+            input.set_value(content.to_owned(), window, cx)
+        });
+        self.content_baseline = Some(content.to_owned());
+        self.syncing = false;
+        cx.notify();
+    }
+    pub fn content_input(&self) -> gpui::Entity<InputState> {
+        self.content.clone()
+    }
+    fn emit_content(&mut self, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let content = self.content.read(cx).value().to_string();
+        if self.syncing
+            || snapshot.mutation_disabled
+            || snapshot.locked
+            || self
+                .content_baseline
+                .as_deref()
+                .is_none_or(|baseline| baseline == content)
+        {
+            return;
+        }
+        self.content_baseline = Some(content.clone());
+        cx.emit(PropertyTextEditEvent {
+            document_id: snapshot.document_id,
+            annotation_id: snapshot.annotation_id.clone(),
+            expected_revision: snapshot.expected_revision,
+            content,
+        });
     }
     pub fn sync(
         &mut self,
@@ -376,6 +432,7 @@ impl DimensionPropertyInspector {
 }
 
 impl EventEmitter<DimensionPropertyEvent> for DimensionPropertyInspector {}
+impl EventEmitter<PropertyTextEditEvent> for DimensionPropertyInspector {}
 
 impl Render for DimensionPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -386,59 +443,113 @@ impl Render for DimensionPropertyInspector {
                 .into_any_element();
         };
         let disabled = snapshot.mutation_disabled || snapshot.locked;
-        let lock = cx.entity().downgrade();
-        let measure_switch = cx.entity().downgrade();
-        let stroke = cx.entity().downgrade();
-        let text = cx.entity().downgrade();
-        let details = Field::new().child(
-            div()
-                .id(DIMENSION_INSPECTOR_LOCKED_ID)
-                .debug_selector(|| DIMENSION_INSPECTOR_LOCKED_ID.into())
-                .child(
-                    Switch::new("dimension-property-locked-switch")
-                        .label("Locked")
-                        .checked(snapshot.locked)
-                        .disabled(snapshot.mutation_disabled)
-                        .on_click(move |value, _, cx| {
-                            let _ = lock.update(cx, |this, cx| {
-                                this.emit_patch(DimensionPropertyPatch::Locked(*value), cx)
-                            });
-                        }),
-                ),
+        let font = property_row(
+            "Font",
+            property_color_and_size(
+                PropertyColor::new(
+                    DIMENSION_INSPECTOR_TEXT_COLOR_ID,
+                    "Text colour",
+                    &self.text_color,
+                )
+                .disabled(disabled),
+                PropertyNumericInput::new(
+                    DIMENSION_INSPECTOR_FONT_SIZE_ID,
+                    "Font size",
+                    &self.font_size,
+                )
+                .suffix("pt")
+                .disabled(disabled),
+            ),
         );
-        let details =
-            v_flex()
-                .gap_3()
-                .child(details)
-                .when_some(snapshot.measure, |details, measure| {
-                    details.child(
-                Field::new().child(
-                    div()
-                        .id(DIMENSION_INSPECTOR_MEASURE_ID)
-                        .debug_selector(|| DIMENSION_INSPECTOR_MEASURE_ID.into())
-                        .child(
-                            Switch::new("dimension-property-measure-switch")
-                                .label("Measure")
-                                .checked(measure)
-                                .disabled(disabled)
-                                .tooltip(if measure {
-                                    "Off, the line keeps its measured text, which you can then edit"
-                                } else {
-                                    "Measure the line with the page scale (Length)"
-                                })
-                                .on_click(move |value, _, cx| {
-                                    let _ = measure_switch.update(cx, |this, cx| {
-                                        this.emit_patch(DimensionPropertyPatch::Measure(*value), cx)
-                                    });
-                                }),
-                        ),
-                ),
+        if snapshot.text_only {
+            // A measured path's caption: the path's own panel above already
+            // shows its lock, line and opacity.
+            return PropertyInspectorPanel::new(
+                DIMENSION_PROPERTY_INSPECTOR_ID,
+                DIMENSION_INSPECTOR_HEADER_ID,
+                DIMENSION_INSPECTOR_SCROLL_ID,
+                "Label",
             )
-                });
-        let mut appearance = v_flex().gap_3();
+            .content_only(self.embedded)
+            .child(property_body().child(PropertyGroup::new().row(font)))
+            .into_any_element();
+        }
+        let content_only = self.embedded && !snapshot.show_offset;
+        let mut lock = Some({
+            let lock = cx.entity().downgrade();
+            property_lock_toggle(
+                DIMENSION_INSPECTOR_LOCKED_ID,
+                snapshot.locked,
+                snapshot.mutation_disabled,
+                move |locked, _, cx| {
+                    let _ = lock.update(cx, |this, cx| {
+                        this.emit_patch(DimensionPropertyPatch::Locked(locked), cx)
+                    });
+                },
+            )
+        });
+        let mut top = PropertyGroup::new();
+        if self.content_baseline.is_some() && snapshot.measure != Some(true) {
+            top = top.row(property_row(
+                "Text",
+                div()
+                    .id(DIMENSION_INSPECTOR_TEXT_ID)
+                    .debug_selector(|| DIMENSION_INSPECTOR_TEXT_ID.into())
+                    .w_full()
+                    .child(
+                        Input::new(&self.content)
+                            .aria_label("Text")
+                            .disabled(disabled),
+                    ),
+            ));
+        }
+        if let Some(measure) = snapshot.measure {
+            let measure_switch = cx.entity().downgrade();
+            top = top.row(property_row(
+                "Measure",
+                div()
+                    .id(DIMENSION_INSPECTOR_MEASURE_ID)
+                    .debug_selector(|| DIMENSION_INSPECTOR_MEASURE_ID.into())
+                    .child(
+                        Switch::new("dimension-property-measure-switch")
+                            .checked(measure)
+                            .disabled(disabled)
+                            .tooltip(if measure {
+                                "Off, the line keeps its measured text, which you can then edit"
+                            } else {
+                                "Measure the line with the page scale (Length)"
+                            })
+                            .on_click(move |value, _, cx| {
+                                let _ = measure_switch.update(cx, |this, cx| {
+                                    this.emit_patch(DimensionPropertyPatch::Measure(*value), cx)
+                                });
+                            }),
+                    ),
+            ));
+        }
+        if content_only && let Some(lock) = lock.take() {
+            // No header here, so the lock sits with the other rows.
+            top = top.row(property_row("Locked", lock));
+        }
+        let mut appearance = PropertyGroup::new().row(property_row(
+            "Line",
+            property_color_and_size(
+                PropertyColor::new(
+                    DIMENSION_INSPECTOR_STROKE_COLOR_ID,
+                    "Line colour",
+                    &self.stroke_color,
+                )
+                .disabled(disabled),
+                PropertyNumericInput::new(DIMENSION_INSPECTOR_WIDTH_ID, "Line width", &self.width)
+                    .suffix("pt")
+                    .disabled(disabled),
+            ),
+        ));
+        appearance = appearance.row(font);
         if snapshot.show_offset {
-            appearance = appearance.child(
-                Field::new().label("Offset").child(
+            appearance = appearance.row(property_row(
+                "Offset",
+                property_number(
                     PropertyNumericInput::new(
                         DIMENSION_INSPECTOR_OFFSET_ID,
                         "Offset",
@@ -447,144 +558,46 @@ impl Render for DimensionPropertyInspector {
                     .suffix("pt")
                     .disabled(disabled),
                 ),
-            );
-            if snapshot.caption_moved {
-                let reset = cx.entity().downgrade();
-                appearance = appearance.child(
-                    Field::new().child(
-                        Button::new(DIMENSION_INSPECTOR_RESET_CAPTION_ID)
-                            .debug_selector(|| DIMENSION_INSPECTOR_RESET_CAPTION_ID.into())
-                            .label("Reset caption position")
-                            .outline()
-                            .disabled(disabled)
-                            .on_click(move |_, _, cx| {
-                                let _ = reset.update(cx, |this, cx| {
-                                    this.emit_patch(
-                                        DimensionPropertyPatch::ResetCaptionPosition,
-                                        cx,
-                                    )
-                                });
-                            }),
-                    ),
-                );
-            }
+            ));
         }
-        let appearance = appearance
-            .child(color_field(
-                DIMENSION_INSPECTOR_STROKE_COLOR_ID,
-                "Stroke colour",
-                &self.stroke_color,
-                disabled,
-                stroke,
-                false,
-                cx,
-            ))
-            .child(crate::property_controls::property_pair(
-                color_field(
-                    DIMENSION_INSPECTOR_TEXT_COLOR_ID,
-                    "Text colour",
-                    &self.text_color,
-                    disabled,
-                    text,
-                    true,
-                    cx,
-                ),
-                Field::new().label("Font size").child(
-                    PropertyNumericInput::new(
-                        DIMENSION_INSPECTOR_FONT_SIZE_ID,
-                        "Font size",
-                        &self.font_size,
-                    )
-                    .suffix("pt")
-                    .disabled(disabled),
-                ),
-            ))
-            .child(
-                Field::new().label("Stroke width").child(
-                    PropertySliderInput::new("Stroke width", &self.width_slider, &self.width)
-                        .input_id(DIMENSION_INSPECTOR_WIDTH_ID)
-                        .suffix("pt")
-                        .disabled(disabled),
-                ),
-            )
-            .child(
-                Field::new().label("Opacity").child(
-                    PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
-                        .slider_id(DIMENSION_INSPECTOR_OPACITY_ID)
-                        .input_id(DIMENSION_INSPECTOR_OPACITY_INPUT_ID)
-                        .suffix("%")
-                        .disabled(disabled),
-                ),
-            );
-        if snapshot.text_only {
-            let text = cx.entity().downgrade();
-            let label = crate::property_controls::property_pair(
-                color_field(
-                    DIMENSION_INSPECTOR_TEXT_COLOR_ID,
-                    "Text colour",
-                    &self.text_color,
-                    disabled,
-                    text,
-                    true,
-                    cx,
-                ),
-                Field::new().label("Font size").child(
-                    PropertyNumericInput::new(
-                        DIMENSION_INSPECTOR_FONT_SIZE_ID,
-                        "Font size",
-                        &self.font_size,
-                    )
-                    .suffix("pt")
-                    .disabled(disabled),
-                ),
-            );
-            let section_control = cx.entity().downgrade();
-            return PropertyInspectorPanel::new(
-                DIMENSION_PROPERTY_INSPECTOR_ID,
-                DIMENSION_INSPECTOR_HEADER_ID,
-                DIMENSION_INSPECTOR_SCROLL_ID,
-                "Label properties",
-            )
-            .content_only(self.embedded)
-            .child(
-                Accordion::new("dimension-property-sections")
-                    .bordered(false)
-                    .item(|item| item.open(self.open_sections[1]).title("Label").child(label))
-                    .on_toggle_click(move |indexes, _, cx| {
-                        let _ = section_control.update(cx, |inspector, cx| {
-                            inspector.open_sections[1] = indexes.contains(&0);
-                            cx.notify();
+        appearance = appearance.row(property_slider_row(
+            "Opacity",
+            PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
+                .slider_id(DIMENSION_INSPECTOR_OPACITY_ID)
+                .input_id(DIMENSION_INSPECTOR_OPACITY_INPUT_ID)
+                .suffix("%")
+                .disabled(disabled),
+        ));
+        if snapshot.show_offset && snapshot.caption_moved {
+            let reset = cx.entity().downgrade();
+            appearance = appearance.row(
+                Button::new(DIMENSION_INSPECTOR_RESET_CAPTION_ID)
+                    .debug_selector(|| DIMENSION_INSPECTOR_RESET_CAPTION_ID.into())
+                    .label("Reset text position")
+                    .outline()
+                    .disabled(disabled)
+                    .on_click(move |_, _, cx| {
+                        let _ = reset.update(cx, |this, cx| {
+                            this.emit_patch(DimensionPropertyPatch::ResetCaptionPosition, cx)
                         });
                     }),
-            )
-            .into_any_element();
+            );
         }
-        let open_sections = self.open_sections;
-        let section_control = cx.entity().downgrade();
-        let accordion = Accordion::new("dimension-property-sections")
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(open_sections[0]).title("Details").child(details))
-            .item(|item| {
-                item.open(open_sections[1])
-                    .title("Appearance")
-                    .child(appearance)
-            })
-            .on_toggle_click(move |indexes, _, cx| {
-                let _ = section_control.update(cx, |inspector, cx| {
-                    inspector.open_sections = [indexes.contains(&0), indexes.contains(&1)];
-                    cx.notify();
-                });
-            });
-        PropertyInspectorPanel::new(
+        let mut body = property_body();
+        if !top.is_empty() {
+            body = body.child(top);
+        }
+        let mut panel = PropertyInspectorPanel::new(
             DIMENSION_PROPERTY_INSPECTOR_ID,
             DIMENSION_INSPECTOR_HEADER_ID,
             DIMENSION_INSPECTOR_SCROLL_ID,
-            "Dimension properties",
+            "Dimension",
         )
-        .content_only(self.embedded && !snapshot.show_offset)
-        .child(accordion)
-        .into_any_element()
+        .content_only(self.embedded && !snapshot.show_offset);
+        if let Some(lock) = lock {
+            panel = panel.header_lock(lock);
+        }
+        panel.child(body.child(appearance)).into_any_element()
     }
 }
 
@@ -632,52 +645,6 @@ fn numeric_subscription(
             }
         },
     )
-}
-
-fn color_field(
-    id: &'static str,
-    label: &'static str,
-    state: &gpui::Entity<ColorPickerState>,
-    disabled: bool,
-    inspector: gpui::WeakEntity<DimensionPropertyInspector>,
-    text_color: bool,
-    cx: &App,
-) -> AnyElement {
-    let button_id = if text_color {
-        "dimension-apply-text-color"
-    } else {
-        "dimension-apply-stroke-color"
-    };
-    let picker = if disabled {
-        let value = state
-            .read(cx)
-            .value()
-            .map(rgb_hex)
-            .unwrap_or_else(|| "Unavailable".into());
-        Button::new(button_id)
-            .label(value)
-            .disabled(true)
-            .into_any_element()
-    } else {
-        property_color_picker(state, "Colour").into_any_element()
-    };
-    let apply = (!disabled).then(|| {
-        Button::new(button_id)
-            .label("Apply colour")
-            .on_click(move |_, _, cx| {
-                let _ = inspector.update(cx, |this, cx| this.apply_color(text_color, cx));
-            })
-    });
-    Field::new()
-        .label(label)
-        .child(
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .child(picker)
-                .children(apply),
-        )
-        .into_any_element()
 }
 
 fn rebuild_appearance(

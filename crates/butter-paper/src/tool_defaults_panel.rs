@@ -4,14 +4,15 @@
 //! stock control state, input drafts, disclosure state, and target-bound
 //! intent events.
 
-use crate::dialog_buttons::{dialog_action_button, dialog_close_button};
 use crate::{
     accessible_button::close_icon_button,
     annotation_adapter::AnnotationTool,
     document_workspace::{DocumentId, MeasureFamily},
     property_controls::{
-        PropertyInspectorPanel, PropertyNumericInput, PropertySliderInput, format_property_number,
-        format_property_percentage, property_color_picker,
+        PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+        PropertyResetConfirm, PropertyResetIds, PropertySliderInput, format_property_number,
+        format_property_percentage, property_body, property_color_and_size, property_number,
+        property_row, property_slider_row, subscribe_property_color,
     },
     tool_properties::{ToolProperties, ToolPropertyField, ToolPropertyRange},
 };
@@ -21,12 +22,9 @@ use gpui::{
     Subscription, Window, div,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IndexPath, WindowExt as _,
-    accordion::Accordion,
-    button::{Button, ButtonVariants as _},
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    dialog::DialogFooter,
-    form::Field,
+    ActiveTheme as _, Disableable as _, IndexPath,
+    color_picker::ColorPickerState,
+    h_flex,
     input::{InputEvent, InputState},
     select::{Select, SelectEvent, SelectState},
     slider::{SliderEvent, SliderState},
@@ -67,6 +65,7 @@ pub const TOOL_DEFAULTS_RESET_ID: &str = "tool-defaults-panel-reset";
 pub const TOOL_DEFAULTS_RESET_BUTTON_ID: &str = "tool-defaults-panel-reset-button";
 pub const TOOL_DEFAULTS_RESET_CANCEL_ID: &str = "tool-defaults-panel-reset-cancel";
 pub const TOOL_DEFAULTS_RESET_CONFIRM_ID: &str = "tool-defaults-panel-reset-confirm";
+pub const TOOL_DEFAULTS_RESET_POPOVER_ID: &str = "tool-defaults-panel-reset-popover";
 
 const FALLBACK_COLOUR: &str = "#ff0000";
 const FALLBACK_FILL_COLOUR: &str = "#ffffff";
@@ -109,8 +108,6 @@ pub struct ToolDefaultsPanel {
     measure: Option<bool>,
     disabled: bool,
     syncing: bool,
-    appearance_open: bool,
-    reset_open: bool,
     controls: ToolDefaultControls,
     _subscriptions: Vec<Subscription>,
 }
@@ -128,8 +125,6 @@ impl ToolDefaultsPanel {
             measure: None,
             disabled: false,
             syncing: false,
-            appearance_open: true,
-            reset_open: false,
             controls,
             _subscriptions: subscriptions,
         }
@@ -189,41 +184,44 @@ impl ToolDefaultsPanel {
         let document_id = self.document_id?;
         let panel = cx.entity().downgrade();
         Some(
-            v_flex()
+            div()
                 .id(TOOL_DEFAULTS_MEASURE_ID)
                 .debug_selector(|| TOOL_DEFAULTS_MEASURE_ID.into())
-                .gap_1()
-                .px_3()
-                .pt_3()
-                .pb_2()
                 .child(
-                    Switch::new("tool-defaults-panel-measure-switch")
-                        .label("Measure")
-                        .checked(measure)
-                        .disabled(disabled)
-                        .tooltip(family.measure_hint())
-                        .on_click(move |measure, _, cx| {
-                            let _ = panel.update(cx, |_, cx| {
-                                cx.emit(ToolDefaultsEvent::Measure {
-                                    document_id,
-                                    family,
-                                    measure: *measure,
-                                })
-                            });
-                        }),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(match (family, measure) {
-                            (MeasureFamily::Dimension, true) => {
-                                "Measures where the page has a scale; elsewhere, type its text."
-                            }
-                            (MeasureFamily::Dimension, false) => "Type its text.",
-                            (_, true) => "Measures with the page scale.",
-                            (_, false) => "Turn on to measure with the page scale.",
-                        }),
+                    property_row(
+                        "Measure",
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                Switch::new("tool-defaults-panel-measure-switch")
+                                    .checked(measure)
+                                    .disabled(disabled)
+                                    .tooltip(family.measure_hint())
+                                    .on_click(move |measure, _, cx| {
+                                        let _ = panel.update(cx, |_, cx| {
+                                            cx.emit(ToolDefaultsEvent::Measure {
+                                                document_id,
+                                                family,
+                                                measure: *measure,
+                                            })
+                                        });
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(match (family, measure) {
+                                        (MeasureFamily::Dimension, true) => {
+                                            "Measures where the page has a scale; elsewhere, type its text."
+                                        }
+                                        (MeasureFamily::Dimension, false) => "Type its text.",
+                                        (_, true) => "Measures with the page scale.",
+                                        (_, false) => "Turn on to measure with the page scale.",
+                                    }),
+                            ),
+                    )
+                    .align_top(),
                 )
                 .into_any_element(),
         )
@@ -359,7 +357,7 @@ impl ToolDefaultsPanel {
         let font_family = cx
             .new(|cx| SelectState::new(font_family_items, Some(IndexPath::default()), window, cx));
 
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             numeric_input_subscription(&width, ToolPropertyField::WidthPt, window, cx),
             numeric_slider_subscription(&width_slider, ToolPropertyField::WidthPt, cx),
             numeric_input_subscription(&opacity, ToolPropertyField::Opacity, window, cx),
@@ -376,36 +374,6 @@ impl ToolDefaultsPanel {
                 ToolPropertyField::CloudIntensity,
                 cx,
             ),
-            cx.subscribe(&colour, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(Some(colour)) = event else {
-                    return;
-                };
-                let Some(tool) = this.tool else {
-                    return;
-                };
-                if !ToolProperties::is_applicable(tool, ToolPropertyField::Colour) {
-                    return;
-                }
-                let mut properties = this.properties.clone();
-                properties.colour = rgb_hex(*colour);
-                properties.opacity = f64::from(colour.a);
-                this.emit_change(properties, cx);
-            }),
-            cx.subscribe(&fill_colour, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(Some(colour)) = event else {
-                    return;
-                };
-                let Some(tool) = this.tool else {
-                    return;
-                };
-                if !ToolProperties::is_applicable(tool, ToolPropertyField::FillColour) {
-                    return;
-                }
-                let mut properties = this.properties.clone();
-                properties.fill_colour = Some(rgb_hex(*colour));
-                properties.fill_opacity = f64::from(colour.a);
-                this.emit_change(properties, cx);
-            }),
             cx.subscribe_in(
                 &font_family,
                 window,
@@ -425,6 +393,44 @@ impl ToolDefaultsPanel {
                 },
             ),
         ];
+        subscriptions.extend(subscribe_property_color(
+            &colour,
+            cx,
+            |this: &mut Self, cx| {
+                let Some(colour) = this.controls.colour.read(cx).value() else {
+                    return;
+                };
+                let Some(tool) = this.tool else {
+                    return;
+                };
+                if !ToolProperties::is_applicable(tool, ToolPropertyField::Colour) {
+                    return;
+                }
+                let mut properties = this.properties.clone();
+                properties.colour = rgb_hex(colour);
+                properties.opacity = f64::from(colour.a);
+                this.emit_change(properties, cx);
+            },
+        ));
+        subscriptions.extend(subscribe_property_color(
+            &fill_colour,
+            cx,
+            |this: &mut Self, cx| {
+                let Some(colour) = this.controls.fill_colour.read(cx).value() else {
+                    return;
+                };
+                let Some(tool) = this.tool else {
+                    return;
+                };
+                if !ToolProperties::is_applicable(tool, ToolPropertyField::FillColour) {
+                    return;
+                }
+                let mut properties = this.properties.clone();
+                properties.fill_colour = Some(rgb_hex(colour));
+                properties.fill_opacity = f64::from(colour.a);
+                this.emit_change(properties, cx);
+            },
+        ));
 
         (
             ToolDefaultControls {
@@ -584,278 +590,250 @@ impl ToolDefaultsPanel {
         });
     }
 
-    fn render_colour_field(&self, disabled: bool) -> AnyElement {
+    fn render_colour_control(&self, disabled: bool) -> PropertyColor {
         let label = match self.tool {
             Some(AnnotationTool::TextBox) => "Text colour",
             Some(
                 AnnotationTool::CloudPlus | AnnotationTool::Callout | AnnotationTool::Dimension,
-            ) => "Text and stroke colour",
-            _ => "Stroke colour",
+            ) => "Text and line colour",
+            _ => "Line colour",
         };
-        let control = if disabled {
-            Button::new(TOOL_DEFAULTS_COLOUR_ID)
-                .debug_selector(|| TOOL_DEFAULTS_COLOUR_ID.into())
-                .label(self.properties.colour.to_uppercase())
-                .disabled(true)
-                .into_any_element()
-        } else {
-            div()
-                .id(TOOL_DEFAULTS_COLOUR_ID)
-                .debug_selector(|| TOOL_DEFAULTS_COLOUR_ID.into())
-                .child(property_color_picker(
-                    &self.controls.colour,
-                    self.properties.colour.to_uppercase(),
-                ))
-                .into_any_element()
-        };
-
-        // A full-width stroke width follows, so nothing pairs with the colour.
-        let paired = !self
-            .tool
-            .is_some_and(|tool| ToolProperties::is_applicable(tool, ToolPropertyField::WidthPt));
-        Field::new()
-            .col_span(if paired { 1 } else { 2 })
-            .label(label)
-            .child(control)
-            .into_any_element()
+        PropertyColor::new(TOOL_DEFAULTS_COLOUR_ID, label, &self.controls.colour).disabled(disabled)
     }
 
-    fn render_fill_field(&self, disabled: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn render_fill_row(&self, disabled: bool, cx: &mut Context<Self>) -> AnyElement {
         let panel = cx.entity().downgrade();
         let fill_enabled = self.properties.fill_colour.is_some();
-        let picker = if fill_enabled {
-            let picker = if disabled {
-                Button::new(TOOL_DEFAULTS_FILL_PICKER_ID)
-                    .label(
-                        self.properties
-                            .fill_colour
-                            .as_deref()
-                            .unwrap_or(FALLBACK_FILL_COLOUR)
-                            .to_uppercase(),
-                    )
-                    .disabled(true)
-                    .into_any_element()
-            } else {
-                div()
-                    .id(TOOL_DEFAULTS_FILL_PICKER_ID)
-                    .debug_selector(|| TOOL_DEFAULTS_FILL_PICKER_ID.into())
-                    .child(property_color_picker(
-                        &self.controls.fill_colour,
-                        self.properties
-                            .fill_colour
-                            .as_deref()
-                            .unwrap_or(FALLBACK_FILL_COLOUR)
-                            .to_uppercase(),
-                    ))
-                    .into_any_element()
-            };
-            Some(picker)
-        } else {
-            None
-        };
-
-        Field::new()
-            .label("Fill colour")
-            .child(
-                v_flex()
-                    .id(TOOL_DEFAULTS_FILL_ID)
-                    .debug_selector(|| TOOL_DEFAULTS_FILL_ID.into())
-                    .gap_2()
-                    .child(
-                        Switch::new(TOOL_DEFAULTS_FILL_ENABLED_ID)
-                            .label("Fill")
-                            .checked(fill_enabled)
-                            .disabled(disabled)
-                            .on_click(move |enabled, _, cx| {
-                                let _ = panel.update(cx, |panel, cx| {
-                                    let Some(tool) = panel.tool else {
-                                        return;
-                                    };
-                                    if !ToolProperties::is_applicable(
-                                        tool,
-                                        ToolPropertyField::FillColour,
-                                    ) {
-                                        return;
-                                    }
-                                    let mut properties = panel.properties.clone();
-                                    properties.fill_colour = if *enabled {
-                                        let colour = panel.controls.fill_colour.read(cx).value();
-                                        if let Some(colour) = colour {
-                                            properties.fill_opacity = f64::from(colour.a);
-                                            Some(rgb_hex(colour))
-                                        } else {
-                                            properties.fill_opacity = 1.;
-                                            Some(FALLBACK_FILL_COLOUR.into())
-                                        }
+        property_row(
+            "Fill",
+            h_flex()
+                .id(TOOL_DEFAULTS_FILL_ID)
+                .debug_selector(|| TOOL_DEFAULTS_FILL_ID.into())
+                .w_full()
+                .gap_3()
+                .items_center()
+                .child(
+                    Switch::new(TOOL_DEFAULTS_FILL_ENABLED_ID)
+                        .checked(fill_enabled)
+                        .disabled(disabled)
+                        .tooltip(if fill_enabled {
+                            "Draw without a fill"
+                        } else {
+                            "Fill it"
+                        })
+                        .on_click(move |enabled, _, cx| {
+                            let _ = panel.update(cx, |panel, cx| {
+                                let Some(tool) = panel.tool else {
+                                    return;
+                                };
+                                if !ToolProperties::is_applicable(
+                                    tool,
+                                    ToolPropertyField::FillColour,
+                                ) {
+                                    return;
+                                }
+                                let mut properties = panel.properties.clone();
+                                properties.fill_colour = if *enabled {
+                                    let colour = panel.controls.fill_colour.read(cx).value();
+                                    if let Some(colour) = colour {
+                                        properties.fill_opacity = f64::from(colour.a);
+                                        Some(rgb_hex(colour))
                                     } else {
-                                        None
-                                    };
-                                    panel.emit_change(properties, cx);
-                                });
-                            }),
+                                        properties.fill_opacity = 1.;
+                                        Some(FALLBACK_FILL_COLOUR.into())
+                                    }
+                                } else {
+                                    None
+                                };
+                                panel.emit_change(properties, cx);
+                            });
+                        }),
+                )
+                // Picking a colour fills it.
+                .child(
+                    PropertyColor::new(
+                        TOOL_DEFAULTS_FILL_PICKER_ID,
+                        "Fill colour",
+                        &self.controls.fill_colour,
                     )
-                    .children(picker),
-            )
-            .into_any_element()
+                    .disabled(disabled),
+                ),
+        )
+        .into_any_element()
     }
 
     fn render_appearance(&self, disabled: bool, cx: &mut Context<Self>) -> AnyElement {
         let Some(tool) = self.tool else {
             return div().into_any_element();
         };
-        let mut content = div()
-            .grid()
-            .grid_cols(2)
-            .id(TOOL_DEFAULTS_APPEARANCE_ID)
-            .debug_selector(|| TOOL_DEFAULTS_APPEARANCE_ID.into())
-            .gap_3();
-
-        if ToolProperties::is_applicable(tool, ToolPropertyField::Colour) {
-            content = content.child(self.render_colour_field(disabled));
-        }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::WidthPt) {
-            content = content.child(
-                Field::new().col_span(2).label("Stroke width").child(
-                    PropertySliderInput::new(
-                        "Stroke width",
-                        &self.controls.width_slider,
+        let applies = |field| ToolProperties::is_applicable(tool, field);
+        let mut rows = PropertyGroup::new();
+        let width = || {
+            div()
+                .id(TOOL_DEFAULTS_WIDTH_ID)
+                .debug_selector(|| TOOL_DEFAULTS_WIDTH_ID.into())
+                .child(
+                    PropertyNumericInput::new(
+                        TOOL_DEFAULTS_WIDTH_INPUT_ID,
+                        "Line width",
                         &self.controls.width,
                     )
-                    .row_id(TOOL_DEFAULTS_WIDTH_ID)
-                    .slider_id(TOOL_DEFAULTS_WIDTH_SLIDER_ID)
-                    .input_id(TOOL_DEFAULTS_WIDTH_INPUT_ID)
                     .suffix("pt")
                     .disabled(disabled),
-                ),
-            );
+                )
+        };
+        let font_size = || {
+            PropertyNumericInput::new(
+                TOOL_DEFAULTS_FONT_SIZE_ID,
+                "Font size",
+                &self.controls.font_size,
+            )
+            .suffix("pt")
+            .disabled(disabled)
+        };
+        // A colour shares its row with the size that goes with it: a line's
+        // width, or a Text Box's font size.
+        let mut font_size_shown = false;
+        if applies(ToolPropertyField::Colour) {
+            let colour = self.render_colour_control(disabled);
+            if applies(ToolPropertyField::WidthPt) {
+                let label = match tool {
+                    AnnotationTool::CloudPlus
+                    | AnnotationTool::Callout
+                    | AnnotationTool::Dimension => "Colour",
+                    _ => "Line",
+                };
+                rows = rows.row(property_row(
+                    label,
+                    property_color_and_size(colour, width()),
+                ));
+            } else if applies(ToolPropertyField::FontSizePt) {
+                font_size_shown = true;
+                rows = rows.row(property_row(
+                    "Font",
+                    property_color_and_size(colour, font_size()),
+                ));
+            } else {
+                rows = rows.row(property_row("Colour", colour));
+            }
+        } else if applies(ToolPropertyField::WidthPt) {
+            rows = rows.row(property_row("Line width", property_number(width())));
         }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::FillColour) {
-            content = content.child(self.render_fill_field(disabled, cx));
+        if applies(ToolPropertyField::FontSizePt) && !font_size_shown {
+            rows = rows.row(property_row("Font size", property_number(font_size())));
         }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::FontSizePt) {
-            content = content.child(
-                Field::new().label("Font size").child(
-                    PropertyNumericInput::new(
-                        TOOL_DEFAULTS_FONT_SIZE_ID,
-                        "Font size",
-                        &self.controls.font_size,
-                    )
-                    .suffix("pt")
-                    .disabled(disabled),
-                ),
-            );
+        if applies(ToolPropertyField::FontFamily) {
+            rows = rows.row(property_row(
+                "Typeface",
+                div()
+                    .id(TOOL_DEFAULTS_FONT_FAMILY_ID)
+                    .debug_selector(|| TOOL_DEFAULTS_FONT_FAMILY_ID.into())
+                    .child(Select::new(&self.controls.font_family).disabled(disabled)),
+            ));
         }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::FontFamily) {
-            content = content.child(
-                Field::new().label("Font family").child(
-                    div()
-                        .id(TOOL_DEFAULTS_FONT_FAMILY_ID)
-                        .debug_selector(|| TOOL_DEFAULTS_FONT_FAMILY_ID.into())
-                        .child(Select::new(&self.controls.font_family).disabled(disabled)),
-                ),
-            );
+        if applies(ToolPropertyField::Opacity) {
+            rows = rows.row(property_slider_row(
+                "Opacity",
+                PropertySliderInput::new(
+                    "Opacity",
+                    &self.controls.opacity_slider,
+                    &self.controls.opacity,
+                )
+                .row_id(TOOL_DEFAULTS_OPACITY_ID)
+                .slider_id(TOOL_DEFAULTS_OPACITY_SLIDER_ID)
+                .input_id(TOOL_DEFAULTS_OPACITY_INPUT_ID)
+                .suffix("%")
+                .disabled(disabled),
+            ));
         }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::Opacity) {
-            content = content.child(
-                Field::new().col_span(2).label("Opacity").child(
-                    PropertySliderInput::new(
-                        "Opacity",
-                        &self.controls.opacity_slider,
-                        &self.controls.opacity,
-                    )
-                    .row_id(TOOL_DEFAULTS_OPACITY_ID)
-                    .slider_id(TOOL_DEFAULTS_OPACITY_SLIDER_ID)
-                    .input_id(TOOL_DEFAULTS_OPACITY_INPUT_ID)
-                    .suffix("%")
-                    .disabled(disabled),
-                ),
-            );
+        if applies(ToolPropertyField::FillColour) {
+            rows = rows.row(self.render_fill_row(disabled, cx));
         }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::SmoothCurves) {
+        if applies(ToolPropertyField::SmoothCurves) {
             let panel = cx.entity().downgrade();
-            content = content.child(
-                Field::new().child(
-                    div()
-                        .id(TOOL_DEFAULTS_SMOOTH_CURVES_ID)
-                        .debug_selector(|| TOOL_DEFAULTS_SMOOTH_CURVES_ID.into())
-                        .child(
-                            Switch::new(TOOL_DEFAULTS_SMOOTH_CURVES_SWITCH_ID)
-                                .label("Smooth curves")
-                                .checked(self.properties.smooth_curves)
-                                .disabled(disabled)
-                                .on_click(move |smooth, _, cx| {
-                                    let _ = panel.update(cx, |panel, cx| {
-                                        let Some(tool) = panel.tool else {
-                                            return;
-                                        };
-                                        if !ToolProperties::is_applicable(
-                                            tool,
-                                            ToolPropertyField::SmoothCurves,
-                                        ) {
-                                            return;
-                                        }
-                                        let mut properties = panel.properties.clone();
-                                        properties.smooth_curves = *smooth;
-                                        panel.emit_change(properties, cx);
-                                    });
-                                }),
-                        ),
-                ),
-            );
+            rows = rows.row(property_row(
+                "Smoothing",
+                div()
+                    .id(TOOL_DEFAULTS_SMOOTH_CURVES_ID)
+                    .debug_selector(|| TOOL_DEFAULTS_SMOOTH_CURVES_ID.into())
+                    .child(
+                        Switch::new(TOOL_DEFAULTS_SMOOTH_CURVES_SWITCH_ID)
+                            .checked(self.properties.smooth_curves)
+                            .disabled(disabled)
+                            .tooltip("Smooth the curves you draw")
+                            .on_click(move |smooth, _, cx| {
+                                let _ = panel.update(cx, |panel, cx| {
+                                    let Some(tool) = panel.tool else {
+                                        return;
+                                    };
+                                    if !ToolProperties::is_applicable(
+                                        tool,
+                                        ToolPropertyField::SmoothCurves,
+                                    ) {
+                                        return;
+                                    }
+                                    let mut properties = panel.properties.clone();
+                                    properties.smooth_curves = *smooth;
+                                    panel.emit_change(properties, cx);
+                                });
+                            }),
+                    ),
+            ));
         }
-        if ToolProperties::is_applicable(tool, ToolPropertyField::CloudStyle) {
+        if applies(ToolPropertyField::CloudStyle) {
             let panel = cx.entity().downgrade();
-            content = content.child(
-                Field::new().col_span(2).child(
-                    div()
-                        .id(TOOL_DEFAULTS_CLOUD_STYLE_ID)
-                        .debug_selector(|| TOOL_DEFAULTS_CLOUD_STYLE_ID.into())
-                        .child(
-                            Switch::new(TOOL_DEFAULTS_CLOUD_STYLE_SWITCH_ID)
-                                .label("Cloud outline")
-                                .checked(self.properties.cloud_style)
-                                .disabled(disabled)
-                                .on_click(move |cloud, _, cx| {
-                                    let _ = panel.update(cx, |panel, cx| {
-                                        let Some(tool) = panel.tool else {
-                                            return;
-                                        };
-                                        if !ToolProperties::is_applicable(
-                                            tool,
-                                            ToolPropertyField::CloudStyle,
-                                        ) {
-                                            return;
-                                        }
-                                        let mut properties = panel.properties.clone();
-                                        properties.cloud_style = *cloud;
-                                        panel.emit_change(properties, cx);
-                                    });
-                                }),
-                        ),
-                ),
-            );
+            rows = rows.row(property_row(
+                "Cloud",
+                div()
+                    .id(TOOL_DEFAULTS_CLOUD_STYLE_ID)
+                    .debug_selector(|| TOOL_DEFAULTS_CLOUD_STYLE_ID.into())
+                    .child(
+                        Switch::new(TOOL_DEFAULTS_CLOUD_STYLE_SWITCH_ID)
+                            .checked(self.properties.cloud_style)
+                            .disabled(disabled)
+                            .tooltip("Draw the outline as a cloud")
+                            .on_click(move |cloud, _, cx| {
+                                let _ = panel.update(cx, |panel, cx| {
+                                    let Some(tool) = panel.tool else {
+                                        return;
+                                    };
+                                    if !ToolProperties::is_applicable(
+                                        tool,
+                                        ToolPropertyField::CloudStyle,
+                                    ) {
+                                        return;
+                                    }
+                                    let mut properties = panel.properties.clone();
+                                    properties.cloud_style = *cloud;
+                                    panel.emit_change(properties, cx);
+                                });
+                            }),
+                    ),
+            ));
         }
         // A polygon's cloud intensity applies only once it has a cloud outline.
-        if ToolProperties::is_applicable(tool, ToolPropertyField::CloudIntensity)
-            && (!ToolProperties::is_applicable(tool, ToolPropertyField::CloudStyle)
-                || self.properties.cloud_style)
+        if applies(ToolPropertyField::CloudIntensity)
+            && (!applies(ToolPropertyField::CloudStyle) || self.properties.cloud_style)
         {
-            content = content.child(
-                Field::new().col_span(2).label("Cloud intensity").child(
-                    PropertySliderInput::new(
-                        "Cloud intensity",
-                        &self.controls.cloud_intensity_slider,
-                        &self.controls.cloud_intensity,
-                    )
-                    .row_id(TOOL_DEFAULTS_CLOUD_INTENSITY_ID)
-                    .slider_id(TOOL_DEFAULTS_CLOUD_INTENSITY_SLIDER_ID)
-                    .input_id(TOOL_DEFAULTS_CLOUD_INTENSITY_INPUT_ID)
-                    .disabled(disabled),
-                ),
-            );
+            rows = rows.row(property_slider_row(
+                "Intensity",
+                PropertySliderInput::new(
+                    "Cloud intensity",
+                    &self.controls.cloud_intensity_slider,
+                    &self.controls.cloud_intensity,
+                )
+                .row_id(TOOL_DEFAULTS_CLOUD_INTENSITY_ID)
+                .slider_id(TOOL_DEFAULTS_CLOUD_INTENSITY_SLIDER_ID)
+                .input_id(TOOL_DEFAULTS_CLOUD_INTENSITY_INPUT_ID)
+                .disabled(disabled),
+            ));
         }
 
-        content.into_any_element()
+        div()
+            .id(TOOL_DEFAULTS_APPEARANCE_ID)
+            .debug_selector(|| TOOL_DEFAULTS_APPEARANCE_ID.into())
+            .child(rows)
+            .into_any_element()
     }
 }
 
@@ -881,71 +859,35 @@ impl Render for ToolDefaultsPanel {
         let measure = self.render_measure(controls_disabled, cx);
         let content = match tool {
             Some(tool) if !ToolProperties::applicable_fields(tool).is_empty() => {
-                let sections = cx.entity().downgrade();
                 let reset = cx.entity().downgrade();
                 let appearance = self.render_appearance(controls_disabled, cx);
-                let reset_content = v_flex()
-                    .id(TOOL_DEFAULTS_RESET_ID)
-                    .debug_selector(|| TOOL_DEFAULTS_RESET_ID.into())
-                    .gap_2()
-                    .child(
-                        Button::new(TOOL_DEFAULTS_RESET_BUTTON_ID)
-                            .debug_selector(|| TOOL_DEFAULTS_RESET_BUTTON_ID.into())
-                            .accessibility_id(TOOL_DEFAULTS_RESET_BUTTON_ID)
-                            .outline()
-                            .label("Reset properties…")
-                            .disabled(controls_disabled)
-                            .on_click(move |_, window, cx| {
-                                let Some((document_id, tool)) = reset
-                                    .read_with(cx, |panel, _| {
-                                        if panel.disabled || panel.syncing {
-                                            None
-                                        } else {
-                                            panel.document_id.zip(panel.tool)
-                                        }
-                                    })
-                                    .ok()
-                                    .flatten()
-                                else {
-                                    return;
-                                };
-                                open_reset_confirmation(
-                                    reset.clone(),
-                                    document_id,
-                                    tool,
-                                    window,
-                                    cx,
-                                );
-                            }),
-                    );
-
-                Accordion::new("tool-defaults-panel-sections")
-                    .bordered(false)
-                    .multiple(true)
-                    .disabled(self.disabled)
-                    .item(|item| {
-                        item.open(self.appearance_open)
-                            .title("Appearance")
-                            .child(appearance)
-                    })
-                    .item(|item| {
-                        item.open(self.reset_open)
-                            .title("Reset")
-                            .child(reset_content)
-                    })
-                    .on_toggle_click(move |open, _, cx| {
-                        let _ = sections.update(cx, |panel, cx| {
-                            let appearance_open = open.contains(&0);
-                            let reset_open = open.contains(&1);
-                            if panel.appearance_open != appearance_open
-                                || panel.reset_open != reset_open
-                            {
-                                panel.appearance_open = appearance_open;
-                                panel.reset_open = reset_open;
-                                cx.notify();
+                let reset_content = PropertyResetConfirm::new(
+                    PropertyResetIds {
+                        root: TOOL_DEFAULTS_RESET_ID,
+                        button: TOOL_DEFAULTS_RESET_BUTTON_ID,
+                        popover: TOOL_DEFAULTS_RESET_POPOVER_ID,
+                        cancel: TOOL_DEFAULTS_RESET_CANCEL_ID,
+                        confirm: TOOL_DEFAULTS_RESET_CONFIRM_ID,
+                    },
+                    format!("{:?}-{}", self.document_id, tool.label()),
+                    format!(
+                        "Reset {} properties? Other tools won't change.",
+                        tool.label()
+                    ),
+                    {
+                        let captured = self.document_id.map(|document_id| (document_id, tool));
+                        move |_, cx| {
+                            if let Some((document_id, tool)) = captured {
+                                apply_reset(&reset, document_id, tool, cx);
                             }
-                        });
-                    })
+                        }
+                    },
+                )
+                .disabled(controls_disabled);
+                property_body()
+                    .children(measure)
+                    .child(appearance)
+                    .child(reset_content)
                     .into_any_element()
             }
             Some(tool) => div()
@@ -976,7 +918,6 @@ impl Render for ToolDefaultsPanel {
                 .id(TOOL_DEFAULTS_ACCORDION_ID)
                 .debug_selector(|| TOOL_DEFAULTS_ACCORDION_ID.into())
                 .w_full()
-                .children(measure)
                 .child(content),
         )
     }
@@ -1014,64 +955,33 @@ fn numeric_slider_subscription(
     })
 }
 
-fn open_reset_confirmation(
-    panel: gpui::WeakEntity<ToolDefaultsPanel>,
+/// Resets the tool's defaults, if the panel still shows the document and
+/// tool the confirmation named.
+fn apply_reset(
+    panel: &gpui::WeakEntity<ToolDefaultsPanel>,
     captured_document_id: DocumentId,
     captured_tool: AnnotationTool,
-    window: &mut Window,
     cx: &mut App,
 ) {
-    let tool_label = captured_tool.label();
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let panel = panel.clone();
-        alert
-            .close_button(false)
-            .title(format!("Reset {tool_label} properties?"))
-            .description(format!(
-                "Restore the current document's {tool_label} defaults. Other tools will not change."
-            ))
-            .footer(
-                DialogFooter::new()
-                    .child(dialog_close_button(
-                        Button::new(TOOL_DEFAULTS_RESET_CANCEL_ID)
-                            .debug_selector(|| TOOL_DEFAULTS_RESET_CANCEL_ID.into())
-                            .accessibility_id(TOOL_DEFAULTS_RESET_CANCEL_ID)
-                            .outline()
-                            .label("Cancel"),
-                    ))
-                    .child(dialog_action_button(
-                        Button::new(TOOL_DEFAULTS_RESET_CONFIRM_ID)
-                            .debug_selector(|| TOOL_DEFAULTS_RESET_CONFIRM_ID.into())
-                            .accessibility_id(TOOL_DEFAULTS_RESET_CONFIRM_ID)
-                            .primary()
-                            .label("Reset"),
-                    )),
-            )
-            .on_ok(move |_, _, cx| {
-                panel
-                    .update(cx, |panel, cx| {
-                        if !can_apply_reset(
-                            panel.document_id,
-                            panel.tool,
-                            captured_document_id,
-                            captured_tool,
-                            panel.disabled,
-                            panel.syncing,
-                        ) {
-                            return true;
-                        }
-                        let properties = ToolProperties::for_tool(captured_tool);
-                        if properties != panel.properties {
-                            cx.emit(ToolDefaultsEvent::Change {
-                                document_id: captured_document_id,
-                                tool: captured_tool,
-                                properties,
-                            });
-                        }
-                        true
-                    })
-                    .unwrap_or(true)
-            })
+    let _ = panel.update(cx, |panel, cx| {
+        if !can_apply_reset(
+            panel.document_id,
+            panel.tool,
+            captured_document_id,
+            captured_tool,
+            panel.disabled,
+            panel.syncing,
+        ) {
+            return;
+        }
+        let properties = ToolProperties::for_tool(captured_tool);
+        if properties != panel.properties {
+            cx.emit(ToolDefaultsEvent::Change {
+                document_id: captured_document_id,
+                tool: captured_tool,
+                properties,
+            });
+        }
     });
 }
 

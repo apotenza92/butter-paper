@@ -5,32 +5,30 @@
 
 use crate::annotation_model::{MarkupId, TextAlignment, TextBoxStyle};
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertyNumericInput, PropertySliderInput, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage,
-    property_color_picker,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertySliderInput, PropertyTextEditEvent, PropertyTextField, canonical_picker_opacity,
+    format_property_number, format_property_percentage, parse_property_percentage, property_body,
+    property_color_and_size, property_lock_toggle, property_row, property_slider_row,
+    subscribe_property_color,
 };
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
-    Disableable as _,
-    accordion::Accordion,
-    button::Button,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
-    input::{InputEvent, InputState},
-    radio::{Radio, RadioGroup},
+    Disableable as _, Selectable as _,
+    button::{Button, ButtonGroup},
+    color_picker::ColorPickerState,
+    input::{InputEvent, InputState, TextareaState},
     slider::{SliderEvent, SliderState},
-    switch::Switch,
-    try_parse_color, v_flex,
+    try_parse_color,
 };
 
 use crate::document_workspace::DocumentId;
 
 pub const TEXT_BOX_PROPERTY_INSPECTOR_ID: &str = "text-box-property-inspector";
 pub const TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID: &str = "text-box-property-color-trigger";
-pub const TEXT_BOX_INSPECTOR_APPLY_COLOR_ID: &str = "text-box-property-apply-color";
+pub const TEXT_BOX_INSPECTOR_TEXT_ID: &str = "text-box-property-text";
 pub const TEXT_BOX_INSPECTOR_SIZE_ID: &str = "text-box-property-size";
 pub const TEXT_BOX_INSPECTOR_OPACITY_ID: &str = "text-box-property-opacity";
 pub const TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID: &str = "text-box-property-opacity-track";
@@ -72,7 +70,9 @@ pub struct TextBoxPropertyInspector {
     syncing: bool,
     open: bool,
     embedded: bool,
-    open_sections: [bool; 2],
+    /// The markup's text as last synced, once the workspace has given it.
+    content_baseline: Option<String>,
+    content: gpui::Entity<TextareaState>,
     size: gpui::Entity<InputState>,
     opacity: gpui::Entity<SliderState>,
     opacity_input: gpui::Entity<InputState>,
@@ -102,8 +102,31 @@ impl TextBoxPropertyInspector {
                 try_parse_color("#ff0000").expect("the built-in Text Box color must parse"),
             )
         });
+        let content = cx.new(|cx| TextareaState::new(window, cx).rows(2).soft_wrap(true));
         let opacity_input_for_slider = opacity_input.clone();
-        let subscriptions = vec![
+        let mut subscriptions = vec![
+            // Enter starts a new line; leaving the field, or Cmd/Ctrl+Enter,
+            // commits it.
+            cx.subscribe_in(
+                &content,
+                window,
+                |this, content, event: &InputEvent, window, cx| match event {
+                    InputEvent::Blur => this.emit_content(cx),
+                    InputEvent::PressEnter {
+                        secondary: true, ..
+                    } => {
+                        // The field has already taken the Enter as a new line.
+                        let value = content.read(cx).value().to_string();
+                        if let Some(value) = value.strip_suffix('\n') {
+                            content.update(cx, |content, cx| {
+                                content.set_value(value.to_owned(), window, cx)
+                            });
+                        }
+                        this.emit_content(cx);
+                    }
+                    _ => {}
+                },
+            ),
             cx.subscribe_in(&size, window, |this, input, event: &InputEvent, _, cx| {
                 if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
                     return;
@@ -161,19 +184,19 @@ impl TextBoxPropertyInspector {
                     });
                 },
             ),
-            cx.subscribe(&color, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(_) = event;
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
         ];
+        subscriptions.extend(subscribe_property_color(
+            &color,
+            cx,
+            |this: &mut Self, cx| this.apply_preview_color(cx),
+        ));
         Self {
             snapshot: None,
             syncing: false,
             open: false,
             embedded: false,
-            open_sections: [true, true],
+            content_baseline: None,
+            content,
             size,
             opacity,
             opacity_input,
@@ -198,9 +221,50 @@ impl TextBoxPropertyInspector {
         }
     }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.content_baseline = None;
         if self.snapshot.take().is_some() {
             cx.notify();
         }
+    }
+    /// Shows the selected Text Box's text in the Text field. The workspace
+    /// calls this after `sync`, and again whenever the text changes.
+    pub fn sync_content(&mut self, content: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.content_baseline.as_deref() == Some(content) {
+            return;
+        }
+        self.syncing = true;
+        self.content.update(cx, |input, cx| {
+            input.set_value(content.to_owned(), window, cx)
+        });
+        self.content_baseline = Some(content.to_owned());
+        self.syncing = false;
+        cx.notify();
+    }
+    pub fn content_input(&self) -> gpui::Entity<TextareaState> {
+        self.content.clone()
+    }
+    fn emit_content(&mut self, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let content = self.content.read(cx).value().to_string();
+        if self.syncing
+            || snapshot.mutation_disabled
+            || snapshot.locked
+            || self
+                .content_baseline
+                .as_deref()
+                .is_none_or(|baseline| baseline == content)
+        {
+            return;
+        }
+        self.content_baseline = Some(content.clone());
+        cx.emit(PropertyTextEditEvent {
+            document_id: snapshot.document_id,
+            annotation_id: snapshot.annotation_id.clone(),
+            expected_revision: snapshot.expected_revision,
+            content,
+        });
     }
     pub fn sync(
         &mut self,
@@ -298,6 +362,7 @@ impl TextBoxPropertyInspector {
 }
 
 impl EventEmitter<TextBoxPropertyEvent> for TextBoxPropertyInspector {}
+impl EventEmitter<PropertyTextEditEvent> for TextBoxPropertyInspector {}
 
 impl Render for TextBoxPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -309,142 +374,113 @@ impl Render for TextBoxPropertyInspector {
         };
         let disabled = snapshot.mutation_disabled || snapshot.locked;
         let lock = cx.entity().downgrade();
-        let color = cx.entity().downgrade();
         let alignment = cx.entity().downgrade();
-        let sections = cx.entity().downgrade();
         let selected_alignment = match snapshot.style.alignment() {
             TextAlignment::Left => 0,
             TextAlignment::Center => 1,
             TextAlignment::Right => 2,
         };
-        let details = Field::new().child(
+        let text = self.content_baseline.is_some().then(|| {
+            property_row(
+                "Text",
+                PropertyTextField::new(TEXT_BOX_INSPECTOR_TEXT_ID, &self.content)
+                    .disabled(disabled),
+            )
+            .align_top()
+            .into_any_element()
+        });
+        let font = property_row(
+            "Font",
+            property_color_and_size(
+                PropertyColor::new(
+                    TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID,
+                    "Text colour",
+                    &self.color,
+                )
+                .disabled(disabled),
+                PropertyNumericInput::new(TEXT_BOX_INSPECTOR_SIZE_ID, "Font size", &self.size)
+                    .suffix("pt")
+                    .disabled(disabled),
+            ),
+        );
+        let opacity = property_slider_row(
+            "Opacity",
+            PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
+                .row_id(TEXT_BOX_INSPECTOR_OPACITY_ID)
+                .slider_id(TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID)
+                .input_id(TEXT_BOX_INSPECTOR_OPACITY_INPUT_ID)
+                .suffix("%")
+                .disabled(disabled),
+        );
+        let align = property_row(
+            "Align",
             div()
-                .id(TEXT_BOX_INSPECTOR_LOCKED_ID)
-                .debug_selector(|| TEXT_BOX_INSPECTOR_LOCKED_ID.into())
+                .id(TEXT_BOX_INSPECTOR_ALIGNMENT_ID)
+                .debug_selector(|| TEXT_BOX_INSPECTOR_ALIGNMENT_ID.into())
                 .child(
-                    Switch::new("text-box-property-locked-switch")
-                        .label("Locked")
-                        .checked(snapshot.locked)
-                        .disabled(snapshot.mutation_disabled)
-                        .on_click(move |value, _, cx| {
-                            let _ = lock.update(cx, |this, cx| {
-                                this.emit_patch(TextBoxPropertyPatch::Locked(*value), cx)
+                    ButtonGroup::new("text-box-property-alignment-group")
+                        .outline()
+                        .w_full()
+                        .disabled(disabled)
+                        .child(
+                            Button::new("left")
+                                .debug_selector(|| TEXT_BOX_INSPECTOR_ALIGNMENT_LEFT_ID.into())
+                                .flex_1()
+                                .label("Left")
+                                .selected(selected_alignment == 0),
+                        )
+                        .child(
+                            Button::new("center")
+                                .debug_selector(|| TEXT_BOX_INSPECTOR_ALIGNMENT_CENTER_ID.into())
+                                .flex_1()
+                                .label("Centre")
+                                .selected(selected_alignment == 1),
+                        )
+                        .child(
+                            Button::new("right")
+                                .debug_selector(|| TEXT_BOX_INSPECTOR_ALIGNMENT_RIGHT_ID.into())
+                                .flex_1()
+                                .label("Right")
+                                .selected(selected_alignment == 2),
+                        )
+                        .on_click(move |indexes, _, cx| {
+                            let Some(index) = indexes.first().copied() else {
+                                return;
+                            };
+                            let next = [
+                                TextAlignment::Left,
+                                TextAlignment::Center,
+                                TextAlignment::Right,
+                            ][index.min(2)];
+                            let _ = alignment.update(cx, |this, cx| {
+                                this.edit_style(cx, |style| {
+                                    rebuild_style(style, None, None, None, Some(next))
+                                })
                             });
                         }),
                 ),
         );
-        let color_control = if disabled {
-            Button::new(TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID)
-                .debug_selector(|| TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID.into())
-                .label(snapshot.style.color().to_owned())
-                .disabled(true)
-                .into_any_element()
-        } else {
-            div()
-                .id(TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID)
-                .debug_selector(|| TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID.into())
-                .child(property_color_picker(&self.color, "Colour"))
-                .into_any_element()
-        };
-        let appearance = v_flex()
-            .gap_3()
-            .child(crate::property_controls::property_pair(
-                Field::new().label("Text colour").child(
-                    div().child(color_control).child(
-                        div()
-                            .id(TEXT_BOX_INSPECTOR_APPLY_COLOR_ID)
-                            .debug_selector(|| TEXT_BOX_INSPECTOR_APPLY_COLOR_ID.into())
-                            .child(
-                                Button::new("text-box-property-apply-color-button")
-                                    .label("Apply colour")
-                                    .disabled(disabled)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = color
-                                            .update(cx, |this, cx| this.apply_preview_color(cx));
-                                    }),
-                            ),
-                    ),
-                ),
-                Field::new().label("Font size").child(
-                    PropertyNumericInput::new(TEXT_BOX_INSPECTOR_SIZE_ID, "Font size", &self.size)
-                        .suffix("pt")
-                        .disabled(disabled),
-                ),
-            ))
-            .child(
-                Field::new().label("Opacity").child(
-                    PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
-                        .row_id(TEXT_BOX_INSPECTOR_OPACITY_ID)
-                        .slider_id(TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID)
-                        .input_id(TEXT_BOX_INSPECTOR_OPACITY_INPUT_ID)
-                        .suffix("%")
-                        .disabled(disabled),
-                ),
-            )
-            .child(
-                Field::new().label("Horizontal alignment").child(
-                    div()
-                        .id(TEXT_BOX_INSPECTOR_ALIGNMENT_ID)
-                        .debug_selector(|| TEXT_BOX_INSPECTOR_ALIGNMENT_ID.into())
-                        .child(
-                            RadioGroup::horizontal("text-box-property-alignment-group")
-                                .selected_index(Some(selected_alignment))
-                                .disabled(disabled)
-                                .child(
-                                    Radio::new("left")
-                                        .debug_selector(|| {
-                                            TEXT_BOX_INSPECTOR_ALIGNMENT_LEFT_ID.into()
-                                        })
-                                        .label("Left"),
-                                )
-                                .child(
-                                    Radio::new("center")
-                                        .debug_selector(|| {
-                                            TEXT_BOX_INSPECTOR_ALIGNMENT_CENTER_ID.into()
-                                        })
-                                        .label("Center"),
-                                )
-                                .child(
-                                    Radio::new("right")
-                                        .debug_selector(|| {
-                                            TEXT_BOX_INSPECTOR_ALIGNMENT_RIGHT_ID.into()
-                                        })
-                                        .label("Right"),
-                                )
-                                .on_click(move |index, _, cx| {
-                                    let next = [
-                                        TextAlignment::Left,
-                                        TextAlignment::Center,
-                                        TextAlignment::Right,
-                                    ][*index];
-                                    let _ = alignment.update(cx, |this, cx| {
-                                        this.edit_style(cx, |style| {
-                                            rebuild_style(style, None, None, None, Some(next))
-                                        })
-                                    });
-                                }),
-                        ),
-                ),
-            );
-        let open = self.open_sections;
-        let accordion = Accordion::new("text-box-property-sections")
-            .bordered(false)
-            .multiple(true)
-            .item(|item| item.open(open[0]).title("Details").child(details))
-            .item(|item| item.open(open[1]).title("Appearance").child(appearance))
-            .on_toggle_click(move |indexes, _, cx| {
-                let _ = sections.update(cx, |this, cx| {
-                    this.open_sections = [indexes.contains(&0), indexes.contains(&1)];
-                    cx.notify();
-                });
-            });
+        let mut rows = PropertyGroup::new();
+        if let Some(text) = text {
+            rows = rows.row(text);
+        }
         PropertyInspectorPanel::new(
             TEXT_BOX_PROPERTY_INSPECTOR_ID,
             TEXT_BOX_INSPECTOR_HEADER_ID,
             TEXT_BOX_INSPECTOR_SCROLL_ID,
             "Text Box",
         )
-        .child(accordion)
+        .header_lock(property_lock_toggle(
+            TEXT_BOX_INSPECTOR_LOCKED_ID,
+            snapshot.locked,
+            snapshot.mutation_disabled,
+            move |locked, _, cx| {
+                let _ = lock.update(cx, |this, cx| {
+                    this.emit_patch(TextBoxPropertyPatch::Locked(locked), cx)
+                });
+            },
+        ))
+        .child(property_body().child(rows.row(font).row(opacity).row(align)))
         .into_any_element()
     }
 }

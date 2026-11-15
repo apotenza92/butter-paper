@@ -2011,10 +2011,10 @@ fn whole_toolbar_fits(h: &mut Harness<'_>, document: &str) {
     let controls = h.cx.debug_bounds(VIEWER_TOOLBAR_CONTROLS_ID).unwrap();
     let edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
     assert!(
-        edit_pdf.right() <= controls.left(),
+        controls.right() <= edit_pdf.left(),
         "Edit PDF overlaps the controls"
     );
-    assert!(controls.right() <= toolbar.right());
+    assert!(edit_pdf.right() <= toolbar.right());
     // Narrow, the page navigator shows its page field alone (decided
     // 2026-11-11, to make room for the page's Scale beside Edit PDF).
     for id in [PAGE_FIRST_ID, PAGE_PREVIOUS_ID, PAGE_NEXT_ID, PAGE_LAST_ID] {
@@ -2025,7 +2025,7 @@ fn whole_toolbar_fits(h: &mut Harness<'_>, document: &str) {
     }
     let scale = h.cx.debug_bounds(VIEWER_SCALE_ID).unwrap();
     assert!(
-        edit_pdf.right() <= scale.left() && scale.right() <= controls.left(),
+        edit_pdf.right() <= scale.left() && scale.right() <= toolbar.right(),
         "the Scale overlaps at half 1080p for {document}"
     );
     for id in [

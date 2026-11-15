@@ -6,25 +6,22 @@
 
 use crate::pdf_text_blocks::TextBlockAlignment;
 use crate::property_controls::{
-    PropertyInspectorPanel, PropertyNumericInput, format_property_number, property_color_picker,
-    property_pair,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    format_property_number, property_body, property_color_and_size, property_number, property_row,
+    subscribe_property_color,
 };
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _,
 };
 use gpui_component::{
     ActiveTheme as _, IndexPath, Selectable as _,
-    accordion::Accordion,
     button::{Button, ButtonGroup},
     checkbox::Checkbox,
-    color_picker::{ColorPickerEvent, ColorPickerState},
-    form::Field,
+    color_picker::ColorPickerState,
     h_flex,
     input::{InputEvent, InputState},
     select::{SearchableVec, Select, SelectEvent, SelectState},
-    v_flex,
 };
 
 pub const EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID: &str = "edit-pdf-content-property-inspector";
@@ -34,7 +31,6 @@ pub const EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID: &str = "edit-pdf-content-property-
 pub const EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID: &str = "edit-pdf-content-property-italic";
 pub const EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID: &str =
     "edit-pdf-content-property-color-trigger";
-pub const EDIT_PDF_CONTENT_INSPECTOR_APPLY_COLOR_ID: &str = "edit-pdf-content-property-apply-color";
 pub const EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID: &str = "edit-pdf-content-property-alignment";
 pub const EDIT_PDF_CONTENT_INSPECTOR_LINE_SPACING_ID: &str =
     "edit-pdf-content-property-line-spacing";
@@ -59,7 +55,7 @@ const ALIGNMENTS: [(TextBlockAlignment, &str, &str); 4] = [
     ),
     (
         TextBlockAlignment::Center,
-        "Center",
+        "Centre",
         EDIT_PDF_CONTENT_INSPECTOR_ALIGN_CENTER_ID,
     ),
     (
@@ -119,7 +115,6 @@ pub enum EditPdfContentPropertyPatch {
 pub struct EditPdfContentPropertyInspector {
     snapshot: Option<EditPdfContentPropertySnapshot>,
     syncing: bool,
-    open_sections: [bool; 2],
     families: Vec<SharedString>,
     font: gpui::Entity<SelectState<SearchableVec<SharedString>>>,
     size: gpui::Entity<InputState>,
@@ -171,7 +166,7 @@ impl EditPdfContentPropertyInspector {
         });
         let color =
             cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb_color([0.; 3])));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(
                 &font,
                 window,
@@ -209,13 +204,12 @@ impl EditPdfContentPropertyInspector {
                     }
                 },
             ),
-            cx.subscribe(&color, |this, _, event: &ColorPickerEvent, cx| {
-                let ColorPickerEvent::Change(_) = event;
-                if !this.syncing {
-                    cx.notify();
-                }
-            }),
         ];
+        subscriptions.extend(subscribe_property_color(
+            &color,
+            cx,
+            |this: &mut Self, cx| this.apply_preview_color(cx),
+        ));
         // Installed families are listed once the fonts are scanned.
         let task = cx.background_spawn(async { crate::pdf_engine::text_face_families() });
         cx.spawn_in(window, async move |this, cx| {
@@ -228,7 +222,6 @@ impl EditPdfContentPropertyInspector {
         Self {
             snapshot: None,
             syncing: false,
-            open_sections: [true, true],
             families,
             font,
             size,
@@ -387,26 +380,29 @@ impl EditPdfContentPropertyInspector {
     ) -> (gpui::AnyElement, gpui::AnyElement) {
         let bold = cx.entity().downgrade();
         let italic = cx.entity().downgrade();
-        let color = cx.entity().downgrade();
         let alignment = cx.entity().downgrade();
         let muted = cx.theme().muted_foreground;
         let scope = if snapshot.selection {
-            "Text changes apply to the selected text."
+            "Changes apply to the selected text."
         } else {
-            "Text changes apply to the whole paragraph."
+            "Changes apply to the whole paragraph."
         };
-        let text = v_flex()
-            .gap_3()
-            .child(
-                Field::new().label("Font").child(
-                    div()
-                        .id(EDIT_PDF_CONTENT_INSPECTOR_FONT_ID)
-                        .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_FONT_ID.into())
-                        .child(Select::new(&self.font).search_placeholder("Search fonts")),
-                ),
-            )
-            .child(property_pair(
-                Field::new().label("Font size").child(
+        let mut text = PropertyGroup::titled("Text")
+            .row(property_row(
+                "Typeface",
+                div()
+                    .id(EDIT_PDF_CONTENT_INSPECTOR_FONT_ID)
+                    .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_FONT_ID.into())
+                    .child(Select::new(&self.font).search_placeholder("Search fonts")),
+            ))
+            .row(property_row(
+                "Font",
+                property_color_and_size(
+                    PropertyColor::new(
+                        EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID,
+                        "Text colour",
+                        &self.color,
+                    ),
                     PropertyNumericInput::new(
                         EDIT_PDF_CONTENT_INSPECTOR_SIZE_ID,
                         "Font size",
@@ -414,176 +410,131 @@ impl EditPdfContentPropertyInspector {
                     )
                     .suffix("pt"),
                 ),
-                Field::new().label("Style").child(
-                    h_flex()
-                        .gap_3()
-                        .h_full()
-                        .child(
-                            Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID)
-                                .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID.into())
-                                .label("Bold")
-                                .checked(snapshot.bold)
-                                .on_click(move |value, _, cx| {
-                                    let _ = bold.update(cx, |this, cx| {
-                                        this.emit_patch(
-                                            EditPdfContentPropertyPatch::Bold(*value),
-                                            true,
-                                            cx,
-                                        )
-                                    });
-                                }),
-                        )
-                        .child(
-                            Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID)
-                                .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID.into())
-                                .label("Italic")
-                                .checked(snapshot.italic)
-                                .on_click(move |value, _, cx| {
-                                    let _ = italic.update(cx, |this, cx| {
-                                        this.emit_patch(
-                                            EditPdfContentPropertyPatch::Italic(*value),
-                                            true,
-                                            cx,
-                                        )
-                                    });
-                                }),
-                        ),
-                ),
             ))
-            .child(
-                Field::new().label("Text colour").child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            div()
-                                .id(EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID)
-                                .debug_selector(|| {
-                                    EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID.into()
-                                })
-                                .child(property_color_picker(&self.color, "Colour")),
-                        )
-                        .child(
-                            Button::new(EDIT_PDF_CONTENT_INSPECTOR_APPLY_COLOR_ID)
-                                .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_APPLY_COLOR_ID.into())
-                                .label("Apply colour")
-                                .on_click(move |_, _, cx| {
-                                    let _ =
-                                        color.update(cx, |this, cx| this.apply_preview_color(cx));
-                                }),
-                        ),
-                ),
-            )
-            .child(
+            .row(property_row(
+                "Style",
+                h_flex()
+                    .gap_4()
+                    .child(
+                        Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID)
+                            .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID.into())
+                            .label("Bold")
+                            .checked(snapshot.bold)
+                            .on_click(move |value, _, cx| {
+                                let _ = bold.update(cx, |this, cx| {
+                                    this.emit_patch(
+                                        EditPdfContentPropertyPatch::Bold(*value),
+                                        true,
+                                        cx,
+                                    )
+                                });
+                            }),
+                    )
+                    .child(
+                        Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID)
+                            .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID.into())
+                            .label("Italic")
+                            .checked(snapshot.italic)
+                            .on_click(move |value, _, cx| {
+                                let _ = italic.update(cx, |this, cx| {
+                                    this.emit_patch(
+                                        EditPdfContentPropertyPatch::Italic(*value),
+                                        true,
+                                        cx,
+                                    )
+                                });
+                            }),
+                    ),
+            ))
+            .row(
                 div()
                     .id(EDIT_PDF_CONTENT_INSPECTOR_SCOPE_ID)
                     .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_SCOPE_ID.into())
-                    .text_sm()
+                    .text_xs()
                     .text_color(muted)
                     .child(scope),
+            );
+        if !snapshot.substitutes.is_empty() {
+            text = text.row(
+                div()
+                    .id(EDIT_PDF_CONTENT_INSPECTOR_SUBSTITUTES_ID)
+                    .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_SUBSTITUTES_ID.into())
+                    .text_xs()
+                    .text_color(muted)
+                    .child(format!(
+                        "Characters the font lacks are drawn with {}.",
+                        snapshot.substitutes.join(", ")
+                    )),
+            );
+        }
+        // Four alignments need the panel's full width.
+        let paragraph = PropertyGroup::titled("Paragraph")
+            .row(
+                div()
+                    .id(EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID)
+                    .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID.into())
+                    .child(
+                        ButtonGroup::new("edit-pdf-content-property-alignment-group")
+                            .outline()
+                            .w_full()
+                            .children(ALIGNMENTS.iter().map(|(value, label, id)| {
+                                let alignment = alignment.clone();
+                                let value = *value;
+                                Button::new(*id)
+                                    .debug_selector(|| (*id).into())
+                                    .flex_1()
+                                    .label(*label)
+                                    .selected(value == snapshot.alignment)
+                                    .on_click(move |_, _, cx| {
+                                        let _ = alignment.update(cx, |this, cx| {
+                                            this.emit_patch(
+                                                EditPdfContentPropertyPatch::Alignment(value),
+                                                true,
+                                                cx,
+                                            )
+                                        });
+                                    })
+                            })),
+                    ),
             )
-            .when(!snapshot.substitutes.is_empty(), |text| {
-                text.child(
-                    div()
-                        .id(EDIT_PDF_CONTENT_INSPECTOR_SUBSTITUTES_ID)
-                        .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_SUBSTITUTES_ID.into())
-                        .text_sm()
-                        .text_color(muted)
-                        .child(format!(
-                            "Characters the font lacks are drawn with {}.",
-                            snapshot.substitutes.join(", ")
-                        )),
-                )
-            });
-        let paragraph = v_flex()
-            .gap_3()
-            .child(
-                Field::new().label("Alignment").child(
-                    div()
-                        .id(EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID)
-                        .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_ALIGNMENT_ID.into())
-                        .child(
-                            ButtonGroup::new("edit-pdf-content-property-alignment-group").children(
-                                ALIGNMENTS.iter().map(|(value, label, id)| {
-                                    let alignment = alignment.clone();
-                                    let value = *value;
-                                    Button::new(*id)
-                                        .debug_selector(|| (*id).into())
-                                        .label(*label)
-                                        .selected(value == snapshot.alignment)
-                                        .on_click(move |_, _, cx| {
-                                            let _ = alignment.update(cx, |this, cx| {
-                                                this.emit_patch(
-                                                    EditPdfContentPropertyPatch::Alignment(value),
-                                                    true,
-                                                    cx,
-                                                )
-                                            });
-                                        })
-                                }),
-                            ),
-                        ),
-                ),
-            )
-            .child(
-                Field::new().label("Line spacing").child(
+            .row(property_row(
+                "Line spacing",
+                property_number(
                     PropertyNumericInput::new(
                         EDIT_PDF_CONTENT_INSPECTOR_LINE_SPACING_ID,
                         "Line spacing",
                         &self.line_spacing,
                     )
-                    .suffix("lines"),
+                    .suffix("×"),
                 ),
-            );
+            ));
         (text.into_any_element(), paragraph.into_any_element())
     }
 }
 
 impl Render for EditPdfContentPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Sections by index: Text, Paragraph.
-        let mut sections: Vec<(usize, &'static str, gpui::AnyElement)> = Vec::new();
-        let snapshot = self.snapshot.clone();
-        if let Some(snapshot) = snapshot.clone() {
-            let (text, paragraph) = self.text_sections(snapshot, cx);
-            sections.push((0, "Text", text));
-            sections.push((1, "Paragraph", paragraph));
-        }
         let panel = PropertyInspectorPanel::new(
             EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID,
             EDIT_PDF_CONTENT_INSPECTOR_HEADER_ID,
             EDIT_PDF_CONTENT_INSPECTOR_SCROLL_ID,
             "Edit PDF",
         );
-        let hint = || {
-            div()
-                .p_3()
-                .text_color(cx.theme().muted_foreground)
-                .child("Double-click text on the page to edit it and see its properties.")
+        let Some(snapshot) = self.snapshot.clone() else {
+            return panel
+                .child(
+                    div()
+                        .p_3()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Double-click text on the page to edit it and see its properties."),
+                )
+                .into_any_element();
         };
-        if sections.is_empty() {
-            return panel.child(hint()).into_any_element();
-        }
-        let open = self.open_sections;
-        let shown = sections
-            .iter()
-            .map(|(index, _, _)| *index)
-            .collect::<Vec<_>>();
-        let owner = cx.entity().downgrade();
-        let mut accordion = Accordion::new("edit-pdf-content-property-sections")
-            .bordered(false)
-            .multiple(true);
-        for (index, title, section) in sections {
-            accordion = accordion.item(|item| item.open(open[index]).title(title).child(section));
-        }
-        let accordion = accordion.on_toggle_click(move |indexes, _, cx| {
-            let _ = owner.update(cx, |this, cx| {
-                for (position, index) in shown.iter().enumerate() {
-                    this.open_sections[*index] = indexes.contains(&position);
-                }
-                cx.notify();
-            });
-        });
-        panel.child(accordion).into_any_element()
+        let (text, paragraph) = self.text_sections(snapshot, cx);
+        panel
+            .child(property_body().child(text).child(paragraph))
+            .into_any_element()
     }
 }
 

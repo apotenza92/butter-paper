@@ -280,6 +280,20 @@ impl PageTransform {
     pub fn pixels_per_point(self) -> f64 {
         self.pixels_per_point
     }
+
+    /// The shown part of the page in PDF points, when its width is known.
+    pub fn page_rect(self) -> Option<PdfRect> {
+        (self.page_width_pt > 0. && self.page_height_pt > 0.).then_some(PdfRect {
+            x: self.view_box_x,
+            y: self.view_box_y,
+            width: self.page_width_pt,
+            height: self.page_height_pt,
+        })
+    }
+
+    pub fn rotation(self) -> PageRotation {
+        self.rotation
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -542,6 +556,139 @@ pub fn measurement_line_layout(
         arrowheads,
         caption_center,
     })
+}
+
+/// How far past the end of a Dimension's caption, in screen pixels, its
+/// offset handle's centre sits: its whole grab reach clears the text.
+pub const DIMENSION_OFFSET_HANDLE_CLEARANCE_CSS_PX: f64 = RESIZE_HANDLE_GRAB_CSS_PX + 3.;
+
+/// Where a Dimension's offset handle sits. Centred on a caption drawn on
+/// the line, just below its text in the text's own (turned) frame, so the
+/// caption is all text (a press edits it) and the handle is only a handle;
+/// just above the text instead when below would put the handle's grab reach
+/// off the page; at the line's middle when there is no caption on the line
+/// (no text, or the caption moved off). `view` is the page as shown (its
+/// turn and bounds); painting, hovering and pressing all read this point.
+#[allow(clippy::too_many_arguments)]
+pub fn dimension_offset_handle_point(
+    start: PdfPoint,
+    end: PdfPoint,
+    dimension_line_offset: f64,
+    content: &str,
+    style: &TextBoxStyle,
+    caption_offset: CaptionOffset,
+    pixels_per_point: f64,
+    view: Option<PageTransform>,
+) -> PdfPoint {
+    let rotation = view.map_or(PageRotation::Degrees0, |view| view.rotation);
+    let (centre, beside) = dimension_offset_handle_anchor(
+        start,
+        end,
+        dimension_line_offset,
+        content,
+        style,
+        caption_offset,
+        rotation,
+    );
+    let Some(beside) = beside else {
+        return centre;
+    };
+    let pixels_per_point = if pixels_per_point.is_finite() && pixels_per_point > 0. {
+        pixels_per_point
+    } else {
+        1.
+    };
+    let clearance = DIMENSION_OFFSET_HANDLE_CLEARANCE_CSS_PX / pixels_per_point;
+    let at = |distance: f64, sign: f64| PdfPoint {
+        x: centre.x + beside.down.0 * distance * sign,
+        y: centre.y + beside.down.1 * distance * sign,
+    };
+    let below = at(beside.below_pt + clearance, 1.);
+    let above = at(beside.above_pt + clearance, -1.);
+    let reach = RESIZE_HANDLE_GRAB_CSS_PX / pixels_per_point;
+    let on_page = |point: PdfPoint| {
+        view.and_then(PageTransform::page_rect).is_none_or(|page| {
+            point.x - reach >= page.x
+                && point.x + reach <= page.x + page.width
+                && point.y - reach >= page.y
+                && point.y + reach <= page.y + page.height
+        })
+    };
+    if !on_page(below) && on_page(above) {
+        above
+    } else {
+        below
+    }
+}
+
+/// The zoom-independent part of a Dimension's offset handle placement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DimensionHandleBeside {
+    /// Unit vector, on the page, towards the bottom of the caption's text as
+    /// it reads on screen.
+    pub down: (f64, f64),
+    /// From the caption's centre to the bottom of its text, in points.
+    pub below_pt: f64,
+    /// From the caption's centre to the top of its text, in points.
+    pub above_pt: f64,
+}
+
+/// The caption's centre (the line's middle) and, when a caption sits on the
+/// line, the direction and distances its offset handle is placed along
+/// ([`dimension_offset_handle_point`] adds the screen clearance).
+pub fn dimension_offset_handle_anchor(
+    start: PdfPoint,
+    end: PdfPoint,
+    dimension_line_offset: f64,
+    content: &str,
+    style: &TextBoxStyle,
+    caption_offset: CaptionOffset,
+    rotation: PageRotation,
+) -> (PdfPoint, Option<DimensionHandleBeside>) {
+    let delta_x = end.x - start.x;
+    let delta_y = end.y - start.y;
+    let length = delta_x.hypot(delta_y);
+    if !length.is_finite() || length <= f64::EPSILON {
+        return (start, None);
+    }
+    let unit = (delta_x / length, delta_y / length);
+    let normal = (-unit.1, unit.0);
+    let centre = PdfPoint {
+        x: (start.x + end.x) * 0.5 + normal.0 * dimension_line_offset,
+        y: (start.y + end.y) * 0.5 + normal.1 * dimension_line_offset,
+    };
+    if content.is_empty() || !caption_offset.is_zero() {
+        return (centre, None);
+    }
+    // Page and screen directions, as the page is shown: each turn maps a
+    // vector by a reflection, so the same map takes it back.
+    let to_screen = |(x, y): (f64, f64)| match rotation {
+        PageRotation::Degrees0 => (x, -y),
+        PageRotation::Degrees90 => (y, x),
+        PageRotation::Degrees180 => (-x, y),
+        PageRotation::Degrees270 => (-y, -x),
+    };
+    // The caption reads along the line, turned no more than a quarter either
+    // way from upright, as the canvas draws it.
+    let mut reading = to_screen(unit);
+    let angle = reading.1.atan2(reading.0);
+    if angle > std::f64::consts::FRAC_PI_2 + 1e-9 || angle <= -std::f64::consts::FRAC_PI_2 + 1e-9 {
+        reading = (-reading.0, -reading.1);
+    }
+    // Down the screen from the text's baseline, back on the page.
+    let down = to_screen((-reading.1, reading.0));
+    // The caption box is centred on the line: one line high (never less than
+    // its font), with further lines below.
+    let first_line = style.line_height_pt().max(style.font_size_pt());
+    let extra_lines = content.split('\n').count().saturating_sub(1) as f64;
+    (
+        centre,
+        Some(DimensionHandleBeside {
+            down,
+            below_pt: first_line * 0.5 + style.line_height_pt() * extra_lines,
+            above_pt: first_line * 0.5,
+        }),
+    )
 }
 
 /// The box a selected markup's outline traces, turned to the markup's angle:
@@ -933,6 +1080,17 @@ fn box_outline_distance(
 
 fn box_inward_resize_reach(rect: PdfRect, reach: f64) -> f64 {
     reach.min(rect.width.min(rect.height) / 12.)
+}
+
+/// How far inside a Callout's or Cloud+'s caption box its border's line
+/// runs: half the line, as the saved appearance draws it, or none at the
+/// default 1 pt leader, which draws no box border.
+pub fn caption_box_border_inset_pt(line_width_pt: f64) -> f64 {
+    if line_width_pt == 1. {
+        0.
+    } else {
+        line_width_pt * 0.5
+    }
 }
 
 /// The Rectangle's resize zone on any box: `reach` either side of its
@@ -2517,6 +2675,11 @@ pub struct CloudPlusAnnotation {
 }
 
 impl CloudPlusAnnotation {
+    /// How far inside the caption box its border's line runs.
+    pub fn text_box_border_inset_pt(&self) -> f64 {
+        caption_box_border_inset_pt(self.appearance.leader().stroke_width_pt())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: MarkupId,
@@ -2859,6 +3022,11 @@ impl CalloutDiskGeometry {
 }
 
 impl CalloutAnnotation {
+    /// How far inside the text box its border's line runs.
+    pub fn text_box_border_inset_pt(&self) -> f64 {
+        caption_box_border_inset_pt(self.appearance.line().stroke_width_pt())
+    }
+
     pub fn new(
         id: MarkupId,
         page_index: u32,
@@ -3997,6 +4165,30 @@ impl DimensionAnnotation {
         }
     }
 
+    /// Where its offset handle sits at `pixels_per_point`
+    /// ([`dimension_offset_handle_point`]).
+    pub fn offset_handle_point(&self, pixels_per_point: f64) -> PdfPoint {
+        self.offset_handle_point_in_view(pixels_per_point, None)
+    }
+
+    /// As [`Self::offset_handle_point`], on the page as `view` shows it.
+    pub fn offset_handle_point_in_view(
+        &self,
+        pixels_per_point: f64,
+        view: Option<PageTransform>,
+    ) -> PdfPoint {
+        dimension_offset_handle_point(
+            self.start,
+            self.end,
+            self.dimension_line_offset,
+            &self.content,
+            self.appearance.text(),
+            self.caption_offset,
+            pixels_per_point,
+            view,
+        )
+    }
+
     pub fn content(&self) -> &str {
         &self.content
     }
@@ -5070,6 +5262,15 @@ pub enum AnnotationEdit {
     },
     SetCloudPlusContent(String),
     SetCloudPlusAppearance(CloudPlusAppearance),
+    /// A new style and cloud intensity from its properties, with the caption
+    /// box and leader refitted, as one undoable change. A new intensity
+    /// redraws an imported cloud's own outline.
+    SetCloudPlusStyle {
+        appearance: CloudPlusAppearance,
+        border_effect_intensity: f64,
+        text_box: PdfRect,
+        leader_points: Vec<PdfPoint>,
+    },
     TranslateCloudPlusGroup {
         delta_x: f64,
         delta_y: f64,
@@ -5082,6 +5283,12 @@ pub enum AnnotationEdit {
     SetCalloutLeaderPoint {
         point_index: usize,
         point: PdfPoint,
+    },
+    /// A new style from its properties, with its box refitted to the text,
+    /// as one undoable change.
+    SetCalloutAppearance {
+        appearance: CalloutAppearance,
+        text_box: PdfRect,
     },
     SetCalloutTextBox(PdfRect),
     TranslateCalloutTextBox {
@@ -5212,6 +5419,38 @@ impl RectangleResizeHandle {
         rotate_point_around_rect_center(self.point(rect), rect, -rotation_degrees)
     }
 
+    /// The handle on a border drawn `inset` inside `rect` (a Callout's or
+    /// Cloud+'s caption box): centred on the border's line.
+    pub fn inset_point(self, rect: PdfRect, inset: f64) -> PdfPoint {
+        let inset = inset.min(rect.width / 2.).min(rect.height / 2.).max(0.);
+        self.point(PdfRect {
+            x: rect.x + inset,
+            y: rect.y + inset,
+            width: rect.width - inset * 2.,
+            height: rect.height - inset * 2.,
+        })
+    }
+
+    /// Where the box's edge goes for a pointer dragging this handle when it
+    /// sits `inset` inside the box ([`Self::inset_point`]): out by `inset` on
+    /// the sides it moves, so pressing the handle moves nothing.
+    pub fn outset_pointer(self, point: PdfPoint, inset: f64) -> PdfPoint {
+        let mut point = point;
+        if self.affects_west() {
+            point.x -= inset;
+        }
+        if self.affects_east() {
+            point.x += inset;
+        }
+        if self.affects_north() {
+            point.y += inset;
+        }
+        if self.affects_south() {
+            point.y -= inset;
+        }
+        point
+    }
+
     pub fn is_corner(self) -> bool {
         matches!(
             self,
@@ -5219,19 +5458,19 @@ impl RectangleResizeHandle {
         )
     }
 
-    pub(crate) fn affects_west(self) -> bool {
+    pub fn affects_west(self) -> bool {
         matches!(self, Self::NorthWest | Self::SouthWest | Self::West)
     }
 
-    pub(crate) fn affects_east(self) -> bool {
+    pub fn affects_east(self) -> bool {
         matches!(self, Self::NorthEast | Self::East | Self::SouthEast)
     }
 
-    pub(crate) fn affects_north(self) -> bool {
+    pub fn affects_north(self) -> bool {
         matches!(self, Self::NorthWest | Self::North | Self::NorthEast)
     }
 
-    pub(crate) fn affects_south(self) -> bool {
+    pub fn affects_south(self) -> bool {
         matches!(self, Self::SouthEast | Self::South | Self::SouthWest)
     }
 
@@ -5875,6 +6114,31 @@ pub struct SceneDimension {
     pub locked: bool,
     pub draft: bool,
     pub feedback: SceneInteractionFeedback,
+}
+
+impl SceneDimension {
+    /// Where its offset handle is drawn ([`dimension_offset_handle_point`]).
+    pub fn offset_handle_point(&self, pixels_per_point: f64) -> PdfPoint {
+        self.offset_handle_point_in_view(pixels_per_point, None)
+    }
+
+    /// As [`Self::offset_handle_point`], on the page as `view` shows it.
+    pub fn offset_handle_point_in_view(
+        &self,
+        pixels_per_point: f64,
+        view: Option<PageTransform>,
+    ) -> PdfPoint {
+        dimension_offset_handle_point(
+            self.start,
+            self.end,
+            self.dimension_line_offset,
+            &self.content,
+            self.appearance.text(),
+            self.caption_offset,
+            pixels_per_point,
+            view,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -12452,6 +12716,54 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::CloudPlus, true))
             }
+            AnnotationEdit::SetCloudPlusStyle {
+                appearance,
+                border_effect_intensity,
+                text_box,
+                leader_points,
+            } => {
+                validate_layout_rect(text_box, "Cloud+ text box")?;
+                validate_cloud_plus_leader_points(&leader_points)?;
+                let annotation = self.cloud_plus(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.appearance == appearance
+                    && annotation.border_effect_intensity == border_effect_intensity
+                    && annotation.text_box == text_box
+                    && annotation.leader_points == leader_points
+                {
+                    return Ok((AnnotationKind::CloudPlus, false));
+                }
+                let cloud_appearance_path =
+                    if annotation.border_effect_intensity == border_effect_intensity {
+                        annotation.cloud_appearance_path.clone()
+                    } else {
+                        None
+                    };
+                let mut replacement = CloudPlusAnnotation::new(
+                    annotation.id.clone(),
+                    annotation.page_index,
+                    annotation.cloud_points.clone(),
+                    border_effect_intensity,
+                    leader_points,
+                    text_box,
+                    annotation.content.clone(),
+                    appearance,
+                )?
+                .with_cloud_appearance_path(cloud_appearance_path)?;
+                replacement.locked = annotation.locked;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    *state
+                        .cloud_pluses
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated Cloud+ style edit must retain its target") =
+                        replacement;
+                });
+                Ok((AnnotationKind::CloudPlus, true))
+            }
             AnnotationEdit::TranslateCloudPlusGroup { delta_x, delta_y } => {
                 require_finite("cloud_plus.delta_x", delta_x)?;
                 require_finite("cloud_plus.delta_y", delta_y)?;
@@ -12500,6 +12812,31 @@ impl AnnotationDocument {
                         .iter_mut()
                         .find(|annotation| annotation.id == id)
                         .expect("a validated Callout text edit must retain its target") =
+                        replacement;
+                });
+                Ok((AnnotationKind::Callout, true))
+            }
+            AnnotationEdit::SetCalloutAppearance {
+                appearance,
+                text_box,
+            } => {
+                let annotation = self.callout(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.appearance == appearance && annotation.text_box == text_box {
+                    return Ok((AnnotationKind::Callout, false));
+                }
+                let mut restyled = annotation.clone();
+                restyled.appearance = appearance;
+                let replacement = restyled.resized_text_box(text_box)?;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    *state
+                        .callouts
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated Callout style edit must retain its target") =
                         replacement;
                 });
                 Ok((AnnotationKind::Callout, true))
@@ -15266,6 +15603,118 @@ mod tests {
     }
 
     #[test]
+    fn a_dimensions_offset_handle_sits_centred_just_below_its_caption() {
+        let style = TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap();
+        let half_height = style.line_height_pt().max(12.) * 0.5;
+        let view = |rotation: PageRotation, ppp: f64| {
+            PageTransform::new_rotated(612., 792., ppp, rotation).unwrap()
+        };
+        // Where the handle sits from the caption's centre, in screen pixels:
+        // across the text (along its reading) and down from it.
+        let place = |start: PdfPoint, end: PdfPoint, content: &str, view: PageTransform| {
+            let handle = dimension_offset_handle_point(
+                start,
+                end,
+                24.,
+                content,
+                &style,
+                CaptionOffset::default(),
+                view.pixels_per_point(),
+                Some(view),
+            );
+            let length = (end.x - start.x).hypot(end.y - start.y);
+            let unit = ((end.x - start.x) / length, (end.y - start.y) / length);
+            let centre = PdfPoint {
+                x: (start.x + end.x) * 0.5 - unit.1 * 24.,
+                y: (start.y + end.y) * 0.5 + unit.0 * 24.,
+            };
+            let from = view.point_to_local_pixels(centre);
+            let to = view.point_to_local_pixels(handle);
+            let along = view.point_to_local_pixels(PdfPoint {
+                x: centre.x + unit.0,
+                y: centre.y + unit.1,
+            });
+            let mut reading = (along.x - from.x, along.y - from.y);
+            let size = reading.0.hypot(reading.1);
+            reading = (reading.0 / size, reading.1 / size);
+            if reading.0 < -1e-9 || (reading.0.abs() <= 1e-9 && reading.1 < 0.) {
+                reading = (-reading.0, -reading.1);
+            }
+            let down = (-reading.1, reading.0);
+            let (dx, dy) = (to.x - from.x, to.y - from.y);
+            (dx * reading.0 + dy * reading.1, dx * down.0 + dy * down.1)
+        };
+        const { assert!(DIMENSION_OFFSET_HANDLE_CLEARANCE_CSS_PX > RESIZE_HANDLE_GRAB_CSS_PX) };
+        for rotation in [
+            PageRotation::Degrees0,
+            PageRotation::Degrees90,
+            PageRotation::Degrees180,
+            PageRotation::Degrees270,
+        ] {
+            for (start, end) in [
+                (point(100., 300.), point(400., 300.)),
+                (point(400., 300.), point(100., 300.)),
+                (point(300., 200.), point(300., 500.)),
+                (point(200., 200.), point(360., 380.)),
+            ] {
+                for content in ["1200", "12,345 mm overall"] {
+                    for ppp in [0.5, 1., 2., 4.] {
+                        let (across, down) = place(start, end, content, view(rotation, ppp));
+                        assert!(across.abs() < 1e-6, "centred on the caption: {across}");
+                        // Its whole grab reach clears the text, just.
+                        let gap = down - half_height * ppp;
+                        assert!(
+                            (gap - DIMENSION_OFFSET_HANDLE_CLEARANCE_CSS_PX).abs() < 1e-6,
+                            "{rotation:?} {content} at {ppp}: {gap}px below the text"
+                        );
+                    }
+                }
+            }
+        }
+        // Near the page's bottom edge it sits just above the text instead.
+        // Its caption's centre 14pt above the bottom: below, the handle's
+        // grab reach would leave the page.
+        let low = (point(100., -10.), point(400., -10.));
+        let (across, down) = place(low.0, low.1, "1200", view(PageRotation::Degrees0, 2.));
+        assert!(across.abs() < 1e-6);
+        assert!(
+            (down + half_height * 2. + DIMENSION_OFFSET_HANDLE_CLEARANCE_CSS_PX).abs() < 1e-6,
+            "flipped above: {down}"
+        );
+        // Without a view it stays below; there is no page to leave.
+        let below = dimension_offset_handle_point(
+            low.0,
+            low.1,
+            24.,
+            "1200",
+            &style,
+            CaptionOffset::default(),
+            2.,
+            None,
+        );
+        assert!(below.y < 14.);
+        // No caption on the line: the handle is the line's middle.
+        let (start, end) = (point(100., 100.), point(400., 100.));
+        let middle = |content: &str, caption_offset| {
+            dimension_offset_handle_point(
+                start,
+                end,
+                24.,
+                content,
+                &style,
+                caption_offset,
+                1.,
+                Some(view(PageRotation::Degrees0, 1.)),
+            )
+        };
+        assert_eq!(middle("", CaptionOffset::default()), point(250., 124.));
+        assert_eq!(
+            middle("1200", CaptionOffset { x: 0., y: 40. }),
+            point(250., 124.)
+        );
+    }
+
+    #[test]
     fn page_text_edits_undo_redo_and_rebase_when_saved() {
         use crate::pdf_text_edit::{TextEditRun, TextLineAnchor, TextRunStyle};
         let run = |text: &str| TextEditRun {
@@ -17465,6 +17914,29 @@ mod tests {
     }
 
     #[test]
+    fn a_caption_border_handle_is_on_its_line_and_maps_back_to_the_box_edge() {
+        assert_eq!(
+            caption_box_border_inset_pt(1.),
+            0.,
+            "no border at the 1 pt default"
+        );
+        assert_eq!(caption_box_border_inset_pt(6.), 3.);
+        let rect = PdfRect::new(100., 20., 80., 40.).unwrap();
+        for handle in RectangleResizeHandle::ALL {
+            let on_line = handle.inset_point(rect, 3.);
+            // The border's line is the box inset by half its width.
+            let line = PdfRect::new(103., 23., 74., 34.).unwrap();
+            assert_eq!(on_line, handle.point(line), "{handle:?}");
+            // Pressing the handle means the box's own edge: nothing moves.
+            assert_eq!(
+                rect.rotated_resize_from_handle(0., handle, handle.outset_pointer(on_line, 3.)),
+                rect,
+                "{handle:?}"
+            );
+        }
+    }
+
+    #[test]
     fn resize_handles_keep_the_opposite_edges_fixed_and_enforce_minimum_size() {
         let mut document = AnnotationDocument::default();
         create_rectangle(&mut document, "resizing");
@@ -19649,6 +20121,64 @@ mod tests {
             }
         );
         document.undo().unwrap();
+        assert_eq!(
+            document.cloud_plus(&id).unwrap().cloud_appearance_path(),
+            Some(custom_path.as_slice())
+        );
+        // A restyle from its properties keeps the imported outline unless
+        // the cloud intensity changes, which redraws it; each is one change.
+        let restyle = |document: &AnnotationDocument, intensity: f64, width: f64| {
+            let current = document.cloud_plus(&id).unwrap();
+            AnnotationEdit::SetCloudPlusStyle {
+                appearance: CloudPlusAppearance::new(
+                    RectangleAppearance::new("#0000ff", width, None::<String>, 1.).unwrap(),
+                    StraightLineAppearance::new("#0000ff", width, 1., StrokeStyle::Solid).unwrap(),
+                    TextBoxStyle::new("Helvetica", 12., "#0000ff", 1.).unwrap(),
+                )
+                .unwrap(),
+                border_effect_intensity: intensity,
+                text_box: current.text_box,
+                leader_points: current.leader_points().to_vec(),
+            }
+        };
+        let edit = restyle(&document, 2., 2.);
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit,
+            })
+            .unwrap();
+        let restyled = document.cloud_plus(&id).unwrap();
+        assert_eq!(restyled.appearance.cloud().stroke_color(), "#0000ff");
+        assert_eq!(
+            restyled.cloud_appearance_path(),
+            Some(custom_path.as_slice())
+        );
+        let edit = restyle(&document, 1., 2.);
+        document
+            .apply_command(AnnotationCommand::EditAnnotation {
+                id: id.clone(),
+                edit,
+            })
+            .unwrap();
+        assert!(
+            document
+                .cloud_plus(&id)
+                .unwrap()
+                .cloud_appearance_path()
+                .is_none()
+        );
+        document.undo().unwrap();
+        document.undo().unwrap();
+        assert_eq!(
+            document
+                .cloud_plus(&id)
+                .unwrap()
+                .appearance
+                .cloud()
+                .stroke_color(),
+            "#ff0000"
+        );
         assert_eq!(
             document.cloud_plus(&id).unwrap().cloud_appearance_path(),
             Some(custom_path.as_slice())

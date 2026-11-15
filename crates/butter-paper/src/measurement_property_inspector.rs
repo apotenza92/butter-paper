@@ -7,7 +7,9 @@ use crate::annotation_model::{
     AnnotationKind, MEASUREMENT_LENGTH_UNITS, MarkupId, PageScale, ScalePrecision,
     ScalePrecisionMode, length_unit_metres,
 };
-use crate::property_controls::PropertyInspectorPanel;
+use crate::property_controls::{
+    PropertyGroup, PropertyInspectorPanel, property_body, property_row,
+};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
@@ -16,11 +18,9 @@ use gpui::{
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IndexPath, Sizable as _,
     button::Button,
-    form::Field,
     h_flex,
     select::{Select, SelectEvent, SelectState},
     switch::Switch,
-    v_flex,
 };
 
 use crate::document_workspace::DocumentId;
@@ -218,19 +218,118 @@ impl Render for MeasurementPropertyInspector {
         let show_caption = cx.entity().downgrade();
         let page_scale = cx.entity().downgrade();
         let reset_caption = cx.entity().downgrade();
-        let read_only = |id: &'static str, label: &'static str, value: String| {
-            Field::new().label(label).child(
-                div()
-                    .id(id)
-                    .debug_selector(move || id.into())
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(value),
-            )
+        let read_only = |id: &'static str, value: String| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .child(value)
         };
+        let editable = !(snapshot.mutation_disabled || snapshot.locked);
+        let mut rows = PropertyGroup::titled("Measurement")
+            .row(property_row(
+                "Scale",
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().truncate().text_sm().child(
+                        snapshot.page_scale.as_ref().map_or_else(
+                            || "None (paper size)".to_owned(),
+                            crate::page_scale_catalog::scale_label,
+                        ),
+                    ))
+                    .child(
+                        Button::new(MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID)
+                            .debug_selector(|| MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID.into())
+                            .label("Change")
+                            .small()
+                            .outline()
+                            .disabled(snapshot.mutation_disabled)
+                            .on_click(move |_, _, cx| {
+                                let _ = page_scale.update(cx, |inspector, cx| {
+                                    inspector
+                                        .emit_action(MeasurementPropertyAction::OpenPageScale, cx)
+                                });
+                            }),
+                    ),
+            ))
+            .row(property_row(
+                "Value",
+                h_flex()
+                    .gap_1()
+                    .child(read_only(
+                        MEASUREMENT_INSPECTOR_CAPTION_ID,
+                        snapshot.caption,
+                    ))
+                    .child(
+                        div()
+                            .id(MEASUREMENT_INSPECTOR_KIND_ID)
+                            .debug_selector(|| MEASUREMENT_INSPECTOR_KIND_ID.into())
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(measurement_kind_label(snapshot.annotation_kind)),
+                    ),
+            ))
+            .row(property_row(
+                "Unit",
+                div()
+                    .id(MEASUREMENT_INSPECTOR_UNIT_ID)
+                    .debug_selector(|| MEASUREMENT_INSPECTOR_UNIT_ID.into())
+                    .w_full()
+                    .when(length_unit_metres(&snapshot.unit).is_none(), |unit| {
+                        // A unit from another app that cannot be converted.
+                        unit.text_sm().child(snapshot.unit.clone())
+                    })
+                    .when(length_unit_metres(&snapshot.unit).is_some(), |unit| {
+                        unit.child(Select::new(&self.unit_select).small().disabled(!editable))
+                    }),
+            ))
+            .row(property_row(
+                "Precision",
+                read_only(
+                    MEASUREMENT_INSPECTOR_PRECISION_ID,
+                    precision_label(snapshot.precision),
+                ),
+            ))
+            .row(property_row(
+                "Caption",
+                div()
+                    .id(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
+                    .debug_selector(|| MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID.into())
+                    .child(
+                        Switch::new("measurement-property-show-caption-switch")
+                            .checked(snapshot.show_caption)
+                            .disabled(!editable)
+                            .tooltip("Show the measured value on the page")
+                            .on_click(move |value, _, cx| {
+                                let _ = show_caption.update(cx, |inspector, cx| {
+                                    inspector.emit_action(
+                                        MeasurementPropertyAction::ShowCaption(*value),
+                                        cx,
+                                    )
+                                });
+                            }),
+                    ),
+            ));
+        if snapshot.caption_moved && snapshot.show_caption {
+            rows = rows.row(
+                Button::new(MEASUREMENT_INSPECTOR_RESET_CAPTION_ID)
+                    .debug_selector(|| MEASUREMENT_INSPECTOR_RESET_CAPTION_ID.into())
+                    .label("Reset caption position")
+                    .small()
+                    .outline()
+                    .disabled(!editable)
+                    .on_click(move |_, _, cx| {
+                        let _ = reset_caption.update(cx, |inspector, cx| {
+                            inspector
+                                .emit_action(MeasurementPropertyAction::ResetCaptionPosition, cx)
+                        });
+                    }),
+            );
+        }
         PropertyInspectorPanel::new(
             MEASUREMENT_PROPERTY_INSPECTOR_ID,
             MEASUREMENT_INSPECTOR_HEADER_ID,
@@ -238,120 +337,7 @@ impl Render for MeasurementPropertyInspector {
             "Measurement",
         )
         .content_only(self.embedded)
-        .child(
-            v_flex()
-                .gap_3()
-                .p_3()
-                .child(
-                    Field::new().label("Page scale").child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().flex_1().min_w_0().truncate().text_sm().child(
-                                snapshot.page_scale.as_ref().map_or_else(
-                                    || "None (paper size)".to_owned(),
-                                    crate::page_scale_catalog::scale_label,
-                                ),
-                            ))
-                            .child(
-                                Button::new(MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID)
-                                    .debug_selector(|| {
-                                        MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID.into()
-                                    })
-                                    .label("Change")
-                                    .small()
-                                    .outline()
-                                    .disabled(snapshot.mutation_disabled)
-                                    .on_click(move |_, _, cx| {
-                                        let _ = page_scale.update(cx, |inspector, cx| {
-                                            inspector.emit_action(
-                                                MeasurementPropertyAction::OpenPageScale,
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            ),
-                    ),
-                )
-                .child(read_only(
-                    MEASUREMENT_INSPECTOR_KIND_ID,
-                    "Type",
-                    measurement_kind_label(snapshot.annotation_kind).into(),
-                ))
-                .child(read_only(
-                    MEASUREMENT_INSPECTOR_CAPTION_ID,
-                    "Measured value",
-                    snapshot.caption,
-                ))
-                .child(
-                    Field::new().label("Unit").child(
-                        div()
-                            .id(MEASUREMENT_INSPECTOR_UNIT_ID)
-                            .debug_selector(|| MEASUREMENT_INSPECTOR_UNIT_ID.into())
-                            .w_full()
-                            .when(length_unit_metres(&snapshot.unit).is_none(), |unit| {
-                                // A unit from another app that cannot be converted.
-                                unit.px_2()
-                                    .py_1()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .child(snapshot.unit.clone())
-                            })
-                            .when(length_unit_metres(&snapshot.unit).is_some(), |unit| {
-                                unit.child(
-                                    Select::new(&self.unit_select)
-                                        .small()
-                                        .disabled(snapshot.mutation_disabled || snapshot.locked),
-                                )
-                            }),
-                    ),
-                )
-                .child(read_only(
-                    MEASUREMENT_INSPECTOR_PRECISION_ID,
-                    "Precision",
-                    precision_label(snapshot.precision),
-                ))
-                .child(
-                    Field::new().child(
-                        div()
-                            .id(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
-                            .debug_selector(|| MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID.into())
-                            .child(
-                                Switch::new("measurement-property-show-caption-switch")
-                                    .label("Show caption")
-                                    .checked(snapshot.show_caption)
-                                    .disabled(snapshot.mutation_disabled || snapshot.locked)
-                                    .on_click(move |value, _, cx| {
-                                        let _ = show_caption.update(cx, |inspector, cx| {
-                                            inspector.emit_action(
-                                                MeasurementPropertyAction::ShowCaption(*value),
-                                                cx,
-                                            )
-                                        });
-                                    }),
-                            ),
-                    ),
-                )
-                .when(snapshot.caption_moved && snapshot.show_caption, |panel| {
-                    panel.child(
-                        Field::new().child(
-                            Button::new(MEASUREMENT_INSPECTOR_RESET_CAPTION_ID)
-                                .debug_selector(|| MEASUREMENT_INSPECTOR_RESET_CAPTION_ID.into())
-                                .label("Reset caption position")
-                                .small()
-                                .outline()
-                                .disabled(snapshot.mutation_disabled || snapshot.locked)
-                                .on_click(move |_, _, cx| {
-                                    let _ = reset_caption.update(cx, |inspector, cx| {
-                                        inspector.emit_action(
-                                            MeasurementPropertyAction::ResetCaptionPosition,
-                                            cx,
-                                        )
-                                    });
-                                }),
-                        ),
-                    )
-                }),
-        )
+        .child(property_body().child(rows))
         .into_any_element()
     }
 }

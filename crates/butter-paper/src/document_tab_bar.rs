@@ -52,8 +52,11 @@ pub const TEMPLATE_PICKER_COLUMN_WIDTH: f32 = (TEMPLATE_PICKER_WIDTH - 12.) / 2.
 pub const DOCUMENT_TAB_LIST_ACCESSIBLE_NAME: &str = "Open documents";
 pub const DOCUMENT_TAB_REORDER_STATUS_ID: &str = "document-tab-reorder-status";
 pub const DOCUMENT_TAB_REORDER_KEYSHORTCUTS: &str = "Alt+Shift+ArrowLeft Alt+Shift+ArrowRight";
-pub const DOCUMENT_TAB_REORDER_DESCRIPTION: &str =
-    "Drag to reorder. Press Alt+Shift+Left or Alt+Shift+Right to move this tab.";
+pub const DOCUMENT_TAB_REORDER_DESCRIPTION: &str = if cfg!(target_os = "macos") {
+    "Drag to reorder. Press ⌥⇧← or ⌥⇧→ to move this tab."
+} else {
+    "Drag to reorder. Press Alt+Shift+Left or Alt+Shift+Right to move this tab."
+};
 pub const DOCUMENT_TAB_POINTER_DRAG_THRESHOLD: f64 = 6.;
 pub const DOCUMENT_TAB_POINTER_PRIMARY_GAP: &str =
     "GPUI exposes one native mouse pointer and no browser-style isPrimary flag";

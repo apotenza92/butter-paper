@@ -152,9 +152,8 @@ impl DocumentWorkspace {
                 .focus(|style| style.opacity(1.))
                 .debug_selector(|| DOCUMENT_NEW_TAB_CLOSE_ID.into())
                 .accessibility_id(DOCUMENT_NEW_TAB_CLOSE_ID)
-                .rounded(cx.theme().radius_full())
                 .ghost()
-                .small()
+                .xsmall()
                 .icon(IconName::Close)
                 .tooltip(close_label.clone())
                 .on_click(move |_: &ClickEvent, _, cx| {
@@ -274,9 +273,8 @@ impl DocumentWorkspace {
                         .focus(|style| style.opacity(1.))
                         .debug_selector(move || close_selector.clone())
                         .accessibility_id(close_accessibility_id)
-                        .rounded(cx.theme().radius_full())
                         .ghost()
-                        .small()
+                        .xsmall()
                         .icon(IconName::Close)
                         .tooltip(close_label.clone())
                         .disabled(*saving)
@@ -356,6 +354,9 @@ impl DocumentWorkspace {
                         .id("document-workspace-native-session-tab-bar")
                         .debug_selector(|| "document-workspace-native-session-tab-bar".into())
                         .flex_1()
+                        // A row, so the segmented track is as wide as its tabs.
+                        .flex()
+                        .items_center()
                         .py_2()
                         .pr_3()
                         // Preserve the pinned Tab's 32px frame plus py_2 even with no tabs.
@@ -371,8 +372,10 @@ impl DocumentWorkspace {
                             }),
                         )
                         .child(
+                            // Stock segmented tabs, as the loaded strip.
                             TabBar::new("document-workspace-session-tabs-component")
-                                .outline()
+                                .segmented()
+                                .min_w_0()
                                 .max_width(px(190.))
                                 // Use stock scrolling, not the always-visible optional tab menu.
                                 .menu(false)

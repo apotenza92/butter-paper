@@ -50,9 +50,8 @@ use butter_paper::{
     },
     highlight_defaults_panel::{HIGHLIGHT_DEFAULTS_CLOSE_ID, HIGHLIGHT_DEFAULTS_PANEL_ID},
     ink_property_inspector::{
-        INK_INSPECTOR_APPLY_COLOR_ID, INK_INSPECTOR_COLOR_ID, INK_INSPECTOR_COLOR_TRIGGER_ID,
-        INK_INSPECTOR_LOCKED_ID, INK_INSPECTOR_OPACITY_ID, INK_INSPECTOR_OPACITY_TRACK_ID,
-        INK_INSPECTOR_WIDTH_ID,
+        INK_INSPECTOR_COLOR_ID, INK_INSPECTOR_COLOR_TRIGGER_ID, INK_INSPECTOR_LOCKED_ID,
+        INK_INSPECTOR_OPACITY_ID, INK_INSPECTOR_OPACITY_TRACK_ID, INK_INSPECTOR_WIDTH_ID,
     },
     native_document_view_state::{RestartView, RestartZoom},
     native_launch::{NativeLaunchAction, NativeLaunchConfig, NativeLaunchSessionSource},
@@ -61,13 +60,12 @@ use butter_paper::{
         SessionManifestStore, SessionRecoveryDocument, SessionRecoverySnapshot, SessionSnapshot,
     },
     straight_line_property_inspector::{
-        STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID, STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID,
-        STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID, STRAIGHT_LINE_INSPECTOR_WIDTH_ID,
+        STRAIGHT_LINE_INSPECTOR_COLOR_TRIGGER_ID, STRAIGHT_LINE_INSPECTOR_OPACITY_TRACK_ID,
+        STRAIGHT_LINE_INSPECTOR_WIDTH_ID,
     },
     text_box_property_inspector::{
-        TEXT_BOX_INSPECTOR_ALIGNMENT_CENTER_ID, TEXT_BOX_INSPECTOR_APPLY_COLOR_ID,
-        TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID, TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID,
-        TEXT_BOX_INSPECTOR_SIZE_ID,
+        TEXT_BOX_INSPECTOR_ALIGNMENT_CENTER_ID, TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID,
+        TEXT_BOX_INSPECTOR_OPACITY_TRACK_ID, TEXT_BOX_INSPECTOR_SIZE_ID,
     },
 };
 use gpui::{
@@ -388,12 +386,8 @@ fn edit_selected_straight_line_through_real_controls(
     let color_input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| color_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string("#2563eb".into()));
+    // Committing the hex value closes the picker and applies the colour.
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply_color = cx
-        .debug_bounds(STRAIGHT_LINE_INSPECTOR_APPLY_COLOR_ID)
-        .expect("the real ColorPicker must expose Apply color");
-    cx.simulate_click(apply_color.center(), Modifiers::default());
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let width = cx
@@ -461,17 +455,7 @@ fn edit_selected_ink_through_real_controls(
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(!picker.read_with(cx, |picker, _| picker.is_open()));
-    assert_eq!(
-        workspace.read_with(cx, |workspace, cx| workspace
-            .annotation_snapshot(document_id, cx)
-            .unwrap()
-            .revision),
-        before.revision,
-        "ColorPicker Change must only preview"
-    );
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply = cx.debug_bounds(INK_INSPECTOR_APPLY_COLOR_ID).unwrap();
-    cx.simulate_click(apply.center(), Modifiers::default());
+    // Committing the hex value closes the picker and applies the colour.
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_snapshot(document_id, cx)
@@ -1087,37 +1071,29 @@ fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_witho
     cx.update(|window, _| window.activate_window());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
-    let double_click = |cx: &mut gpui::VisualTestContext| {
+    let open_text = |cx: &mut gpui::VisualTestContext| {
         let layer = cx.debug_bounds(layer_id).unwrap();
         let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
         let origin = point(
             layer.origin.x + px((f32::from(layer.size.width) - 612. * scale) / 2.),
             layer.origin.y + px((f32::from(layer.size.height) - 792. * scale) / 2.),
         );
+        // On "baseline": the first click selects the box, a click in its
+        // selected text edits it (one already selected edits at once).
         let body = point(
-            origin.x + px(340. * scale),
-            origin.y + px((792. - 320.) * scale),
+            origin.x + px(320. * scale),
+            origin.y + px((792. - 332.) * scale),
         );
-        cx.simulate_event(MouseDownEvent {
-            button: MouseButton::Left,
-            position: body,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            button: MouseButton::Left,
-            position: body,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-        });
-        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for _ in 0..2 {
+            cx.simulate_click(body, Modifiers::default());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
     };
 
-    double_click(cx);
+    open_text(cx);
     let input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
-        .expect("double-click must retain the application-close draft");
+        .expect("a click in the selected text must retain the application-close draft");
     cx.update(|window, cx| {
         input.update(cx, |input, cx| {
             input.replace_text_in_range(Some(0..8), "committed once", window, cx)
@@ -1152,7 +1128,7 @@ fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_witho
         close.choose(ApplicationCloseAction::Cancel, cx)
     });
 
-    double_click(cx);
+    open_text(cx);
     let blocked_input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
         .expect("the editor must reopen for blocked application close");
@@ -5221,10 +5197,8 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     let hex_input = picker.read_with(cx, |picker, _| picker.hex_input().clone());
     cx.update(|window, cx| hex_input.read(cx).focus_handle(cx).focus(window, cx));
     cx.write_to_clipboard(ClipboardItem::new_string("#2563eb66".into()));
+    // Committing the hex value closes the picker and applies the colour.
     cx.simulate_keystrokes(&format!("{EDIT_SELECT_ALL} {EDIT_PASTE} enter"));
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let apply_color = cx.debug_bounds(TEXT_BOX_INSPECTOR_APPLY_COLOR_ID).unwrap();
-    cx.simulate_click(apply_color.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let size = cx.debug_bounds(TEXT_BOX_INSPECTOR_SIZE_ID).unwrap();
     cx.simulate_click(size.center(), Modifiers::default());
