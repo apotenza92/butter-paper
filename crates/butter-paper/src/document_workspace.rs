@@ -246,15 +246,15 @@ use crate::{
 };
 use gpui::{
     Anchor, App, AppContext as _, BorderStyle, Bounds, ClickEvent, ContentMask, Context,
-    CursorStyle, DispatchPhase, DragMoveEvent, Edges, Entity, EventEmitter, FocusHandle,
-    Focusable as _, FontStyle, FontWeight, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions,
-    Pixels, Point, Render, RenderImage, Role, ScrollHandle, ScrollStrategy, ScrollWheelEvent,
-    ShapedLine, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
-    Subscription, Task, TextAlign, TextRun, TransformationMatrix, UniformListScrollHandle,
-    WeakEntity, Window, accesskit::Live, canvas, fill, font, img, outline, point,
-    prelude::FluentBuilder as _, px, radians, relative, size, uniform_list,
+    CursorStyle, DispatchPhase, Edges, Entity, EventEmitter, FocusHandle, Focusable as _,
+    FontStyle, FontWeight, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent,
+    KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, ParentElement as _, PathBuilder, PathPromptOptions, Pixels, Point,
+    Render, RenderImage, Role, ScrollHandle, ScrollStrategy, ScrollWheelEvent, ShapedLine,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
+    Task, TextAlign, TextRun, TransformationMatrix, UniformListScrollHandle, WeakEntity, Window,
+    accesskit::Live, canvas, fill, font, img, outline, point, prelude::FluentBuilder as _, px,
+    radians, relative, size, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
@@ -668,10 +668,12 @@ pub const DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID: &str =
 pub const DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID: &str = "document-workspace-signed-text-edit-cancel";
 pub const DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID: &str = "document-workspace-restricted-edit-confirm";
 pub const DOCUMENT_RESTRICTED_EDIT_CANCEL_ID: &str = "document-workspace-restricted-edit-cancel";
-/// The Open and New actions above the tool rail.
+/// The New PDF lane above the tool rail.
 pub const DOCUMENT_WORKSPACE_TAB_ACTIONS_ID: &str = "document-workspace-tab-actions";
-pub const DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID: &str =
-    "document-workspace-right-rail-resize-handle";
+/// New Tab and the open documents menu, on the tab track after the last tab.
+pub const DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID: &str = "document-session-tab-track-actions";
+/// The menu of every open document, on the tab track.
+pub const DOCUMENT_TABS_MENU_ID: &str = "document-tabs-overflow";
 pub const DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID: &str = "document-workspace-active-inspector-slot";
 pub const DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID: &str = "document-workspace-active-inspector-close";
 pub const DOCUMENT_PEN_TOOL_ID: &str = "document-workspace-pen-tool";
@@ -2938,8 +2940,6 @@ pub struct DocumentWorkspace {
     semantic_snap_dimension_increment_input: Option<Entity<InputState>>,
     semantic_snap_input_subscriptions: Vec<Subscription>,
     right_rail_actions_open: bool,
-    right_rail_columns: usize,
-    right_rail_resizable: Entity<ResizableState>,
     right_rail_scroll: ScrollHandle,
     /// The rail overflow cue under the pointer, which names what it does.
     right_rail_overflow_hover: Option<RailOverflowEdge>,
@@ -3186,6 +3186,9 @@ pub struct DocumentWorkspace {
     /// The application shows the dragged tab in its own window beyond the strip.
     external_tab_drag_preview: bool,
     session_tab_strip_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// New Tab and the documents menu on the tab track, which a
+    /// double-click on the track's empty part must not reach.
+    session_tab_actions_bounds: Rc<Cell<Bounds<Pixels>>>,
     other_window_document_focus: Option<OtherWindowDocumentFocus>,
     opener: Option<Arc<dyn NativeDocumentOpener>>,
     saver: Option<Arc<dyn NativeDocumentSaver>>,
@@ -4732,8 +4735,6 @@ impl DocumentWorkspace {
             semantic_snap_dimension_increment_input: None,
             semantic_snap_input_subscriptions: Vec::new(),
             right_rail_actions_open: false,
-            right_rail_columns: DEFAULT_RIGHT_RAIL_COLUMNS,
-            right_rail_resizable: cx.new(|_| ResizableState::default()),
             right_rail_scroll: ScrollHandle::new(),
             right_rail_overflow_hover: None,
             content_edit_mode: HashSet::new(),
@@ -4887,6 +4888,7 @@ impl DocumentWorkspace {
             incoming_tab_drop: None,
             external_tab_drag_preview: false,
             session_tab_strip_bounds: Rc::new(Cell::new(Bounds::default())),
+            session_tab_actions_bounds: Rc::new(Cell::new(Bounds::default())),
             other_window_document_focus: None,
             opener: None,
             saver: None,
@@ -8789,13 +8791,6 @@ impl DocumentWorkspace {
 
     pub fn right_rail_scroll_offset(&self) -> gpui::Point<Pixels> {
         self.right_rail_scroll.offset()
-    }
-
-    /// Keep the chosen column count when interface zoom changes. Resizable
-    /// stores physical panel sizes, whereas tool geometry follows rem units.
-    pub fn reset_right_rail_pixel_sizes(&mut self, cx: &mut Context<Self>) {
-        self.right_rail_resizable = cx.new(|_| ResizableState::default());
-        cx.notify();
     }
 
     pub fn pending_text_box_value(&self, cx: &App) -> Option<String> {
@@ -20544,7 +20539,11 @@ impl DocumentWorkspace {
             .iter()
             .filter_map(|session| self.session_tab_bounds.get(&session.read(cx).id))
             .any(|bounds| bounds.get().contains(&event.position))
-            || (self.new_tab_open && self.new_tab_bounds.get().contains(&event.position));
+            || (self.new_tab_open && self.new_tab_bounds.get().contains(&event.position))
+            || self
+                .session_tab_actions_bounds
+                .get()
+                .contains(&event.position);
         if !on_tab {
             self.open_new_tab(cx);
         }
@@ -25135,19 +25134,6 @@ fn snap_number_row(label: &'static str, input: impl IntoElement) -> gpui::AnyEle
         .into_any_element()
 }
 
-/// Drag marker for the tool rail's edge handle.
-#[derive(Clone, Copy)]
-struct RightRailResizeDrag;
-
-/// The drag carries no visible ghost; the rail itself resizes.
-struct RightRailResizeDragGhost;
-
-impl Render for RightRailResizeDragGhost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        gpui::Empty
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RailOverflowEdge {
     Top,
@@ -25290,14 +25276,33 @@ fn recovered_document_edits(timeline: &[u8]) -> crate::pdf_worker::DocumentEdits
         .unwrap_or_default()
 }
 
-const DEFAULT_RIGHT_RAIL_COLUMNS: usize = 2;
+/// The tool rail's columns. Its width is fixed: it has no resize handle.
+const RIGHT_RAIL_COLUMNS: usize = 2;
+
+/// The least width of the page between Page Thumbnails and an open
+/// properties panel, in rems: the least width of either panel.
+pub const PAGE_BESIDE_SIDEBARS_MIN_REMS: f32 = 15.;
+
+/// Whether Page Thumbnails `thumbnails` wide fit in a window `window_width`
+/// wide, beside the left rail, the tool rail `rail` wide and a properties
+/// panel `properties` wide, if one is open. Without properties they always
+/// fit, as the viewer toolbar scrolls sideways when squeezed. With
+/// properties, the page between them keeps
+/// [`PAGE_BESIDE_SIDEBARS_MIN_REMS`].
+pub fn thumbnails_fit_beside_properties(
+    window_width: Pixels,
+    rem: Pixels,
+    rail: Pixels,
+    thumbnails: Pixels,
+    properties: Option<Pixels>,
+) -> bool {
+    properties.is_none_or(|properties| {
+        window_width >= rem * (3. + PAGE_BESIDE_SIDEBARS_MIN_REMS) + rail + thumbnails + properties
+    })
+}
 
 fn right_rail_width(columns: usize, rem: Pixels) -> Pixels {
     rem * (0.25 + 2.5 * columns.clamp(1, 8) as f32)
-}
-
-fn right_rail_columns(width: Pixels, rem: Pixels) -> usize {
-    (((width / rem - 0.25) / 2.5).round() as usize).clamp(1, 8)
 }
 
 fn rail_tool_section(
@@ -27716,7 +27721,7 @@ impl Render for DocumentWorkspace {
             annotation_tool,
             save_busy,
             self.pan_tool_active || self.middle_pan_active(),
-            self.right_rail_columns,
+            RIGHT_RAIL_COLUMNS,
             self.signature_popover_open,
             self.signature_box_guidance().is_some(),
             self.signature_prepare_state.clone(),
@@ -27964,20 +27969,18 @@ impl Render for DocumentWorkspace {
         let save_failure_title = format!("Couldn’t save “{title}”");
         let text_box_commit_error = self.text_box_commit_error.clone();
         let properties_visible = self.right_rail_actions_open || inspector_visible;
-        // Preserve the user's open/width preferences while temporarily yielding
-        // thumbnail space to properties and the viewer toolbar, which needs
-        // more than the stock minimum canvas width to show all its controls.
+        // Page Thumbnails open at any window width: a narrow viewer toolbar
+        // scrolls sideways. They yield only to an open properties panel that
+        // leaves too little page between the two. The user's open state and
+        // widths stay as they were.
         let rem = window.rem_size();
-        let required_width = rem * 3.
-            + right_rail_width(self.right_rail_columns, rem)
-            + self.left_sidebar_sizing.preferred_width(rem)
-            + if properties_visible {
-                self.right_sidebar_sizing.preferred_width(rem)
-            } else {
-                px(0.)
-            }
-            + rem * crate::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS;
-        let thumbnails_fit = window.viewport_size().width >= required_width;
+        let thumbnails_fit = thumbnails_fit_beside_properties(
+            window.viewport_size().width,
+            rem,
+            right_rail_width(RIGHT_RAIL_COLUMNS, rem),
+            self.left_sidebar_sizing.preferred_width(rem),
+            properties_visible.then(|| self.right_sidebar_sizing.preferred_width(rem)),
+        );
         let thumbnails_visible = self.pages_panel_open && thumbnails_fit;
         let sidebar_panel = self.render_thumbnail_sidebar(
             ThumbnailSidebarInputs {
@@ -28089,30 +28092,6 @@ impl Render for DocumentWorkspace {
             .id("document-workspace-right-rail")
             .debug_selector(|| "document-workspace-right-rail".into())
             .relative()
-            .on_drag_move(cx.listener(
-                |workspace, event: &DragMoveEvent<RightRailResizeDrag>, window, cx| {
-                    let width = event.bounds.right() - event.event.position.x;
-                    let columns = right_rail_columns(width, window.rem_size());
-                    if columns != workspace.right_rail_columns {
-                        workspace.right_rail_columns = columns;
-                        cx.notify();
-                    }
-                },
-            ))
-            .child(
-                gpui::div()
-                    .id(DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID)
-                    .debug_selector(|| DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID.into())
-                    .absolute()
-                    .left(px(-3.))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(6.))
-                    .cursor(gpui::CursorStyle::ResizeColumn)
-                    .on_drag(RightRailResizeDrag, |_, _, _, cx| {
-                        cx.new(|_| RightRailResizeDragGhost)
-                    }),
-            )
             .w_full()
             .h_full()
             .flex_none()
@@ -28122,9 +28101,6 @@ impl Render for DocumentWorkspace {
             .child(
                 h_flex()
                     .h_12()
-                    .when(self.right_rail_columns == 1, |header| {
-                        header.h(gpui::rems(5.5)).flex_col()
-                    })
                     .flex_none()
                     .w_full()
                     .justify_center()
@@ -28175,7 +28151,7 @@ impl Render for DocumentWorkspace {
             cx,
             |_, _| ResizableState::default(),
         );
-        let rail_width = right_rail_width(self.right_rail_columns, window.rem_size());
+        let rail_width = right_rail_width(RIGHT_RAIL_COLUMNS, window.rem_size());
         let viewport = self.render_document_viewport(
             ViewportInputs {
                 active_selection_marquee,

@@ -4,6 +4,24 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.3]
+
+### Tabs
+
+- The tab track fills the whole tab strip, so one open tab no longer sits in
+  a small grey box.
+- New Tab (+) and a new documents menu follow the last tab. The menu lists
+  every open document and opens the one you choose. When the tabs do not
+  fit, both buttons stay at the track's right end.
+- New PDF is centred in a lane of its own above the tool rail, and its
+  divider continues the rail's edge. Its icon is now a page with a plus.
+
+### Sidebars
+
+- Page Thumbnails open at any window width. In a narrow window, the toolbar
+  scrolls instead. Only an open properties panel can still make them close.
+- The tool rail is fixed at two columns and no longer resizes.
+
 ## [0.5.2]
 
 ### Editing text

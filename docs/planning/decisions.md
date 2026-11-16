@@ -149,10 +149,11 @@ changes it; history is in git.
   toolbar shows Edit PDF, Scale, the signatures button and all its view controls,
   with the page field, between the left
   rail and the two-column tool rail (the tool rail folds into its overflow
-  menu when short), Settings 600 × 420. Page Thumbnails yields to the
-  toolbar: it hides while the window is too narrow for both, and returns
+  menu when short), Settings 600 × 420. Page Thumbnails open at any window
+  width. They yield only to an open properties panel: they hide while the
+  page between the two is narrower than 15 rem (240 points), and return
   when it widens. The toolbar scrolls sideways only when something else
-  squeezes it (an open properties panel, a widened tool rail or a larger
+  squeezes it (Page Thumbnails, an open properties panel or a larger
   interface size). A restored or cascaded window smaller than
   that opens at it. Dialogs stay within the window: a taller one scrolls
   its body between its title and buttons; panels such as Snap settings do
@@ -179,21 +180,23 @@ changes it; history is in git.
   `property_controls.rs` composes them. Canvas, renderers, annotation layers
   and the scroll area are domain UI.
 - Document tabs: stock Segmented appearance, shadcn's default Tabs: a muted
-  track as wide as its tabs (it takes the strip and scrolls when they don't
-  fit), with the active document raised on it; width follows the
+  track that fills the strip up to the New PDF lane, however many tabs are
+  open, with the active document raised on it; width follows the
   title up to 190px; the close button is hidden at rest and appears on hover
   or focus over the end of the title, which keeps its position and truncates.
-  Open, New and template controls stay pinned right at one size and spacing,
-  the same distance from the window's edge at every rail width, in a lane
-  never narrower than a three-column rail: its divider continues the rail's
-  edge from three tool columns and stays put below that (Recovery and Update
-  sit just before it); an overflow menu
-  appears only when tabs overflow. Close buttons use the stock extra-small
+  New Tab (+) and a menu of every open document (a chevron) sit on the track
+  just after the last tab, as ghost buttons. When the tabs don't fit, they
+  scroll and these two stay at the track's right end. With no document open,
+  the track holds New Tab alone. The New PDF split control is centred
+  in a lane as wide as the tool rail, so its divider continues the
+  rail's edge. The window with no document has the same lane, so the
+  divider does not move when a document opens (Recovery and Update sit
+  just before it). Close buttons use the stock extra-small
   ghost icon Button, centred in a square lane at the end of the tab's raised
   area with equal clearance on three sides. Filenames keep their leading position when close appears;
   only the trailing truncation changes.
 - Recovery and save problems live in a conditional Recovery button beside
-  Open/New, with a warning icon and item count. Its bounded, scrollable panel
+  New PDF, with a warning icon and item count. Its bounded, scrollable panel
   has a fixed top-right X; closing it never discards data. Unsaved changes
   found at startup reopen automatically in tabs (as a new PDF when their
   source has changed); only those that cannot be reopened stay in the panel,
@@ -235,10 +238,10 @@ changes it; history is in git.
   content; the word Cancel is reserved for a decision prompt beside a commit or
   destructive action.
 - Sidebars: page thumbnails on the left, properties on the right, both 300px
-  by default and resizable; thumbnails hide automatically when the window is
-  too narrow for both and return when it widens. The right tool rail snaps to
-  whole columns, two by default, in sections General, Edit, Review and
-  Draw. When it overflows, an ellipsis cue at the hidden edge covers
+  by default and resizable; thumbnails yield to properties only, hiding
+  while the page between the two is too narrow (see the window size entry).
+  The right tool rail has two columns and cannot be resized, in sections
+  General, Edit, Review and Draw. When it overflows, an ellipsis cue at the hidden edge covers
   the tools faded under it; hovering it shows "Scroll to see other tools"
   beside the ellipsis, and a rail with nothing to scroll never shows it.
 - Pages are arranged from Page Thumbnails (its right-click menu, drag, the
@@ -411,7 +414,7 @@ changes it; history is in git.
   renamed within its volume keeps its place at the new path, found by file
   identity (bookmark, file ID) rather than by searching; one deleted, moved
   to the Trash or Recycle Bin, or otherwise not found leaves the list.
-- The + beside the tabs, and a double-click on the tab bar's empty space,
+- The + after the last tab, and a double-click on the track's empty space,
   open a New Tab: the blank workspace (Open and the recent files) in a tab of
   its own after the documents. There is at most one. Choosing another tab or
   opening a document replaces it; closing it (its X or ⌘W) shows the document

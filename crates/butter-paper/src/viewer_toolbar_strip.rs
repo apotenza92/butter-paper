@@ -98,8 +98,9 @@ pub const fn viewer_toolbar_rems(fit: ViewerToolbarFit, signed: bool, digits: u3
 
 /// The least toolbar width, in rems: compact Edit PDF, the view controls,
 /// the page field of a document of up to four-digit page counts and the
-/// signatures button. Below it the strip scrolls sideways. Thumbnails yield
-/// to it, and the document window's least size holds it beside both rails.
+/// signatures button. Below it the strip scrolls sideways, as it does when
+/// Page Thumbnails squeeze it. The document window's least size holds it
+/// beside both rails.
 pub const VIEWER_TOOLBAR_MIN_REMS: f32 = viewer_toolbar_rems(
     ViewerToolbarFit::Compact,
     true,

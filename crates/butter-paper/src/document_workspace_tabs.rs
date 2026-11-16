@@ -1,5 +1,5 @@
-//! The document tab strip: tabs, drag reordering and tear-off, overflow and
-//! the pinned Open/New actions.
+//! The document tab strip: tabs, drag reordering and tear-off, New Tab and
+//! the documents menu on the track, and the pinned New PDF lane.
 
 use super::*;
 
@@ -576,101 +576,50 @@ impl DocumentWorkspace {
                 },
             )
             .collect::<Vec<_>>();
-        let open_document = accessible_icon_button(
-            Button::new(DOCUMENT_TAB_OPEN_ID)
-                .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
-                .icon(IconName::Plus)
-                .tooltip("New Tab")
-                .on_click(cx.listener(|workspace, _, _, cx| {
-                    workspace.open_new_tab(cx);
-                })),
-            "New Tab",
-        );
-        let recovery_button = self.render_recovery_notifications_button(cx);
-        let update_button = cx
-            .try_global::<crate::application_settings::ApplicationUpdatePresentation>()
-            .and_then(|presentation| crate::application_settings::update_button(presentation, cx));
-        // Open and New keep one size and spacing, the same distance from the
-        // window's right edge, however many tool columns the rail has. Their
-        // lane is never narrower than a three-column rail, so its divider
-        // stays put below three columns and follows the rail's edge above.
-        let actions_width = right_rail_width(self.right_rail_columns.max(3), window.rem_size());
-        let has_extras = recovery_button.is_some() || update_button.is_some();
-        let overflow_lane = self.session_tabs_overflow.then(|| {
+        let (has_extras, strip_end) = self.render_tab_strip_end(window, cx);
+        // Every open document, on the track beside New Tab: the way to the
+        // tabs scrolled out of sight.
+        let documents_menu = {
             let control = cx.entity().downgrade();
-            h_flex()
-                .id("document-tabs-overflow-lane")
-                .debug_selector(|| "document-tabs-overflow-lane".into())
-                .flex_shrink_0()
-                .pl_3()
-                .pr_3()
-                .when(has_extras, |lane| lane.border_r_1())
-                .border_color(cx.theme().border)
-                .child(
-                    accessible_icon_button(
-                        Button::new("document-tabs-overflow")
-                            .debug_selector(|| "document-tabs-overflow".into())
-                            .icon(IconName::ChevronDown)
-                            .tooltip("Open documents"),
-                        "Open documents",
-                    )
-                    .dropdown_menu(move |mut menu, _, _| {
-                        menu = menu.scrollable(true);
-                        for (ix, (id, title)) in overflow_items.iter().enumerate() {
-                            let id = *id;
-                            let control = control.clone();
-                            menu = menu.item(
-                                PopupMenuItem::new(title.clone())
-                                    .checked(selected_session_ix == Some(ix))
-                                    .on_click(move |_, window, cx| {
-                                        let _ = control.update(cx, |workspace, cx| {
-                                            let _ = workspace.activate_document(id, cx);
-                                            if let Some(focus) =
-                                                workspace.session_tab_focus_handles.get(&id)
-                                            {
-                                                focus.focus(window, cx);
-                                            }
-                                            cx.notify();
-                                        });
-                                    }),
-                            );
-                        }
-                        menu
-                    }),
-                )
-        });
-        let extras = has_extras.then(|| {
-            h_flex()
-                .flex_shrink_0()
-                // Full height, so the update lane's divider spans the strip.
-                .self_stretch()
-                .px_3()
-                .gap_2()
-                .children(recovery_button)
-                .children(update_button)
-        });
-        let document_actions = h_flex().flex_shrink_0().children(extras).child(
-            h_flex()
-                .id(DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-                .debug_selector(|| DOCUMENT_WORKSPACE_TAB_ACTIONS_ID.into())
-                .flex_none()
-                .self_stretch()
-                .w(actions_width)
-                .border_l_1()
-                .border_color(cx.theme().border)
-                .justify_end()
-                .items_center()
-                .pr_3()
-                .gap_2()
-                .child(open_document)
-                .child(self.template_control.clone()),
-        );
+            accessible_icon_button(
+                Button::new(DOCUMENT_TABS_MENU_ID)
+                    .debug_selector(|| DOCUMENT_TABS_MENU_ID.into())
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronDown)
+                    .tooltip("Open documents"),
+                "Open documents",
+            )
+            .dropdown_menu(move |mut menu, _, _| {
+                menu = menu.scrollable(true);
+                for (ix, (id, title)) in overflow_items.iter().enumerate() {
+                    let id = *id;
+                    let control = control.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(title.clone())
+                            .checked(selected_session_ix == Some(ix))
+                            .on_click(move |_, window, cx| {
+                                let _ = control.update(cx, |workspace, cx| {
+                                    let _ = workspace.activate_document(id, cx);
+                                    if let Some(focus) =
+                                        workspace.session_tab_focus_handles.get(&id)
+                                    {
+                                        focus.focus(window, cx);
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
+        };
         let tab_bar_click_control = cx.entity().downgrade();
         let tab_bar_click_ids = session_tab_ids.clone();
         let tab_bar_focus_handles = self.session_tab_focus_handles.clone();
-        // Stock segmented tabs, shadcn's default: a muted track, with the
-        // active document raised on it. The track is as wide as its tabs and
-        // gives way, scrolling, when they don't fit.
+        // Stock segmented tabs, shadcn's default, with the active document
+        // raised on the track (see `session_tab_track`).
         let native_session_tabs = TabBar::new("document-workspace-session-tabs-component")
             .segmented()
             .min_w_0()
@@ -925,9 +874,7 @@ impl DocumentWorkspace {
                     .py_2()
                     .pr_3()
                     .overflow_hidden()
-                    .when(self.session_tabs_overflow || has_extras, |strip| {
-                        strip.border_r_1()
-                    })
+                    .when(has_extras, |strip| strip.border_r_1())
                     .border_color(cx.theme().border)
                     .on_mouse_down(
                         MouseButton::Left,
@@ -992,19 +939,124 @@ impl DocumentWorkspace {
                             });
                         });
                     })
-                    .child(
-                        h_flex().w_full().min_w_0().child(
-                            h_flex()
-                                .id(DOCUMENT_SESSION_TAB_TRACK_ID)
-                                .debug_selector(|| DOCUMENT_SESSION_TAB_TRACK_ID.into())
-                                .min_w_0()
-                                .child(native_session_tabs),
-                        ),
-                    ),
+                    .child(session_tab_track(
+                        native_session_tabs,
+                        self.render_session_tab_actions(Some(documents_menu), cx),
+                        cx,
+                    )),
             )
-            .children(overflow_lane)
-            .child(document_actions)
+            .child(strip_end)
             .child(reorder_status)
             .child(pointer_event_bridge)
     }
+}
+
+impl DocumentWorkspace {
+    /// The strip's right end: Recovery and Update when shown, then the New
+    /// PDF lane. Returns whether Recovery or Update is shown.
+    pub(super) fn render_tab_strip_end(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (bool, gpui::Div) {
+        let recovery_button = self.render_recovery_notifications_button(cx);
+        let update_button = cx
+            .try_global::<crate::application_settings::ApplicationUpdatePresentation>()
+            .and_then(|presentation| crate::application_settings::update_button(presentation, cx));
+        let has_extras = recovery_button.is_some() || update_button.is_some();
+        let extras = has_extras.then(|| {
+            h_flex()
+                .flex_shrink_0()
+                .items_center()
+                .px_3()
+                .gap_2()
+                .children(recovery_button)
+                .children(update_button)
+        });
+        // The New PDF lane is as wide as the tool rail, so its divider
+        // continues the rail's edge.
+        let lane_width = right_rail_width(RIGHT_RAIL_COLUMNS, window.rem_size());
+        let template_lane = h_flex()
+            .id(DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
+            .debug_selector(|| DOCUMENT_WORKSPACE_TAB_ACTIONS_ID.into())
+            .flex_none()
+            .w(lane_width)
+            .border_l_1()
+            .border_color(cx.theme().border)
+            // The control is centred, equally clear of the divider and the
+            // window edge.
+            .justify_center()
+            .items_center()
+            .child(self.template_control.clone());
+        (
+            has_extras,
+            // Full height, so the dividers span the strip.
+            h_flex()
+                .flex_none()
+                .self_stretch()
+                .items_stretch()
+                .children(extras)
+                .child(template_lane),
+        )
+    }
+
+    /// New Tab (+) and the open documents menu, on the tab track just after
+    /// the last tab.
+    pub(super) fn render_session_tab_actions(
+        &self,
+        documents_menu: Option<gpui::AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let bounds = self.session_tab_actions_bounds.clone();
+        let open_document = accessible_icon_button(
+            Button::new(DOCUMENT_TAB_OPEN_ID)
+                .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
+                .ghost()
+                .small()
+                .icon(IconName::Plus)
+                .tooltip("New Tab")
+                .on_click(cx.listener(|workspace, _, _, cx| {
+                    workspace.open_new_tab(cx);
+                })),
+            "New Tab",
+        );
+        h_flex()
+            .id(DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID)
+            .debug_selector(|| DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID.into())
+            .relative()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .child(
+                canvas(move |measured, _, _| bounds.set(measured), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
+            .child(open_document)
+            .children(documents_menu)
+    }
+}
+
+/// The tab track: the stock segmented track's muted colour across the whole
+/// strip, however many tabs are open. The tabs come first and `actions`
+/// follow the last one. When the tabs don't fit, they scroll and `actions`
+/// stay at the track's right end.
+pub(super) fn session_tab_track(
+    tabs: TabBar,
+    actions: impl IntoElement,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(DOCUMENT_SESSION_TAB_TRACK_ID)
+        .debug_selector(|| DOCUMENT_SESSION_TAB_TRACK_ID.into())
+        .w_full()
+        .min_w_0()
+        // A segmented tab's height, also with no tabs on it.
+        .min_h(px(32.))
+        .items_center()
+        .rounded(cx.theme().radius_lg)
+        .bg(cx.theme().tokens.tab_bar_segmented)
+        .child(tabs)
+        .child(actions)
 }

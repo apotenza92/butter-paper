@@ -8,7 +8,8 @@ use gpui::{
     accesskit::Live, canvas, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _,
     button::{Button, ButtonVariants as _},
     dialog::Cancel,
     h_flex,
@@ -19,6 +20,7 @@ use gpui_component::{
 };
 
 use crate::accessible_button::{accessible_icon_button, close_icon_button};
+use crate::application_assets::NEW_DOCUMENT_ICON;
 use crate::template_preview::{
     PaperOrientation, TemplatePreview, group_by_paper_size, orientation_toggle,
     template_control_row, template_preview_card,
@@ -682,7 +684,7 @@ impl Render for TemplateSplitControl {
                 .rounded_r_none()
                 .debug_selector(|| TEMPLATE_PRIMARY_ID.into())
                 .accessibility_id(TEMPLATE_PRIMARY_ID)
-                .icon(IconName::File)
+                .icon(Icon::default().path(NEW_DOCUMENT_ICON))
                 .disabled(self.creating)
                 .tooltip(primary_label.clone())
                 .on_click(move |_: &ClickEvent, _, cx| {

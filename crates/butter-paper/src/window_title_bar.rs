@@ -66,7 +66,7 @@ pub fn format_window_title_for_application(
 
 /// The least content size of a document window: the view toolbar shows all
 /// its controls, centred, between the left rail and the two-column tool rail
-/// (Page Thumbnails yields to it when the window is narrower than both); the
+/// (open Page Thumbnails squeeze it, and it scrolls sideways); the
 /// tool rail folds into its overflow menu, but the page, dialogs (the signing
 /// dialog is 460 points wide) and panels such as Snap settings still fit.
 pub const DOCUMENT_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {

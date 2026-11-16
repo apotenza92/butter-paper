@@ -590,10 +590,9 @@ impl ComponentStory {
         let this_window = self.window_handle;
         cx.defer(move |cx| {
             for entry in document_window_entries(cx) {
+                // Tool geometry follows rem units: redraw each workspace.
                 if let Some(workspace) = entry.workspace.upgrade() {
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.reset_right_rail_pixel_sizes(cx)
-                    });
+                    workspace.update(cx, |_, cx| cx.notify());
                 }
                 if entry.handle != this_window {
                     let _ = entry.handle.update(cx, |_, window, _| window.refresh());

@@ -7,6 +7,7 @@ pub const SIGNATURE_VALID_ICON: &str = "icons/shield-check.svg";
 pub const SIGNATURE_UNVERIFIED_ICON: &str = "icons/shield-alert.svg";
 pub const SIGNATURE_INVALID_ICON: &str = "icons/rail/shield-x.svg";
 pub const EDIT_PDF_ICON: &str = "icons/file-pen-line.svg";
+pub const NEW_DOCUMENT_ICON: &str = "icons/file-plus.svg";
 pub const LOCK_ICON: &str = "icons/lock.svg";
 pub const LOCK_OPEN_ICON: &str = "icons/lock-open.svg";
 
@@ -20,6 +21,7 @@ impl AssetSource for ApplicationAssets {
             SIGNATURE_VALID_ICON => Some(include_bytes!("../assets/icons/shield-check.svg")),
             SIGNATURE_UNVERIFIED_ICON => Some(include_bytes!("../assets/icons/shield-alert.svg")),
             EDIT_PDF_ICON => Some(include_bytes!("../assets/icons/file-pen-line.svg")),
+            NEW_DOCUMENT_ICON => Some(include_bytes!("../assets/icons/file-plus.svg")),
             LOCK_ICON => Some(include_bytes!("../assets/icons/lock.svg")),
             LOCK_OPEN_ICON => Some(include_bytes!("../assets/icons/lock-open.svg")),
             "icons/grip-vertical.svg" => Some(include_bytes!("../assets/icons/grip-vertical.svg")),

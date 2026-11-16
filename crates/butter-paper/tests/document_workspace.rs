@@ -71,21 +71,21 @@ use butter_paper::document_workspace::{
     DOCUMENT_PUBLICATION_WARNING_CLOSE_ID, DOCUMENT_RECOVERY_ALERT_ID,
     DOCUMENT_RECOVERY_PREPARATION_ALERT_ID, DOCUMENT_RECOVERY_PREPARATION_RETRY_ID,
     DOCUMENT_RECOVERY_RETRY_ID, DOCUMENT_RECTANGLE_TOOL_ID, DOCUMENT_REDACT_TOOL_ID,
-    DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID, DOCUMENT_SAVE_ERROR_ALERT_ID,
-    DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID, DOCUMENT_SAVE_ERROR_SAVE_AS_ID,
-    DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID, DOCUMENT_SIGNATURE_ADD_ID,
-    DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID, DOCUMENT_SIGNATURE_CLEAR_ID,
-    DOCUMENT_SIGNATURE_ERROR_ALERT_ID, DOCUMENT_SIGNATURE_FROM_PAGE_ID,
-    DOCUMENT_SIGNATURE_LOADING_ID, DOCUMENT_SIGNATURE_MODE_IMAGE_ID,
-    DOCUMENT_SIGNATURE_MODE_TYPE_ID, DOCUMENT_SIGNATURE_NAME_INPUT_ID, DOCUMENT_SIGNATURE_PASTE_ID,
-    DOCUMENT_SIGNATURE_PREVIEW_ID, DOCUMENT_SIGNATURE_TOOL_ID, DOCUMENT_SNAP_CLOSE_ID,
-    DOCUMENT_SNAP_CONSTRUCTION_GRID_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
-    DOCUMENT_SNAP_DIMENSION_INCREMENT_ID, DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID,
-    DOCUMENT_SNAP_POPOVER_ID, DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID,
-    DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID, DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID,
-    DOCUMENT_THUMBNAIL_STRIP_ID, DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID,
-    DOCUMENT_VIEWPORT_ID, DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution,
-    DocumentId, DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
+    DOCUMENT_SAVE_ERROR_ALERT_ID, DOCUMENT_SAVE_ERROR_DISMISS_ID, DOCUMENT_SAVE_ERROR_RETRY_ID,
+    DOCUMENT_SAVE_ERROR_SAVE_AS_ID, DOCUMENT_SELECT_TOOL_ID, DOCUMENT_SESSION_TABS_ID,
+    DOCUMENT_SIGNATURE_ADD_ID, DOCUMENT_SIGNATURE_CANVAS_ID, DOCUMENT_SIGNATURE_CHOOSE_IMAGE_ID,
+    DOCUMENT_SIGNATURE_CLEAR_ID, DOCUMENT_SIGNATURE_ERROR_ALERT_ID,
+    DOCUMENT_SIGNATURE_FROM_PAGE_ID, DOCUMENT_SIGNATURE_LOADING_ID,
+    DOCUMENT_SIGNATURE_MODE_IMAGE_ID, DOCUMENT_SIGNATURE_MODE_TYPE_ID,
+    DOCUMENT_SIGNATURE_NAME_INPUT_ID, DOCUMENT_SIGNATURE_PASTE_ID, DOCUMENT_SIGNATURE_PREVIEW_ID,
+    DOCUMENT_SIGNATURE_TOOL_ID, DOCUMENT_SNAP_CLOSE_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
+    DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID, DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
+    DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID, DOCUMENT_SNAP_POPOVER_ID,
+    DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID, DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID,
+    DOCUMENT_TEXT_BOX_EDITOR_ID, DOCUMENT_TEXT_BOX_TOOL_ID, DOCUMENT_THUMBNAIL_STRIP_ID,
+    DOCUMENT_VIEWER_PROGRESS_ID, DOCUMENT_VIEWER_STATUS_ID, DOCUMENT_VIEWPORT_ID,
+    DOCUMENT_WORKSPACE_ID, DeferredStartupOpen, DirtyCloseResolution, DocumentId,
+    DocumentOpenBatchDisposition, DocumentOpenBatchRequest, DocumentOpenBatchStatus,
     DocumentOpenOrigin, DocumentSaveFailureKind, DocumentSaveFailureOperation, DocumentSaveRoute,
     DocumentTabTransferEvent, DocumentWorkspace, FitPage, FitWidth,
     GeneratedTemplateRequestDisposition, MeasureFamily, NativeDocumentOpener,
@@ -6799,6 +6799,88 @@ fn ellipse_workspace_save_as_reconciles_create_edit_and_delete_across_reopens() 
             .all(|ellipse| ellipse.id != id)
     );
     assert!(!deleted_reopen.has_canonical_raw_annotation_name(&id));
+}
+
+#[gpui::test]
+fn page_thumbnails_open_at_the_least_window_width_and_yield_only_to_properties(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE;
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("bp-multi-page-v1.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.simulate_resize(DOCUMENT_WINDOW_MIN_SIZE);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    // The narrowest window still opens them; the toolbar scrolls instead.
+    show_page_thumbnails(cx);
+    let strip = cx
+        .debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID)
+        .expect("Page Thumbnails must open at the least window width");
+    let page = cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap();
+    assert!(page.left() >= strip.right(), "the page sits beside them");
+
+    // Properties leave too little page beside them: they yield, and return
+    // when properties close.
+    let properties = cx.debug_bounds("document-workspace-rail-actions").unwrap();
+    cx.simulate_click(properties.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).is_none());
+    cx.simulate_resize(size(px(1400.), DOCUMENT_WINDOW_MIN_SIZE.height));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).is_some(),
+        "a wide window holds thumbnails, the page and properties"
+    );
+}
+
+#[test]
+fn page_thumbnails_fit_without_properties_at_any_width() {
+    use butter_paper::document_workspace::thumbnails_fit_beside_properties;
+    let rem = px(16.);
+    let (rail, thumbnails, properties) = (px(84.), px(300.), px(300.));
+    assert!(thumbnails_fit_beside_properties(
+        px(400.),
+        rem,
+        rail,
+        thumbnails,
+        None
+    ));
+    // Left rail 48, page 240, tool rail, thumbnails and properties.
+    let least = px(48. + 240.) + rail + thumbnails + properties;
+    assert!(thumbnails_fit_beside_properties(
+        least,
+        rem,
+        rail,
+        thumbnails,
+        Some(properties)
+    ));
+    assert!(!thumbnails_fit_beside_properties(
+        least - px(1.),
+        rem,
+        rail,
+        thumbnails,
+        Some(properties)
+    ));
 }
 
 #[gpui::test]
@@ -46315,43 +46397,33 @@ fn middle_button_drag_pans_the_canvas_with_any_tool(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn tool_rail_resize_snaps_to_whole_columns_while_dragging(cx: &mut TestAppContext) {
+fn tool_rail_stays_at_two_columns_when_its_edge_is_dragged(cx: &mut TestAppContext) {
     let (_workspace, _document_id, cx) = pan_test_workspace(cx);
     let rem = cx.update(|window, _| window.rem_size());
-    let column_width = |columns: f32| rem * (0.25 + 2.5 * columns);
+    let two_columns = rem * (0.25 + 2.5 * 2.);
     let rail = |cx: &mut gpui::VisualTestContext| {
         cx.debug_bounds("document-workspace-right-rail").unwrap()
     };
-    assert_eq!(rail(cx).size.width, column_width(2.));
-
-    let handle = cx
-        .debug_bounds(DOCUMENT_RIGHT_RAIL_RESIZE_HANDLE_ID)
-        .unwrap()
-        .center();
-    let right = rail(cx).right();
-    cx.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
-    // GPUI starts a drag once the pointer moves past its threshold.
-    cx.simulate_mouse_move(
-        point(handle.x - px(4.), handle.y),
-        Some(MouseButton::Left),
+    let before = rail(cx);
+    assert_eq!(before.size.width, two_columns);
+    // Its left edge was a resize handle; now a drag there does nothing.
+    let start = point(before.left(), before.top() + px(100.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    for x in [px(4.), px(80.), px(300.)] {
+        cx.simulate_mouse_move(
+            point(start.x - x, start.y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    cx.simulate_mouse_up(
+        point(start.x - px(300.), start.y),
+        MouseButton::Left,
         Modifiers::default(),
     );
-    // Widths between column stops round to the nearest whole column, live.
-    for (target_width, columns) in [
-        (column_width(3.) + px(9.), 3.),
-        (column_width(7.) - px(9.), 7.),
-        (px(2_000.), 8.),
-    ] {
-        let pointer = point(right - target_width, handle.y);
-        cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert_eq!(rail(cx).size.width, column_width(columns));
-    }
-    let pointer = point(right - column_width(1.), handle.y);
-    cx.simulate_mouse_move(pointer, Some(MouseButton::Left), Modifiers::default());
-    cx.simulate_mouse_up(pointer, MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert_eq!(rail(cx).size.width, column_width(1.));
+    assert_eq!(rail(cx), before);
 }
 
 #[gpui::test]

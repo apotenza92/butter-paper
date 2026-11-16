@@ -1,6 +1,7 @@
 //! The workspace with no active document: open/new actions, inactive tabs
 //! and the opening or error status.
 
+use super::tabs::session_tab_track;
 use super::*;
 
 fn recent_document_path_tooltip(mut button: Button, path: String) -> Button {
@@ -217,31 +218,8 @@ impl DocumentWorkspace {
                 }
             })
         });
-        let open_document = accessible_icon_button(
-            Button::new(DOCUMENT_TAB_OPEN_ID)
-                .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
-                .icon(IconName::Plus)
-                .tooltip("New Tab")
-                .on_click(cx.listener(|workspace, _, _, cx| {
-                    workspace.open_new_tab(cx);
-                })),
-            "New Tab",
-        );
-        let document_actions = h_flex()
-            .flex_shrink_0()
-            .gap_2()
-            .when_some(
-                self.render_recovery_notifications_button(cx),
-                |row, button| row.child(button),
-            )
-            .child(open_document)
-            .child(self.template_control.clone())
-            .children(
-                cx.try_global::<crate::application_settings::ApplicationUpdatePresentation>()
-                    .and_then(|presentation| {
-                        crate::application_settings::update_button(presentation, cx)
-                    }),
-            );
+        // Recovery, Update and the New PDF lane, as in the document strip.
+        let (has_extras, strip_end) = self.render_tab_strip_end(window, cx);
         let inactive_session_tabs = session_tabs
             .iter()
             .enumerate()
@@ -344,9 +322,8 @@ impl DocumentWorkspace {
                 .id(DOCUMENT_SESSION_TABS_ID)
                 .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
                 .w_full()
-                .px_3()
+                .pl_3()
                 .items_stretch()
-                .gap_3()
                 .border_b_1()
                 .border_color(cx.theme().border)
                 .child(
@@ -354,14 +331,13 @@ impl DocumentWorkspace {
                         .id("document-workspace-native-session-tab-bar")
                         .debug_selector(|| "document-workspace-native-session-tab-bar".into())
                         .flex_1()
-                        // A row, so the segmented track is as wide as its tabs.
                         .flex()
                         .items_center()
                         .py_2()
                         .pr_3()
+                        .when(has_extras, |strip| strip.border_r_1())
                         // Preserve the pinned Tab's 32px frame plus py_2 even with no tabs.
                         .min_h(px(32.) + window.rem_size())
-                        .border_r_1()
                         .border_color(cx.theme().border)
                         .min_w_0()
                         .max_w_full()
@@ -371,7 +347,7 @@ impl DocumentWorkspace {
                                 workspace.open_new_tab_from_tab_bar(event, cx);
                             }),
                         )
-                        .child(
+                        .child(session_tab_track(
                             // Stock segmented tabs, as the loaded strip.
                             TabBar::new("document-workspace-session-tabs-component")
                                 .segmented()
@@ -396,9 +372,11 @@ impl DocumentWorkspace {
                                         focus.focus(window, cx);
                                     }
                                 }),
-                        ),
+                            self.render_session_tab_actions(None, cx),
+                            cx,
+                        )),
                 )
-                .child(document_actions)
+                .child(strip_end)
         };
         root.child(session_tab_strip).child(
             h_flex()

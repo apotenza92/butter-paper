@@ -843,20 +843,33 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
             - cx.debug_bounds("document-tab-template-picker")
                 .unwrap()
                 .right(),
-        px(12.),
-        "actions stay pinned to trailing inset even with two tabs"
+        px(9.5),
+        "New PDF stays centred in its lane even with two tabs"
     );
-    assert!(
-        cx.debug_bounds("document-tabs-overflow-lane").is_none(),
-        "no overflow lane when tabs fit"
-    );
-    // The actions lane's divider closes the tabs, and Open and New sit in
-    // the lane at its trailing inset.
+    // New Tab and the documents menu follow the last tab on the track.
+    let track_actions = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID)
+        .unwrap();
+    let last_bounds = cx.debug_bounds("document-3-session-tab").unwrap();
+    assert_eq!(track_actions.left() - last_bounds.right(), px(4.));
+    let open = cx.debug_bounds("document-tab-open").unwrap();
+    let menu = cx.debug_bounds("document-tabs-overflow").unwrap();
+    assert!(open.left() >= track_actions.left() && menu.left() > open.right());
+    // The New PDF lane's divider closes the tab bar. Its control is centred
+    // in the lane, equally clear of the divider and the window edge.
     let actions = cx
         .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
         .unwrap();
     assert_eq!(actions.left(), viewport.right());
-    assert!(cx.debug_bounds("document-tab-open").unwrap().left() > actions.left());
+    let new_pdf = cx.debug_bounds("document-tab-new-pdf").unwrap();
+    let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
+    let leading = new_pdf.left() - actions.left();
+    let trailing = actions.right() - picker.right();
+    assert!(leading > px(0.));
+    assert!(
+        (leading - trailing).abs() <= px(1.),
+        "New PDF control centred in its lane: {leading:?} before, {trailing:?} after"
+    );
     cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     for appearance in [gpui::WindowAppearance::Light, gpui::WindowAppearance::Dark] {
@@ -939,7 +952,7 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
 }
 
 #[gpui::test]
-fn document_tabs_sit_on_a_segmented_track_that_hugs_them_and_scrolls_when_full(
+fn document_tabs_sit_on_a_segmented_track_that_fills_the_strip_and_scrolls_when_full(
     cx: &mut TestAppContext,
 ) {
     use butter_paper::document_workspace::{
@@ -969,12 +982,17 @@ fn document_tabs_sit_on_a_segmented_track_that_hugs_them_and_scrolls_when_full(
     };
     let first = tab_bounds(cx, ids[0]);
     let last = tab_bounds(cx, ids[1]);
-    // shadcn's TabsList: the track is as wide as its tabs, padded 4px.
+    // shadcn's TabsList, padded 4px. A few tabs still take the whole strip:
+    // the track ends at the strip's inset, not after its last tab.
     assert_eq!(first.left() - track.left(), px(4.));
-    assert_eq!(track.right() - last.right(), px(4.));
     assert!(
-        track.right() < viewport.right() - px(100.),
-        "a few tabs leave the strip's spare room outside the track"
+        track.right() - last.right() > px(100.),
+        "the track continues past a few tabs: track={track:?}, last={last:?}"
+    );
+    assert_eq!(
+        track.right(),
+        viewport.right() - px(12.),
+        "the track fills the strip up to its right inset"
     );
     // Closing stays a separate target in the tab.
     let close: &'static str = Box::leak(document_session_close_id(ids[1]).into_boxed_str());
@@ -1000,10 +1018,57 @@ fn document_tabs_sit_on_a_segmented_track_that_hugs_them_and_scrolls_when_full(
         track.left() >= viewport.left() && track.right() <= viewport.right(),
         "the full track stays inside the strip: track={track:?}, strip={viewport:?}"
     );
-    assert!(
-        cx.debug_bounds("document-tabs-overflow-lane").is_some(),
-        "the overflow menu appears once tabs don't fit"
+    // New Tab and the documents menu stay at the track's right end.
+    let track_actions = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID)
+        .unwrap();
+    assert_eq!(track_actions.right(), track.right());
+    assert!(cx.debug_bounds("document-tabs-overflow").is_some());
+
+    // A double-click on the track's buttons is theirs; one on the empty
+    // track opens a New Tab.
+    let double_click = |cx: &mut gpui::VisualTestContext, position| {
+        for click_count in [1, 2] {
+            cx.simulate_event(gpui::MouseDownEvent {
+                position,
+                button: gpui::MouseButton::Left,
+                click_count,
+                ..Default::default()
+            });
+            cx.simulate_event(gpui::MouseUpEvent {
+                position,
+                button: gpui::MouseButton::Left,
+                click_count,
+                ..Default::default()
+            });
+        }
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    for _ in 2..14 {
+        let active = observed
+            .read_with(cx, |workspace, _| workspace.active_document_id())
+            .unwrap();
+        observed.update(cx, |workspace, cx| {
+            workspace.close_document(active, cx);
+        });
+    }
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let track = cx.debug_bounds(DOCUMENT_SESSION_TAB_TRACK_ID).unwrap();
+    double_click(cx, point(track.right() - px(40.), track.center().y));
+    assert!(observed.read_with(cx, |workspace, _| workspace.is_new_tab_open()));
+    observed.update(cx, |workspace, cx| workspace.close_new_tab(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // The gap between New Tab and the documents menu belongs to them too.
+    let open = cx.debug_bounds("document-tab-open").unwrap();
+    let menu = cx.debug_bounds("document-tabs-overflow").unwrap();
+    assert!(menu.left() > open.right());
+    double_click(
+        cx,
+        point((open.right() + menu.left()) / 2., menu.center().y),
     );
+    assert!(!observed.read_with(cx, |workspace, _| workspace.is_new_tab_open()));
 }
 
 #[gpui::test]
@@ -1028,9 +1093,25 @@ fn empty_workspace_retains_tab_bar_boundaries_and_pinned_actions(cx: &mut TestAp
     );
     assert_eq!(divider.top(), strip.top());
     assert_eq!(divider.bottom(), strip.bottom() - px(1.));
-    assert_eq!(open.left() - divider.right(), px(12.));
-    assert_eq!(strip.right() - picker.right(), px(12.));
-    assert!(cx.debug_bounds("document-tabs-overflow-lane").is_none());
+    // New Tab sits on the empty track; New PDF stays beside it.
+    let track = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ID)
+        .unwrap();
+    assert!(open.left() > track.left() && open.right() < track.center().x);
+    assert_eq!(track.right(), divider.right() - px(12.));
+    // The New PDF lane is as wide as in a document window, a two-column
+    // rail, so its divider stays put when a document opens.
+    let lane = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
+        .unwrap();
+    assert_eq!(lane.left(), divider.right());
+    assert_eq!(lane.size.width, px(84.));
+    // Centred: 84px lane, 1px divider, 64px control.
+    assert_eq!(strip.right() - picker.right(), px(9.5));
+    assert!(
+        cx.debug_bounds("document-tabs-overflow").is_none(),
+        "no documents to list"
+    );
 }
 
 #[gpui::test]
@@ -1141,20 +1222,20 @@ fn workspace_integration_crowded_tabs_keep_actions_pinned_for_both_wheel_axes(
     let overflow = before[3];
     assert_eq!(
         overflow.size, before[0].size,
-        "overflow must use the same stock button size as Open"
+        "the documents menu uses the same stock button size as New Tab"
     );
     assert_eq!(overflow.top(), before[0].top());
-    let lane = cx.debug_bounds("document-tabs-overflow-lane").unwrap();
+    // Crowded tabs: New Tab and the documents menu stay at the track's
+    // right end, before the New PDF lane.
+    let track = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ID)
+        .unwrap();
     let actions = cx
         .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
         .unwrap();
-    assert_eq!(actions.left(), lane.right(), "the actions lane follows");
-    assert_eq!(
-        actions.left() - overflow.right(),
-        overflow.left() - cut.right(),
-        "overflow has equal clearance to both dividers"
-    );
-    for boundary in [cut, lane] {
+    assert!(overflow.right() < track.right() && track.right() - overflow.right() < px(12.));
+    assert_eq!(actions.left(), cut.right(), "the New PDF lane follows");
+    for boundary in [cut, actions] {
         assert_eq!(
             boundary.top(),
             tabs.top(),
@@ -1166,7 +1247,7 @@ fn workspace_integration_crowded_tabs_keep_actions_pinned_for_both_wheel_axes(
             "tab boundaries must meet the bottom border"
         );
     }
-    assert!(cut.right() < overflow.left());
+    assert!(overflow.right() < cut.right());
     let target = point(tabs.left() + px(60.), tabs.center().y);
     let mut positions = Vec::new();
     for delta in [
@@ -1439,9 +1520,12 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         assert_eq!(cx.debug_bounds(right_id).unwrap().size.width, px(400.));
     }
     // The exact fit boundary has no extra rounding margin or oscillation:
-    // both rails, both sidebars and the viewer toolbar's least width.
-    let fit =
-        48. + 84. + 360. + 400. + 16. * butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS;
+    // both rails, both sidebars and the least page between them.
+    let fit = 48.
+        + 84.
+        + 360.
+        + 400.
+        + 16. * butter_paper::document_workspace::PAGE_BESIDE_SIDEBARS_MIN_REMS;
     for (width, visible) in [
         (fit - 1., false),
         (fit, true),
@@ -1541,9 +1625,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
     for level in [-3, 3, 0] {
         cx.update(|window, cx| {
             butter_paper::application_shell::apply_application_ui_zoom(level, px(16.), window, cx);
-            observed.update(cx, |workspace, cx| {
-                workspace.reset_right_rail_pixel_sizes(cx)
-            });
+            observed.update(cx, |_, cx| cx.notify());
         });
         settle(cx);
         let rem = butter_paper::application_shell::application_ui_zoom_font_size(px(16.), level);
@@ -1564,9 +1646,11 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         assert_eq!(toolbar.left(), cx.debug_bounds(left_id).unwrap().right());
         assert_eq!(toolbar.right(), cx.debug_bounds(right_id).unwrap().left());
         if level == 3 {
-            // Wide enough for thumbnails beside the viewer toolbar's least
-            // width at this interface size, but not for properties as well.
-            cx.simulate_resize(gpui::size(px(2200.), px(1000.)));
+            // Just too narrow at this interface size for the least page
+            // between thumbnails and properties (3 + 15 + 18.75 + 18.75 rem,
+            // and the 5.25 rem tool rail).
+            let narrow = rem * 60.5;
+            cx.simulate_resize(gpui::size(narrow, px(1000.)));
             settle(cx);
             assert!(
                 cx.debug_bounds(left_id).is_none(),
@@ -1583,7 +1667,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
                 cx.debug_bounds("document-workspace-right-rail")
                     .unwrap()
                     .right()
-                    <= px(2200.)
+                    <= narrow
             );
             let properties_toggle = cx
                 .debug_bounds("document-workspace-rail-actions")
@@ -1966,7 +2050,7 @@ fn workspace_right_rail_replaces_horizontal_tools_and_keeps_canvas_band_between_
 }
 
 #[gpui::test]
-fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut TestAppContext) {
+fn right_rail_stays_at_two_columns_and_double_click_toggles_properties(cx: &mut TestAppContext) {
     use butter_paper::annotation_adapter::AnnotationTool;
     cx.update(gpui_component::init);
     let backend = Arc::new(RecordingBackend::default());
@@ -1999,18 +2083,12 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
         callout.top(),
         "composite icon cannot wrap its two-column row"
     );
-    // Drag the stock divider, not an application setter. Include a threshold
-    // move and a frame before the destination so GPUI starts its drag session.
-    // Open and New: their sizes, the gap between them, and how far New
-    // ends from the window's edge, the same at every rail width.
+    // The rail has no resize handle: a drag from its edge, with a threshold
+    // move and a frame before the destination, leaves it at two columns.
+    // New Tab and New PDF keep their sizes and spacing after each drag.
     let mut tab_action_layouts = Vec::new();
-    for (requested_width, expected_width) in [
-        (170., 164.),
-        (20., 44.),
-        (124., 124.),
-        (600., 324.),
-        (84., 84.),
-    ] {
+    for requested_width in [170., 20., 600.] {
+        let expected_width = 84.;
         let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
         let start = point(rail.left(), rail.top() + px(100.));
         let end = point(rail.right() - px(requested_width), start.y);
@@ -2041,9 +2119,8 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
             cx.debug_bounds("viewer-toolbar").unwrap().right(),
             resized.left()
         );
-        // The actions lane is never narrower than a three-column rail: from
-        // three columns its divider continues the rail's edge, and below
-        // that it stays where a three-column rail's edge would be.
+        // The New PDF lane is as wide as the rail, so its divider continues
+        // the rail's edge. New Tab sits on the tab track before it.
         let tab_actions = cx
             .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
             .unwrap();
@@ -2051,18 +2128,15 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
         let primary = cx.debug_bounds("document-tab-new-pdf").unwrap();
         let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
         assert_eq!(tab_actions.right(), resized.right());
-        assert_eq!(
-            tab_actions.size.width,
-            resized.size.width.max(px(124.)),
-            "requested {requested_width}"
-        );
-        assert!(open.left() > tab_actions.left() && picker.right() < tab_actions.right());
+        assert_eq!(tab_actions.size.width, resized.size.width);
+        assert!(open.right() < tab_actions.left());
+        assert!(primary.left() > tab_actions.left() && picker.right() < tab_actions.right());
         let window_right = cx.update(|window, _| window.viewport_size().width);
         tab_action_layouts.push((
             open.size,
             primary.size,
             picker.size,
-            primary.left() - open.right(),
+            picker.left() - primary.right(),
             window_right - picker.right(),
         ));
         let select = cx.debug_bounds("document-workspace-select-tool").unwrap();
@@ -2075,26 +2149,20 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
             actions.bottom() <= scroller.top(),
             "pinned controls cannot clip into the scroll body"
         );
-        if expected_width == 44. {
-            assert_eq!(select.left(), hand.left());
-            assert_eq!(hand.top() - select.bottom(), px(8.));
-            assert_eq!(scroller.top() - resized.top(), px(88.));
-        } else {
-            assert_eq!(select.top(), hand.top());
-            assert_eq!(
-                (select.left() + hand.right()) / 2.,
-                resized.center().x + px(0.5)
-            );
-            // Edit PDF is a switch in the viewer toolbar, not a rail tool.
-            assert!(
-                cx.debug_bounds("document-workspace-edit-pdf-content-tool")
-                    .is_none()
-            );
-        }
+        assert_eq!(select.top(), hand.top());
+        assert_eq!(
+            (select.left() + hand.right()) / 2.,
+            resized.center().x + px(0.5)
+        );
+        // Edit PDF is a switch in the viewer toolbar, not a rail tool.
+        assert!(
+            cx.debug_bounds("document-workspace-edit-pdf-content-tool")
+                .is_none()
+        );
     }
     assert!(
         tab_action_layouts.windows(2).all(|pair| pair[0] == pair[1]),
-        "Open and New keep their size and spacing at every rail width: {tab_action_layouts:?}"
+        "New Tab and New PDF keep their size and spacing: {tab_action_layouts:?}"
     );
     let document_id =
         observed.read_with(cx, |workspace, _| workspace.active_document_id().unwrap());
@@ -2258,9 +2326,7 @@ fn right_rail_resize_snaps_columns_and_double_click_toggles_properties(cx: &mut 
     for level in [2, -2, 0] {
         cx.update(|window, cx| {
             butter_paper::application_shell::apply_application_ui_zoom(level, px(16.), window, cx);
-            observed.update(cx, |workspace, cx| {
-                workspace.reset_right_rail_pixel_sizes(cx)
-            });
+            observed.update(cx, |_, cx| cx.notify());
             window.draw(cx).clear(cx);
         });
         cx.run_until_parked();
