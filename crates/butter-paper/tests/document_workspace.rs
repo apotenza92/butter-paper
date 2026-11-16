@@ -44868,14 +44868,17 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(cx: &mut Tes
             )
         })
         .unwrap();
-    assert!(
-        workspace
-            .update(cx, |workspace, cx| {
-                workspace.render_planned_tiles_for_evidence(document_b, &b_plan, cx)
-            })
-            .unwrap()
-            .rendered_tiles
-            > 0
+    // B's view still draws: its tiles render now or come from its cache, as
+    // the view drew them already.
+    let b_render = workspace
+        .update(cx, |workspace, cx| {
+            workspace.render_planned_tiles_for_evidence(document_b, &b_plan, cx)
+        })
+        .unwrap();
+    assert_eq!(
+        b_render.rendered_tiles + b_render.cache_hits,
+        b_plan.tiles.len(),
+        "{b_render:?}"
     );
 
     assert!(workspace.update(cx, |workspace, cx| workspace.close_document(document_a, cx)));

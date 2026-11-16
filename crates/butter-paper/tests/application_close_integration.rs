@@ -2991,7 +2991,10 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
     let document_ids = sources
         .clone()
         .map(|source| workspace.update(cx, |workspace, cx| workspace.open_path(source, cx)));
-    cx.run_until_parked();
+    // Each worker opens its document in its own time, longer under load.
+    for (document_id, source) in document_ids.iter().zip(&sources) {
+        wait_for_real_document_ready(cx, &workspace, *document_id, source);
+    }
     for (document_id, suffix) in document_ids.into_iter().zip(["real-1", "real-2"]) {
         workspace
             .update(cx, |workspace, cx| {
@@ -3691,6 +3694,12 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         .debug_bounds("document-workspace-rail-actions")
         .expect("the real Document actions disclosure must render");
     cx.simulate_click(document_actions.center(), Modifiers::default());
+    cx.run_until_parked();
+    // The gestures below need the whole page in view: the zoomed view above
+    // can leave its lower-left corner off-screen.
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx));
+    });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
@@ -5068,7 +5077,9 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
         resized.text_boxes[0].layout_rect.y + resized.text_boxes[0].layout_rect.height * 0.5,
     )
     .unwrap();
-    let double_click = |cx: &mut gpui::VisualTestContext| {
+    // The first click selects the Text Box and the next press edits its text
+    // (a double-click opens its properties instead).
+    let click_to_edit = |cx: &mut gpui::VisualTestContext| {
         let layer = cx
             .debug_bounds(layer_id)
             .expect("the real native annotation canvas must remain rendered");
@@ -5081,25 +5092,27 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
             origin.x + px(edit_point.x as f32 * scale),
             origin.y + px((792. - edit_point.y as f32) * scale),
         );
-        cx.simulate_event(MouseDownEvent {
-            button: MouseButton::Left,
-            position,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            button: MouseButton::Left,
-            position,
-            modifiers: Modifiers::default(),
-            click_count: 2,
-        });
-        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for _ in 0..2 {
+            cx.simulate_event(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            });
+            cx.simulate_event(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
     };
-    double_click(cx);
+    click_to_edit(cx);
     let cancel_input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
-        .expect("double-click must reopen the existing Text Box editor");
+        .expect("a press on the selected Text Box's text must reopen its editor");
     cx.update(|window, cx| {
         cancel_input.update(cx, |input, cx| {
             input.replace_text_in_range(Some(0..expected_content.len()), "cancelled", window, cx)
@@ -5124,7 +5137,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert!(escaped.dirty);
     assert_eq!(escaped.selected_id, None);
 
-    double_click(cx);
+    click_to_edit(cx);
     let edit_input = workspace
         .read_with(cx, |workspace, _| workspace.pending_text_box_input())
         .expect("the existing Text Box editor must reopen after cancellation");
