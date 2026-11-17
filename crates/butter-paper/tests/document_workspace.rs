@@ -20020,7 +20020,7 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             cx,
         )
     });
-    #[cfg(target_os = "macos")]
+    // One page at 100% on every platform, the strokes below in the window.
     let base_plan = workspace.update(cx, |workspace, cx| {
         workspace
             .plan_viewport(
@@ -20036,6 +20036,9 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
             )
             .unwrap()
     });
+    // Only macOS checks the plan's pixels below.
+    #[cfg(not(target_os = "macos"))]
+    let _ = base_plan;
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds(DOCUMENT_HIGHLIGHT_TOOL_ID).is_some());
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
