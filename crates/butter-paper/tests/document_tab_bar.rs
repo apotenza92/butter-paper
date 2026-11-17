@@ -38,7 +38,8 @@ use gpui_component::Root;
 const NORMAL_WIDTH: f32 = 1200.;
 const MINIMUM_WIDTH: f32 = 900.;
 const CONSTRAINED_WIDTH: f32 = 320.;
-const DOCUMENT_TAB_REQUIRED_WIDTH: f32 = 380.;
+// The tabs and the tab row's small New from template buttons.
+const DOCUMENT_TAB_REQUIRED_WIDTH: f32 = 364.;
 const DOCUMENT_TAB_POINTER_DRAG_THRESHOLD: f32 = 6.;
 const DOCUMENT_TAB_DRAG_SITE_PLAN_ID: &str = "document-tab-drag-site-plan";
 const DOCUMENT_TAB_DROP_SITE_PLAN_ID: &str = "document-tab-drop-target-site-plan";
@@ -397,6 +398,15 @@ fn the_start_page_creates_from_the_last_template_as_the_primary_button_does(
     assert_eq!(
         control.read_with(cx, |control, _| control.last_template_label()),
         "New Blank Paper document"
+    );
+    // The primary button says what a click makes; the menu, what it holds.
+    assert_eq!(
+        control.read_with(cx, |control, _| control.last_template_tooltip()),
+        "New from template: Blank Paper"
+    );
+    assert_eq!(
+        butter_paper::document_tab_bar::TEMPLATE_PICKER_LABEL,
+        "Select and customise templates"
     );
     control.update(cx, |control, cx| control.create_from_last_template(cx));
     draw(cx);

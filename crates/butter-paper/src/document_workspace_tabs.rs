@@ -576,7 +576,7 @@ impl DocumentWorkspace {
                 },
             )
             .collect::<Vec<_>>();
-        let (has_extras, strip_end) = self.render_tab_strip_end(window, cx);
+        let (has_extras, strip_end) = self.render_tab_strip_end(cx);
         // Every open document, on the track beside New Tab: the way to the
         // tabs scrolled out of sight.
         let documents_menu = {
@@ -584,7 +584,10 @@ impl DocumentWorkspace {
             accessible_icon_button(
                 Button::new(DOCUMENT_TABS_MENU_ID)
                     .debug_selector(|| DOCUMENT_TABS_MENU_ID.into())
-                    .ghost()
+                    // Framed on the tab row's own colour, as New Tab and New
+                    // from template are.
+                    .outline()
+                    .bg(cx.theme().transparent)
                     .small()
                     .icon(IconName::ChevronDown)
                     .tooltip("Open documents"),
@@ -838,7 +841,6 @@ impl DocumentWorkspace {
             .id(DOCUMENT_SESSION_TABS_ID)
             .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
             .w_full()
-            .pl_3()
             .items_stretch()
             .border_b_1()
             .border_color(cx.theme().border)
@@ -871,8 +873,6 @@ impl DocumentWorkspace {
                     .flex_1()
                     .min_w_0()
                     .max_w_full()
-                    .py_2()
-                    .pr_3()
                     .overflow_hidden()
                     .when(has_extras, |strip| strip.border_r_1())
                     .border_color(cx.theme().border)
@@ -952,13 +952,9 @@ impl DocumentWorkspace {
 }
 
 impl DocumentWorkspace {
-    /// The strip's right end: Recovery and Update when shown, then the New
-    /// PDF lane. Returns whether Recovery or Update is shown.
-    pub(super) fn render_tab_strip_end(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> (bool, gpui::Div) {
+    /// The strip's right end: Recovery and Update when shown. Returns
+    /// whether either is shown.
+    pub(super) fn render_tab_strip_end(&mut self, cx: &mut Context<Self>) -> (bool, gpui::Div) {
         let recovery_button = self.render_recovery_notifications_button(cx);
         let update_button = cx
             .try_global::<crate::application_settings::ApplicationUpdatePresentation>()
@@ -973,21 +969,6 @@ impl DocumentWorkspace {
                 .children(recovery_button)
                 .children(update_button)
         });
-        // The New PDF lane is as wide as the tool rail, so its divider
-        // continues the rail's edge.
-        let lane_width = right_rail_width(RIGHT_RAIL_COLUMNS, window.rem_size());
-        let template_lane = h_flex()
-            .id(DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-            .debug_selector(|| DOCUMENT_WORKSPACE_TAB_ACTIONS_ID.into())
-            .flex_none()
-            .w(lane_width)
-            .border_l_1()
-            .border_color(cx.theme().border)
-            // The control is centred, equally clear of the divider and the
-            // window edge.
-            .justify_center()
-            .items_center()
-            .child(self.template_control.clone());
         (
             has_extras,
             // Full height, so the dividers span the strip.
@@ -995,13 +976,12 @@ impl DocumentWorkspace {
                 .flex_none()
                 .self_stretch()
                 .items_stretch()
-                .children(extras)
-                .child(template_lane),
+                .children(extras),
         )
     }
 
-    /// New Tab (+) and the open documents menu, on the tab track just after
-    /// the last tab.
+    /// New Tab (+), New from template and the open documents menu, on the
+    /// tab track just after the last tab.
     pub(super) fn render_session_tab_actions(
         &self,
         documents_menu: Option<gpui::AnyElement>,
@@ -1011,7 +991,9 @@ impl DocumentWorkspace {
         let open_document = accessible_icon_button(
             Button::new(DOCUMENT_TAB_OPEN_ID)
                 .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
-                .ghost()
+                // Framed on the tab row's own colour.
+                .outline()
+                .bg(cx.theme().transparent)
                 .small()
                 .icon(IconName::Plus)
                 .tooltip("New Tab")
@@ -1034,12 +1016,13 @@ impl DocumentWorkspace {
                     .inset_0(),
             )
             .child(open_document)
+            .child(self.template_control.clone())
             .children(documents_menu)
     }
 }
 
-/// The tab track: the stock segmented track's muted colour across the whole
-/// strip, however many tabs are open. The tabs come first and `actions`
+/// The tab track: the stock segmented bar's muted colour across the whole
+/// strip, edge to edge and top to bottom, however many tabs are open. The tabs come first and `actions`
 /// follow the last one. When the tabs don't fit, they scroll and `actions`
 /// stay at the track's right end.
 pub(super) fn session_tab_track(
@@ -1051,12 +1034,14 @@ pub(super) fn session_tab_track(
         .id(DOCUMENT_SESSION_TAB_TRACK_ID)
         .debug_selector(|| DOCUMENT_SESSION_TAB_TRACK_ID.into())
         .w_full()
+        .h_full()
         .min_w_0()
         // A segmented tab's height, also with no tabs on it.
         .min_h(px(32.))
         .items_center()
-        .rounded(cx.theme().radius_lg)
         .bg(cx.theme().tokens.tab_bar_segmented)
-        .child(tabs)
+        // The stock segmented bar, square: it is the whole tab row, edge to
+        // edge, not a rounded track inside it.
+        .child(tabs.h_full().rounded(px(0.)))
         .child(actions)
 }

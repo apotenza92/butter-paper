@@ -169,7 +169,10 @@ pub fn update_button(presentation: &ApplicationUpdatePresentation, cx: &App) -> 
     {
         return None;
     }
-    let button = update_status_button(presentation, "application-update-button", Button::outline)?;
+    // Small, as the tab row's other buttons are.
+    let button = update_status_button(presentation, "application-update-button", |button| {
+        button.outline().small()
+    })?;
     Some(
         h_flex()
             .id("application-update-lane")

@@ -968,7 +968,6 @@ impl Render for ViewerToolbarStrip {
                                         toolbar_group(cx)
                                             .id(VIEWER_PAGES_GROUP_ID)
                                             .debug_selector(|| VIEWER_PAGES_GROUP_ID.into())
-                                            .px_1()
                                             .flex_shrink_0()
                                             .child(navigator),
                                     )
@@ -993,7 +992,6 @@ impl Render for ViewerToolbarStrip {
                                             toolbar_group(cx)
                                                 .id(VIEWER_ZOOM_GROUP_ID)
                                                 .debug_selector(|| VIEWER_ZOOM_GROUP_ID.into())
-                                                .px_1()
                                                 .flex_shrink_0()
                                                 .child(control),
                                         )
@@ -1053,7 +1051,8 @@ impl Render for ViewerToolbarStrip {
 }
 
 /// A group of toolbar controls in one frame, as the fit and page-view
-/// buttons are.
+/// buttons are. Its buttons reach the frame: the end ones' hover and press
+/// fill it to its rounded edge, as a stock button group's do.
 fn toolbar_group(cx: &App) -> gpui::Div {
     let theme = cx.theme();
     h_flex()
@@ -1062,4 +1061,5 @@ fn toolbar_group(cx: &App) -> gpui::Div {
         .border_1()
         .border_color(theme.border)
         .rounded(theme.radius)
+        .overflow_hidden()
 }

@@ -828,7 +828,9 @@ with it.
 - Right-click a thumbnail for Insert Blank Page Before or After, Duplicate,
   Cut, Copy, Paste After, Rotate Left or Right, and Delete; thumbnails have
   no buttons of their own. A right-click on an unselected page selects it
-  first. Rotate turns the selected pages one after another. Delete is
+  first. Rotate turns the selected pages one after another. A page turns in
+  the first frame, from its own tiles turned, and the other pages keep
+  theirs; rotating the page in view does not move the view. Delete is
   unavailable when every page is selected: a document keeps one page.
 - Drag thumbnails to move them: a line shows where they will land, before
   the page under the pointer in its top half and after it in its bottom

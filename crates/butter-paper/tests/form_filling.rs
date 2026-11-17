@@ -155,6 +155,7 @@ fn form_workspace_with_links(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
+    fit_page_to_window(cx, &workspace, document_id);
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
@@ -416,10 +417,7 @@ fn a_choice_field_opens_its_menu_and_escape_leaves_it_unchanged(cx: &mut TestApp
 #[gpui::test]
 fn fields_follow_their_page_when_pages_are_rearranged(cx: &mut TestAppContext) {
     let (workspace, document_id, _, cx) = form_workspace(cx);
-    let redraw = |cx: &mut gpui::VisualTestContext| {
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.run_until_parked();
-    };
+    let redraw = |cx: &mut gpui::VisualTestContext| settle(cx, &workspace, document_id);
     workspace
         .update(cx, |workspace, cx| {
             workspace.insert_blank_page(document_id, 0, cx)
@@ -572,10 +570,7 @@ fn a_click_on_a_link_opens_it_beneath_fields(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_link_to_a_page_follows_it_when_pages_are_rearranged(cx: &mut TestAppContext) {
     let (workspace, document_id, _, cx) = form_workspace_with_links(cx, page_links());
-    let redraw = |cx: &mut gpui::VisualTestContext| {
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.run_until_parked();
-    };
+    let redraw = |cx: &mut gpui::VisualTestContext| settle(cx, &workspace, document_id);
     let current_page = |workspace: &gpui::Entity<DocumentWorkspace>,
                         cx: &mut gpui::VisualTestContext| {
         workspace.read_with(cx, |workspace, cx| {
@@ -716,4 +711,50 @@ fn the_worker_process_renders_filled_fields() {
     );
     resource.close().unwrap();
     std::fs::remove_dir_all(root).ok();
+}
+
+/// Fits the page to the test window and lets the view settle, as the app's
+/// next frames do once the window is measured. A test window gives no next
+/// frame: without this, the view keeps the layout it was given for a
+/// viewport of another size, which the app replaces at once.
+fn fit_page_to_window(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: butter_paper::document_workspace::DocumentId,
+) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(
+            document_id,
+            butter_paper::document_workspace::ViewerFitPreset::Page,
+            cx,
+        );
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+}
+
+/// Draws until the view settles, as the app's next frames do: each frame
+/// lays out the view it observed (a test window gives no next frame to do
+/// it), and each render that arrives is drawn.
+fn settle(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+) {
+    for _ in 0..3 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let scale = cx.update(|window, _| window.scale_factor());
+        workspace.update(cx, |workspace, cx| {
+            if let Some((width, height)) = workspace
+                .document_view_state(document_id, cx)
+                .and_then(|state| state.viewport_size())
+            {
+                let _ = workspace.refresh_viewport_async(document_id, width, height, scale, cx);
+            }
+        });
+        cx.run_until_parked();
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 }

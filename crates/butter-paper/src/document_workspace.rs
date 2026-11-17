@@ -669,7 +669,6 @@ pub const DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID: &str = "document-workspace-signed
 pub const DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID: &str = "document-workspace-restricted-edit-confirm";
 pub const DOCUMENT_RESTRICTED_EDIT_CANCEL_ID: &str = "document-workspace-restricted-edit-cancel";
 /// The New PDF lane above the tool rail.
-pub const DOCUMENT_WORKSPACE_TAB_ACTIONS_ID: &str = "document-workspace-tab-actions";
 /// New Tab and the open documents menu, on the tab track after the last tab.
 pub const DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID: &str = "document-session-tab-track-actions";
 /// The menu of every open document, on the tab track.
@@ -1230,6 +1229,19 @@ pub struct ViewerPlanEvidence {
     pub tiles: Vec<TileRequest>,
     pub requested_bytes: usize,
     pub cache_max_bytes: usize,
+}
+
+/// What the next frame draws on one page.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageCoverEvidence {
+    /// The page's own tiles drawn, of the tiles planned for it.
+    pub tiles: usize,
+    pub planned_tiles: usize,
+    /// Tiles kept from before the page's tiles were last dropped, drawn
+    /// under its own until those arrive.
+    pub kept_tiles: usize,
+    /// Whether the page's whole-page image is drawn under the tiles.
+    pub page_image: bool,
 }
 
 /// Copyable proof that a current viewer page reached the native prepaint boundary.
@@ -2933,6 +2945,12 @@ pub struct DocumentWorkspace {
     session_tab_reorder_events: Vec<DocumentTabReorderEvent>,
     session_tab_reorder_announcement: String,
     viewport_refresh_scheduled: Option<DocumentId>,
+    /// The document and viewer scheduling revision a frame last laid out
+    /// before it painted, so a layout that fails is not tried each frame.
+    render_replanned: Option<(DocumentId, u64)>,
+    /// The document viewport (width, height and scale) as last measured in
+    /// this window, for a document shown here for the first time.
+    window_viewport: Option<(f32, f32, f32)>,
     viewer_quality_tasks: HashMap<DocumentId, Task<()>>,
     semantic_snap_settings_open: bool,
     semantic_snap_settings: SemanticSnapSettings,
@@ -4728,6 +4746,8 @@ impl DocumentWorkspace {
             session_tab_reorder_events: Vec::new(),
             session_tab_reorder_announcement: String::new(),
             viewport_refresh_scheduled: None,
+            render_replanned: None,
+            window_viewport: None,
             viewer_quality_tasks: HashMap::new(),
             semantic_snap_settings_open: false,
             semantic_snap_settings: SemanticSnapSettings::default(),
@@ -11765,6 +11785,57 @@ impl DocumentWorkspace {
         let _ = self.refresh_viewport_async(document_id, width, height, device_scale, cx);
     }
 
+    /// No frame paints a document without its layout. A change that drops
+    /// it (a page turned, pages moved, a file reopened, a page shown, the
+    /// window resized) is laid out again here, before the frame paints, and
+    /// not a frame later: the frames between would flash. A document shown
+    /// for the first time takes the window's viewport, as a document shown
+    /// before measured it; only the first document in a new window has none,
+    /// and is laid out once its first frame measures it.
+    fn replan_before_paint(&mut self, cx: &mut Context<Self>) {
+        let Some(document_id) = self.active_ready_document_id(cx) else {
+            return;
+        };
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let (laid_out, revision, measured, device_scale) = {
+            let session = session.read(cx);
+            (
+                session.viewer.plan_snapshot().is_some(),
+                session.viewer.scheduler_revision(),
+                session.view_state.viewport_size(),
+                session.viewer.device_scale(),
+            )
+        };
+        if laid_out || self.render_replanned == Some((document_id, revision)) {
+            return;
+        }
+        let ((width, height), device_scale) = match (measured, self.window_viewport) {
+            (Some(size), _) => (size, device_scale),
+            (None, Some((width, height, scale))) => {
+                session.update(cx, |session, _| {
+                    session.viewport_size = Some((width, height));
+                    if let Some(page_size) = session
+                        .page_sizes
+                        .get(session.current_page as usize)
+                        .copied()
+                    {
+                        session.view_state.update_viewport(width, height, page_size);
+                        session.viewer.configure(
+                            session.view_state.mode(),
+                            session.view_state.zoom_percent(),
+                        );
+                    }
+                });
+                ((width, height), scale)
+            }
+            (None, None) => return,
+        };
+        self.render_replanned = Some((document_id, revision));
+        let _ = self.refresh_viewport_async(document_id, width, height, device_scale, cx);
+    }
+
     fn active_ready_document_id(&self, cx: &App) -> Option<DocumentId> {
         let document_id = self.active_document_id?;
         self.session(document_id, cx)
@@ -12234,6 +12305,30 @@ impl DocumentWorkspace {
                 session.adaptive_performance.observe_input(input_at);
             });
         }
+    }
+
+    /// What the next frame draws on page `page_index`, when the view is
+    /// laid out. Tests check with it that a change never blanks a page.
+    pub fn page_cover_for_evidence(
+        &self,
+        document_id: DocumentId,
+        page_index: usize,
+        cx: &App,
+    ) -> Option<PageCoverEvidence> {
+        let session = self.session(document_id, cx)?.read(cx);
+        let plan = session.viewer.plan_snapshot()?;
+        Some(PageCoverEvidence {
+            tiles: session.viewer.visible_tiles(page_index).len(),
+            planned_tiles: plan
+                .tiles
+                .iter()
+                .filter(|request| request.page == page_index)
+                .count(),
+            kept_tiles: session.viewer.page_fallback_tiles(page_index).len(),
+            page_image: session.current_image.is_some()
+                && session.current_image_page == Some(page_index as u32)
+                && session.current_page == page_index as u32,
+        })
     }
 
     pub fn painted_page_evidence(
@@ -12866,6 +12961,7 @@ impl DocumentWorkspace {
     ) {
         let frame_at = cx.background_executor().now();
         self.observe_viewer_frame_at(document_id, frame_at, cx);
+        self.window_viewport = Some((viewport_width, viewport_height, window.scale_factor()));
         if let Some(session) = self.session(document_id, cx).cloned() {
             session.update(cx, |session, cx| {
                 let next = Some((viewport_width, viewport_height));
@@ -13416,6 +13512,11 @@ impl DocumentWorkspace {
         direction: PageRotationDirection,
         cx: &mut Context<Self>,
     ) {
+        // Rotating the page in view leaves the view where it is; rotating
+        // another page's thumbnail goes to that page.
+        let go_to_page = self
+            .session(document_id, cx)
+            .is_some_and(|session| session.read(cx).current_page != page_index);
         let Ok(request) = self.begin_page_rotation(document_id, page_index, direction, cx) else {
             return;
         };
@@ -13449,6 +13550,7 @@ impl DocumentWorkspace {
                 if workspace.apply_page_rotation_result(&request, result, cx)
                     == ApplyDisposition::Applied
                     && succeeded
+                    && go_to_page
                 {
                     workspace.activate_thumbnail_page(request.document_id, request.page_index, cx);
                 }
@@ -14557,7 +14659,11 @@ impl DocumentWorkspace {
             session.requested_page = session.current_page;
             session.recovery_generation = None;
             session.presentation_error = None;
-            session.viewer.invalidate_raster();
+            // The new worker draws the same pages: the old tiles stay on
+            // screen until it does.
+            session
+                .viewer
+                .invalidate_raster(crate::document_viewer::ShownPage::same);
             session.status = NativeDocumentStatus::Ready;
             if let Some(image) = old_current {
                 cx.drop_image(image, None);
@@ -14924,9 +15030,13 @@ impl DocumentWorkspace {
             session.thumbnails = thumbnails;
             session.source_sha256 = source_sha256;
             // The validated reopen owns a different PDF resource. Pixels from
-            // the prior resource must never survive the atomic swap, even when
+            // the prior resource must never be cached as its pixels, even when
             // document identity, annotation revision, zoom, and crop match.
-            session.viewer.invalidate_raster();
+            // The saved file shows the pages as they were shown, so the old
+            // tiles stay on screen until the new resource draws them.
+            session
+                .viewer
+                .invalidate_raster(crate::document_viewer::ShownPage::same);
             session.status = NativeDocumentStatus::Ready;
             session.save_status = NativeDocumentSaveStatus::Idle;
             session.publication_durability_warning = retained_publication_warning;
@@ -26527,6 +26637,7 @@ impl Render for DocumentWorkspace {
         }
         self.reconcile_page_text_editing(cx);
         self.reconcile_form_filling(cx);
+        self.replan_before_paint(cx);
         if self.page_scale_control.as_ref().is_some_and(|control| {
             control
                 .read(cx)
@@ -26640,10 +26751,10 @@ impl Render for DocumentWorkspace {
             document_id,
             title,
             current_page,
-            current_page_size,
-            current_pdf_page_size,
-            current_page_rotation,
-            current_coordinate_space,
+            _current_page_size,
+            _current_pdf_page_size,
+            _current_page_rotation,
+            _current_coordinate_space,
             current_image,
             annotation_tool,
             _annotation_dirty,
@@ -26678,7 +26789,7 @@ impl Render for DocumentWorkspace {
             relationship_snap_guides,
             construction_grid_spacing_mm,
             active_selection_marquee,
-            current_highlights_precomposed,
+            _current_highlights_precomposed,
             image_assets,
             thumbnails,
             viewer_plan,
@@ -27027,7 +27138,7 @@ impl Render for DocumentWorkspace {
             let viewer_zoom_fallback = viewer_plan
                 .iter()
                 .flat_map(|plan| plan.visible_pages.iter().copied())
-                .map(|page| (page, session.viewer.zoom_fallback_tiles(page)))
+                .map(|page| (page, session.viewer.page_fallback_tiles(page)))
                 .filter(|(_, tiles)| !tiles.is_empty())
                 .collect::<HashMap<_, _>>();
             let viewer_pages = viewer_plan
@@ -27603,7 +27714,6 @@ impl Render for DocumentWorkspace {
             self.measurement_property_inspector_open = false;
             measurement_property_inspector.update(cx, |inspector, cx| inspector.clear(cx));
         }
-        let has_viewer_pages = !viewer_pages.is_empty();
         let viewport_control = cx.entity().downgrade();
         let viewport_observer_scroll = viewer_scroll.clone();
         let painted_layouts = viewer_plan.as_ref().map(|plan| plan.page_layouts.clone());
@@ -28155,19 +28265,12 @@ impl Render for DocumentWorkspace {
         let viewport = self.render_document_viewport(
             ViewportInputs {
                 active_selection_marquee,
-                annotation_scene,
                 construction_grid_spacing_mm,
-                current_coordinate_space,
-                current_highlights_precomposed,
                 current_image,
                 current_page,
-                current_page_rotation,
-                current_page_size,
-                current_pdf_page_size,
                 document_id,
                 document_opening_batch_count,
                 focused_annotation_id,
-                has_viewer_pages,
                 viewer_zoom_fallback,
                 hot_annotation_handle,
                 hovered_annotation,

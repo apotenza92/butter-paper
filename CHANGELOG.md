@@ -4,6 +4,35 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.4]
+
+### View
+
+- Rotating a page no longer flashes. The rotated page turns in the first
+  frame and stays sharp, the other pages keep their pictures, and the view
+  no longer jumps to the page's top edge a moment later.
+- The view never paints a frame without its layout, after any change:
+  moved or deleted pages, a save, a recovered worker, a window resize or a
+  page turn. A newly opened document no longer shows a small page that
+  then grows.
+
+### Tabs and toolbar
+
+- The tab bar is the whole tab row, edge to edge, with square corners, and
+  is slimmer. The selected tab's shadow is no longer cut off at its sides.
+- New from template sits on the tab row between New Tab (+) and the
+  documents menu. Its tooltips say "New from template: <template>" and
+  "Select and customise templates". The three buttons are framed on the
+  tab row's own colour.
+- Buttons in the page and zoom groups fill their group to its edge when
+  hovered or pressed.
+
+### Reliability
+
+- Fixed a rare failure to open a document when the app started a PDF worker
+  while busy on other threads (the worker was stopped by macOS before it
+  ran). Worker errors now say how the worker ended.
+
 ## [0.5.3]
 
 ### Tabs

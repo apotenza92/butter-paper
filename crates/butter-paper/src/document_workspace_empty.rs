@@ -218,8 +218,8 @@ impl DocumentWorkspace {
                 }
             })
         });
-        // Recovery, Update and the New PDF lane, as in the document strip.
-        let (has_extras, strip_end) = self.render_tab_strip_end(window, cx);
+        // Recovery and Update, as in the document strip.
+        let (has_extras, strip_end) = self.render_tab_strip_end(cx);
         let inactive_session_tabs = session_tabs
             .iter()
             .enumerate()
@@ -322,7 +322,6 @@ impl DocumentWorkspace {
                 .id(DOCUMENT_SESSION_TABS_ID)
                 .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
                 .w_full()
-                .pl_3()
                 .items_stretch()
                 .border_b_1()
                 .border_color(cx.theme().border)
@@ -332,12 +331,10 @@ impl DocumentWorkspace {
                         .debug_selector(|| "document-workspace-native-session-tab-bar".into())
                         .flex_1()
                         .flex()
-                        .items_center()
-                        .py_2()
-                        .pr_3()
+                        .items_stretch()
                         .when(has_extras, |strip| strip.border_r_1())
-                        // Preserve the pinned Tab's 32px frame plus py_2 even with no tabs.
-                        .min_h(px(32.) + window.rem_size())
+                        // A segmented tab's frame, even with no tabs.
+                        .min_h(px(32.))
                         .border_color(cx.theme().border)
                         .min_w_0()
                         .max_w_full()

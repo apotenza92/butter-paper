@@ -825,51 +825,35 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
     let viewport = cx
         .debug_bounds("document-workspace-native-session-tab-bar")
         .unwrap();
-    // Stock segmented tabs: the track sits at the strip's 12px inset, its
-    // first tab inside the track's 4px padding, and tabs 2px apart on it.
+    // Stock segmented tabs: the bar is the whole row, its first tab inside
+    // the bar's 4px inset, and tabs 2px apart on it.
     let gap = second_bounds.left() - first_bounds.right();
     assert_eq!(gap, px(2.), "segmented tabs sit 2px apart on their track");
     assert_eq!(
         first_bounds.left() - strip.left(),
-        px(12. + 4.),
-        "the track sits at the strip's inset, the first tab in its padding"
+        px(4.),
+        "the bar fills the strip, the first tab in its inset"
     );
     assert!(
         viewport.right() > second_bounds.right(),
         "unused tab space stays before pinned actions"
     );
-    assert_eq!(
-        strip.right()
-            - cx.debug_bounds("document-tab-template-picker")
-                .unwrap()
-                .right(),
-        px(9.5),
-        "New PDF stays centred in its lane even with two tabs"
-    );
-    // New Tab and the documents menu follow the last tab on the track.
+    // New Tab, New from template and the documents menu follow the last tab
+    // on the track.
     let track_actions = cx
         .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID)
         .unwrap();
     let last_bounds = cx.debug_bounds("document-3-session-tab").unwrap();
     assert_eq!(track_actions.left() - last_bounds.right(), px(4.));
     let open = cx.debug_bounds("document-tab-open").unwrap();
-    let menu = cx.debug_bounds("document-tabs-overflow").unwrap();
-    assert!(open.left() >= track_actions.left() && menu.left() > open.right());
-    // The New PDF lane's divider closes the tab bar. Its control is centred
-    // in the lane, equally clear of the divider and the window edge.
-    let actions = cx
-        .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-        .unwrap();
-    assert_eq!(actions.left(), viewport.right());
     let new_pdf = cx.debug_bounds("document-tab-new-pdf").unwrap();
     let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
-    let leading = new_pdf.left() - actions.left();
-    let trailing = actions.right() - picker.right();
-    assert!(leading > px(0.));
-    assert!(
-        (leading - trailing).abs() <= px(1.),
-        "New PDF control centred in its lane: {leading:?} before, {trailing:?} after"
-    );
+    let menu = cx.debug_bounds("document-tabs-overflow").unwrap();
+    assert!(open.left() >= track_actions.left());
+    assert!(new_pdf.left() > open.right() && picker.left() >= new_pdf.right());
+    assert!(menu.left() > picker.right());
+    // The bar runs to the window's edge.
+    assert_eq!(viewport.right(), strip.right());
     cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
     for appearance in [gpui::WindowAppearance::Light, gpui::WindowAppearance::Dark] {
@@ -982,18 +966,16 @@ fn document_tabs_sit_on_a_segmented_track_that_fills_the_strip_and_scrolls_when_
     };
     let first = tab_bounds(cx, ids[0]);
     let last = tab_bounds(cx, ids[1]);
-    // shadcn's TabsList, padded 4px. A few tabs still take the whole strip:
-    // the track ends at the strip's inset, not after its last tab.
+    // shadcn's TabsList, inset 4px. A few tabs still take the whole strip:
+    // the track is the whole row, edge to edge and top to bottom, square.
     assert_eq!(first.left() - track.left(), px(4.));
     assert!(
         track.right() - last.right() > px(100.),
         "the track continues past a few tabs: track={track:?}, last={last:?}"
     );
-    assert_eq!(
-        track.right(),
-        viewport.right() - px(12.),
-        "the track fills the strip up to its right inset"
-    );
+    assert_eq!(track.left(), viewport.left());
+    assert_eq!(track.right(), viewport.right(), "the track fills the strip");
+    assert_eq!(track.size.height, viewport.size.height);
     // Closing stays a separate target in the tab.
     let close: &'static str = Box::leak(document_session_close_id(ids[1]).into_boxed_str());
     cx.simulate_mouse_move(last.center(), None, gpui::Modifiers::default());
@@ -1088,26 +1070,20 @@ fn empty_workspace_retains_tab_bar_boundaries_and_pinned_actions(cx: &mut TestAp
     let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
     assert_eq!(
         strip.size.height,
-        px(49.),
-        "empty row retains 32px tab frame, 16px padding and bottom border"
+        px(37.),
+        "empty row is shadcn's 36px TabsList and a bottom border"
     );
     assert_eq!(divider.top(), strip.top());
     assert_eq!(divider.bottom(), strip.bottom() - px(1.));
-    // New Tab sits on the empty track; New PDF stays beside it.
+    // New Tab sits on the empty track, New from template beside it; the
+    // track is the whole row.
     let track = cx
         .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ID)
         .unwrap();
     assert!(open.left() > track.left() && open.right() < track.center().x);
-    assert_eq!(track.right(), divider.right() - px(12.));
-    // The New PDF lane is as wide as in a document window, a two-column
-    // rail, so its divider stays put when a document opens.
-    let lane = cx
-        .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-        .unwrap();
-    assert_eq!(lane.left(), divider.right());
-    assert_eq!(lane.size.width, px(84.));
-    // Centred: 84px lane, 1px divider, 64px control.
-    assert_eq!(strip.right() - picker.right(), px(9.5));
+    assert!(picker.left() > open.right() && picker.right() < track.center().x);
+    assert_eq!(track.left(), strip.left());
+    assert_eq!(track.right(), strip.right());
     assert!(
         cx.debug_bounds("document-tabs-overflow").is_none(),
         "no documents to list"
@@ -1225,28 +1201,20 @@ fn workspace_integration_crowded_tabs_keep_actions_pinned_for_both_wheel_axes(
         "the documents menu uses the same stock button size as New Tab"
     );
     assert_eq!(overflow.top(), before[0].top());
-    // Crowded tabs: New Tab and the documents menu stay at the track's
-    // right end, before the New PDF lane.
+    // Crowded tabs: New Tab, New from template and the documents menu stay
+    // at the track's right end, which is the window's.
     let track = cx
         .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ID)
         .unwrap();
-    let actions = cx
-        .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-        .unwrap();
     assert!(overflow.right() < track.right() && track.right() - overflow.right() < px(12.));
-    assert_eq!(actions.left(), cut.right(), "the New PDF lane follows");
-    for boundary in [cut, actions] {
-        assert_eq!(
-            boundary.top(),
-            tabs.top(),
-            "tab boundaries must start at the strip top"
-        );
-        assert_eq!(
-            boundary.bottom(),
-            tabs.bottom() - px(1.),
-            "tab boundaries must meet the bottom border"
-        );
-    }
+    assert!(before[0].right() < before[1].left() && before[2].right() < overflow.left());
+    assert_eq!(track.right(), cut.right());
+    assert_eq!(cut.top(), tabs.top(), "the tab bar starts at the strip top");
+    assert_eq!(
+        cut.bottom(),
+        tabs.bottom() - px(1.),
+        "the tab bar meets the bottom border"
+    );
     assert!(overflow.right() < cut.right());
     let target = point(tabs.left() + px(60.), tabs.center().y);
     let mut positions = Vec::new();
@@ -2119,18 +2087,12 @@ fn right_rail_stays_at_two_columns_and_double_click_toggles_properties(cx: &mut 
             cx.debug_bounds("viewer-toolbar").unwrap().right(),
             resized.left()
         );
-        // The New PDF lane is as wide as the rail, so its divider continues
-        // the rail's edge. New Tab sits on the tab track before it.
-        let tab_actions = cx
-            .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-            .unwrap();
+        // New Tab, then New from template, on the tab track: the rail's
+        // width does not move them.
         let open = cx.debug_bounds("document-tab-open").unwrap();
         let primary = cx.debug_bounds("document-tab-new-pdf").unwrap();
         let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
-        assert_eq!(tab_actions.right(), resized.right());
-        assert_eq!(tab_actions.size.width, resized.size.width);
-        assert!(open.right() < tab_actions.left());
-        assert!(primary.left() > tab_actions.left() && picker.right() < tab_actions.right());
+        assert!(open.right() < primary.left() && primary.right() <= picker.left());
         let window_right = cx.update(|window, _| window.viewport_size().width);
         tab_action_layouts.push((
             open.size,
@@ -3185,17 +3147,8 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
                 .unwrap();
             assert_eq!(lane.top(), tabs.top());
             assert_eq!(lane.bottom(), tabs.bottom());
-            // In a document the update sits before Open and New, which stay
-            // over the rail; without one it follows them.
-            match cx
-                .debug_bounds(butter_paper::document_workspace::DOCUMENT_WORKSPACE_TAB_ACTIONS_ID)
-            {
-                Some(actions) => {
-                    assert!(lane.right() <= actions.left());
-                    assert!(template.left() > lane.right());
-                }
-                None => assert!(lane.left() >= template.right()),
-            }
+            // The update follows the tab row's buttons, at the strip's end.
+            assert!(lane.left() >= template.right());
             assert!(update.left() > lane.left());
             assert_eq!(update.size.height, template.size.height);
             let width = cx.update(|window, _| window.viewport_size().width);

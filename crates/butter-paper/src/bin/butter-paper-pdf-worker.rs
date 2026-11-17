@@ -1533,6 +1533,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Registration is the first opt-in action. The final self receipt is
     // attempted for both protocol success and setup/runtime failure.
     let lifecycle = WorkerLifecycleReporter::from_environment()?;
+    #[cfg(unix)]
+    let result = butter_paper::pdf_worker::receive_worker_source()
+        .map_err(Into::into)
+        .and_then(|()| run());
+    #[cfg(not(unix))]
     let result = run();
     let lifecycle_result = lifecycle.map(WorkerLifecycleReporter::finish).transpose();
     match (result, lifecycle_result) {

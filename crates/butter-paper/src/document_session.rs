@@ -12,7 +12,7 @@ use crate::{
         DEFAULT_PAGE_RENDER_WIDTH, DocumentId, NativeDocumentResource, OpenedNativeDocument,
         RasterSurface, coordinate_rotation,
     },
-    document_viewer::DocumentViewerState,
+    document_viewer::{DocumentViewerState, ShownPage},
     native_document_view_state::NativeDocumentViewState,
 };
 use crate::{
@@ -390,6 +390,9 @@ pub struct NativeDocumentSession {
     pub(crate) source_page_sizes: Vec<(f32, f32)>,
     pub(crate) source_page_rotations: Vec<PageRotation>,
     pub(crate) source_page_coordinate_spaces: Vec<PageCoordinateSpace>,
+    /// Each page's clockwise quarter turns when the viewer last laid the
+    /// pages out, to tell which of the pages it shows turned since.
+    shown_quarter_turns: Vec<u8>,
     /// The file's own pages, which the `source_page_*` lists show as
     /// arranged ([`Self::sync_page_arrangement`]).
     pub(crate) file_page_sizes: Vec<(f32, f32)>,
@@ -521,6 +524,7 @@ impl NativeDocumentSession {
             source_page_sizes: Vec::new(),
             source_page_rotations: Vec::new(),
             source_page_coordinate_spaces: Vec::new(),
+            shown_quarter_turns: Vec::new(),
             file_page_sizes: Vec::new(),
             file_page_rotations: Vec::new(),
             file_page_coordinate_spaces: Vec::new(),
@@ -987,11 +991,20 @@ impl NativeDocumentSession {
                 f64::from(size.1),
             );
         }
-        self.sync_rotation_geometry();
+        self.sync_moved_page_geometry(|page| follow(page as u32).map(|page| page as usize));
         true
     }
 
+    /// Takes the pages' sizes from their rotations, after a page turned.
     pub(crate) fn sync_rotation_geometry(&mut self) {
+        self.sync_moved_page_geometry(Some);
+    }
+
+    /// Takes the pages' sizes from their rotations, after the pages moved:
+    /// `moved` gives where each page went, or `None` for one removed. The
+    /// viewer keeps each page's tiles on screen, moved and turned with the
+    /// page, until its new ones arrive.
+    fn sync_moved_page_geometry(&mut self, moved: impl Fn(usize) -> Option<usize>) {
         self.page_sizes = self
             .source_page_sizes
             .iter()
@@ -1019,7 +1032,16 @@ impl NativeDocumentSession {
                     })
             })
             .collect();
-        self.viewer.invalidate_raster();
+        let before = std::mem::take(&mut self.shown_quarter_turns);
+        let after = self.page_rotation_quarter_turns();
+        self.viewer.invalidate_raster(|page| {
+            let to = moved(page)?;
+            Some(ShownPage {
+                page: to,
+                quarter_turns: (after.get(to)? + 4 - before.get(page)?) % 4,
+            })
+        });
+        self.shown_quarter_turns = after;
     }
 
     /// Turns the pixels already shown for `page_index`, its page image and

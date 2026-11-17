@@ -35,6 +35,8 @@ pub const DOCUMENT_TAB_OPEN_ID: &str = "document-tab-open";
 pub const TEMPLATE_CONTROL_GROUP_ID: &str = "document-tab-template-controls";
 pub const TEMPLATE_PRIMARY_ID: &str = "document-tab-new-pdf";
 pub const TEMPLATE_PICKER_ID: &str = "document-tab-template-picker";
+/// The template menu button's tooltip and accessible label.
+pub const TEMPLATE_PICKER_LABEL: &str = "Select and customise templates";
 pub const TEMPLATE_PICKER_POPOVER_ID: &str = "template-picker";
 pub const TEMPLATE_MANAGE_ID: &str = "template-picker-manage";
 pub const TEMPLATE_CREATE_ID: &str = "template-picker-create";
@@ -619,6 +621,19 @@ impl TemplateSplitControl {
         format!("New {name} document")
     }
 
+    /// The primary button's tooltip and accessible label: what a click
+    /// makes, from the last template used.
+    pub fn last_template_tooltip(&self) -> String {
+        let name = self
+            .templates
+            .iter()
+            .find(|template| template.id == self.last_template_id)
+            .unwrap_or(&self.templates[0])
+            .name
+            .clone();
+        format!("New from template: {name}")
+    }
+
     /// Creates a document from the last template used, as the primary button
     /// does.
     pub fn create_from_last_template(&mut self, cx: &mut Context<Self>) {
@@ -677,10 +692,13 @@ impl Render for TemplateSplitControl {
             .clone();
         let primary_control = cx.entity().downgrade();
         // Says what a click makes: the last template used, ready to draw on.
-        let primary_label = format!("New {} document", current_template.name);
+        let primary_label = self.last_template_tooltip();
         let primary = accessible_icon_button(
             Button::new(TEMPLATE_PRIMARY_ID)
                 .outline()
+                // Framed on the tab row's own colour, the row's height.
+                .bg(cx.theme().transparent)
+                .small()
                 .rounded_r_none()
                 .debug_selector(|| TEMPLATE_PRIMARY_ID.into())
                 .accessibility_id(TEMPLATE_PRIMARY_ID)
@@ -702,13 +720,15 @@ impl Render for TemplateSplitControl {
         let picker = accessible_icon_button(
             Button::new(TEMPLATE_PICKER_ID)
                 .outline()
+                .bg(cx.theme().transparent)
+                .small()
                 .rounded_l_none()
                 .border_l_0()
                 .debug_selector(|| TEMPLATE_PICKER_ID.into())
                 .accessibility_id(TEMPLATE_PICKER_ID)
                 .dropdown_caret(true)
-                .tooltip("New from template…"),
-            "New from template",
+                .tooltip(TEMPLATE_PICKER_LABEL),
+            TEMPLATE_PICKER_LABEL,
         );
 
         let picker_control = cx.entity().downgrade();

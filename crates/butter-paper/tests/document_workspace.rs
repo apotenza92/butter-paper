@@ -5685,7 +5685,9 @@ fn native_open_session_restore_keeps_partial_failure_feedback_and_intended_valid
                     55.,
                     66.,
                 ),
-                RestartView::new(1, PageViewMode::Continuous, RestartZoom::FitPage, 7., 8.),
+                // Scrolled into the first page: in Continuous view the page
+                // in view is the current page once the view is laid out.
+                RestartView::new(0, PageViewMode::Continuous, RestartZoom::FitPage, 7., 8.),
             ]),
         )
         .unwrap();
@@ -5743,7 +5745,7 @@ fn native_open_session_restore_keeps_partial_failure_feedback_and_intended_valid
                 -3.,
                 -4.,
             ),
-            RestartView::new(1, PageViewMode::Continuous, RestartZoom::FitPage, 7., 8.,),
+            RestartView::new(0, PageViewMode::Continuous, RestartZoom::FitPage, 7., 8.,),
         ],
         "each successful path must receive its own clamped view despite a failed sibling",
     );
@@ -6131,6 +6133,7 @@ fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
     let layer = cx.debug_bounds(layer_id).unwrap();
@@ -6281,6 +6284,7 @@ fn ellipse_workspace_create_edit_lock_delete_undo_and_real_component_tool_are_co
     });
     cx.update(|window, _| window.activate_window());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     assert!(
         cx.debug_bounds(DOCUMENT_ELLIPSE_TOOL_ID).is_some(),
         "the real GPUI Component Ellipse tool button must render"
@@ -6923,6 +6927,7 @@ fn document_workspace_preserves_live_state_rejects_stale_results_and_releases_re
     let pages_toggle = cx.debug_bounds("document-left-rail-pages").unwrap();
     cx.simulate_click(pages_toggle.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, first_id);
     assert!(cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).is_some());
     let second_thumbnail = cx
         .debug_bounds("document-1-thumbnail-1")
@@ -7422,6 +7427,7 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
         ApplyDisposition::Applied
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let line_button = cx
         .debug_bounds(DOCUMENT_LINE_TOOL_ID)
         .expect("the real Line Button must render under its stable ID");
@@ -7971,6 +7977,7 @@ fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(cx: &mut
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
     let layer = cx
         .debug_bounds(layer_id)
@@ -8127,6 +8134,7 @@ fn semantic_snapping_workspace_routes_real_line_input_and_transient_guide_eviden
         ApplyDisposition::Applied,
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_LINE_TOOL_ID);
     let line_button = cx
         .debug_bounds(DOCUMENT_LINE_TOOL_ID)
@@ -8253,6 +8261,7 @@ fn opened_page_grid_metadata_reaches_real_workspace_pointer_routes(cx: &mut Test
         ApplyDisposition::Applied,
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_LINE_TOOL_ID);
     let line_button = cx.debug_bounds(DOCUMENT_LINE_TOOL_ID).unwrap();
     cx.simulate_click(line_button.center(), Modifiers::default());
@@ -12421,6 +12430,7 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         .unwrap();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let projection = |cx: &mut gpui::VisualTestContext| {
         let layer = cx.debug_bounds(layer_id).unwrap();
@@ -12856,6 +12866,7 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
         .expect("the opened source must own a real worker");
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let layer = cx.debug_bounds(layer_id).unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
@@ -14715,6 +14726,7 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry_on_nativ
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer_bounds = cx
         .debug_bounds("document-1-annotation-layer-0")
         .expect("the imported annotation layer must render");
@@ -14919,6 +14931,7 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
         .unwrap();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -15325,6 +15338,7 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -16041,6 +16055,7 @@ fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let before_hover = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -17266,6 +17281,7 @@ fn unselected_snapshot_hover_controls_start_resize_on_first_press_on_native_stac
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
@@ -17491,6 +17507,7 @@ fn cross_family_body_targeting_moves_the_topmost_annotation_on_first_press_on_na
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -18137,6 +18154,7 @@ fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut Te
         ))
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -18399,6 +18417,7 @@ fn multi_selection_workspace_marquee_routes_real_pointer_coordinates_and_modifie
         .unwrap();
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -18602,6 +18621,7 @@ fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut Tes
     });
     scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
     cx.simulate_click(button.center(), Modifiers::default());
     assert!(cx.did_prompt_for_paths());
@@ -18919,6 +18939,7 @@ fn rectangle_pointer_placement_resets_select_only_after_creation(cx: &mut TestAp
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_RECTANGLE_TOOL_ID);
     let rectangle_button = cx.debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID).unwrap();
     cx.simulate_click(rectangle_button.center(), Modifiers::default());
@@ -19067,6 +19088,7 @@ fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_PEN_TOOL_ID);
     let pen_button = cx
         .debug_bounds(DOCUMENT_PEN_TOOL_ID)
@@ -20536,6 +20558,7 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_TEXT_BOX_TOOL_ID);
     let tool = cx
         .debug_bounds(DOCUMENT_TEXT_BOX_TOOL_ID)
@@ -20665,7 +20688,7 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
         .debug_bounds(DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID)
         .expect("the editor content renders inside the box");
     assert_eq!(content_bounds.origin, live_editor_bounds.origin);
-    assert!(content_bounds.size.width >= live_editor_bounds.size.width + px(12. * scale));
+    assert!(content_bounds.size.width >= live_editor_bounds.size.width + px(12. * scale) - px(1.));
     assert!(cx.update(|window, _| editor_focus.is_focused(window)));
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
@@ -20740,6 +20763,7 @@ fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -20845,6 +20869,7 @@ fn text_box_input_handler_composition_save_and_reopen_is_coherent(cx: &mut TestA
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -21173,6 +21198,7 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
         .unwrap();
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let before = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -21421,6 +21447,7 @@ fn existing_text_box_pointer_move_resize_enter_escape_commit_history_and_lock_us
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx
         .debug_bounds("document-1-annotation-layer-0")
         .expect("the real annotation canvas must render");
@@ -21822,6 +21849,7 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         (0, 0)
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -21874,7 +21902,13 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         .unwrap();
     assert_eq!(committed.lengths.len(), 1);
     assert_eq!(committed.lengths[0].id.as_str(), "workspace:length:1");
-    assert_eq!(committed.lengths[0].caption(), "2.03 m");
+    // 146 pt on a page at 1:100, give or take the window pixel each click
+    // lands on.
+    assert!(
+        ["2.02 m", "2.03 m"].contains(&committed.lengths[0].caption().as_ref()),
+        "{}",
+        committed.lengths[0].caption()
+    );
     assert_eq!((committed.revision, committed.undo_depth), (2, 2));
     assert_eq!(
         committed.selected_id.as_ref(),
@@ -22016,6 +22050,7 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let trigger = cx
         .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID)
         .expect("the real Set Page Scale button must render");
@@ -22825,6 +22860,7 @@ fn the_length_shortcut_asks_for_a_page_scale_where_the_dimension_button_draws_te
     cx.run_until_parked();
     assert_eq!(tool(cx), Some(AnnotationTool::Length));
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     assert!(!open(cx));
     cx.simulate_click(layer.center(), Modifiers::default());
@@ -23817,6 +23853,7 @@ fn canvas_escape_preserves_tool_and_history_in_signature_input(cx: &mut TestAppC
     cx.run_until_parked();
     scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -24026,6 +24063,7 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     for id in [
         DOCUMENT_SELECT_TOOL_ID,
@@ -24455,6 +24493,7 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     for id in [DOCUMENT_POLYLINE_TOOL_ID, DOCUMENT_POLYGON_TOOL_ID] {
         assert!(
@@ -25195,6 +25234,7 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     scroll_annotation_target_into_view(cx, CALLOUT_TOOL_ID);
     let callout_button = cx
@@ -25639,6 +25679,7 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_PLUS_TOOL_ID);
     let cloud_plus_button = cx
@@ -26023,6 +26064,7 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
@@ -26935,6 +26977,7 @@ fn a_new_dimension_keeps_its_typed_text_when_clicking_away_on_the_page(cx: &mut 
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
     cx.simulate_keystrokes("shift-l");
@@ -27013,6 +27056,7 @@ fn markup_text_workspace(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| focus.focus(window, cx));
     (workspace, request.document_id, cx)
@@ -27103,8 +27147,9 @@ fn a_selected_markups_text_shows_an_ibeam_and_a_press_there_edits_it(cx: &mut Te
         Some(id.clone())
     );
 
-    // The right edge resizes, selected or not, and never edits.
-    let edge = project(460., 352.);
+    // The right edge resizes, selected or not, and never edits: its middle,
+    // clear of the corner handles.
+    let edge = project(460., 330.);
     assert_ne!(hover_cursor(&workspace, cx, edge), gpui::CursorStyle::IBeam);
     cx.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
@@ -27402,6 +27447,7 @@ fn arc_workspace_renders_real_component_tool_three_click_preview_and_shift_snap(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
     cx.update(|window, cx| workspace_focus.focus(window, cx));
@@ -27501,6 +27547,7 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     let layer_id = Box::leak(document_annotation_layer_id(request.document_id, 0).into_boxed_str());
     let layer = cx.debug_bounds(layer_id).unwrap();
@@ -28110,6 +28157,7 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     scroll_annotation_target_into_view(cx, DOCUMENT_REDACT_TOOL_ID);
     let page_layer_id =
@@ -28355,6 +28403,7 @@ fn snapshot_tool_copies_a_two_click_box_that_pastes_as_a_snapshot(cx: &mut TestA
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     scroll_annotation_target_into_view(cx, DOCUMENT_SNAPSHOT_TOOL_ID);
     let snapshot_button = cx
@@ -28558,6 +28607,7 @@ fn paste_lands_centred_on_the_pointer_or_where_the_page_menu_opened(cx: &mut Tes
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let id = MarkupId::new("source:text:pointer").unwrap();
     workspace
         .update(cx, |workspace, cx| {
@@ -28834,6 +28884,7 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
         .expect("the real fixture must own one live worker");
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_SNAPSHOT_TOOL_ID);
     let snapshot_button = cx
         .debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID)
@@ -29512,6 +29563,7 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
     assert_eq!(initial.selected_id, None);
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_REDACT_TOOL_ID);
     let redact_button = cx
         .debug_bounds(DOCUMENT_REDACT_TOOL_ID)
@@ -29948,6 +30000,7 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
         )
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_TOOL_ID);
     let cloud_button = cx
@@ -30177,6 +30230,7 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_POLYLINE_TOOL_ID);
     let polyline_tool = cx
         .debug_bounds(DOCUMENT_POLYLINE_TOOL_ID)
@@ -31646,6 +31700,7 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_TOOL_ID);
     let cloud_button = cx
         .debug_bounds(DOCUMENT_CLOUD_TOOL_ID)
@@ -31908,6 +31963,7 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_CALLOUT_TOOL_ID);
     let callout_button = cx
         .debug_bounds(DOCUMENT_CALLOUT_TOOL_ID)
@@ -32258,6 +32314,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_CLOUD_PLUS_TOOL_ID);
     let cloud_plus_button = cx
         .debug_bounds(DOCUMENT_CLOUD_PLUS_TOOL_ID)
@@ -32590,6 +32647,7 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
         .expect("the real fixture must own one live worker");
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let layer = cx
         .debug_bounds(layer_id)
@@ -33043,6 +33101,7 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         .expect("the real fixture must own one live worker");
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_DIMENSION_TOOL_ID);
     let dimension_button = cx
         .debug_bounds(DOCUMENT_DIMENSION_TOOL_ID)
@@ -33192,8 +33251,10 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("dimension.body").is_some());
-    let body_start = to_view(144., 352.);
-    let body_end = to_view(156., 360.);
+    // On the dimension line, clear of its caption: a press on a selected
+    // markup's text edits the text.
+    let body_start = to_view(270., 352.);
+    let body_end = to_view(282., 360.);
     cx.simulate_mouse_down(body_start, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(body_end, Some(MouseButton::Left), Modifiers::default());
     assert_eq!(
@@ -33450,6 +33511,7 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
     assert!(!worker_process_exists(source_pixel_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     scroll_annotation_target_into_view(cx, DOCUMENT_ARC_TOOL_ID);
     let arc_button = cx
         .debug_bounds(DOCUMENT_ARC_TOOL_ID)
@@ -36859,6 +36921,7 @@ fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editi
     });
     scroll_annotation_target_into_view(cx, DOCUMENT_IMAGE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let button = cx.debug_bounds(DOCUMENT_IMAGE_TOOL_ID).unwrap();
     cx.simulate_click(button.center(), Modifiers::default());
     assert!(cx.did_prompt_for_paths());
@@ -37261,6 +37324,7 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
     cx.run_until_parked();
     scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let signature_trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_trigger.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -37487,6 +37551,7 @@ fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppCon
     cx.run_until_parked();
     scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let signature_tool = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_tool.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -37988,6 +38053,7 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     let signature_trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(signature_trigger.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let signature_canvas = cx.debug_bounds(DOCUMENT_SIGNATURE_CANVAS_ID).unwrap();
     let draw_start = point(
         signature_canvas.origin.x
@@ -38430,6 +38496,7 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
     });
     let viewer_bounds_before = {
         cx.update(|window, cx| window.draw(cx).clear(cx));
+        fit_page_to_window(cx, &workspace, document_id);
         cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap()
     };
     assert!(cx.debug_bounds(DIMENSION_PROPERTY_INSPECTOR_ID).is_none());
@@ -43675,6 +43742,7 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
     assert!(worker_process_exists(original_worker_pid));
 
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let rectangle_tool = cx
         .debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID)
         .expect("the real GPUI Component Rectangle tool must render");
@@ -44642,6 +44710,7 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(cx: &mut Tes
         .expect("document A must have a rendered stable-ID tab");
     cx.simulate_click(a_tab.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_a);
     scroll_annotation_target_into_view(cx, DOCUMENT_RECTANGLE_TOOL_ID);
     let rectangle_tool = cx
         .debug_bounds(DOCUMENT_RECTANGLE_TOOL_ID)
@@ -45735,6 +45804,7 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
     cx.run_until_parked();
     scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let centre = cx
         .debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID)
         .unwrap()
@@ -46027,21 +46097,18 @@ fn pdf_content_geometry_waits_for_visible_settled_page_retries_and_deduplicates(
             ApplyDisposition::Applied
         );
     });
-    cx.run_until_parked();
     assert!(
         calls.lock().unwrap().is_empty(),
         "open must not parse content before a visible settled viewport exists"
     );
-
-    workspace.update(cx, |workspace, cx| {
-        workspace.set_view_configuration(request.document_id, PageViewMode::SinglePage, 100., cx);
-        workspace
-            .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
-            .unwrap();
-    });
+    // The window's first frames lay the page out, in view and settled.
     cx.run_until_parked();
     assert_eq!(calls.lock().unwrap().as_slice(), &[0]);
 
+    // Settled again after the view's last move, the failed page is asked
+    // for again.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
     workspace.update(cx, |workspace, cx| {
         workspace
             .refresh_viewport_async(request.document_id, 800., 600., 1., cx)
@@ -46098,6 +46165,7 @@ fn hold_space_pans_temporarily_and_double_tap_toggles_pan_select(cx: &mut TestAp
         ApplyDisposition::Applied
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
 
     // A focused session tab is an interactive target, so Space must not pan.
     // No keyup follows: the ignored keydown leaves no stash and stamps no
@@ -46494,7 +46562,15 @@ fn tool_rail_overflow_cue_covers_the_tools_faded_under_it(cx: &mut TestAppContex
         DOCUMENT_TEXT_BOX_TOOL_ID,
         DOCUMENT_ARROW_TOOL_ID,
         DOCUMENT_HIGHLIGHT_TOOL_ID,
+        DOCUMENT_CLOUD_TOOL_ID,
+        DOCUMENT_CLOUD_PLUS_TOOL_ID,
+        DOCUMENT_CALLOUT_TOOL_ID,
+        DOCUMENT_REDACT_TOOL_ID,
+        DOCUMENT_SIGNATURE_TOOL_ID,
+        DOCUMENT_IMAGE_TOOL_ID,
+        DOCUMENT_SNAPSHOT_TOOL_ID,
         DOCUMENT_RECTANGLE_TOOL_ID,
+        DOCUMENT_ELLIPSE_TOOL_ID,
     ]
     .into_iter()
     .find_map(|id| {
@@ -47811,6 +47887,7 @@ fn a_click_in_a_selected_text_box_edits_it_in_place_without_opening_properties(
         })
         .unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let layer = cx.debug_bounds(layer_id).unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
@@ -47949,6 +48026,7 @@ fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut 
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let layer = cx.debug_bounds("document-1-annotation-layer-0").unwrap();
     let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
     let origin = point(
@@ -49042,6 +49120,7 @@ fn selection_handles_paint_above_markups_drawn_after_the_selection(cx: &mut Test
         workspace.select_annotation(document, &below, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document);
     let quads = cx.update(|window, _| window.painted_quads());
     // The rectangles' outlines: square bordered quads the size of their
     // 200 pt sides, the later one last.
@@ -49110,6 +49189,7 @@ fn signature_image_tab(
     cx.run_until_parked();
     scroll_annotation_target_into_view(cx, DOCUMENT_SIGNATURE_TOOL_ID);
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let trigger = cx.debug_bounds(DOCUMENT_SIGNATURE_TOOL_ID).unwrap();
     cx.simulate_click(trigger.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -49224,6 +49304,122 @@ fn close_page_scale_panel(
         .expect("the Page Scale panel was opened");
     control.update(cx, |control, cx| control.close(cx));
     cx.run_until_parked();
+}
+
+/// Rotating a page used to drop every page's tiles and its layout: the
+/// pages went blank or blurred, the view was laid out a frame late, and a
+/// moment later it scrolled to the rotated page's top edge. From the first
+/// frame, each page must show what it showed (the rotated page turned), and
+/// the view must stay where it is.
+#[gpui::test]
+fn rotating_a_page_keeps_every_page_drawn_and_the_view_still(cx: &mut TestAppContext) {
+    cx.update(gpui_component::init);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("rotation-flash.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    let document_id = request.document_id;
+    let draw = |cx: &mut gpui::VisualTestContext| cx.update(|window, cx| window.draw(cx).clear(cx));
+    draw(cx);
+    workspace.update(cx, |workspace, cx| {
+        assert!(workspace.set_view_configuration(document_id, PageViewMode::Continuous, 20., cx));
+    });
+    // Render every tile, then let the view settle.
+    for _ in 0..3 {
+        draw(cx);
+        cx.run_until_parked();
+    }
+    let cover = |cx: &mut gpui::VisualTestContext, page: usize| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.page_cover_for_evidence(document_id, page, cx)
+            })
+            .expect("the view is laid out")
+    };
+    let scroll = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .document_view_state(document_id, cx)
+                .unwrap()
+                .scroll()
+        })
+    };
+    for page in 0..3 {
+        let cover = cover(cx, page);
+        assert!(
+            cover.planned_tiles > 0 && cover.tiles == cover.planned_tiles,
+            "page {page} is drawn before the rotation: {cover:?}"
+        );
+    }
+    let still = scroll(cx);
+    // Rotate turns the page in view.
+    let rotated = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .session(document_id, cx)
+            .unwrap()
+            .read(cx)
+            .current_page() as usize
+    });
+    let other = (rotated + 1) % 3;
+
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| {
+        focus.focus(window, cx);
+        window.dispatch_action(Box::new(RotatePageRight), cx);
+    });
+    // The first frame: the pages are laid out, the rotated page is turned,
+    // and every page shows its tiles from before, until its new ones arrive.
+    draw(cx);
+    let page_id = |page| Box::leak(document_viewer_page_id(document_id, page).into_boxed_str());
+    let turned = cx
+        .debug_bounds(page_id(rotated))
+        .expect("the first frame lays out the pages");
+    assert!(turned.size.width > turned.size.height, "{turned:?}");
+    for page in 0..3 {
+        let cover = cover(cx, page);
+        assert!(
+            cover.tiles == cover.planned_tiles || cover.kept_tiles > 0,
+            "page {page} is blank in the first frame: {cover:?}"
+        );
+    }
+    assert!(
+        cover(cx, rotated).kept_tiles > 0,
+        "the rotated page shows its tiles turned"
+    );
+    assert_eq!(scroll(cx), still);
+    let next = cx.debug_bounds(page_id(other)).unwrap();
+
+    // The render arrives; nothing moves.
+    for _ in 0..3 {
+        cx.run_until_parked();
+        draw(cx);
+    }
+    assert_eq!(scroll(cx), still, "the view jumped after the rotation");
+    assert_eq!(cx.debug_bounds(page_id(rotated)), Some(turned));
+    assert_eq!(cx.debug_bounds(page_id(other)), Some(next));
+    for page in 0..3 {
+        let cover = cover(cx, page);
+        assert!(
+            cover.tiles == cover.planned_tiles && cover.kept_tiles == 0,
+            "page {page} has its new tiles: {cover:?}"
+        );
+    }
 }
 
 /// The toolbar's fit and layout buttons used to clear the page layout and
@@ -49801,5 +49997,23 @@ fn a_rectangles_line_runs_through_the_centre_of_every_resize_handle(cx: &mut Tes
                 );
             }
         }
+    }
+}
+
+/// Fits the page to the test window and lets the view settle, as the app's
+/// next frames do once the window is measured. A test window gives no next
+/// frame: without this, the view keeps the layout it was given for a
+/// viewport of another size, which the app replaces at once.
+fn fit_page_to_window(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx);
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
     }
 }

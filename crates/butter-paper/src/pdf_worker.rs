@@ -12,12 +12,10 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::ExitStatus;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-#[cfg(target_os = "macos")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::pdf_content_geometry::PageSnapGeometry;
 use crate::pdf_forms::FormFieldEdit;
@@ -32,6 +30,16 @@ const WORKER_LIFECYCLE_TOKEN_ENV: &str = "BP_PDF_WORKER_LIFECYCLE_TOKEN";
 const WORKER_LIFECYCLE_FD: i32 = 199;
 #[cfg(unix)]
 const WORKER_SOURCE_FD: i32 = 198;
+/// Tells the worker that its source descriptor will come over its input socket.
+#[cfg(unix)]
+const WORKER_SOURCE_CHANNEL_ENV: &str = "BP_PDF_WORKER_SOURCE_CHANNEL";
+/// The one byte that carries the source descriptor.
+#[cfg(unix)]
+const WORKER_SOURCE_MARKER: u8 = b'S';
+/// The one byte that carries the lifecycle diagnostics descriptor, sent
+/// before the source.
+#[cfg(target_os = "macos")]
+const WORKER_LIFECYCLE_MARKER: u8 = b'L';
 #[cfg(target_os = "macos")]
 const WORKER_LIFECYCLE_EVENT_LIMIT: usize = 8 * 1024;
 #[cfg(target_os = "macos")]
@@ -1501,6 +1509,11 @@ impl WorkerLifecycleReporter {
                         "worker lifecycle diagnostics descriptor is invalid",
                     )
                 })?;
+            // The application sends it over the input socket, first.
+            place_descriptor(
+                receive_descriptor(WORKER_LIFECYCLE_MARKER, "lifecycle")?,
+                descriptor,
+            )?;
             // SAFETY: F_GETFD/F_SETFD operate on the validated inherited descriptor.
             let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
             if flags < 0
@@ -1870,7 +1883,6 @@ fn configure_worker_lifecycle_with_token(
     }
     {
         use std::os::fd::{AsRawFd, FromRawFd};
-        use std::os::unix::process::CommandExt;
 
         let mut descriptors = [-1; 2];
         // SAFETY: the array provides storage for exactly two pipe descriptors.
@@ -1896,29 +1908,9 @@ fn configure_worker_lifecycle_with_token(
                 return Err(io::Error::last_os_error().into());
             }
         }
-        let writer_fd = writer.as_raw_fd();
-        // SAFETY: the closure uses only async-signal-safe descriptor operations
-        // between fork and exec. The parent-owned File keeps `writer_fd` valid.
-        unsafe {
-            command.pre_exec(move || {
-                if writer_fd != WORKER_LIFECYCLE_FD
-                    && libc::dup2(writer_fd, WORKER_LIFECYCLE_FD) < 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                let flags = libc::fcntl(WORKER_LIFECYCLE_FD, libc::F_GETFD);
-                if flags < 0
-                    || libc::fcntl(
-                        WORKER_LIFECYCLE_FD,
-                        libc::F_SETFD,
-                        flags & !libc::FD_CLOEXEC,
-                    ) < 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        // The writer goes to the worker over its input socket once it
+        // starts (see `spawn_over_channel`), not by `pre_exec`, which would
+        // make Rust `fork` the application.
         command
             .env_remove(WORKER_LIFECYCLE_REQUEST_ENV)
             .env_remove(WORKER_LIFECYCLE_RECEIPT_DIR_ENV)
@@ -1932,50 +1924,193 @@ fn configure_worker_lifecycle_with_token(
     }
 }
 
+/// Makes the worker's input a socket that will carry its source descriptor.
+///
+/// The descriptor is not remapped between `fork` and `exec` with `pre_exec`:
+/// that makes Rust `fork` the multithreaded application, and on macOS the
+/// child can then end with SIGKILL in libSystem's fork handlers, before it
+/// runs the worker. Without `pre_exec`, Rust uses `posix_spawn`.
 #[cfg(unix)]
-fn duplicate_source_for_child(source: &File) -> Result<File, WorkerError> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-
-    // Keep the remap source above both fixed child destinations. Otherwise a
-    // lifecycle dup2 onto 199 could destroy a source that happened to be opened
-    // as descriptor 199 before the source dup2 onto 198 runs.
-    let descriptor = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 200) };
-    if descriptor < 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: F_DUPFD_CLOEXEC returned a new descriptor owned by this process.
-    Ok(unsafe { File::from_raw_fd(descriptor) })
+fn configure_source_channel(
+    command: &mut Command,
+) -> Result<std::os::unix::net::UnixStream, WorkerError> {
+    let parent = configure_descriptor_channel(command)?;
+    command.env(WORKER_SOURCE_CHANNEL_ENV, "1");
+    Ok(parent)
 }
 
+/// Makes the worker's input a socket that can carry descriptors, and
+/// returns the application's end.
 #[cfg(unix)]
-fn configure_inherited_source(command: &mut Command, source: &File) -> Result<File, WorkerError> {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::process::CommandExt;
+fn configure_descriptor_channel(
+    command: &mut Command,
+) -> Result<std::os::unix::net::UnixStream, WorkerError> {
+    let (parent, child) = std::os::unix::net::UnixStream::pair()?;
+    command.stdin(Stdio::from(std::os::fd::OwnedFd::from(child)));
+    Ok(parent)
+}
 
-    let inherited_source = duplicate_source_for_child(source)?;
-    let parent_fd = inherited_source.as_raw_fd();
-    // SAFETY: the closure calls only async-signal-safe descriptor functions.
-    // It changes the child between fork and exec, not the parent process.
+/// Control-message space for one descriptor, aligned for `cmsghdr`.
+#[cfg(unix)]
+type DescriptorControl = [u64; 4];
+
+/// Sends `descriptor` to the worker as one `marker` byte with the
+/// descriptor attached.
+#[cfg(unix)]
+fn send_descriptor(
+    channel: &std::os::unix::net::UnixStream,
+    descriptor: std::os::fd::RawFd,
+    marker: u8,
+) -> Result<(), WorkerError> {
+    use std::os::fd::AsRawFd;
+
+    let mut marker = [marker];
+    let mut iov = libc::iovec {
+        iov_base: marker.as_mut_ptr().cast(),
+        iov_len: marker.len(),
+    };
+    let mut control: DescriptorControl = [0; 4];
+    // SAFETY: CMSG_SPACE and CMSG_LEN only compute sizes.
+    let (space, length) = unsafe {
+        let descriptor = std::mem::size_of::<libc::c_int>() as libc::c_uint;
+        (libc::CMSG_SPACE(descriptor), libc::CMSG_LEN(descriptor))
+    };
+    debug_assert!(space as usize <= std::mem::size_of_val(&control));
+    // SAFETY: an all-zero msghdr is valid; the fields set below point at
+    // `iov` and `control`, which outlive the sendmsg call.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = space as _;
+    // SAFETY: `control` holds CMSG_SPACE bytes for one descriptor, so the
+    // first header and its data are inside it.
     unsafe {
-        command.pre_exec(move || {
-            if libc::dup2(parent_fd, WORKER_SOURCE_FD) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let flags = libc::fcntl(WORKER_SOURCE_FD, libc::F_GETFD);
-            if flags < 0
-                || libc::fcntl(WORKER_SOURCE_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
+        let header = libc::CMSG_FIRSTHDR(&message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = length as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<libc::c_int>(), descriptor);
+    }
+    loop {
+        // SAFETY: `message` is fully initialised above.
+        let sent = unsafe { libc::sendmsg(channel.as_raw_fd(), &message, 0) };
+        if sent == 1 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if sent < 0 && error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(if sent < 0 {
+            error.into()
+        } else {
+            WorkerError::with_detail(
+                WorkerErrorCode::WorkerCrashed,
+                "the PDF worker did not take its descriptor",
+            )
         });
     }
-    Ok(inherited_source)
 }
+
+/// Worker side of [`send_source`]. When the client sends the source over the
+/// input socket, receives it before the protocol reads any input and keeps it
+/// at the descriptor that Open requests name. Call it once, during
+/// single-threaded startup, before anything reads standard input.
+#[cfg(unix)]
+pub fn receive_worker_source() -> Result<(), WorkerError> {
+    if std::env::var_os(WORKER_SOURCE_CHANNEL_ENV).is_none() {
+        return Ok(());
+    }
+    // SAFETY: the worker calls this during single-threaded startup.
+    unsafe { std::env::remove_var(WORKER_SOURCE_CHANNEL_ENV) };
+    let source = receive_descriptor(WORKER_SOURCE_MARKER, "source")?;
+    place_descriptor(source, WORKER_SOURCE_FD)
+}
+
+/// Receives the descriptor the application sent with `marker` over the
+/// worker's input socket. Nothing must have read standard input before.
+#[cfg(unix)]
+fn receive_descriptor(marker: u8, what: &str) -> Result<std::os::fd::OwnedFd, WorkerError> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    let invalid = || {
+        WorkerError::with_detail(
+            WorkerErrorCode::InvalidRequest,
+            format!("the PDF worker received no {what} descriptor"),
+        )
+    };
+    let expected = marker;
+    let mut marker = [0u8];
+    let mut iov = libc::iovec {
+        iov_base: marker.as_mut_ptr().cast(),
+        iov_len: marker.len(),
+    };
+    let mut control: DescriptorControl = [0; 4];
+    // SAFETY: an all-zero msghdr is valid; the fields set below point at
+    // `iov` and `control`, which outlive the recvmsg call.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = std::mem::size_of_val(&control) as _;
+    let received = loop {
+        // SAFETY: `message` describes buffers owned by this frame.
+        let received = unsafe { libc::recvmsg(libc::STDIN_FILENO, &mut message, 0) };
+        if received < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        break received;
+    };
+    if received < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if received != 1 || marker[0] != expected || message.msg_flags & libc::MSG_CTRUNC != 0 {
+        return Err(invalid());
+    }
+    // SAFETY: the kernel filled `control` and `msg_controllen`; the header is
+    // checked before its data is read.
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        let length = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as libc::c_uint);
+        if header.is_null()
+            || (*header).cmsg_level != libc::SOL_SOCKET
+            || (*header).cmsg_type != libc::SCM_RIGHTS
+            || (*header).cmsg_len as usize != length as usize
+        {
+            return Err(invalid());
+        }
+        Ok(OwnedFd::from_raw_fd(std::ptr::read_unaligned(
+            libc::CMSG_DATA(header).cast::<libc::c_int>(),
+        )))
+    }
+}
+
+/// Keeps `descriptor` at `target`, close-on-exec: the worker's own children
+/// must not get it.
+#[cfg(unix)]
+fn place_descriptor(descriptor: std::os::fd::OwnedFd, target: i32) -> Result<(), WorkerError> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+
+    if descriptor.as_raw_fd() == target {
+        let _ = descriptor.into_raw_fd();
+    } else if unsafe { libc::dup2(descriptor.as_raw_fd(), target) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: F_GETFD/F_SETFD operate on the descriptor placed above.
+    let flags = unsafe { libc::fcntl(target, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(target, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+/// The worker's input: a pipe, or a socket when the source goes over it.
+pub type WorkerInput = Box<dyn Write + Send>;
 
 pub struct WorkerProcessClient {
     child: Child,
-    sender: Option<JsonLineSender<ChildStdin>>,
+    sender: Option<JsonLineSender<WorkerInput>>,
     receiver: JsonLineReceiver<ChildStdout>,
     surface_root: PathBuf,
     lifecycle: Option<WorkerLifecycleOwner>,
@@ -1994,7 +2129,7 @@ impl WorkerProcessClient {
         Self::spawn_command(command, surface_root.as_ref(), lifecycle)
     }
 
-    /// Spawns a worker with one destination-scoped source descriptor inherited
+    /// Spawns a worker with one destination-scoped source descriptor sent
     /// out of band. The returned identifier is the only source value the caller
     /// should place in its Open request.
     #[cfg(unix)]
@@ -2019,12 +2154,67 @@ impl WorkerProcessClient {
         fs::create_dir_all(surface_root.as_ref())?;
         let mut command = Command::new(executable.as_ref());
         configure_worker_command(&mut command, surface_root.as_ref(), pdfium_library.as_ref());
+        let channel = configure_source_channel(&mut command)?;
         let lifecycle = configure_worker_lifecycle(&mut command)?;
-        let inherited_source = configure_inherited_source(&mut command, &source)?;
-        let client = Self::spawn_command(command, surface_root.as_ref(), lifecycle)?;
-        drop(inherited_source);
-        drop(source);
+        let client = Self::spawn_command_with_source(
+            command,
+            channel,
+            surface_root.as_ref(),
+            lifecycle,
+            &source,
+        )?;
         Ok((client, SourceHandleId(WORKER_SOURCE_FD as u64)))
+    }
+
+    /// Spawns `command`, configured by [`configure_source_channel`], and sends
+    /// `source` over `channel`.
+    #[cfg(unix)]
+    fn spawn_command_with_source(
+        command: Command,
+        channel: std::os::unix::net::UnixStream,
+        surface_root: &Path,
+        lifecycle: Option<PendingWorkerLifecycle>,
+        source: &File,
+    ) -> Result<Self, WorkerError> {
+        Self::spawn_over_channel(command, channel, surface_root, lifecycle, Some(source))
+    }
+
+    /// Spawns `command`, whose input is `channel`, then sends the lifecycle
+    /// diagnostics descriptor (when measured) and `source` over it, in the
+    /// order the worker receives them.
+    #[cfg(unix)]
+    fn spawn_over_channel(
+        mut command: Command,
+        channel: std::os::unix::net::UnixStream,
+        surface_root: &Path,
+        lifecycle: Option<PendingWorkerLifecycle>,
+        source: Option<&File>,
+    ) -> Result<Self, WorkerError> {
+        use std::os::fd::AsRawFd;
+
+        let mut child = command.spawn()?;
+        // The command holds the worker's end of the channel. The worker must
+        // be its only holder, or it never sees the end of its input.
+        drop(command);
+        let sent = (|| {
+            #[cfg(target_os = "macos")]
+            if let Some(pending) = &lifecycle {
+                send_descriptor(
+                    &channel,
+                    pending.writer.as_raw_fd(),
+                    WORKER_LIFECYCLE_MARKER,
+                )?;
+            }
+            if let Some(source) = source {
+                send_descriptor(&channel, source.as_raw_fd(), WORKER_SOURCE_MARKER)?;
+            }
+            Ok::<(), WorkerError>(())
+        })();
+        if let Err(error) = sent {
+            stop_child(&mut child);
+            return Err(error);
+        }
+        Self::from_spawned_child(child, surface_root, lifecycle, Some(Box::new(channel)))
     }
 
     #[cfg(windows)]
@@ -2056,7 +2246,7 @@ impl WorkerProcessClient {
             }
         };
         drop(source);
-        match Self::from_spawned_child(child, surface_root, lifecycle) {
+        match Self::from_spawned_child(child, surface_root, lifecycle, None) {
             Ok(client) => Ok((client, source_handle_id)),
             Err(error) => {
                 remove_owned_surface_root(surface_root, owns_surface_root);
@@ -2083,14 +2273,22 @@ impl WorkerProcessClient {
         surface_root: &Path,
         lifecycle: Option<PendingWorkerLifecycle>,
     ) -> Result<Self, WorkerError> {
+        // A measured worker gets its diagnostics descriptor over its input.
+        #[cfg(target_os = "macos")]
+        if lifecycle.is_some() {
+            let channel = configure_descriptor_channel(&mut command)?;
+            return Self::spawn_over_channel(command, channel, surface_root, lifecycle, None);
+        }
         let child = command.spawn()?;
-        Self::from_spawned_child(child, surface_root, lifecycle)
+        Self::from_spawned_child(child, surface_root, lifecycle, None)
     }
 
+    /// `input` replaces the child's piped stdin when the caller made its own.
     fn from_spawned_child(
         mut child: Child,
         surface_root: &Path,
         lifecycle: Option<PendingWorkerLifecycle>,
+        input: Option<WorkerInput>,
     ) -> Result<Self, WorkerError> {
         let Some(stdout) = child.stdout.take() else {
             stop_child(&mut child);
@@ -2099,7 +2297,12 @@ impl WorkerProcessClient {
                 "missing worker stdout",
             ));
         };
-        let Some(stdin) = child.stdin.take() else {
+        let Some(input) = input.or_else(|| {
+            child
+                .stdin
+                .take()
+                .map(|stdin| Box::new(stdin) as WorkerInput)
+        }) else {
             stop_child(&mut child);
             return Err(WorkerError::with_detail(
                 WorkerErrorCode::WorkerCrashed,
@@ -2124,7 +2327,7 @@ impl WorkerProcessClient {
         };
         Ok(Self {
             child,
-            sender: Some(JsonLineSender::new(stdin)),
+            sender: Some(JsonLineSender::new(input)),
             receiver: JsonLineReceiver::new(stdout),
             surface_root: surface_root.to_path_buf(),
             lifecycle,
@@ -2132,6 +2335,11 @@ impl WorkerProcessClient {
     }
 
     pub fn exchange(&mut self, request: &WorkerRequest) -> Result<WorkerResponse, WorkerError> {
+        self.exchange_once(request)
+            .map_err(|error| self.with_exit_status(error))
+    }
+
+    fn exchange_once(&mut self, request: &WorkerRequest) -> Result<WorkerResponse, WorkerError> {
         self.sender
             .as_ref()
             .ok_or_else(|| {
@@ -2151,9 +2359,38 @@ impl WorkerProcessClient {
         }
     }
 
+    /// `error`, with how the worker process ended when the error is a crash.
+    /// A broken pipe or a closed response stream alone does not tell a clean
+    /// exit, an exit code and a signal apart.
+    fn with_exit_status(&mut self, mut error: WorkerError) -> WorkerError {
+        if error.code != WorkerErrorCode::WorkerCrashed {
+            return error;
+        }
+        // The worker can close its pipes an instant before it ends.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                _ => break None,
+            }
+        };
+        let ended = match status {
+            Some(status) => format!("worker ended with {status}"),
+            None => "worker is still running".to_owned(),
+        };
+        error.detail = Some(match error.detail {
+            Some(detail) => format!("{detail} ({ended})"),
+            None => ended,
+        });
+        error
+    }
+
     /// Returns a clonable writer for out-of-band Cancel requests while another
     /// thread waits for the corresponding render response.
-    pub fn control_sender(&self) -> JsonLineSender<ChildStdin> {
+    pub fn control_sender(&self) -> JsonLineSender<WorkerInput> {
         self.sender
             .as_ref()
             .expect("worker input remains available while the client is borrowed")
@@ -2523,12 +2760,23 @@ mod worker_lifecycle_tests {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let channel = configure_descriptor_channel(&mut command).unwrap();
         let pending = configure_worker_lifecycle_with_token(
             &mut command,
             "deterministic-worker-token".to_owned(),
         )
         .unwrap();
         let mut child = command.spawn().unwrap();
+        drop(command);
+        {
+            use std::os::fd::AsRawFd;
+            send_descriptor(
+                &channel,
+                pending.writer.as_raw_fd(),
+                WORKER_LIFECYCLE_MARKER,
+            )
+            .unwrap();
+        }
         let lifecycle = WorkerLifecycleOwner::attach(pending, child.id()).unwrap();
         let mut stdout = String::new();
         child
@@ -2706,6 +2954,7 @@ mod worker_lifecycle_tests {
             let reporter = WorkerLifecycleReporter::from_environment()
                 .unwrap()
                 .expect("collision fixture must receive lifecycle capability");
+            receive_worker_source().unwrap();
             let mut source = unsafe { File::from_raw_fd(WORKER_SOURCE_FD) };
             let mut contents = String::new();
             source.read_to_string(&mut contents).unwrap();
@@ -2733,21 +2982,20 @@ mod worker_lifecycle_tests {
             command
                 .args(["--exact", COLLISION_TEST_NAME, "--nocapture"])
                 .env(COLLISION_CHILD_ENV, "1")
-                .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            let channel = configure_source_channel(&mut command).unwrap();
             let pending = configure_worker_lifecycle_with_token(
                 &mut command,
                 "forced-fd-collision".to_owned(),
             )
             .unwrap();
-            let inherited_source =
-                configure_inherited_source(&mut command, &forced_source).unwrap();
-            assert!(inherited_source.as_raw_fd() > WORKER_LIFECYCLE_FD);
-            let client = WorkerProcessClient::spawn_command(
+            let client = WorkerProcessClient::spawn_command_with_source(
                 command,
+                channel,
                 Path::new("/unused-lifecycle-test-surface-root"),
                 Some(pending),
+                &forced_source,
             )
             .unwrap();
             let receipt = client.finish_lifecycle_measurement().unwrap();

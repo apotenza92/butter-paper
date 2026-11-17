@@ -13,7 +13,7 @@ use butter_paper::document_workspace::{
     DOCUMENT_SIGN_CHOOSE_ID, DOCUMENT_SIGN_CONFIRM_ID, DOCUMENT_SIGN_DIALOG_ID,
     DOCUMENT_SIGN_INVISIBLE_ID, DOCUMENT_SIGN_PASSWORD_ID, DOCUMENT_SIGN_TIMESTAMP_ID,
     DOCUMENT_SIGNATURES_DIALOG_ID, DocumentId, DocumentWorkspace, NativeDocumentOpener,
-    OpenDocumentRequest, init_document_workspace_actions,
+    OpenDocumentRequest, ViewerFitPreset, init_document_workspace_actions,
 };
 use butter_paper::pdf_signatures::{Verdict, document_verdict};
 use butter_paper::viewer_toolbar_strip::VIEWER_SIGNATURES_ID;
@@ -140,6 +140,14 @@ fn open(
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // The whole page in view, as the tests draw boxes near its foot.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx);
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
     (workspace, document_id, cx)
 }
 
@@ -281,6 +289,14 @@ fn signing_workspace<'a>(
     });
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // The whole page in view, as the tests draw boxes near its foot.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx);
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
     (workspace, scratch, pdf, cx)
 }
 

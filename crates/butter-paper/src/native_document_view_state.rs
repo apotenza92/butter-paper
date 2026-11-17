@@ -249,7 +249,15 @@ impl NativeDocumentViewState {
             ViewerZoomPreset::FitWidth => RestartZoom::FitWidth,
             ViewerZoomPreset::FitPage => RestartZoom::FitPage,
         };
-        RestartView::new(current_page, self.mode, zoom, self.scroll.0, self.scroll.1)
+        // Adding zero turns a negative zero, which centring can leave, into
+        // zero: the stored view compares scroll bit for bit.
+        RestartView::new(
+            current_page,
+            self.mode,
+            zoom,
+            self.scroll.0 + 0.,
+            self.scroll.1 + 0.,
+        )
     }
 
     pub fn apply_restart_view(&mut self, view: RestartView, page_count: usize) -> u32 {

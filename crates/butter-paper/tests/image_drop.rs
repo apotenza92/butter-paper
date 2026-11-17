@@ -119,6 +119,7 @@ fn blank_workspace(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
+    fit_page_to_window(cx, &workspace, document_id);
     (workspace, document_id, cx)
 }
 
@@ -396,5 +397,27 @@ fn a_tiff_or_bitmap_another_app_copied_pastes_as_an_image(cx: &mut TestAppContex
             (rect.width / rect.height - 2.).abs() < 0.01,
             "{format:?} keeps its shape: {rect:?}"
         );
+    }
+}
+
+/// Fits the page to the test window and lets the view settle, as the app's
+/// next frames do once the window is measured. A test window gives no next
+/// frame: without this, the view keeps the layout it was given for a
+/// viewport of another size, which the app replaces at once.
+fn fit_page_to_window(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: butter_paper::document_workspace::DocumentId,
+) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(
+            document_id,
+            butter_paper::document_workspace::ViewerFitPreset::Page,
+            cx,
+        );
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
     }
 }

@@ -12,7 +12,7 @@ use butter_paper::document_resource::{
     NativeDocumentResource, OpenedNativeDocument, RasterSurface, ThumbnailSurface,
 };
 use butter_paper::document_workspace::{
-    DeleteTableRow, DocumentId, DocumentWorkspace, InsertTableRowBelow,
+    DeleteTableRow, DocumentId, DocumentWorkspace, InsertTableRowBelow, ViewerFitPreset,
     document_annotation_layer_id, init_document_workspace_actions,
 };
 use butter_paper::page_view_control::PageViewMode;
@@ -734,7 +734,16 @@ fn table_typing_latency_in_the_app(cx: &mut TestAppContext) {
     let found = started.elapsed();
     assert_eq!(tables.len(), 1);
     let cell = line_end(&layer, "Row 36 cell 1");
-    let (_, document_id, shown, cx) = table_workspace(cx, layer);
+    let (workspace, document_id, shown, cx) = table_workspace(cx, layer);
+    // The cell is near the page's foot: the whole page is in view, as the
+    // window shows it once measured.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx);
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
     click_page_point(cx, document_id, cell);
     let mut times = Vec::new();
     for keystroke in 0..36 {

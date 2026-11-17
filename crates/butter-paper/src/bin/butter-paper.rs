@@ -4896,12 +4896,15 @@ mod review_driver {
                         pause(cx, 600).await;
                     }
                     "dispatch" => {
-                        // dispatch W ACTION: a table row action, as its page
-                        // menu item sends it.
+                        // dispatch W ACTION: a table row or page rotation
+                        // action, as its menu item sends it.
                         use butter_paper::document_workspace::{
                             DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow,
+                            RotatePageLeft, RotatePageRight,
                         };
                         let action: Box<dyn gpui::Action> = match words[2] {
+                            "rotate-left" => Box::new(RotatePageLeft),
+                            "rotate-right" => Box::new(RotatePageRight),
                             "insert-row-above" => Box::new(InsertTableRowAbove),
                             "insert-row-below" => Box::new(InsertTableRowBelow),
                             "delete-row" => Box::new(DeleteTableRow),
@@ -5153,7 +5156,7 @@ mod review_driver {
                         }));
                     }
                     "frames" => {
-                        // frames W wheel LINES|key KEYSTROKE|drag X,Y,DX,DY|click X,Y COUNT GAP_MS AFTER_MS NAME:
+                        // frames W wheel LINES|key KEYSTROKE|drag X,Y,DX,DY|click X,Y|action rotate-left|rotate-right COUNT GAP_MS AFTER_MS NAME:
                         // COUNT wheel notches (at the viewport, negative turns
                         // down), key presses or clicks GAP_MS apart, saving every frame
                         // drawn until AFTER_MS after the last. Times are from
@@ -5201,7 +5204,26 @@ mod review_driver {
                         };
                         for step in 0..count {
                             writeln!(log, "input {name} {} {} at={}", words[2], words[3], script_started.elapsed().as_millis()).unwrap();
-                            dispatch(cx, index, input(step));
+                            if words[2] == "action" {
+                                use butter_paper::document_workspace::{RotatePageLeft, RotatePageRight};
+                                let action: Box<dyn gpui::Action> = match words[3] {
+                                    "rotate-left" => Box::new(RotatePageLeft),
+                                    _ => Box::new(RotatePageRight),
+                                };
+                                cx.update(|cx| {
+                                    if let Some(entry) = document_window_entries(cx).get(index).cloned()
+                                        && let Some(workspace) = entry.workspace.upgrade()
+                                    {
+                                        let focus = workspace.read(cx).focus_handle();
+                                        let _ = entry.handle.update(cx, |_, window, cx| {
+                                            focus.focus(window, cx);
+                                            window.dispatch_action(action, cx);
+                                        });
+                                    }
+                                });
+                            } else {
+                                dispatch(cx, index, input(step));
+                            }
                             if let ("click", Some(at)) = (words[2], &drag) {
                                 dispatch(
                                     cx,

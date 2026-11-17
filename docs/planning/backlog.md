@@ -164,11 +164,6 @@ tables and images. Not handled yet, so their text flows as plain paragraphs
 ## Platforms and release
 
 
-- A PDF worker sometimes exits as it opens a document, while other real-PDFium
-  tests run in parallel: `real_mixed_document_application_close_saves_generated_target_and_releases_resources`
-  failed 2 of 5 runs on macOS with `WorkerCrashed: Broken pipe` on
-  `second.pdf`, then passed 10 runs. It leaves no crash report. Find why the
-  worker exits; a worker crash is high priority.
 - Remove the unused local phone helper (`local_phone_signature`,
   `xtask/src/phone.rs`, `crates/butter-paper/phone-helper/`, its packaging and
   notices) once relay phone signing is confirmed on a phone.

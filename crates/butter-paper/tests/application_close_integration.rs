@@ -1070,6 +1070,7 @@ fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_witho
     });
     cx.update(|window, _| window.activate_window());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
     let open_text = |cx: &mut gpui::VisualTestContext| {
         let layer = cx.debug_bounds(layer_id).unwrap();
@@ -3977,6 +3978,7 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
         .expect("the fresh shell must render the Select control");
     fresh_cx.simulate_click(reopened_select.center(), Modifiers::default());
     fresh_cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(fresh_cx, &fresh_workspace, reopened_id);
     let reopened_layer_id =
         Box::leak(document_annotation_layer_id(reopened_id, 0).into_boxed_str());
     let reopened_layer = fresh_cx
@@ -4184,6 +4186,7 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     cx.run_until_parked();
     cx.update(|window, _| window.activate_window());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let original_worker_pid = workspace
         .read_with(cx, |workspace, cx| {
             let evidence = workspace.evidence_snapshot(document_id, cx).unwrap();
@@ -4918,6 +4921,7 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     cx.run_until_parked();
     cx.update(|window, _| window.activate_window());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let original_worker_pid = workspace
         .read_with(cx, |workspace, cx| {
             let evidence = workspace.evidence_snapshot(document_id, cx).unwrap();
@@ -5072,9 +5076,11 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     assert!((resized.text_boxes[0].layout_rect.width - (moved_rect.width + 24.)).abs() < 0.001);
     assert_eq!((resized.revision, resized.undo_depth), (3, 3));
 
+    // On the first line of text, under the box's top edge: the text can be
+    // a single line after an edit.
     let edit_point = PdfPoint::new(
         resized.text_boxes[0].layout_rect.x + 20.,
-        resized.text_boxes[0].layout_rect.y + resized.text_boxes[0].layout_rect.height * 0.5,
+        resized.text_boxes[0].layout_rect.y + resized.text_boxes[0].layout_rect.height - 10.,
     )
     .unwrap();
     // The first click selects the Text Box and the next press edits its text
@@ -5457,6 +5463,7 @@ fn application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_an
         ApplyDisposition::Applied,
     );
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, request.document_id);
     let initial = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -5870,6 +5877,7 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     cx.run_until_parked();
     cx.update(|window, _| window.activate_window());
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    fit_page_to_window(cx, &workspace, document_id);
     let original_worker_pid = workspace
         .read_with(cx, |workspace, cx| {
             let evidence = workspace.evidence_snapshot(document_id, cx).unwrap();
@@ -6901,4 +6909,20 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
     );
     drop(scratch_guard);
     assert!(!owned_root.exists());
+}
+
+/// Fits the page to the test window and lets the view settle, as the app's
+/// next frames do once the window is measured: the whole page in view.
+fn fit_page_to_window(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(document_id, ViewerFitPreset::Page, cx);
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
 }

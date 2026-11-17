@@ -179,22 +179,28 @@ changes it; history is in git.
 - Controls are stock gpui-component controls; the property toolkit in
   `property_controls.rs` composes them. Canvas, renderers, annotation layers
   and the scroll area are domain UI.
-- Document tabs: stock Segmented appearance, shadcn's default Tabs: a muted
-  track that fills the strip up to the New PDF lane, however many tabs are
-  open, with the active document raised on it; width follows the
-  title up to 190px; the close button is hidden at rest and appears on hover
-  or focus over the end of the title, which keeps its position and truncates.
-  New Tab (+) and a menu of every open document (a chevron) sit on the track
-  just after the last tab, as ghost buttons. When the tabs don't fit, they
-  scroll and these two stay at the track's right end. With no document open,
-  the track holds New Tab alone. The New PDF split control is centred
-  in a lane as wide as the tool rail, so its divider continues the
-  rail's edge. The window with no document has the same lane, so the
-  divider does not move when a document opens (Recovery and Update sit
-  just before it). Close buttons use the stock extra-small
-  ghost icon Button, centred in a square lane at the end of the tab's raised
-  area with equal clearance on three sides. Filenames keep their leading position when close appears;
-  only the trailing truncation changes.
+- Document tabs: stock Segmented appearance, shadcn's default Tabs. The bar
+  is the whole tab row, edge to edge and top to bottom, with square corners
+  and shadcn's 36px TabsList height: a muted track however many tabs are
+  open, with the active document raised on it (decided 2026-11-17, replacing
+  a rounded track inset in the strip and a New PDF lane over the tool rail).
+  Width follows the title up to 190px; the close button is hidden at rest
+  and appears on hover or focus over the end of the title, which keeps its
+  position and truncates. New Tab (+), the New from template split control
+  and a menu of every open document (a chevron) sit on the track just after
+  the last tab, in that order, as small framed buttons on the track's own
+  colour. When the tabs don't fit, they scroll and these stay at the track's
+  right end. With no document open, the track holds New Tab and New from
+  template. The split control's button says what a click makes ("New from
+  template: Blank Paper"); its chevron opens "Select and customise
+  templates". Recovery and Update sit at the strip's end. Close buttons use
+  the stock extra-small ghost icon Button, centred in a square lane at the
+  end of the tab's raised area with equal clearance on three sides.
+  Filenames keep their leading position when close appears; only the
+  trailing truncation changes.
+- Buttons in a framed toolbar group (the page navigator, zoom) reach the
+  frame: the end buttons' hover and press fill it to its rounded edge, as
+  a stock button group's do.
 - Recovery and save problems live in a conditional Recovery button beside
   New PDF, with a warning icon and item count. Its bounded, scrollable panel
   has a fixed top-right X; closing it never discards data. Unsaved changes
@@ -375,6 +381,22 @@ changes it; history is in git.
   beta builds and weekly for stable builds, preserving saved user choices.
   Interface size stays in the View menu, not Settings. Restart uses the normal
   unsaved-work quit flow.
+- The view never flashes (decided 2026-11-17, after flashes were fixed one
+  command at a time). Two rules in the viewer apply to every change, so a
+  new command gets them without its own fix:
+  - A frame never paints a document without its layout. When a change
+    drops the layout, the workspace lays the pages out again in `render`,
+    before the frame paints (`replan_before_paint`). A document shown for
+    the first time takes the window's last measured viewport. Only the
+    first document in a new window has none: its first frame shows the
+    canvas without the page, never a page that then changes size.
+  - Pages keep their tiles on screen until their new tiles arrive. When the
+    pages are rendered again (`invalidate_raster`), the caller says where
+    each shown page went: the same place, a new place, turned, or changed.
+    Each page that still shows the same content keeps its tiles, moved and
+    turned with it. Only a page whose content changed loses them.
+  A change to the content does not move the view. Only a navigation moves
+  it: rotating the page in view leaves the view where it is.
 
 ## Release
 

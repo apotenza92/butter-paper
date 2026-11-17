@@ -187,10 +187,11 @@ pub(crate) struct DocumentViewerState {
     /// Whether the fallback tiles may show highlights as they were before a
     /// change (where highlights are composed into the tiles).
     fallback_highlights_stale: bool,
-    /// Each page's tiles from before its size last changed (a zoom), with
-    /// the page's logical width then. They are drawn scaled under the new
-    /// tiles until those arrive, so zooming never drops to a coarser image.
-    zoom_fallback: HashMap<usize, ZoomFallback>,
+    /// Each page's tiles from before they were last dropped: the page
+    /// resized (a zoom), turned, moved or was rendered again. They are drawn
+    /// under the new tiles, scaled to the page's size now, until those
+    /// arrive. A change never blanks a page or drops it to a coarser image.
+    page_fallback: HashMap<usize, PageFallback>,
     /// Tile images no longer cached, whose GPU textures the window can
     /// release once nothing draws them.
     retired: Vec<Arc<RenderImage>>,
@@ -323,7 +324,7 @@ impl Default for DocumentViewerState {
             detail_cache: TileCache::new(cache_policy(DETAIL_CACHE_BYTES)),
             content_fallback: HashMap::new(),
             fallback_highlights_stale: false,
-            zoom_fallback: HashMap::new(),
+            page_fallback: HashMap::new(),
             retired: Vec::new(),
             scroll_handle: scroll_handle.clone(),
             viewport_size: (0., 0.),
@@ -366,10 +367,10 @@ impl DocumentViewerState {
                 .map(|plan| plan.visible_pages.clone())
                 .unwrap_or_default();
             for page in pages {
-                self.keep_page_zoom_fallback(page);
+                self.keep_page_fallback(page);
             }
         } else {
-            self.drop_zoom_fallback();
+            self.drop_page_fallback();
         }
         self.mode = mode;
         self.zoom_percent = zoom_percent;
@@ -385,7 +386,39 @@ impl DocumentViewerState {
         self.cancel_plan();
     }
 
-    pub fn invalidate_raster(&mut self) {
+    /// Renders every page again. Each page shown now that `kept` maps to a
+    /// page keeps its tiles on screen, moved and turned as `kept` says, until
+    /// that page's new tiles arrive. A page `kept` maps to `None` changed:
+    /// its old tiles would show the wrong content, so it goes without.
+    pub fn invalidate_raster(&mut self, kept: impl Fn(usize) -> Option<ShownPage>) {
+        let shown = self
+            .plan
+            .as_ref()
+            .map(|plan| plan.visible_pages.clone())
+            .unwrap_or_default();
+        for page in shown {
+            self.keep_page_fallback(page);
+        }
+        let mut moved = HashMap::new();
+        for (page, fallback) in std::mem::take(&mut self.page_fallback) {
+            let Some(to) = kept(page) else {
+                self.retired
+                    .extend(fallback.tiles.into_iter().map(|(_, image)| image));
+                continue;
+            };
+            let fallback = match fallback.turned(to.quarter_turns) {
+                Ok(fallback) => fallback,
+                Err(fallback) => {
+                    self.retired
+                        .extend(fallback.tiles.into_iter().map(|(_, image)| image));
+                    continue;
+                }
+            };
+            if let Some(replaced) = moved.insert(to.page, fallback) {
+                self.retired
+                    .extend(replaced.tiles.into_iter().map(|(_, image)| image));
+            }
+        }
         self.raster_revision = self.raster_revision.saturating_add(1).max(1);
         self.cancel_plan();
         self.cache.drain_into(&mut self.retired);
@@ -394,7 +427,7 @@ impl DocumentViewerState {
         self.retired
             .extend(self.content_fallback.drain().map(|(_, image)| image));
         self.fallback_highlights_stale = false;
-        self.drop_zoom_fallback();
+        self.page_fallback = moved;
     }
 
     /// Tile images dropped from the caches since the last call.
@@ -438,12 +471,12 @@ impl DocumentViewerState {
             .extend(self.content_fallback.drain().map(|(_, image)| image));
         self.content_fallback = fallback;
         // Tiles from another zoom would show the old content.
-        self.drop_zoom_fallback();
+        self.drop_page_fallback();
     }
 
-    fn drop_zoom_fallback(&mut self) {
+    fn drop_page_fallback(&mut self) {
         self.retired.extend(
-            self.zoom_fallback
+            self.page_fallback
                 .drain()
                 .flat_map(|(_, fallback)| fallback.tiles)
                 .map(|(_, image)| image),
@@ -453,12 +486,12 @@ impl DocumentViewerState {
     /// Before `next` replaces the plan: keeps the tiles of each page whose
     /// size changes, to draw scaled until the new size's tiles arrive. A
     /// page zoomed again before then keeps the last complete set.
-    fn keep_zoom_fallback(&mut self, next: &ViewerPlanSnapshot) {
+    fn keep_resized_page_fallback(&mut self, next: &ViewerPlanSnapshot) {
         let Some(previous) = self.plan.clone() else {
             return;
         };
         let mut retired = Vec::new();
-        self.zoom_fallback.retain(|page, fallback| {
+        self.page_fallback.retain(|page, fallback| {
             let shown = next.visible_pages.contains(page);
             if !shown {
                 retired.extend(fallback.tiles.drain(..).map(|(_, image)| image));
@@ -483,21 +516,21 @@ impl DocumentViewerState {
             {
                 continue;
             }
-            self.keep_page_zoom_fallback(layout.page);
+            self.keep_page_fallback(layout.page);
         }
         self.retired.extend(retired);
     }
 
     /// Keeps `page`'s tiles in the current plan to draw scaled after it
     /// resizes, unless they are incomplete and an earlier set is kept.
-    fn keep_page_zoom_fallback(&mut self, page: usize) {
+    fn keep_page_fallback(&mut self, page: usize) {
         let Some(plan) = self.plan.as_ref() else {
             return;
         };
         let Some(layout) = plan.page_layouts.iter().find(|layout| layout.page == page) else {
             return;
         };
-        let page_width = layout.logical_rect.width;
+        let (page_width, page_height) = (layout.logical_rect.width, layout.logical_rect.height);
         let expected = plan
             .tiles
             .iter()
@@ -505,10 +538,18 @@ impl DocumentViewerState {
             .count();
         let tiles = self.visible_tiles(page);
         let complete = expected > 0 && tiles.len() == expected;
-        if (complete || (!tiles.is_empty() && !self.zoom_fallback.contains_key(&page)))
-            && let Some(old) = self
-                .zoom_fallback
-                .insert(page, ZoomFallback { page_width, tiles })
+        if (complete || (!tiles.is_empty() && !self.page_fallback.contains_key(&page)))
+            && let Some(old) = self.page_fallback.insert(
+                page,
+                PageFallback {
+                    page_width,
+                    page_height,
+                    tiles: tiles
+                        .into_iter()
+                        .map(|(request, image)| (tile_rect(request), image))
+                        .collect(),
+                },
+            )
         {
             self.retired
                 .extend(old.tiles.into_iter().map(|(_, image)| image));
@@ -517,12 +558,12 @@ impl DocumentViewerState {
 
     /// Releases the zoom fallback of each page whose tiles are all shown,
     /// none of them a preview.
-    fn release_covered_zoom_fallback(&mut self) {
+    fn release_covered_page_fallback(&mut self) {
         let Some(plan) = self.plan.as_ref() else {
             return;
         };
         let covered = self
-            .zoom_fallback
+            .page_fallback
             .keys()
             .copied()
             .filter(|page| {
@@ -535,17 +576,17 @@ impl DocumentViewerState {
             })
             .collect::<Vec<_>>();
         for page in covered {
-            if let Some(fallback) = self.zoom_fallback.remove(&page) {
+            if let Some(fallback) = self.page_fallback.remove(&page) {
                 self.retired
                     .extend(fallback.tiles.into_iter().map(|(_, image)| image));
             }
         }
     }
 
-    /// Tiles from before `page` was last resized, as rectangles in the
-    /// page's current logical pixels, to draw under its tiles.
-    pub fn zoom_fallback_tiles(&self, page: usize) -> Vec<(Rect, Arc<RenderImage>)> {
-        let Some(fallback) = self.zoom_fallback.get(&page) else {
+    /// Tiles from before `page`'s tiles were last dropped, as rectangles in
+    /// the page's current logical pixels, to draw under its tiles.
+    pub fn page_fallback_tiles(&self, page: usize) -> Vec<(Rect, Arc<RenderImage>)> {
+        let Some(fallback) = self.page_fallback.get(&page) else {
             return Vec::new();
         };
         let Some(layout) = self
@@ -559,14 +600,13 @@ impl DocumentViewerState {
         fallback
             .tiles
             .iter()
-            .map(|(request, image)| {
-                let scale = (request.device_scale_millis as f32 / 1_000.).max(0.1) / ratio;
+            .map(|(rect, image)| {
                 (
                     Rect::new(
-                        request.crop.x as f32 / scale,
-                        request.crop.y as f32 / scale,
-                        request.crop.width as f32 / scale,
-                        request.crop.height as f32 / scale,
+                        rect.x * ratio,
+                        rect.y * ratio,
+                        rect.width * ratio,
+                        rect.height * ratio,
                     ),
                     image.clone(),
                 )
@@ -612,7 +652,7 @@ impl DocumentViewerState {
     }
 
     pub fn close(&mut self) {
-        self.invalidate_raster();
+        self.invalidate_raster(|_| None);
         self.active.clear();
     }
 
@@ -759,7 +799,7 @@ impl DocumentViewerState {
             requested_bytes: plan.requested_bytes,
             cache_max_bytes: plan.cache.max_bytes,
         };
-        self.keep_zoom_fallback(&snapshot);
+        self.keep_resized_page_fallback(&snapshot);
         self.queue.clear();
         self.pending.clear();
         self.pending_promotions.clear();
@@ -794,7 +834,7 @@ impl DocumentViewerState {
             } else if preview.raster == full.raster
                 || covered
                 || self.thumbnail_navigation_target == Some(request.page)
-                || self.zoom_fallback.contains_key(&request.page)
+                || self.page_fallback.contains_key(&request.page)
                 || self
                     .content_fallback
                     .contains_key(&TileGeometry::of(request))
@@ -806,7 +846,7 @@ impl DocumentViewerState {
         }
         self.viewport_key = Some(viewport_key);
         self.error = None;
-        self.release_covered_zoom_fallback();
+        self.release_covered_page_fallback();
         Ok(snapshot)
     }
 
@@ -1052,7 +1092,7 @@ impl DocumentViewerState {
                     self.retired.push(image);
                 }
                 self.fallback_highlights_stale &= !self.content_fallback.is_empty();
-                self.release_covered_zoom_fallback();
+                self.release_covered_page_fallback();
                 match request.quality {
                     ViewerRenderQuality::Preview => {
                         self.schedule_promotion(
@@ -1085,7 +1125,7 @@ impl DocumentViewerState {
     /// The tiles drawn for `page`. A page just zoomed draws no preview over
     /// its old tiles, scaled beneath, as they are sharper.
     pub fn visible_tiles(&self, page: usize) -> Vec<(TileRequest, Arc<RenderImage>)> {
-        let previews = !self.zoom_fallback.contains_key(&page);
+        let previews = !self.page_fallback.contains_key(&page);
         self.plan
             .as_ref()
             .into_iter()
@@ -1478,11 +1518,103 @@ impl DocumentViewerState {
     }
 }
 
-/// Where a tile sits and at what scale, regardless of the content revision
-/// that rendered it.
-struct ZoomFallback {
+/// Where a page shown before [`DocumentViewerState::invalidate_raster`] is
+/// after it, and how far it turned clockwise.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShownPage {
+    pub page: usize,
+    pub quarter_turns: u8,
+}
+
+impl ShownPage {
+    /// The page shows the same as before, at the same index.
+    pub fn same(page: usize) -> Option<Self> {
+        Some(Self {
+            page,
+            quarter_turns: 0,
+        })
+    }
+}
+
+/// A page's tiles kept to draw until its new ones arrive, each as a
+/// rectangle in the page's logical pixels when they were kept.
+struct PageFallback {
     page_width: f32,
-    tiles: Vec<(TileRequest, Arc<RenderImage>)>,
+    page_height: f32,
+    tiles: Vec<(Rect, Arc<RenderImage>)>,
+}
+
+impl PageFallback {
+    /// These tiles turned clockwise by `quarter_turns`, as the page shows
+    /// after it turned: each image is turned, and moved to where its part of
+    /// the page now is. The tiles back unchanged when an image cannot turn.
+    fn turned(self, quarter_turns: u8) -> Result<Self, Self> {
+        use crate::annotation_model::PageRotation;
+        use crate::document_resource::RasterSurface;
+
+        let rotation = match quarter_turns % 4 {
+            0 => return Ok(self),
+            1 => PageRotation::Degrees90,
+            2 => PageRotation::Degrees180,
+            _ => PageRotation::Degrees270,
+        };
+        let (width, height) = (self.page_width, self.page_height);
+        let turn = |rect: &Rect, image: &Arc<RenderImage>| {
+            let size = image.size(0);
+            let raster = RasterSurface::new(
+                u32::try_from(size.width.0).ok()?,
+                u32::try_from(size.height.0).ok()?,
+                image.as_bytes(0)?.to_vec(),
+            )
+            .ok()?;
+            let image = raster.rotated(rotation).ok()?.into_render_image().ok()?;
+            let rect = match rotation {
+                PageRotation::Degrees90 => Rect::new(
+                    height - rect.y - rect.height,
+                    rect.x,
+                    rect.height,
+                    rect.width,
+                ),
+                PageRotation::Degrees180 => Rect::new(
+                    width - rect.x - rect.width,
+                    height - rect.y - rect.height,
+                    rect.width,
+                    rect.height,
+                ),
+                _ => Rect::new(rect.y, width - rect.x - rect.width, rect.height, rect.width),
+            };
+            Some((rect, image))
+        };
+        let Some(tiles) = self
+            .tiles
+            .iter()
+            .map(|(rect, image)| turn(rect, image))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Err(self);
+        };
+        let (page_width, page_height) = if rotation.swaps_axes() {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        Ok(Self {
+            page_width,
+            page_height,
+            tiles,
+        })
+    }
+}
+
+/// Where `request`'s tile sits on its page, in the page's logical pixels.
+fn tile_rect(request: TileRequest) -> Rect {
+    let scale = (request.device_scale_millis as f32 / 1_000.).max(0.1);
+    Rect::new(
+        request.crop.x as f32 / scale,
+        request.crop.y as f32 / scale,
+        request.crop.width as f32 / scale,
+        request.crop.height as f32 / scale,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1729,7 +1861,7 @@ mod tests {
             .unwrap();
         let old = first.tiles[0];
         assert_eq!(old.rotation_quarter_turns, 0);
-        viewer.invalidate_raster();
+        viewer.invalidate_raster(|_| None);
         let rotated = viewer
             .plan(9, &[(792., 612.)], &[1], 0, 800., 600., 0., 0., 1.)
             .unwrap();
@@ -1872,13 +2004,13 @@ mod tests {
             .plan_at(11, &[(612., 792.)], &[0], 0, 800., 600., 0., 0., 1., now)
             .unwrap();
         render_all(&mut viewer);
-        assert!(viewer.zoom_fallback_tiles(0).is_empty());
+        assert!(viewer.page_fallback_tiles(0).is_empty());
 
         viewer.configure(PageViewMode::SinglePage, 200.);
         let after = viewer
             .plan_at(11, &[(612., 792.)], &[0], 0, 800., 600., 0., 0., 1., now)
             .unwrap();
-        let fallback = viewer.zoom_fallback_tiles(0);
+        let fallback = viewer.page_fallback_tiles(0);
         assert_eq!(fallback.len(), before.tiles.len());
         // The zoomed page goes straight to full renders: a preview would
         // blur it until they arrived.
@@ -1901,9 +2033,118 @@ mod tests {
 
         render_all(&mut viewer);
         assert!(
-            viewer.zoom_fallback_tiles(0).is_empty(),
+            viewer.page_fallback_tiles(0).is_empty(),
             "the new tiles cover the page"
         );
+    }
+
+    /// Rendering the pages again (a page turned or moved, a file reopened)
+    /// used to drop every page's tiles: each page went blank or blurred
+    /// until its new tiles arrived. Each page that still shows the same,
+    /// moved or turned, keeps its tiles on screen until then.
+    #[test]
+    fn rendering_again_keeps_each_kept_page_on_screen_moved_and_turned() {
+        let mut viewer = DocumentViewerState::default();
+        let now = Instant::now();
+        let render_all = |viewer: &mut DocumentViewerState| loop {
+            let jobs = viewer.claim_jobs();
+            if jobs.is_empty() {
+                break;
+            }
+            for job in jobs {
+                assert!(viewer.finish_at(job, Ok((test_image(), 16)), now));
+            }
+        };
+        let page_tiles = |plan: &ViewerPlanSnapshot, page: usize| {
+            plan.tiles
+                .iter()
+                .copied()
+                .filter(|request| request.page == page)
+                .collect::<Vec<_>>()
+        };
+        viewer.configure(PageViewMode::Continuous, 100.);
+        let portrait = [(612., 792.), (612., 792.)];
+        let before = viewer
+            .plan_at(11, &portrait, &[0, 0], 0, 1400., 1800., 0., 0., 1., now)
+            .unwrap();
+        assert_eq!(before.visible_pages, vec![0, 1]);
+        render_all(&mut viewer);
+
+        // Page 0 turns a quarter clockwise; page 1 changed.
+        viewer.invalidate_raster(|page| {
+            (page == 0).then_some(ShownPage {
+                page: 0,
+                quarter_turns: 1,
+            })
+        });
+        let turned = viewer
+            .plan_at(
+                11,
+                &[(792., 612.), (612., 792.)],
+                &[1, 0],
+                0,
+                1400.,
+                1800.,
+                0.,
+                0.,
+                1.,
+                now,
+            )
+            .unwrap();
+        let old = page_tiles(&before, 0);
+        let kept = viewer.page_fallback_tiles(0);
+        assert_eq!(kept.len(), old.len());
+        let height = before.page_layouts[0].logical_rect.height;
+        for ((rect, _), request) in kept.iter().zip(&old) {
+            // Each part of the page is where the turn took it.
+            let was = tile_rect(*request);
+            let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+            assert!(
+                close(rect.x, height - was.y - was.height),
+                "{rect:?} {was:?}"
+            );
+            assert!(close(rect.y, was.x), "{rect:?} {was:?}");
+            assert!(close(rect.width, was.height) && close(rect.height, was.width));
+        }
+        assert!(
+            viewer.page_fallback_tiles(1).is_empty(),
+            "a page that changed keeps no tiles"
+        );
+        // A kept page goes straight to full renders, not a blurred preview.
+        let jobs = viewer.claim_jobs();
+        assert!(
+            jobs.iter()
+                .filter(|job| job.authority.page == 0)
+                .all(|job| job.quality == ViewerRenderQuality::Full),
+            "{jobs:?}"
+        );
+        for job in jobs {
+            assert!(viewer.finish_at(job, Ok((test_image(), 16)), now));
+        }
+        render_all(&mut viewer);
+        assert!(
+            viewer.page_fallback_tiles(0).is_empty(),
+            "the new tiles cover it"
+        );
+
+        // The pages swap places: each keeps its tiles at its new place.
+        let shown = page_tiles(&turned, 1).len();
+        viewer.invalidate_raster(|page| ShownPage::same(1 - page));
+        viewer
+            .plan_at(
+                11,
+                &[(612., 792.), (792., 612.)],
+                &[0, 1],
+                0,
+                1400.,
+                1800.,
+                0.,
+                0.,
+                1.,
+                now,
+            )
+            .unwrap();
+        assert_eq!(viewer.page_fallback_tiles(0).len(), shown);
     }
 
     #[test]

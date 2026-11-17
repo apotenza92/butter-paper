@@ -25,19 +25,12 @@ pub(super) type ViewerPageRender = (
 /// Everything the viewport draws, gathered by the workspace render.
 pub(super) struct ViewportInputs {
     pub active_selection_marquee: Option<(u32, SelectionMarquee)>,
-    pub annotation_scene: AnnotationScene,
     pub construction_grid_spacing_mm: Option<f64>,
-    pub current_coordinate_space: PageCoordinateSpace,
-    pub current_highlights_precomposed: bool,
     pub current_image: Option<Arc<RenderImage>>,
     pub current_page: u32,
-    pub current_page_rotation: PageRotation,
-    pub current_page_size: (f32, f32),
-    pub current_pdf_page_size: (f32, f32),
     pub document_id: DocumentId,
     pub document_opening_batch_count: usize,
     pub focused_annotation_id: Option<MarkupId>,
-    pub has_viewer_pages: bool,
     pub hot_annotation_handle: Option<(DocumentId, u32, MarkupId, usize)>,
     pub hovered_annotation: Option<(DocumentId, u32, MarkupId)>,
     pub image_assets: Arc<HashMap<String, Arc<RenderImage>>>,
@@ -74,19 +67,12 @@ impl DocumentWorkspace {
     ) -> impl IntoElement + use<> {
         let ViewportInputs {
             active_selection_marquee,
-            annotation_scene,
             construction_grid_spacing_mm,
-            current_coordinate_space,
-            current_highlights_precomposed,
             current_image,
             current_page,
-            current_page_rotation,
-            current_page_size,
-            current_pdf_page_size,
             document_id,
             document_opening_batch_count,
             focused_annotation_id,
-            has_viewer_pages,
             hot_annotation_handle,
             hovered_annotation,
             image_assets,
@@ -484,73 +470,9 @@ impl DocumentWorkspace {
                                             ),
                                     )
                                 })
-                                .when(!has_viewer_pages, |viewport| {
-                                    viewport.when_some(current_image, |viewport, image| {
-                                        viewport.child(
-                                            gpui::div()
-                                                .relative()
-                                                .size_full()
-                                                .child(
-                                                    img(image)
-                                                        .size_full()
-                                                        .object_fit(ObjectFit::Contain),
-                                                )
-                                                .child(annotation_layer(
-                                                    document_id,
-                                                    current_page,
-                                                    current_page_size,
-                                                    current_pdf_page_size,
-                                                    current_page_rotation,
-                                                    current_coordinate_space,
-                                                    annotation_scene,
-                                                    pending_image_preview.clone().filter(|preview| preview.page_index == current_page),
-                                                    pending_text_box_presentation.clone().filter(|preview| preview.page_index == current_page),
-                                                    current_highlights_precomposed,
-                                                    image_assets,
-                                                    selection_color,
-                                                    hovered_annotation.clone().filter(|(doc, page, _)| {
-                                                        *doc == document_id && *page == current_page
-                                                    }).map(|(_, _, id)| id),
-                                                    hot_annotation_handle.clone().filter(|(doc, page, _, _)| {
-                                                        *doc == document_id && *page == current_page
-                                                    }).map(|(_, _, id, index)| (id, index)),
-                                                    focused_annotation_id.clone(),
-                                                    cx.theme().border,
-                                                    construction_grid_spacing_mm,
-                                                    semantic_snap_decision.clone(),
-                                                    object_snap_tracking_result.clone(),
-                                                    relationship_snap_guides.clone(),
-                                                    active_selection_marquee
-                                                        .as_ref()
-                                                        .filter(|(active_page, _)| {
-                                                            *active_page == current_page
-                                                        })
-                                                        .map(|(_, marquee)| marquee.clone()),
-                                                    Some(cx.entity().downgrade()),
-                                                    None,
-                                                    calibration_preview.clone().filter(|preview| {
-                                                        preview.document_id == document_id
-                                                            && preview.page_index == current_page
-                                                    }),
-                                                ))
-                                                .children(
-                                                    form_overlays
-                                                        .iter()
-                                                        .find(|overlay| overlay.page_index == current_page)
-                                                        .cloned()
-                                                        .map(|overlay| {
-                                                            forms::form_overlay_element(
-                                                                overlay,
-                                                                current_page_size,
-                                                                current_coordinate_space,
-                                                                selection_color,
-                                                                form_owner.clone(),
-                                                            )
-                                                        }),
-                                                ),
-                                        )
-                                    })
-                                })
+                                // Before its first layout a document draws no page:
+                                // a page fitted to the window here, then laid out at
+                                // its zoom a frame later, would jump in size.
                                 .when(document_opening_batch_count > 0, |viewport| {
                                     let status = if document_opening_batch_count == 1 {
                                         "Opening PDF".to_owned()

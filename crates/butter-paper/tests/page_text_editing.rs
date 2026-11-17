@@ -197,6 +197,7 @@ fn edit_pdf_content_types_shortcut_letters_into_the_line_and_commits_one_undoabl
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
+    fit_page_to_window(cx, &workspace, document_id);
     workspace.update(cx, |workspace, cx| {
         workspace.set_content_edit_mode(document_id, true, cx);
     });
@@ -372,6 +373,7 @@ fn edit_pdf_content_workspace(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
+    fit_page_to_window(cx, &workspace, document_id);
     workspace.update(cx, |workspace, cx| {
         workspace.set_content_edit_mode(document_id, true, cx);
     });
@@ -1871,6 +1873,7 @@ fn select_tool_selects_page_text_by_dragging_and_double_click_and_copies_it(
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
+    fit_page_to_window(cx, &workspace, document_id);
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
             .annotation_tool(document_id, cx)),
@@ -1983,6 +1986,7 @@ fn content_snaps_to_the_box_round_a_paragraph(cx: &mut TestAppContext) {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
     }
+    fit_page_to_window(cx, &workspace, document_id);
     let (inside, scale) = plain_page_point(cx, document_id, (330., 220.));
     cx.simulate_mouse_move(inside, None, Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -2034,4 +2038,26 @@ fn content_snaps_to_the_box_round_a_paragraph(cx: &mut TestAppContext) {
     assert_eq!(moves.len(), 1, "{moves:?}");
     let left = 300. + moves[0].offset[0];
     assert!((left - 247.8).abs() < 0.01, "{moves:?}");
+}
+
+/// Fits the page to the test window and lets the view settle, as the app's
+/// next frames do once the window is measured. A test window gives no next
+/// frame: without this, the view keeps the layout it was given for a
+/// viewport of another size, which the app replaces at once.
+fn fit_page_to_window(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: butter_paper::document_workspace::DocumentId,
+) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_fit_preset(
+            document_id,
+            butter_paper::document_workspace::ViewerFitPreset::Page,
+            cx,
+        );
+    });
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
 }
