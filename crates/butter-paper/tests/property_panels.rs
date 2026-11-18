@@ -33,7 +33,11 @@ fn text_box_snapshot() -> TextBoxPropertySnapshot {
 fn open_text_box_inspector(
     cx: &mut TestAppContext,
 ) -> (&mut VisualTestContext, Entity<TextBoxPropertyInspector>) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let inspector = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let inspector = inspector.clone();
@@ -172,7 +176,11 @@ fn the_text_field_shows_the_text_and_reports_one_edit_when_committed(cx: &mut Te
 
 #[gpui::test]
 fn a_dimension_text_field_commits_on_enter_without_a_trailing_line(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let inspector = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let inspector = inspector.clone();
@@ -251,7 +259,11 @@ impl gpui::Render for NumberPairView {
 
 #[gpui::test]
 fn a_narrow_number_pair_moves_below_its_label_and_stays_side_by_side(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| NumberPairView {
             x: cx.new(|cx| {

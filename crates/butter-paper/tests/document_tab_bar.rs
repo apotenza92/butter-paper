@@ -39,7 +39,7 @@ const NORMAL_WIDTH: f32 = 1200.;
 const MINIMUM_WIDTH: f32 = 900.;
 const CONSTRAINED_WIDTH: f32 = 320.;
 // The tabs and the tab row's small New from template buttons.
-const DOCUMENT_TAB_REQUIRED_WIDTH: f32 = 364.;
+const DOCUMENT_TAB_REQUIRED_WIDTH: f32 = 380.;
 const DOCUMENT_TAB_POINTER_DRAG_THRESHOLD: f32 = 6.;
 const DOCUMENT_TAB_DRAG_SITE_PLAN_ID: &str = "document-tab-drag-site-plan";
 const DOCUMENT_TAB_DROP_SITE_PLAN_ID: &str = "document-tab-drop-target-site-plan";
@@ -115,7 +115,11 @@ struct HarnessEntities {
 }
 
 fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, HarnessEntities) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let entities = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let entities = entities.clone();
@@ -176,7 +180,7 @@ fn viewer_toolbar_required_width(cx: &mut gpui::VisualTestContext) -> Pixels {
     bounds(cx, VIEWER_TOOLBAR_ID)
         .size
         .width
-        .max(last.right() + px(6.) - content.left())
+        .max(last.right() + px(butter_paper::layout_metrics::SPACE) - content.left())
 }
 
 fn bounds(cx: &mut gpui::VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
@@ -383,7 +387,11 @@ fn template_split_starts_at_the_frozen_contract_and_rendered_ids(cx: &mut TestAp
 fn the_start_page_creates_from_the_last_template_as_the_primary_button_does(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let entities = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let entities = entities.clone();
@@ -424,7 +432,11 @@ fn the_start_page_creates_from_the_last_template_as_the_primary_button_does(
 fn reusable_template_split_emits_semantic_creation_without_owning_document_tabs(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let entities = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let entities = entities.clone();

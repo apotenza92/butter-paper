@@ -6,17 +6,14 @@ use crate::{
 };
 use gpui::{
     AnyElement, App, AppContext as _, Context, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, px,
+    ParentElement as _, Render, ScrollHandle, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
-    WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
-    scroll::ScrollableElement as _,
-    sidebar::{Sidebar, SidebarMenu},
     text::TextView,
     v_flex,
 };
@@ -169,9 +166,9 @@ pub fn update_button(presentation: &ApplicationUpdatePresentation, cx: &App) -> 
     {
         return None;
     }
-    // Small, as the tab row's other buttons are.
+    // Medium, as the tab row's other buttons are.
     let button = update_status_button(presentation, "application-update-button", |button| {
-        button.outline().small()
+        button.outline()
     })?;
     Some(
         h_flex()
@@ -243,6 +240,7 @@ fn open_settings_category(category: SettingsCategory, window: &mut Window, cx: &
             .update(cx, |_, window, cx| {
                 existing.view.update(cx, |view, cx| {
                     view.category = category;
+                    view.category_request += 1;
                     view.scroll.set_offset(gpui::point(px(0.), px(0.)));
                     cx.notify();
                 });
@@ -306,12 +304,14 @@ pub const SETTINGS_LOCK_IMAGE_PROPORTIONS_ID: &str = "settings-lock-image-propor
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SettingsCategory {
     Updates,
-    Markups,
     Signatures,
 }
 
 struct SettingsView {
     category: SettingsCategory,
+    /// Counts requests to show a category, so the stock Settings shows the
+    /// requested page afresh each time one arrives.
+    category_request: usize,
     scroll: ScrollHandle,
     _updates: Subscription,
     _markups: Subscription,
@@ -325,6 +325,7 @@ impl SettingsView {
     fn new(category: SettingsCategory, cx: &mut Context<Self>) -> Self {
         Self {
             category,
+            category_request: 0,
             scroll: ScrollHandle::new(),
             _updates: cx.observe_global::<ApplicationUpdatePresentation>(|_, cx| cx.notify()),
             _markups: cx.observe_global::<crate::application_shell::LockImageProportions>(
@@ -385,8 +386,6 @@ impl SettingsView {
             .id("settings-timestamps-section")
             .debug_selector(|| "settings-timestamps-section".into())
             .gap_3()
-            .pb_6()
-            .child(div().font_semibold().child("Timestamps"))
             .child(
                 v_flex()
                     .gap_1()
@@ -399,7 +398,10 @@ impl SettingsView {
                     ),
             )
             .when_some(self.timestamp_server_error, |section, error| {
-                section.child(div().text_sm().text_color(cx.theme().danger).child(error))
+                section.child(gpui_component::alert::Alert::error(
+                    "settings-timestamp-server-error",
+                    error,
+                ))
             })
             .child(
                 div()
@@ -424,8 +426,6 @@ impl SettingsView {
             .id("settings-images-section")
             .debug_selector(|| "settings-images-section".into())
             .gap_3()
-            .pb_6()
-            .child(div().font_semibold().child("Images"))
             .child(
                 div()
                     .id(SETTINGS_LOCK_IMAGE_PROPORTIONS_ID)
@@ -522,8 +522,6 @@ impl SettingsView {
             .id("settings-version-section")
             .debug_selector(|| "settings-version-section".into())
             .gap_3()
-            .pb_6()
-            .child(div().font_semibold().child("Version"))
             .child(
                 div()
                     .text_sm()
@@ -564,8 +562,7 @@ impl SettingsView {
         if store {
             return vec![("Version", version)];
         }
-        let automatic = v_flex().id("settings-automatic-section").debug_selector(|| "settings-automatic-section".into()).gap_3().pb_6()
-            .child(div().font_semibold().child("Automatic checks"))
+        let automatic = v_flex().id("settings-automatic-section").debug_selector(|| "settings-automatic-section".into()).gap_3()
             .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Choose how often Butter Paper looks for updates."))
             .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Updates download automatically after a successful check. You choose when to restart."))
             .child(schedule).into_any_element();
@@ -580,7 +577,6 @@ impl SettingsView {
                     .id("settings-notes-section")
                     .debug_selector(|| "settings-notes-section".into())
                     .gap_3()
-                    .child(div().font_semibold().child("What’s new"))
                     .child(TextView::markdown(
                         "update-release-notes",
                         presentation.notes,
@@ -593,194 +589,63 @@ impl SettingsView {
 }
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = window.viewport_size().width < window.rem_size() * 48.;
-        let categories = [
-            (
-                SettingsCategory::Updates,
-                Icon::default().path(crate::application_assets::DOWNLOAD_ICON),
+        use gpui_component::setting::{
+            SelectIndex, SettingGroup, SettingItem, SettingPage, Settings,
+        };
+        // Each section is one stock group, titled by its heading; the stock
+        // Settings lays out the pages, their navigation and search.
+        let page = |title: &'static str, icon: Icon, sections: Vec<(&'static str, AnyElement)>| {
+            SettingPage::new(title)
+                .icon(icon)
+                .resettable(false)
+                .groups(sections.into_iter().map(|(heading, section)| {
+                    // Built for this frame, so drawn once.
+                    let section = std::rc::Rc::new(std::cell::RefCell::new(Some(section)));
+                    SettingGroup::new().title(heading).item(
+                        SettingItem::render(move |_, _, _| {
+                            section
+                                .borrow_mut()
+                                .take()
+                                .unwrap_or_else(|| div().into_any_element())
+                        })
+                        .keywords([heading, title]),
+                    )
+                }))
+        };
+        let pages = [
+            page(
                 "Updates",
-                "settings-category-updates",
+                Icon::default().path(crate::application_assets::DOWNLOAD_ICON),
+                self.render_update_sections(cx),
             ),
-            (
-                SettingsCategory::Markups,
-                Icon::default().path("icons/rail/image.svg"),
+            page(
                 "Markups",
-                "settings-category-markups",
+                Icon::default().path("icons/rail/image.svg"),
+                self.render_markup_sections(cx),
             ),
-            (
-                SettingsCategory::Signatures,
-                Icon::default().path("icons/rail/signature.svg"),
+            page(
                 "Signatures",
-                "settings-category-signatures",
+                Icon::default().path("icons/rail/signature.svg"),
+                self.render_signature_sections(window, cx),
             ),
         ];
-        let category_buttons = categories.map(|(category, icon, label, id)| {
-            let button = Button::new(id)
-                .debug_selector(move || id.into())
-                .ghost()
-                .icon(icon)
-                .tooltip(label)
-                .selected(self.category == category)
-                .toggled(self.category == category);
-            let button = if compact {
-                button.small().label(label)
-            } else {
-                button
-            };
-            crate::accessible_button::accessible_icon_button(button, label).on_click(cx.listener(
-                move |view, _, _, cx| {
-                    if view.category != category {
-                        view.category = category;
-                        view.scroll.set_offset(gpui::point(px(0.), px(0.)));
-                        cx.notify();
-                    }
-                },
-            ))
-        });
-        let (title, sections) = match self.category {
-            SettingsCategory::Updates => ("Updates", self.render_update_sections(cx)),
-            SettingsCategory::Markups => ("Markups", self.render_markup_sections(cx)),
-            SettingsCategory::Signatures => {
-                ("Signatures", self.render_signature_sections(window, cx))
-            }
+        let page_ix = match self.category {
+            SettingsCategory::Updates => 0,
+            // Markups, page 1, opens from the Settings sidebar.
+            SettingsCategory::Signatures => 2,
         };
-        let (headings, sections): (Vec<&str>, Vec<AnyElement>) = sections.into_iter().unzip();
-        let headings = headings.as_slice();
-        let scroll = v_flex()
-            .id("application-settings-scroll")
-            .debug_selector(|| "application-settings-scroll".into())
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .pr_2()
-            .track_scroll(&self.scroll)
-            .overflow_y_scroll()
-            .children(sections)
-            .vertical_scrollbar(&self.scroll);
-        let body = if compact {
-            let weak = cx.entity().downgrade();
-            let headings = headings
-                .iter()
-                .map(|heading| (*heading).to_owned())
-                .collect::<Vec<_>>();
-            let jump = Button::new("settings-mobile-jump")
-                .debug_selector(|| "settings-mobile-jump".into())
-                .outline()
-                .small()
-                .label("Jump to section")
-                .tooltip("Jump to a heading in this category")
-                .dropdown_caret(true)
-                .dropdown_menu(move |mut menu, _, _| {
-                    for (ix, heading) in headings.iter().enumerate() {
-                        let weak = weak.clone();
-                        menu = menu.item(PopupMenuItem::new(heading.clone()).on_click(
-                            move |_, _, cx| {
-                                let _ = weak.update(cx, |view, cx| {
-                                    view.scroll.scroll_to_top_of_item(ix);
-                                    cx.notify();
-                                });
-                            },
-                        ));
-                    }
-                    menu
-                });
-            v_flex()
-                .id("application-settings-screen")
-                .debug_selector(|| "application-settings-screen".into())
-                .w_full()
-                .h_full()
-                .p_4()
-                .gap_4()
-                .child(
-                    h_flex()
-                        .id("settings-mobile-navigation")
-                        .debug_selector(|| "settings-mobile-navigation".into())
-                        .flex_shrink_0()
-                        .flex_wrap()
-                        .gap_2()
-                        .pb_3()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .children(category_buttons)
-                        .child(jump),
-                )
-                .child(scroll)
-                .into_any_element()
-        } else {
-            let rail = v_flex().w_16().h_full().flex_shrink_0().child(
-                Sidebar::<SidebarMenu>::new("settings-category-rail")
-                    .collapsible(false)
-                    .w_full()
-                    .header(
-                        v_flex()
-                            .w_full()
-                            .items_center()
-                            .gap_1()
-                            .children(category_buttons),
-                    ),
+        let body = div()
+            .id("application-settings-screen")
+            .debug_selector(|| "application-settings-screen".into())
+            .size_full()
+            .child(
+                Settings::new(("application-settings", self.category_request))
+                    .default_selected_index(SelectIndex {
+                        page_ix,
+                        ..Default::default()
+                    })
+                    .pages(pages),
             );
-            let sidebar = v_flex()
-                .id("settings-heading-sidebar")
-                .debug_selector(|| "settings-heading-sidebar".into())
-                .w_48()
-                .h_full()
-                .flex_shrink_0()
-                .child(
-                    Sidebar::<SidebarMenu>::new("settings-section-navigation")
-                        .collapsible(false)
-                        .w_full()
-                        .header(
-                            v_flex()
-                                .w_full()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .h_8()
-                                        .flex()
-                                        .items_center()
-                                        .text_xs()
-                                        .font_medium()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(title),
-                                )
-                                .children(headings.iter().enumerate().map(|(ix, heading)| {
-                                    crate::accessible_button::accessible_icon_button(
-                                        Button::new(("settings-heading", ix))
-                                            .debug_selector(move || format!("settings-jump-{ix}"))
-                                            .ghost()
-                                            .w_full()
-                                            .tooltip(format!("Jump to {heading}"))
-                                            .child(div().w_full().text_left().child(*heading)),
-                                        *heading,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |view, _, _, cx| {
-                                            view.scroll.scroll_to_top_of_item(ix);
-                                            cx.notify();
-                                        },
-                                    ))
-                                })),
-                        ),
-                );
-            h_flex()
-                .id("application-settings-screen")
-                .debug_selector(|| "application-settings-screen".into())
-                .w_full()
-                .items_start()
-                .h_full()
-                .child(rail)
-                .child(sidebar)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .p_5()
-                        .child(scroll.h_full()),
-                )
-                .into_any_element()
-        };
         v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -912,50 +777,40 @@ mod tests {
         assert!(cx.debug_bounds("settings-releases").is_some());
         assert!(cx.debug_bounds("settings-automatic-section").is_none());
         assert!(cx.debug_bounds("settings-notes-section").is_none());
-        assert!(cx.debug_bounds("settings-jump-0").is_some());
-        assert!(cx.debug_bounds("settings-jump-1").is_none());
     }
 
     #[gpui::test]
-    fn heading_shortcuts_scroll_one_content_pane_and_restore_the_top(cx: &mut TestAppContext) {
-        use std::cell::RefCell;
+    fn the_stock_settings_page_shows_every_group_of_its_category(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let retained = Rc::new(RefCell::new(None));
-        let (_, cx) = cx.add_window_view({
-            let retained = retained.clone();
-            move |window, cx| {
-                // What's new shows for an update there is to install.
-                cx.set_global(ApplicationUpdatePresentation {
-                    state: UpdateMenuState {
-                        status: UpdateMenuStatus::Available(
-                            crate::native_updater::ReleaseVersion::stable(0, 1, 5),
-                        ),
-                        frequency: Some(UpdateFrequency::Daily),
-                    },
-                    notes: "Release detail.\n\n".repeat(100),
-                    ..Default::default()
-                });
-                let view = cx.new(|cx| SettingsView::new(SettingsCategory::Updates, cx));
-                retained.replace(Some(view.clone()));
-                gpui_component::Root::new(view, window, cx)
-            }
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            // What's new shows for an update there is to install.
+            cx.set_global(ApplicationUpdatePresentation {
+                state: UpdateMenuState {
+                    status: UpdateMenuStatus::Available(
+                        crate::native_updater::ReleaseVersion::stable(0, 1, 5),
+                    ),
+                    frequency: Some(UpdateFrequency::Daily),
+                },
+                notes: "Release detail.".into(),
+                ..Default::default()
+            });
+            let view = cx.new(|cx| SettingsView::new(SettingsCategory::Updates, cx));
+            gpui_component::Root::new(view, window, cx)
         });
-        let view = retained.borrow_mut().take().unwrap();
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let shortcut = cx.debug_bounds("settings-jump-2").unwrap();
-        cx.simulate_click(shortcut.center(), Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(view.read_with(cx, |view, _| view.scroll.offset().y < px(0.)));
-        assert_eq!(
-            cx.debug_bounds("settings-jump-2").unwrap(),
-            shortcut,
-            "navigation stays fixed while content scrolls"
-        );
-        let top = cx.debug_bounds("settings-jump-0").unwrap();
-        cx.simulate_click(top.center(), Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        assert_eq!(view.read_with(cx, |view, _| view.scroll.offset().y), px(0.));
-        assert!(cx.debug_bounds("settings-category-general").is_none());
+        for id in [
+            "settings-automatic-section",
+            "settings-version-section",
+            "settings-notes-section",
+        ] {
+            assert!(
+                cx.debug_bounds(id).is_some(),
+                "{id} shows on the Updates page"
+            );
+        }
+        // The other categories' groups are on their own pages.
+        assert!(cx.debug_bounds("settings-images-section").is_none());
+        assert!(cx.debug_bounds("settings-timestamps-section").is_none());
         for id in [
             "settings-interface-smaller",
             "settings-interface-reset",
@@ -963,53 +818,6 @@ mod tests {
         ] {
             assert!(cx.debug_bounds(id).is_none());
         }
-    }
-
-    #[gpui::test]
-    fn compact_jump_opens_from_its_label_and_keyboard_jumps_to_release_notes(
-        cx: &mut TestAppContext,
-    ) {
-        use std::cell::RefCell;
-        cx.update(gpui_component::init);
-        let retained = Rc::new(RefCell::new(None));
-        let (_, cx) = cx.add_window_view({
-            let retained = retained.clone();
-            move |window, cx| {
-                // What's new shows for an update there is to install.
-                cx.set_global(ApplicationUpdatePresentation {
-                    state: UpdateMenuState {
-                        status: UpdateMenuStatus::Available(
-                            crate::native_updater::ReleaseVersion::stable(0, 1, 5),
-                        ),
-                        frequency: Some(UpdateFrequency::Daily),
-                    },
-                    notes: "Release detail.\n\n".repeat(100),
-                    ..Default::default()
-                });
-                let view = cx.new(|cx| SettingsView::new(SettingsCategory::Updates, cx));
-                retained.replace(Some(view.clone()));
-                gpui_component::Root::new(view, window, cx)
-            }
-        });
-        let view = retained.borrow_mut().take().unwrap();
-        cx.simulate_resize(gpui::size(px(360.), px(640.)));
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        let trigger = cx.debug_bounds("settings-mobile-jump").unwrap();
-        cx.simulate_click(trigger.center(), Modifiers::default());
-        cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.run_until_parked();
-        cx.simulate_keystrokes("down down down enter");
-        cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        let notes = cx.debug_bounds("settings-notes-section").unwrap();
-        let viewport = cx.debug_bounds("application-settings-scroll").unwrap();
-        assert_eq!(
-            notes.top(),
-            viewport.top(),
-            "the release-notes heading is at the top of the content pane"
-        );
-        assert!(view.read_with(cx, |view, _| view.scroll.offset().y < px(0.)));
     }
 
     struct EmptyView;
@@ -1022,19 +830,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn settings_switches_to_compact_navigation_and_stays_inside_small_windows(
-        cx: &mut TestAppContext,
-    ) {
+    fn settings_stays_inside_small_windows(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let (_, cx) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| SettingsView::new(SettingsCategory::Updates, cx));
             gpui_component::Root::new(view, window, cx)
         });
-        cx.update(|window, cx| {
-            window.draw(cx).clear(cx);
-        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
-        for width in [1200., 700., 320.] {
+        for width in [1200., 700., 600.] {
             cx.simulate_resize(gpui::size(px(width), px(520.)));
             cx.update(|window, cx| window.draw(cx).clear(cx));
             let screen = cx
@@ -1043,13 +847,10 @@ mod tests {
             assert_eq!(screen.left(), px(0.));
             assert_eq!(screen.right(), px(width));
             assert!(screen.top() >= px(0.) && screen.bottom() <= px(520.));
-            assert_eq!(
-                cx.debug_bounds("settings-mobile-navigation").is_some(),
-                width < 768.
-            );
-            assert_eq!(
-                cx.debug_bounds("settings-heading-sidebar").is_some(),
-                width >= 768.
+            assert!(
+                cx.debug_bounds("settings-version-section")
+                    .is_some_and(|section| section.right() <= px(width)),
+                "the page stays inside the window at {width}"
             );
         }
     }

@@ -91,6 +91,7 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return;
         };
+        self.begin_snapshot_flash(document_id, page_index, rect, cx);
         let (resource, rotation, opacity, fallback, markups, media_box) = {
             let session = session.read(cx);
             // The markups on the box, which it copies with the page.

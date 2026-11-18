@@ -16,6 +16,17 @@ impl DocumentWorkspace {
                 .position(|(document_id, _, _, _)| *document_id == active_id)
         });
         let session_tab_count = session_tabs.len();
+        // Reordered tabs slide while the slide runs.
+        let slide_now = cx.background_executor().now();
+        if self
+            .tab_slide
+            .as_ref()
+            .is_some_and(|(_, started)| page_turn::slide_remaining(*started, slide_now) > 0.)
+        {
+            window.request_animation_frame();
+        } else {
+            self.tab_slide = None;
+        }
         let session_tab_ids = session_tabs
             .iter()
             .map(|(document_id, _, _, _)| *document_id)
@@ -167,10 +178,16 @@ impl DocumentWorkspace {
                                 }),
                             )
                         });
+                    // A reordered tab slides from where it was.
+                    let slide_offset = self.tab_slide_offset(tab_document_id, slide_now);
+                    // The selected tab is raised; the others keep the grey.
+                    let selected = is_active && !self.new_tab_open;
                     let tab = Tab::new()
                         // Short titles still leave a grab area clear of the
                         // close button, as browsers keep a minimum tab width.
                         .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
+                        .child(session_tab_frame(selected, cx))
+                        .when_some(slide_offset, |tab, offset| tab.left(px(offset)))
                         .when(is_dragged, |tab| tab.opacity(0.6))
                         .on_hover(cx.listener(move |workspace, hovered, _, cx| {
                             let next = if *hovered { Some(tab_document_id) } else {
@@ -519,7 +536,7 @@ impl DocumentWorkspace {
                                                     .debug_selector(|| DOCUMENT_DIRTY_CLOSE_SAVE_ID.into())
                                                     .primary()
                                                     .label(if saving { "Saving…" } else { "Save" })
-                                                    .disabled(saving)
+                                                    .loading(saving)
                                                     .on_click(move |_: &ClickEvent, _, cx| {
                                                         let _ = save_control.update(cx, |workspace, cx| {
                                                             workspace.prompt_to_save_pending_close(cx);
@@ -584,11 +601,7 @@ impl DocumentWorkspace {
             accessible_icon_button(
                 Button::new(DOCUMENT_TABS_MENU_ID)
                     .debug_selector(|| DOCUMENT_TABS_MENU_ID.into())
-                    // Framed on the tab row's own colour, as New Tab and New
-                    // from template are.
                     .outline()
-                    .bg(cx.theme().transparent)
-                    .small()
                     .icon(IconName::ChevronDown)
                     .tooltip("Open documents"),
                 "Open documents",
@@ -625,6 +638,13 @@ impl DocumentWorkspace {
         // raised on the track (see `session_tab_track`).
         let native_session_tabs = TabBar::new("document-workspace-session-tabs-component")
             .segmented()
+            // Large: the row is the toolbar's height, with medium buttons.
+            .large()
+            // Raised tabs as tall as the row's buttons, spaced as far apart
+            // and from the strip's edge as from its top and bottom.
+            .tab_height(px(SESSION_TAB_HEIGHT))
+            .inset(px(SESSION_TAB_ROW_GAP))
+            .tab_gap(px(SESSION_TAB_ROW_GAP))
             .min_w_0()
             .track_scroll(&self.session_tab_scroll)
             .max_width(px(190.))
@@ -841,9 +861,10 @@ impl DocumentWorkspace {
             .id(DOCUMENT_SESSION_TABS_ID)
             .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
             .w_full()
+            // A bar: 8 + 32 + 8, its line drawn inside.
+            .h(px(crate::layout_metrics::BAR))
+            .flex_shrink_0()
             .items_stretch()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .relative()
             .child(
                 canvas(
@@ -948,6 +969,10 @@ impl DocumentWorkspace {
             .child(strip_end)
             .child(reorder_status)
             .child(pointer_event_bridge)
+            .child(crate::layout_metrics::inside_line(
+                crate::layout_metrics::Edge::Bottom,
+                cx.theme().border,
+            ))
     }
 }
 
@@ -964,8 +989,8 @@ impl DocumentWorkspace {
             h_flex()
                 .flex_shrink_0()
                 .items_center()
-                .px_3()
-                .gap_2()
+                .px(px(SESSION_TAB_ROW_GAP))
+                .gap(px(SESSION_TAB_ROW_GAP))
                 .children(recovery_button)
                 .children(update_button)
         });
@@ -991,10 +1016,7 @@ impl DocumentWorkspace {
         let open_document = accessible_icon_button(
             Button::new(DOCUMENT_TAB_OPEN_ID)
                 .debug_selector(|| DOCUMENT_TAB_OPEN_ID.into())
-                // Framed on the tab row's own colour.
                 .outline()
-                .bg(cx.theme().transparent)
-                .small()
                 .icon(IconName::Plus)
                 .tooltip("New Tab")
                 .on_click(cx.listener(|workspace, _, _, cx| {
@@ -1007,14 +1029,21 @@ impl DocumentWorkspace {
             .debug_selector(|| DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID.into())
             .relative()
             .flex_none()
+            // The bar's full height, so the separator spans it.
+            .self_stretch()
             .items_center()
-            .gap_1()
-            .px_1()
+            // The tabs' spacing: the track leaves it after the last tab, and
+            // it goes between these and after the last of them.
+            .gap(px(SESSION_TAB_ROW_GAP))
+            .pr(px(SESSION_TAB_ROW_GAP))
             .child(
                 canvas(move |measured, _, _| bounds.set(measured), |_, _, _, _| {})
                     .absolute()
                     .inset_0(),
             )
+            // Tabs on one side, buttons on the other: a line the bar's full
+            // height.
+            .child(gpui_component::separator::Separator::vertical().h_full())
             .child(open_document)
             .child(self.template_control.clone())
             .children(documents_menu)
@@ -1036,12 +1065,11 @@ pub(super) fn session_tab_track(
         .w_full()
         .h_full()
         .min_w_0()
-        // A segmented tab's height, also with no tabs on it.
-        .min_h(px(32.))
         .items_center()
-        .bg(cx.theme().tokens.tab_bar_segmented)
+        // The viewer toolbar's background; the tabs carry the segmented grey.
+        .bg(cx.theme().background)
         // The stock segmented bar, square: it is the whole tab row, edge to
         // edge, not a rounded track inside it.
-        .child(tabs.h_full().rounded(px(0.)))
+        .child(tabs.h_full().rounded(px(0.)).bg(cx.theme().background))
         .child(actions)
 }

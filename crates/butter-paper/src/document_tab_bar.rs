@@ -696,9 +696,6 @@ impl Render for TemplateSplitControl {
         let primary = accessible_icon_button(
             Button::new(TEMPLATE_PRIMARY_ID)
                 .outline()
-                // Framed on the tab row's own colour, the row's height.
-                .bg(cx.theme().transparent)
-                .small()
                 .rounded_r_none()
                 .debug_selector(|| TEMPLATE_PRIMARY_ID.into())
                 .accessibility_id(TEMPLATE_PRIMARY_ID)
@@ -720,13 +717,13 @@ impl Render for TemplateSplitControl {
         let picker = accessible_icon_button(
             Button::new(TEMPLATE_PICKER_ID)
                 .outline()
-                .bg(cx.theme().transparent)
-                .small()
                 .rounded_l_none()
                 .border_l_0()
                 .debug_selector(|| TEMPLATE_PICKER_ID.into())
                 .accessibility_id(TEMPLATE_PICKER_ID)
-                .dropdown_caret(true)
+                // The template library, not a menu caret: it is the second
+                // of two dropdowns side by side.
+                .icon(Icon::default().path(crate::application_assets::TEMPLATE_LIBRARY_ICON))
                 .tooltip(TEMPLATE_PICKER_LABEL),
             TEMPLATE_PICKER_LABEL,
         );
@@ -860,7 +857,8 @@ impl Render for TemplateSplitControl {
                     .accessibility_id(TEMPLATE_CREATE_ID)
                     .primary()
                     .label(if creating { "Creating…" } else { "Create" })
-                    .disabled(creating)
+                    // The stock busy state, as well as the label.
+                    .loading(creating)
                     .on_click(move |_: &ClickEvent, _, cx| {
                         let _ = create_control.update(cx, |control, cx| {
                             if !control.creating {
@@ -1951,7 +1949,7 @@ impl Render for DocumentTabBarTemplateSeam {
                                             } else {
                                                 "Save"
                                             })
-                                            .disabled(confirmation_busy)
+                                            .loading(confirmation_busy)
                                             .on_click(move |_: &ClickEvent, _, cx| {
                                                 let _ = save_control.update(cx, |control, cx| {
                                                     control.record_confirmation_intent(

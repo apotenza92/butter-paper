@@ -289,6 +289,21 @@ impl DocumentWorkspace {
                 .map_err(|error| error.to_string())
         })?;
         self.after_pages_arranged(document_id, cx);
+        // Thumbnails of the pages that moved slide from their old places.
+        if !cx.reduce_motion() {
+            let moved = pages
+                .iter()
+                .enumerate()
+                .filter_map(|(new, page)| match page {
+                    ArrangedPage::Shown { index, copy: false } if *index != new as u32 => {
+                        Some((new as u32, *index))
+                    }
+                    _ => None,
+                })
+                .collect::<HashMap<_, _>>();
+            self.thumbnail_slide =
+                (!moved.is_empty()).then(|| (document_id, moved, cx.background_executor().now()));
+        }
         if let Some(&first) = select.first() {
             self.page_selection = Some(PageSelection {
                 document_id,

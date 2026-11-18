@@ -18,11 +18,11 @@ use crate::page_scale_catalog::{
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
     InteractiveElement as _, IntoElement, ParentElement as _, Pixels, SharedString,
-    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, anchored, deferred, div,
-    point, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, anchored, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, GlobalState, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
     form::Field,
     h_flex,
@@ -249,6 +249,9 @@ pub struct PageScaleControl {
     /// The panel is showing (it hides while a calibration line is picked).
     open: bool,
     focus_handle: FocusHandle,
+    /// Focus goes into the panel once it is drawn: a handle focused before
+    /// its element exists gives focus back to the workspace.
+    focus_when_drawn: bool,
     request: Option<PageScaleRequest>,
     choice: ScaleChoice,
     /// The page's text has been searched for the scales it states.
@@ -401,6 +404,7 @@ impl PageScaleControl {
         Self {
             owner,
             open: false,
+            focus_when_drawn: false,
             focus_handle: cx.focus_handle(),
             request: None,
             choice: ScaleChoice::Unset,
@@ -1114,13 +1118,17 @@ impl PageScaleControl {
 
     fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = true;
+        self.focus_when_drawn = true;
         self.focus_handle.focus(window, cx);
     }
 }
 
-/// The panel, dropping down from `anchor` (the toolbar's Scale), while it is
-/// open. A press outside it closes it, unless the press is on the anchor,
-/// whose menu button opens and closes it, or in one of its own lists.
+/// The panel, a stock Popover dropping down from `anchor` (the toolbar's
+/// Scale), while it is open. It opens from the Scale menu, the status bar
+/// and the measuring tools alike, so its trigger is a point at the Scale's
+/// lower right, not the Scale itself. A press outside it closes it, unless
+/// the press is on the anchor, whose menu button opens and closes it, or in
+/// one of its own lists.
 pub fn page_scale_panel(
     entity: &Entity<PageScaleControl>,
     anchor: Option<Bounds<Pixels>>,
@@ -1133,61 +1141,93 @@ pub fn page_scale_panel(
     let viewport = window.viewport_size();
     let margin = px(8.);
     let width = px(480.).min(viewport.width - margin * 2.);
-    // The Scale sits at the toolbar's trailing end, so the panel drops from it
-    // ending at its right edge.
-    let position = anchor.map_or_else(
-        || point(margin, px(96.)),
-        |anchor| {
-            point(
-                (anchor.right() - width).max(margin),
-                anchor.bottom() + px(4.),
-            )
-        },
+    // The Scale sits at the toolbar's trailing end, so the panel drops from
+    // it ending at its right edge.
+    let point_at = anchor.map_or_else(
+        || point(margin + width, px(96.)),
+        |anchor| point(anchor.right(), anchor.bottom()),
     );
-    let max_height = (viewport.height - position.y - margin).max(px(160.));
-    let content = panel_content(entity, cx)?;
-    let focus = entity.read(cx).focus_handle.clone();
-    let escape = entity.downgrade();
-    let outside = entity.downgrade();
-    let theme = cx.theme();
+    let max_height = (viewport.height - point_at.y - margin * 2.).max(px(160.));
+    if entity.update(cx, |control, _| {
+        std::mem::take(&mut control.focus_when_drawn)
+    }) {
+        let focus = entity.read(cx).focus_handle.clone();
+        window.defer(cx, move |window, cx| focus.focus(window, cx));
+    }
+    let content_entity = entity.clone();
+    let closing = entity.downgrade();
     Some(
-        deferred(
-            anchored()
-                .position(position)
-                .snap_to_window_with_margin(margin)
-                .child(
-                    v_flex()
-                        .id(PAGE_SCALE_DIALOG_ID)
-                        .debug_selector(|| PAGE_SCALE_DIALOG_ID.into())
-                        .track_focus(&focus)
-                        .tab_group()
-                        .occlude()
-                        .w(width)
-                        .max_h(max_height)
-                        .bg(theme.popover)
-                        .text_color(theme.popover_foreground)
-                        .border_1()
-                        .border_color(theme.border)
-                        .rounded(theme.radius_lg)
-                        .shadow_lg()
-                        .key_context(PAGE_SCALE_CONTEXT)
-                        .on_action(move |_: &ClosePageScale, _, cx| {
-                            let _ = escape.update(cx, |control, cx| control.close(cx));
-                        })
-                        .on_mouse_down_out(move |event, _, cx| {
-                            if GlobalState::is_in_deferred_context(cx)
-                                || anchor.is_some_and(|anchor| anchor.contains(&event.position))
-                            {
-                                return;
-                            }
-                            let _ = outside.update(cx, |control, cx| control.close(cx));
-                        })
-                        .child(content),
-                ),
-        )
-        .with_priority(1)
-        .into_any_element(),
+        anchored()
+            .position(point_at)
+            .child(
+                gpui_component::popover::Popover::new("page-scale-popover")
+                    .anchor(gpui::Anchor::TopRight)
+                    .trigger(ScaleAnchorPoint)
+                    .open(true)
+                    // Its own outside press, which spares the Scale's menu.
+                    .overlay_closable(false)
+                    .on_open_change(move |open, _, cx| {
+                        if !*open {
+                            let _ = closing.update(cx, |control, cx| control.close(cx));
+                        }
+                    })
+                    .w(width)
+                    .max_h(max_height)
+                    .content(move |_, _, cx| {
+                        let escape = content_entity.downgrade();
+                        let outside = content_entity.downgrade();
+                        let focus = content_entity.read(cx).focus_handle.clone();
+                        v_flex()
+                            .id(PAGE_SCALE_DIALOG_ID)
+                            .debug_selector(|| PAGE_SCALE_DIALOG_ID.into())
+                            .track_focus(&focus)
+                            .tab_group()
+                            .min_h_0()
+                            .key_context(PAGE_SCALE_CONTEXT)
+                            .on_action(move |_: &ClosePageScale, _, cx| {
+                                let _ = escape.update(cx, |control, cx| control.close(cx));
+                            })
+                            .on_mouse_down_out(move |event, window, cx| {
+                                // A press in one of its own open lists, which
+                                // hold focus while open, or on the Scale menu.
+                                // (The popover itself counts as an open
+                                // deferred popup, so that test cannot tell.)
+                                let in_own_list = window.context_stack().iter().any(|context| {
+                                    context.contains("List") || context.contains("PopupMenu")
+                                });
+                                if in_own_list
+                                    || anchor.is_some_and(|anchor| anchor.contains(&event.position))
+                                {
+                                    return;
+                                }
+                                let _ = outside.update(cx, |control, cx| control.close(cx));
+                            })
+                            .children(panel_content(&content_entity, cx))
+                    }),
+            )
+            .into_any_element(),
     )
+}
+
+/// The Page Scale popover's trigger: a point at the Scale's lower right
+/// that takes no space and no presses.
+#[derive(IntoElement)]
+struct ScaleAnchorPoint;
+
+impl gpui_component::Selectable for ScaleAnchorPoint {
+    fn selected(self, _: bool) -> Self {
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        false
+    }
+}
+
+impl gpui::RenderOnce for ScaleAnchorPoint {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        div().size(px(0.))
+    }
 }
 
 fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyElement> {
@@ -1212,13 +1252,13 @@ fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyE
             .size_full()
             .min_h_0()
             .child(
+                // The stock popover's padding is the edge; the header leaves
+                // room for its X and a section's space below.
                 v_flex()
                     .relative()
                     .gap_1()
-                    .pl_4()
                     .pr_10()
-                    .pt_4()
-                    .pb_3()
+                    .pb(px(crate::layout_metrics::GROUP_SPACE))
                     .child(div().text_base().font_semibold().child("Page scale"))
                     .child(div().text_sm().text_color(muted).child(description))
                     .when(request.for_measuring, |header| {
@@ -1227,7 +1267,7 @@ fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyE
                              units, or Cancel to measure paper size.",
                         ))
                     })
-                    .child(div().absolute().top_2().right_2().child(
+                    .child(div().absolute().top_0().right_0().child(
                         close_icon_button(PAGE_SCALE_CLOSE_ID, "Close").on_click(
                             move |_, _, cx| {
                                 let _ = close.update(cx, |control, cx| control.close(cx));
@@ -1240,9 +1280,7 @@ fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyE
                     .id("page-scale-dialog-body")
                     .flex_1()
                     .min_h_0()
-                    .gap_5()
-                    .px_4()
-                    .pb_1()
+                    .gap(px(crate::layout_metrics::GROUP_SPACE))
                     .overflow_y_scroll()
                     .child(scale_section(entity, &request, cx))
                     .when(entity.read(cx).choice != ScaleChoice::None, |body| {
@@ -1255,8 +1293,8 @@ fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyE
             .child(
                 h_flex()
                     .justify_end()
-                    .gap_2()
-                    .p_4()
+                    .gap(px(crate::layout_metrics::SPACE))
+                    .pt(px(crate::layout_metrics::GROUP_SPACE))
                     .child(
                         Button::new(PAGE_SCALE_CANCEL_ID)
                             .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
@@ -1357,16 +1395,17 @@ fn scale_list(stated: &[usize], measured: bool, imperial_first: bool) -> ScaleLi
 fn error_text(
     state: &PageScaleControl,
     place: ErrorPlace,
-    cx: &App,
+    _cx: &App,
 ) -> Option<impl IntoElement + use<>> {
     let (error_place, error) = state.error.as_ref()?;
     (*error_place == place).then(|| {
         div()
             .id(PAGE_SCALE_ERROR_ID)
             .debug_selector(|| PAGE_SCALE_ERROR_ID.into())
-            .text_sm()
-            .text_color(cx.theme().danger)
-            .child(error.clone())
+            .child(gpui_component::alert::Alert::error(
+                "page-scale-error-alert",
+                error.clone(),
+            ))
     })
 }
 
@@ -1452,19 +1491,29 @@ fn scale_section(
                                 .text_color(cx.theme().muted_foreground)
                                 .child("Stated on this page:"),
                         )
-                        .children(stated.into_iter().map(|index| {
+                        .child({
                             let choose = entity.downgrade();
-                            Button::new(("page-scale-stated", index))
-                                .label(STANDARD_SCALES[index].label)
+                            let indices = stated.clone();
+                            ButtonGroup::new("page-scale-stated-group")
                                 .small()
                                 .outline()
-                                .selected(choice == ScaleChoice::Standard(index))
-                                .on_click(move |_, window, cx| {
+                                .children(stated.into_iter().map(|index| {
+                                    Button::new(("page-scale-stated", index))
+                                        .label(STANDARD_SCALES[index].label)
+                                        .selected(choice == ScaleChoice::Standard(index))
+                                }))
+                                .on_click(move |selected, window, cx| {
+                                    let Some(index) = selected
+                                        .first()
+                                        .and_then(|position| indices.get(*position).copied())
+                                    else {
+                                        return;
+                                    };
                                     let _ = choose.update(cx, |control, cx| {
                                         control.choose(ScaleChoice::Standard(index), window, cx)
                                     });
                                 })
-                        })),
+                        }),
                 )
             })
             .when(choice == ScaleChoice::Custom, |section| {

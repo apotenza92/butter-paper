@@ -85,6 +85,21 @@ impl DocumentWorkspace {
             selection_color,
             ink_mutation_disabled,
         } = inputs;
+        // Moved pages' rows slide from their old places to their new ones.
+        let row_pitch = f32::from(window.rem_size()) * 12.5;
+        let slide = self
+            .thumbnail_slide
+            .as_ref()
+            .and_then(|(slide_document, moved, started)| {
+                let remaining =
+                    page_turn::slide_remaining(*started, cx.background_executor().now());
+                (*slide_document == document_id && remaining > 0.)
+                    .then(|| (moved.clone(), remaining))
+            });
+        if slide.is_some() {
+            window.request_animation_frame();
+        }
+        let slide = Arc::new(slide);
         resizable_panel()
                         .visible(thumbnails_visible)
                         .size(window.rem_size() * 18.75)
@@ -187,7 +202,9 @@ impl DocumentWorkspace {
                                 .h_full()
                                 .flex_1().min_h_0()
                                 .child(
-                                    gpui::div().size_full().p_2().child(
+                                    // The grid's 8px at the edges: rows carry
+                                    // 4px above and below, so 8px apart.
+                                    gpui::div().size_full().px_2().py_1().child(
                                     uniform_list(
                                         "document-workspace-thumbnail-list",
                                         thumbnail_count,
@@ -249,7 +266,13 @@ impl DocumentWorkspace {
                                                     // page for the line, inside the row, as the
                                                     // list clips anything outside its rows.
                                                     let last = page_index + 1 == thumbnail_count as u32;
+                                                    let slide_offset = slide.as_ref().as_ref().and_then(|(moved, remaining)| {
+                                                        moved.get(&page_index).map(|old| {
+                                                            (*old as f32 - page_index as f32) * row_pitch * remaining
+                                                        })
+                                                    });
                                                     gpui::div().py_1().relative()
+                                                        .when_some(slide_offset, |row, offset| row.top(px(offset)))
                                                         .when(drop_before == Some(page_index), |row| row.child(drop_line(true)))
                                                         .when(last && drop_before == Some(page_index + 1), |row| row.child(drop_line(false)))
                                                         .child(v_flex()
@@ -410,15 +433,14 @@ impl DocumentWorkspace {
                                                                 .when(
                                                                     image.is_none() && preview_error.is_none(),
                                                                     |page| {
-                                                                        page.items_center()
-                                                                            .justify_center()
-                                                                            .bg(cx.theme().muted)
-                                                                            .text_xs()
-                                                                            .text_color(
-                                                                                cx.theme()
-                                                                                    .muted_foreground,
-                                                                            )
-                                                                            .child("Loading preview…")
+                                                                        // The stock loading placeholder, its
+                                                                        // pulse named for assistive technology.
+                                                                        page.child(
+                                                                            gpui_component::skeleton::Skeleton::new()
+                                                                                .absolute()
+                                                                                .inset_0(),
+                                                                        )
+                                                                        .aria_label("Loading preview")
                                                                     },
                                                                 )
                                                                 .when_some(preview_error, |page, _| {

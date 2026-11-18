@@ -181,19 +181,26 @@ changes it; history is in git.
   and the scroll area are domain UI.
 - Document tabs: stock Segmented appearance, shadcn's default Tabs. The bar
   is the whole tab row, edge to edge and top to bottom, with square corners
-  and shadcn's 36px TabsList height: a muted track however many tabs are
+  and the viewer toolbar's 48px height: a muted track however many tabs are
   open, with the active document raised on it (decided 2026-11-17, replacing
   a rounded track inset in the strip and a New PDF lane over the tool rail).
+  The tabs are the stock large size with 14px titles, their raised area
+  32px high to match the row's medium buttons (decided 2026-11-18,
+  replacing the 36px row and small buttons). The row has one spacing, the
+  7.5px above and below the tabs: at both ends, between tabs, on each side
+  of a vertical separator between the tabs and the buttons, and between
+  buttons. Tabs that are not selected are outlined as the buttons are; the
+  selected tab is raised.
   Width follows the title up to 190px; the close button is hidden at rest
   and appears on hover or focus over the end of the title, which keeps its
   position and truncates. New Tab (+), the New from template split control
   and a menu of every open document (a chevron) sit on the track just after
-  the last tab, in that order, as small framed buttons on the track's own
-  colour. When the tabs don't fit, they scroll and these stay at the track's
+  the last tab, in that order, as medium outline buttons with their own
+  background (white in light, dark in dark). When the tabs don't fit, they scroll and these stay at the track's
   right end. With no document open, the track holds New Tab and New from
   template. The split control's button says what a click makes ("New from
-  template: Blank Paper"); its chevron opens "Select and customise
-  templates". Recovery and Update sit at the strip's end. Close buttons use
+  template: Blank Paper"); its second half, an open book, opens "Select
+  and customise templates". Recovery and Update sit at the strip's end. Close buttons use
   the stock extra-small ghost icon Button, centred in a square lane at the
   end of the tab's raised area with equal clearance on three sides.
   Filenames keep their leading position when close appears; only the
@@ -355,12 +362,11 @@ changes it; history is in git.
   Markups sit above fields: a press on a markup selects it.
 
 - About Butter Paper and Settings are available in both application menus.
-  Settings is a dedicated reusable window with edge-to-edge navigation,
-  a category rail, a sidebar of heading shortcuts and one
-  scrollable content pane per category. The rail and heading sidebar follow
-  shadcn's nested-sidebar pattern, using native sidebar surfaces and
-  left-aligned, full-width navigation controls. Narrow windows replace the rail and
-  sidebar with a category row and a Jump to section menu. Settings owns update
+  Settings is a dedicated reusable window built on gpui-component's stock
+  Settings (decided 2026-11-18, replacing a custom category rail, heading
+  sidebar and Jump to section menu): its sidebar searches and lists the
+  pages (Updates, Markups, Signatures) and each page's groups, and each
+  section is a titled stock group. Settings owns update
   checks, their visible results and the check frequency. Its Updates
   category shows Automatic checks first, then Version (with the download's
   size and percentage while one runs), then What's new only while there is
@@ -397,6 +403,36 @@ changes it; history is in git.
     turned with it. Only a page whose content changed loses them.
   A change to the content does not move the view. Only a navigation moves
   it: rotating the page in view leaves the view where it is.
+- Spacing is an 8pt grid (decided 2026-11-18; `layout_metrics.rs`).
+  Controls are 32px. Every edge and every gap between controls is 8px;
+  groups of controls are 16px apart. A bar's stated size includes its 1px
+  line, drawn inside it without taking layout space: the tab row, the viewer
+  toolbar and the panel headers are 48px high (8 + 32 + 8), the left rail is
+  48px wide and the two-column tool rail 88px (8 + 32 + 8 + 32 + 8). The
+  status bar is 36px (8 + its 20px controls + 8). Panels have 8px margins.
+  Stock dialogs and menus keep gpui-component's own spacing.
+- Motion is stock (decided 2026-11-18). Every control is the stock
+  gpui-component control with its default motion. Where the app has its own
+  element with a stock counterpart, the stock one replaces it. Elements with
+  no stock counterpart use the stock motion settings:
+  - The thumbnails and properties panels show and hide with the stock
+    Sidebar's offcanvas motion (200 ms width, ease-in-out).
+  - Zoom, Fit Width, Fit Page and rotate animate the view over about
+    200 ms. During the motion the page draws the tiles it has. The no-flash
+    rules above still apply to every frame. Going to a page still jumps.
+  - Reordered thumbnails and document tabs slide to their new places. The
+    selection outline and handles fade in, snap guides fade in and out, and
+    the Snapshot tool's copied area flashes. Drawing, dragging, resizing and
+    nudging are never animated: they follow the pointer or key at once.
+  - The app follows the operating system's reduce-motion setting (macOS
+    Reduce motion, Windows Animation effects, GNOME Reduce animation and
+    the portal's `reduced-motion`, KDE's animation speed). With it on, every
+    change takes its end state at once.
+- Errors use the stock Alert, choice rows the stock ButtonGroup (vertical in a
+  narrow dialog), shortcut hints in tooltips the stock Kbd, and the Recovery
+  count the stock Badge. Clickable rows in lists (recent documents, the
+  template picker, the merge list, startup recovery) stay Buttons: the stock
+  ListItem has no keyboard focus, accessibility role or tooltip.
 
 ## Release
 

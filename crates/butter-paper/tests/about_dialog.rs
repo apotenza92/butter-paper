@@ -22,7 +22,11 @@ impl Render for DialogLayer {
 
 #[gpui::test]
 fn the_about_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (_, cx) = cx.add_window_view(|window, cx| {
         let layer = cx.new(|_| DialogLayer);
         Root::new(layer, window, cx)

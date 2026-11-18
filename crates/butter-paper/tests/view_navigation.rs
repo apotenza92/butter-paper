@@ -291,6 +291,8 @@ fn setup_tabs<'a>(
 ) -> (Harness<'a>, Vec<DocumentId>) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));

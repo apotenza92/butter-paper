@@ -469,17 +469,10 @@ impl AnnotationTool {
         }
     }
 
-    pub fn tooltip_label(self) -> String {
-        self.shortcut().map_or_else(
-            || self.label().to_owned(),
-            |shortcut| {
-                format!(
-                    "{} ({})",
-                    self.label(),
-                    crate::shortcut_label::shortcut_label(shortcut)
-                )
-            },
-        )
+    /// The tool's shortcut as a stock key binding for its tooltip.
+    pub fn tooltip_key_binding(self) -> Option<gpui_component::kbd::Kbd> {
+        self.shortcut()
+            .and_then(crate::shortcut_label::shortcut_kbd)
     }
 
     pub fn from_plain_shortcut(value: &str) -> Option<Self> {

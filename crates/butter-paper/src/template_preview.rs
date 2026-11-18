@@ -548,15 +548,8 @@ pub fn template_preview_card(
                 )
                 .when(patterned, |row| {
                     row.child(
-                        div()
+                        gpui_component::Sizable::small(gpui_component::tag::Tag::secondary())
                             .flex_none()
-                            .rounded_md()
-                            .px_2()
-                            .py_0p5()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .bg(cx.theme().secondary)
-                            .text_color(cx.theme().secondary_foreground)
                             .child(preview.grid_summary()),
                     )
                 }),

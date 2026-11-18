@@ -77,7 +77,11 @@ struct HarnessEntities {
 }
 
 fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, HarnessEntities) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let entities = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let entities = entities.clone();
@@ -130,7 +134,11 @@ struct CadHarnessEntities {
 }
 
 fn open_cad_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, CadHarnessEntities) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let entities = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let entities = entities.clone();
@@ -1479,11 +1487,11 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
             edit_pdf.right() <= scale.left(),
             "Edit PDF before Scale at {width}"
         );
-        assert!(scale.right() <= toolbar.right() - px(6.));
+        assert!(scale.right() <= toolbar.right() - px(8.));
         // The page navigator's frame keeps the edge inset that matches the
         // group gap.
         assert!(
-            pages.left() - toolbar.left() >= px(6.) && pages.left() - toolbar.left() <= px(12.),
+            pages.left() - toolbar.left() >= px(8.) && pages.left() - toolbar.left() <= px(16.),
             "pages at the left edge at {width}: {pages:?}"
         );
         let labelled =
@@ -1505,13 +1513,13 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
             );
             assert_eq!(
                 scale.right(),
-                toolbar.right() - px(6.),
+                toolbar.right() - px(8.),
                 "switches pinned right at {width}"
             );
         } else {
             // Compact: packed from the left at the group gap.
             assert!(
-                edit_pdf.left() - layout.right() <= px(12.),
+                edit_pdf.left() - layout.right() <= px(16.),
                 "compact switches pack after the layout at {width}: layout={layout:?}, edit={edit_pdf:?}"
             );
         }

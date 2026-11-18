@@ -917,7 +917,11 @@ fn dirty_two_documents(
     Arc<DeterministicBackend>,
     [DocumentId; 2],
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -962,7 +966,11 @@ fn dirty_two_generated_documents(
 ) {
     static NEXT_ROOT: AtomicU32 = AtomicU32::new(1);
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -1193,7 +1201,11 @@ fn application_close_commits_live_text_box_draft_or_surfaces_blocked_draft_witho
 fn session_checkpoint_publishes_ordered_active_workspace_before_release_and_quit(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -1325,7 +1337,11 @@ fn session_checkpoint_publishes_ordered_active_workspace_before_release_and_quit
 fn failed_session_checkpoint_preserves_manifest_resources_and_discard_retry_completion(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -1417,7 +1433,11 @@ fn failed_session_checkpoint_preserves_manifest_resources_and_discard_retry_comp
 fn session_checkpoint_durability_warning_is_reported_once_and_continues_close(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -1464,7 +1484,11 @@ fn session_checkpoint_durability_warning_is_reported_once_and_continues_close(
 
 #[gpui::test]
 fn empty_workspace_replaces_stale_session_manifest_before_quit(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -1503,7 +1527,11 @@ fn empty_workspace_replaces_stale_session_manifest_before_quit(cx: &mut TestAppC
 
 #[gpui::test]
 fn generated_save_as_checkpoints_only_the_final_durable_target(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -1983,7 +2011,11 @@ fn mixed_opened_and_generated_save_all_is_serial_and_cancel_preserves_earlier_sa
 ) {
     static NEXT_ROOT: AtomicU32 = AtomicU32::new(10_000);
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -2763,7 +2795,11 @@ fn clean_close_failure_is_reported_and_preserves_the_session() {
 fn clean_close_failure_is_reported_and_preserves_the_session_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(DeterministicBackend::default());
     backend.fail_closes.store(true, Ordering::Release);
     let workspace = cx.new({
@@ -2963,7 +2999,11 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
     ));
     let saver = Arc::new(PdfDocumentSaver::new(backend.clone()));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let close_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -3289,7 +3329,11 @@ fn real_mixed_document_application_close_saves_generated_target_and_releases_res
     ));
     let fresh_saver = Arc::new(PdfDocumentSaver::new(fresh_backend.clone()));
     let mut fresh_cx = TestAppContext::single();
-    fresh_cx.update(gpui_component::init);
+    fresh_cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let fresh_workspace = fresh_cx.new({
         let fresh_backend = fresh_backend.clone();
         move |cx| DocumentWorkspace::with_opener(fresh_backend, cx)
@@ -3462,6 +3506,8 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace = cx.new({
@@ -3889,6 +3935,8 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
     let fresh_saver = Arc::new(PdfDocumentSaver::new(backend.clone()));
     let (fresh_workspace, fresh_close) = fresh_app.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
         let close = cx.new({
             let workspace = workspace.clone();
@@ -4072,6 +4120,8 @@ fn real_native_shell_rectangle_edit_save_close_and_fresh_reopen(cx: &mut TestApp
 
     let second_workspace = second_fresh_app.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         cx.new(|cx| DocumentWorkspace::with_opener(backend, cx))
     });
     let second_content = AnyView::from(second_workspace.clone());
@@ -4154,7 +4204,11 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
     ));
     let saver = Arc::new(PdfDocumentSaver::new(backend.clone()));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     cx.update(init_document_workspace_actions);
     let workspace = cx.new({
         let backend = backend.clone();
@@ -4522,6 +4576,8 @@ fn real_native_shell_pen_highlight_create_undo_redo_save_close_and_fresh_reopen(
 
     let fresh_workspace = fresh_app.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx))
     });
     let fresh_content = AnyView::from(fresh_workspace.clone());
@@ -4890,7 +4946,11 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
     original_base.close().unwrap();
     let saver = Arc::new(PdfDocumentSaver::new(backend.clone()));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new({
         let backend = backend.clone();
         move |cx| DocumentWorkspace::with_opener(backend, cx)
@@ -5336,6 +5396,8 @@ fn real_native_shell_text_box_create_type_escape_save_close_and_fresh_reopen(
 
     let fresh_workspace = fresh_app.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx))
     });
     let fresh_content = AnyView::from(fresh_workspace.clone());
@@ -5404,6 +5466,8 @@ fn application_shell_edit_shortcuts_use_production_workspace_action_bootstrap_an
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let backend = Arc::new(DeterministicBackend::default());
@@ -5847,6 +5911,8 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace = cx.new({
@@ -6763,6 +6829,8 @@ fn real_native_shell_all_eight_families_edit_history_save_save_as_close_and_two_
 
     let fresh_workspace = fresh_app.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         cx.new(|cx| DocumentWorkspace::with_opener(backend, cx))
     });
     let fresh_content = AnyView::from(fresh_workspace.clone());

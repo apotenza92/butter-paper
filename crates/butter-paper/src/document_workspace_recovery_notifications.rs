@@ -55,16 +55,19 @@ impl DocumentWorkspace {
                         cx.notify();
                     });
                 })
-                .trigger(
-                    Button::new(RECOVERY_NOTIFICATIONS_BUTTON_ID)
-                        .debug_selector(|| RECOVERY_NOTIFICATIONS_BUTTON_ID.into())
-                        .accessibility_id(RECOVERY_NOTIFICATIONS_BUTTON_ID)
-                        .small()
-                        .icon(Icon::new(IconName::Info).text_color(cx.theme().warning))
-                        .outline()
-                        .label(format!("Recovery ({count})"))
-                        .selected(open),
-                )
+                .trigger(BadgedTrigger {
+                    button: crate::accessible_button::accessible_icon_button(
+                        Button::new(RECOVERY_NOTIFICATIONS_BUTTON_ID)
+                            .debug_selector(|| RECOVERY_NOTIFICATIONS_BUTTON_ID.into())
+                            .accessibility_id(RECOVERY_NOTIFICATIONS_BUTTON_ID)
+                            .icon(Icon::new(IconName::Info).text_color(cx.theme().warning))
+                            .outline()
+                            .label("Recovery")
+                            .selected(open),
+                        format!("Recovery ({count})"),
+                    ),
+                    count,
+                })
                 .content(move |_, window, cx| {
                     let popover = cx.entity();
                     let content = content_owner
@@ -245,5 +248,32 @@ impl DocumentWorkspace {
             );
         }
         body
+    }
+}
+
+/// A button with the stock count Badge on its corner, usable as a Popover's
+/// trigger: selection passes to the button.
+#[derive(IntoElement)]
+struct BadgedTrigger {
+    button: Button,
+    count: usize,
+}
+
+impl gpui_component::Selectable for BadgedTrigger {
+    fn selected(mut self, selected: bool) -> Self {
+        self.button = self.button.selected(selected);
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.button.is_selected()
+    }
+}
+
+impl gpui::RenderOnce for BadgedTrigger {
+    fn render(self, _: &mut gpui::Window, _: &mut gpui::App) -> impl IntoElement {
+        gpui_component::badge::Badge::new()
+            .count(self.count)
+            .child(self.button)
     }
 }

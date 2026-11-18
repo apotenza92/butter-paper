@@ -80,7 +80,7 @@ pub const DOCUMENT_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
 /// The left rail and default two-column tool rail, at the default interface
 /// size.
 const LEFT_RAIL_WIDTH: f32 = 48.;
-const TOOL_RAIL_WIDTH: f32 = 84.;
+const TOOL_RAIL_WIDTH: f32 = 88.;
 
 /// The least content size of the Settings window: its category rail, list
 /// and a readable column of settings.
@@ -201,7 +201,7 @@ mod tests {
         let small = gpui::size(gpui::px(300.), gpui::px(900.));
         assert_eq!(
             at_least(small, DOCUMENT_WINDOW_MIN_SIZE),
-            gpui::size(gpui::px(914.), gpui::px(900.))
+            gpui::size(gpui::px(918.), gpui::px(900.))
         );
         let large = gpui::size(gpui::px(1200.), gpui::px(800.));
         assert_eq!(at_least(large, DOCUMENT_WINDOW_MIN_SIZE), large);

@@ -108,6 +108,8 @@ fn open(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -251,6 +253,8 @@ fn signing_workspace<'a>(
     use butter_paper::page_view_control::PageViewMode;
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

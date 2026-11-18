@@ -238,79 +238,40 @@ impl DocumentWorkspace {
             "Hold Space and drag to pan. Two-finger trackpad scrolling always scrolls. Pinch or Ctrl + trackpad scroll zooms. Mouse-wheel behaviour follows the view dropdown; Ctrl + wheel does the opposite."
         };
         let accessible_help = format!("{context_tooltip}. {navigation_tooltip}");
-        let message = self
-            .status_message
-            .as_ref()
-            .filter(|(document_id, _, shown)| {
-                Some(*document_id) == self.active_document_id
-                    && shown.elapsed() < STATUS_MESSAGE_SHOWN
-            })
-            .map(|(_, text, _)| text.clone());
-        let showing_message = message.is_some();
-        let accessible_help = match &message {
-            Some(message) => format!("{message}. {accessible_help}"),
-            None => accessible_help,
-        };
-        h_flex()
-            .id("document-status-bar")
-            .debug_selector(|| "document-status-bar".into())
-            .role(Role::Status)
-            .aria_label(accessible_help)
-            .w_full()
-            .flex_none()
+        // Timed messages show as toasts (`push_status_toast`); the bar keeps
+        // its guidance, the page's scale and the navigation help.
+        let context_help = gpui::div()
+            .id("document-context-help")
+            .flex_1()
             .min_w_0()
-            .px_3()
-            .py_1()
-            .gap_4()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .text_color(cx.theme().muted_foreground)
-            .text_xs()
-            .when_some(message, |bar, message| {
-                bar.child(
-                    gpui::div()
-                        .id(DOCUMENT_STATUS_MESSAGE_ID)
-                        .debug_selector(|| DOCUMENT_STATUS_MESSAGE_ID.into())
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(cx.theme().foreground)
-                        .tooltip({
-                            let message = message.clone();
-                            move |window, cx| {
-                                gpui_component::tooltip::Tooltip::new(message.clone())
-                                    .build(window, cx)
-                            }
-                        })
-                        .child(message),
-                )
+            .truncate()
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::element({
+                    let text = context_tooltip.clone();
+                    move |window, _| {
+                        gpui::div()
+                            .w((window.viewport_size().width - window.rem_size() * 4.)
+                                .min(window.rem_size() * 24.))
+                            .whitespace_normal()
+                            .child(text.clone())
+                    }
+                })
+                .build(window, cx)
             })
-            .when(!showing_message, |bar| {
-                bar.child(
-                    gpui::div()
-                        .id("document-context-help")
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .tooltip(move |window, cx| {
-                            gpui_component::tooltip::Tooltip::element({
-                                let text = context_tooltip.clone();
-                                move |window, _| {
-                                    gpui::div()
-                                        .w((window.viewport_size().width - window.rem_size() * 4.)
-                                            .min(window.rem_size() * 24.))
-                                        .whitespace_normal()
-                                        .child(text.clone())
-                                }
-                            })
-                            .build(window, cx)
-                        })
-                        .child(context),
-                )
-            })
+            .child(context);
+        // 8 + its 20px controls + 8, with the grid's unit at the ends and
+        // between items; the line is drawn inside.
+        let bar = gpui_component::status_bar::StatusBar::new()
+            .w_full()
+            .min_w_0()
+            .h(px(crate::layout_metrics::STATUS_BAR))
+            .py_0()
+            .px(px(crate::layout_metrics::SPACE))
+            .gap(px(crate::layout_metrics::SPACE))
+            .border_t_0()
+            .child(context_help)
             .when_some(scale, |bar, (document_id, page_index, label)| {
-                bar.child(
+                bar.right(
                     Button::new(DOCUMENT_STATUS_SCALE_ID)
                         .debug_selector(|| DOCUMENT_STATUS_SCALE_ID.into())
                         .flex_none()
@@ -324,7 +285,7 @@ impl DocumentWorkspace {
                         })),
                 )
             })
-            .child(
+            .right(
                 gpui::div()
                     .id("document-navigation-help")
                     .flex_none()
@@ -339,6 +300,47 @@ impl DocumentWorkspace {
                         .build(window, cx)
                     })
                     .child(navigation),
-            )
+            );
+        gpui::div()
+            .id("document-status-bar")
+            .debug_selector(|| "document-status-bar".into())
+            .role(Role::Status)
+            .aria_label(accessible_help)
+            .w_full()
+            .flex_none()
+            .min_w_0()
+            .relative()
+            .child(bar)
+            .child(crate::layout_metrics::inside_line(
+                crate::layout_metrics::Edge::Top,
+                cx.theme().border,
+            ))
+    }
+
+    /// Shows a new status message as a stock toast. A newer message
+    /// replaces the one before it.
+    pub(super) fn push_status_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((document_id, text, shown)) = self.status_message.clone() else {
+            return;
+        };
+        if Some(document_id) != self.active_document_id
+            || self.status_toast_shown == Some(shown)
+            || shown.elapsed() >= STATUS_MESSAGE_SHOWN
+        {
+            return;
+        }
+        // Toasts live in the window's stock Root; a window without one
+        // (a bare workspace in a test) has nowhere to show them.
+        if window.root::<gpui_component::Root>().flatten().is_none() {
+            return;
+        }
+        self.status_toast_shown = Some(shown);
+        struct StatusToast;
+        window.push_notification(
+            gpui_component::notification::Notification::new()
+                .id::<StatusToast>()
+                .message(text),
+            cx,
+        );
     }
 }

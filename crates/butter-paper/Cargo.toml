@@ -1,6 +1,6 @@
 [package]
 name = "butter-paper"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 publish = false
 license = "MIT"
@@ -9,7 +9,7 @@ license = "MIT"
 default = ["development-pdfium-override"]
 benchmark-evidence = ["gpui/profiler"]
 # Development only: the scripted in-app review driver captures its own windows.
-review-driver = ["gpui/test-support", "gpui_platform/test-support"]
+review-driver = ["gpui/test-support", "gpui_platform/test-support", "gpui-component/test-support"]
 development-pdfium-override = []
 
 [dependencies]
@@ -27,8 +27,8 @@ dunce = "1.0.5"
 flate2 = "1.1.10"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["wayland", "x11", "windows-manifest"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8b1497dbd22fb06f5838a7c0b84a1e54fafa71bc", default-features = false, features = ["font-kit", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "e29de0d3aad5ae473ddb49d4a5c2f06f647e0146" }
-gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "e29de0d3aad5ae473ddb49d4a5c2f06f647e0146" }
+gpui-component = { git = "https://github.com/apotenza92/gpui-kit", rev = "61e5b2fef2ab656f6613244a2ed8b0ed3a4cc5a1" }
+gpui-component-assets = { git = "https://github.com/apotenza92/gpui-kit", rev = "61e5b2fef2ab656f6613244a2ed8b0ed3a4cc5a1" }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "crypto-rust", "sync-secret-service", "windows-native"] }
 libc = "0.2"
@@ -67,9 +67,15 @@ zeroize = "1.9.0"
 rustix = { version = "1.1.4", features = ["fs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2.7"
 core-foundation = "0.10.1"
 core-foundation-sys = "0.8.7"
 security-framework = { version = "3.7.0", features = ["macos-12"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The desktop portal's settings, as GPUI reads them for dark mode.
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "settings"] }
+futures-lite = "2.6.1"
 
 [target.'cfg(windows)'.dependencies]
 # GPUI Component's icons embedded in debug builds too: otherwise they are read

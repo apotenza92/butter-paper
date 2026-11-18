@@ -159,6 +159,8 @@ fn open_with<'a>(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     std::fs::create_dir_all(pdf.parent().unwrap()).unwrap();

@@ -56,6 +56,8 @@ pub use certificate_signing::{
     DOCUMENT_SIGN_PASSWORD_ID, DOCUMENT_SIGN_PLACE_ID, DOCUMENT_SIGN_REASON_ID,
     DOCUMENT_SIGN_TIMESTAMP_ID, DOCUMENT_SIGN_TIMESTAMP_SETTINGS_ID,
 };
+#[path = "document_workspace_page_turn.rs"]
+mod page_turn;
 #[path = "space_pan.rs"]
 mod space_pan;
 #[path = "document_workspace_tables.rs"]
@@ -64,6 +66,9 @@ mod tables;
 mod text_selection;
 #[path = "document_workspace_thumbnails.rs"]
 mod thumbnail_sidebar;
+#[path = "document_workspace_view_motion.rs"]
+mod view_motion;
+pub use page_turn::PageTurnPaint;
 #[path = "document_workspace_viewport.rs"]
 mod viewport;
 #[path = "document_workspace_word.rs"]
@@ -2958,6 +2963,28 @@ pub struct DocumentWorkspace {
     semantic_snap_dimension_increment_input: Option<Entity<InputState>>,
     semantic_snap_input_subscriptions: Vec<Subscription>,
     right_rail_actions_open: bool,
+    /// Zoom and fit commands move the view over a short motion.
+    view_motion: Option<view_motion::ViewMotion>,
+    /// Set while a view motion's command runs, so it runs at once.
+    finishing_view_motion: bool,
+    /// The page whose picture is turning into a new orientation.
+    page_turn: Option<page_turn::PageTurn>,
+    /// The page whose markups fade back in after it turned, from when.
+    markups_return: Option<(DocumentId, usize, Instant)>,
+    /// The selection whose outline and handles are shown, since when.
+    selection_shown: Option<(DocumentId, Vec<MarkupId>, Instant)>,
+    /// Snap guides fading in, or fading out after the snap ended.
+    snap_fade: Option<page_turn::SnapFade>,
+    /// How far snap guides have faded in this frame.
+    snap_guide_fade: f32,
+    /// The box the Snapshot tool copied, flashing since when.
+    snapshot_flash: Option<(DocumentId, u32, PdfRect, Instant)>,
+    /// Thumbnails sliding to their new places after pages moved: each moved
+    /// page's new index and old index, since when.
+    thumbnail_slide: Option<(DocumentId, HashMap<u32, u32>, Instant)>,
+    /// Document tabs sliding to their new places after a reorder: how far
+    /// each started from its new place, since when.
+    tab_slide: Option<(HashMap<DocumentId, f32>, Instant)>,
     right_rail_scroll: ScrollHandle,
     /// The rail overflow cue under the pointer, which names what it does.
     right_rail_overflow_hover: Option<RailOverflowEdge>,
@@ -3048,6 +3075,8 @@ pub struct DocumentWorkspace {
     /// shown: the status bar shows it for a few seconds in place of its
     /// guidance.
     status_message: Option<(DocumentId, String, std::time::Instant)>,
+    /// When the status message last shown as a toast was set.
+    status_toast_shown: Option<std::time::Instant>,
     /// Documents with a page render for navigation in flight. Navigation
     /// requested meanwhile only moves `requested_page`; the next render
     /// starts from there when this one is shown.
@@ -4563,16 +4592,23 @@ impl DocumentWorkspace {
         v_flex()
             .id("document-left-rail")
             .debug_selector(|| "document-left-rail".into())
-            .w_12()
+            // A bar's width: 8 + 32 + 8, its line drawn inside.
+            .w(px(crate::layout_metrics::BAR))
             .h_full()
             .flex_shrink_0()
+            .relative()
             .items_center()
-            .py_2()
+            .pt(px(crate::layout_metrics::SPACE))
+            .gap(px(crate::layout_metrics::SPACE))
+            .bg(cx.theme().background)
             // With thumbnails collapsed, the viewer's stock resize divider
             // already owns this edge. Do not paint a second adjacent line.
-            .when(!enabled || expanded, |rail| rail.border_r_1())
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .when(!enabled || expanded, |rail| {
+                rail.child(crate::layout_metrics::inside_line(
+                    crate::layout_metrics::Edge::Right,
+                    cx.theme().border,
+                ))
+            })
             .child(accessible_disclosure_button(
                 Button::new("document-left-rail-pages")
                     .debug_selector(|| "document-left-rail-pages".into())
@@ -4755,6 +4791,16 @@ impl DocumentWorkspace {
             semantic_snap_dimension_increment_input: None,
             semantic_snap_input_subscriptions: Vec::new(),
             right_rail_actions_open: false,
+            view_motion: None,
+            finishing_view_motion: false,
+            page_turn: None,
+            markups_return: None,
+            selection_shown: None,
+            snap_fade: None,
+            snap_guide_fade: 1.,
+            snapshot_flash: None,
+            thumbnail_slide: None,
+            tab_slide: None,
             right_rail_scroll: ScrollHandle::new(),
             right_rail_overflow_hover: None,
             content_edit_mode: HashSet::new(),
@@ -4800,6 +4846,7 @@ impl DocumentWorkspace {
             content_restriction_confirmed: HashSet::new(),
             restricted_edit_prompt: None,
             status_message: None,
+            status_toast_shown: None,
             navigation_in_flight: HashSet::new(),
             adjacent_page_renders_in_flight: HashSet::new(),
             text_selection: None,
@@ -6126,8 +6173,14 @@ impl DocumentWorkspace {
             return false;
         }
         let title = self.sessions[from_ix].read(cx).title.clone();
+        let old_order = self.session_order(cx);
         let session = self.sessions.remove(from_ix);
         self.sessions.insert(to_ix, session);
+        self.begin_tab_slide(
+            &old_order,
+            (origin == DocumentTabReorderOrigin::Pointer).then_some(document_id),
+            cx,
+        );
         let announcement = format!(
             "Moved {title} to position {} of {}.",
             to_ix + 1,
@@ -11742,6 +11795,13 @@ impl DocumentWorkspace {
         {
             return false;
         }
+        if self.begin_view_motion(
+            document_id,
+            view_motion::ViewMotionEnd::Zoom { mode, zoom_percent },
+            cx,
+        ) {
+            return true;
+        }
         session.update(cx, |session, cx| {
             if session.view_state.mode() != mode {
                 session.hold_current_page_across_mode_change();
@@ -12189,6 +12249,9 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return false;
         };
+        if self.begin_view_motion(document_id, view_motion::ViewMotionEnd::Fit(preset), cx) {
+            return true;
+        }
         session.update(cx, |session, cx| {
             // A plan cancelled by a mode change in the same gesture has no
             // anchor to give; keep the one that change recorded.
@@ -12300,6 +12363,8 @@ impl DocumentWorkspace {
         input_at: Instant,
         cx: &mut Context<Self>,
     ) {
+        // Wheel and pinch input take the view from a zoom still moving.
+        self.cancel_view_motion();
         if let Some(session) = self.session(document_id, cx).cloned() {
             session.update(cx, |session, _| {
                 session.adaptive_performance.observe_input(input_at);
@@ -13409,6 +13474,13 @@ impl DocumentWorkspace {
             .read(cx)
             .page_rotation(page_index)
             .unwrap_or(source_rotation);
+        // Where the page is laid out now: its turn starts there.
+        let old_rect = session.read(cx).viewer.plan_snapshot().and_then(|plan| {
+            plan.page_layouts
+                .iter()
+                .find(|layout| layout.page == page_index as usize)
+                .map(|layout| layout.logical_rect)
+        });
         let generation = self.next_generation();
         let recovery_store = self.document_recovery_store.clone();
         let target_rotation = session.update(cx, |session, cx| {
@@ -13436,6 +13508,13 @@ impl DocumentWorkspace {
             cx.notify();
             Ok::<_, String>(rotation)
         })?;
+        self.begin_page_turn(
+            document_id,
+            page_index as usize,
+            direction == PageRotationDirection::Right,
+            old_rect,
+            cx,
+        );
         let (document_revision, resource_epoch) = {
             let session = session.read(cx);
             (
@@ -22414,6 +22493,19 @@ fn calibration_label(
     )
 }
 
+thread_local! {
+    /// How far snap guides have faded in (1 shown in full); set each frame.
+    static SNAP_GUIDE_FADE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.) };
+    /// The Snapshot tool's copied box flashing this frame, and how strongly.
+    static SNAPSHOT_FLASH: std::cell::RefCell<Option<(DocumentId, u32, PdfRect, f32)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A snap guide colour, faded as snap guides are this frame.
+fn snap_guide_colour(rgb: u32) -> gpui::Hsla {
+    gpui::Hsla::from(gpui::rgb(rgb)).opacity(SNAP_GUIDE_FADE.with(std::cell::Cell::get))
+}
+
 fn paint_semantic_snap_indicator(
     decision: &SemanticSnapDecision,
     page_bounds: Bounds<Pixels>,
@@ -22425,7 +22517,7 @@ fn paint_semantic_snap_indicator(
         page_bounds.origin.x + px(local.x as f32),
         page_bounds.origin.y + px(local.y as f32),
     );
-    let color = gpui::rgb(0x16a34a);
+    let color = snap_guide_colour(0x16a34a);
     let half = px(5.);
     match decision.role {
         SemanticSnapRole::GridPoint => {
@@ -22509,7 +22601,7 @@ fn paint_object_snap_tracking_guides(
         )
     };
     let resolved = to_window(tracking.point);
-    let color = gpui::rgb(0x16a34a);
+    let color = snap_guide_colour(0x16a34a);
     for guide in &tracking.guides {
         let origin = to_window(guide.origin);
         let end = match guide.axis {
@@ -22567,7 +22659,7 @@ fn paint_relationship_measurement(
             end.x += px(offset_px);
         }
     }
-    let color = gpui::rgb(0x16a34a);
+    let color = snap_guide_colour(0x16a34a);
     let tick = px(4.);
     let mut path = PathBuilder::stroke(px(1.25));
     path.move_to(start);
@@ -22590,7 +22682,7 @@ fn paint_relationship_measurement(
         window.paint_path(path, color);
     }
     let middle = point((start.x + end.x) / 2., (start.y + end.y) / 2.);
-    for (width, color) in [(px(4.25), gpui::rgb(0xffffff)), (px(1.25), color)] {
+    for (width, color) in [(px(4.25), snap_guide_colour(0xffffff)), (px(1.25), color)] {
         let mut equals = PathBuilder::stroke(width);
         match axis {
             OrthogonalAxis::Horizontal => {
@@ -24659,6 +24751,22 @@ fn annotation_layer(
                             window,
                         );
                     }
+                    let flash = SNAPSHOT_FLASH.with(|cell| *cell.borrow());
+                    if let Some((_, _, rect, strength)) = flash.filter(|(flash_document, page, _, _)| {
+                        *flash_document == document_id && *page == page_index
+                    }) {
+                        let local = transform.rect_to_local_pixels(rect);
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(
+                                point(
+                                    page_bounds.origin.x + px(local.x as f32),
+                                    page_bounds.origin.y + px(local.y as f32),
+                                ),
+                                size(px(local.width as f32), px(local.height as f32)),
+                            ),
+                            gpui::Hsla::white().opacity(0.6 * strength),
+                        ));
+                    }
                     interaction_chrome::paint_deferred_chrome(window);
                 },
             )
@@ -25119,13 +25227,28 @@ fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<String> {
     Some(format!("Page scale: {line}"))
 }
 
-/// A Draw rail button's tooltip: its name and shortcut, and on a second line
-/// what a page scale adds, worded the same for every tool it enhances.
+/// A Draw rail button's tooltip text: its name, and on a second line what a
+/// page scale adds, worded the same for every tool it enhances.
 fn draw_tool_tooltip(tool: AnnotationTool) -> String {
-    let tool = MeasureFamily::of(tool).map_or(tool, |family| family.tool(false));
+    let tool = tooltip_tool(tool);
     match page_scale_tooltip_line(tool) {
-        Some(line) => format!("{}\n{line}", tool.tooltip_label()),
-        None => tool.tooltip_label(),
+        Some(line) => format!("{}\n{line}", tool.label()),
+        None => tool.label().to_owned(),
+    }
+}
+
+/// A measured tool's tooltip reads as its family's plain tool.
+fn tooltip_tool(tool: AnnotationTool) -> AnnotationTool {
+    MeasureFamily::of(tool).map_or(tool, |family| family.tool(false))
+}
+
+/// A rail tool button's tooltip, with the tool's shortcut as a stock key
+/// binding beside the text.
+fn with_tool_tooltip(button: Button, tool: AnnotationTool) -> Button {
+    let text = draw_tool_tooltip(tool);
+    match tooltip_tool(tool).tooltip_key_binding() {
+        Some(key_binding) => button.tooltip_with_key_binding(text, key_binding),
+        None => button.tooltip(text),
     }
 }
 
@@ -25156,12 +25279,8 @@ fn snap_section(label: &'static str, body: gpui::AnyElement, cx: &App) -> gpui::
         .into_any_element()
 }
 
-fn snap_separator(cx: &App) -> gpui::AnyElement {
-    gpui::div()
-        .h_px()
-        .w_full()
-        .bg(cx.theme().border)
-        .into_any_element()
+fn snap_separator(_cx: &App) -> gpui::AnyElement {
+    gpui_component::separator::Separator::horizontal().into_any_element()
 }
 
 /// Two columns of options, in rows that size to their content: a CSS grid
@@ -25411,8 +25530,10 @@ pub fn thumbnails_fit_beside_properties(
     })
 }
 
+/// The tool rail's width: one unit, then a control and a unit per column
+/// (88px for two), its line drawn inside.
 fn right_rail_width(columns: usize, rem: Pixels) -> Pixels {
-    rem * (0.25 + 2.5 * columns.clamp(1, 8) as f32)
+    rem * (0.5 + 2.5 * columns.clamp(1, 8) as f32)
 }
 
 fn rail_tool_section(
@@ -25701,6 +25822,12 @@ const SIGNATURE_POPOVER_WIDTH: f32 = 384.;
 /// macOS dims window chrome while the window is inactive, as native apps do;
 /// the first click on an inactive window only activates it.
 fn dim_inactive_window_chrome(window: &Window) -> bool {
+    // Review builds can draw a background window as active, so captures for
+    // product screenshots show what a person sees in the active window.
+    #[cfg(feature = "review-driver")]
+    if std::env::var_os("BP_REVIEW_ACTIVE_CHROME").is_some() {
+        return false;
+    }
     cfg!(target_os = "macos") && !window.is_window_active()
 }
 
@@ -26147,7 +26274,11 @@ fn annotation_tool_group(
         .w_full()
         .flex_none()
         .gap_2()
-        .when(dim_chrome, |rail| rail.opacity(0.5))
+        // An open signature popover is in use: neither it nor the rail it
+        // drops from fades with the window.
+        .when(dim_chrome && !signature_popover_open, |rail| {
+            rail.opacity(0.5)
+        })
         .child(rail_tool_section(
             "General",
             vec![
@@ -26204,7 +26335,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_ARROW_TOOL_ID, "Arrow", "arrow-right")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_ARROW_TOOL_ID.into())
-                    .tooltip(draw_tool_tooltip(AnnotationTool::Arrow))
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Arrow))
                     .selected(annotation_tool == AnnotationTool::Arrow && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Arrow && !pan_active)
                     .disabled(save_busy)
@@ -26235,7 +26366,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_CLOUD_TOOL_ID, "Cloud", "cloud")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_CLOUD_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Cloud.tooltip_label())
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Cloud))
                     .selected(annotation_tool == AnnotationTool::Cloud && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Cloud && !pan_active)
                     .disabled(save_busy)
@@ -26250,7 +26381,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_CLOUD_PLUS_TOOL_ID, "Cloud+", "cloud-plus")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_CLOUD_PLUS_TOOL_ID.into())
-                    .tooltip(AnnotationTool::CloudPlus.tooltip_label())
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::CloudPlus))
                     .selected(annotation_tool == AnnotationTool::CloudPlus && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::CloudPlus && !pan_active)
                     .disabled(save_busy)
@@ -26268,7 +26399,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_CALLOUT_TOOL_ID, "Callout", "callout")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_CALLOUT_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Callout.tooltip_label())
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Callout))
                     .selected(annotation_tool == AnnotationTool::Callout && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Callout && !pan_active)
                     .disabled(save_busy)
@@ -26283,7 +26414,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_REDACT_TOOL_ID, "Redact", "shield-x")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_REDACT_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Redact.tooltip_label())
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Redact))
                     .selected(annotation_tool == AnnotationTool::Redact && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Redact && !pan_active)
                     .disabled(save_busy)
@@ -26346,7 +26477,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_RECTANGLE_TOOL_ID, "Rectangle", "square")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_RECTANGLE_TOOL_ID.into())
-                    .tooltip(draw_tool_tooltip(AnnotationTool::Rectangle))
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Rectangle))
                     .selected(annotation_tool == AnnotationTool::Rectangle && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Rectangle && !pan_active)
                     .on_click(cx.listener(move |workspace, event, _, cx| {
@@ -26363,7 +26494,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_ELLIPSE_TOOL_ID, "Ellipse", "circle")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_ELLIPSE_TOOL_ID.into())
-                    .tooltip(draw_tool_tooltip(AnnotationTool::Ellipse))
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Ellipse))
                     .selected(annotation_tool == AnnotationTool::Ellipse && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Ellipse && !pan_active)
                     .disabled(save_busy)
@@ -26378,7 +26509,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_POLYGON_TOOL_ID, "Polygon", "pentagon")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_POLYGON_TOOL_ID.into())
-                    .tooltip(draw_tool_tooltip(AnnotationTool::Polygon))
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Polygon))
                     .selected(
                         MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polygon)
                             && !pan_active,
@@ -26403,7 +26534,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_POLYLINE_TOOL_ID, "Polyline", "waypoints")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_POLYLINE_TOOL_ID.into())
-                    .tooltip(draw_tool_tooltip(AnnotationTool::Polyline))
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Polyline))
                     .selected(
                         MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Polyline)
                             && !pan_active,
@@ -26428,7 +26559,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_LINE_TOOL_ID, "Line", "minus")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_LINE_TOOL_ID.into())
-                    .tooltip(draw_tool_tooltip(AnnotationTool::Line))
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Line))
                     .selected(annotation_tool == AnnotationTool::Line && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Line && !pan_active)
                     .disabled(save_busy)
@@ -26443,7 +26574,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_DIMENSION_TOOL_ID, "Dimension", "dimension")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_DIMENSION_TOOL_ID.into())
-                    .tooltip(draw_tool_tooltip(AnnotationTool::Dimension))
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Dimension))
                     .selected(
                         MeasureFamily::of(annotation_tool) == Some(MeasureFamily::Dimension)
                             && !pan_active,
@@ -26468,7 +26599,7 @@ fn annotation_tool_group(
                 rail_tool_button(DOCUMENT_ARC_TOOL_ID, "Arc", "spline")
                     .disabled(save_busy)
                     .debug_selector(|| DOCUMENT_ARC_TOOL_ID.into())
-                    .tooltip(AnnotationTool::Arc.tooltip_label())
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Arc))
                     .selected(annotation_tool == AnnotationTool::Arc && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Arc && !pan_active)
                     .disabled(save_busy)
@@ -26481,7 +26612,7 @@ fn annotation_tool_group(
                     .into_any_element(),
                 rail_tool_button(DOCUMENT_PEN_TOOL_ID, "Pen", "pen-line")
                     .disabled(save_busy)
-                    .tooltip(AnnotationTool::Pen.tooltip_label())
+                    .map(|button| with_tool_tooltip(button, AnnotationTool::Pen))
                     .debug_selector(|| DOCUMENT_PEN_TOOL_ID.into())
                     .selected(annotation_tool == AnnotationTool::Pen && !pan_active)
                     .toggled(annotation_tool == AnnotationTool::Pen && !pan_active)
@@ -26533,6 +26664,8 @@ fn session_tab_overlay_label(
         .relative()
         .flex_1()
         .min_w_0()
+        // The large tab's text is 16px; titles keep the shell's 14px.
+        .text_sm()
         .child(
             h_flex()
                 .gap_1()
@@ -26585,20 +26718,42 @@ fn session_tab_overlay_label(
 
 /// The stock extra-small close button's size.
 const SESSION_TAB_CLOSE_SIZE: f32 = 20.;
-/// The close button's lane: as wide as the segmented tab's raised area is
-/// high, so the button has equal clearance at its top, bottom and trailing
-/// edge.
-const SESSION_TAB_CLOSE_LANE: f32 = 24.;
-/// How far the unsaved-changes indicator reaches back over the tab's
-/// 12px leading padding, so its centre is as far from the tab's inner left
+/// A document tab's raised area: as tall as the tab row's medium buttons.
+pub(crate) const SESSION_TAB_HEIGHT: f32 = crate::layout_metrics::CONTROL;
+/// The tab row's spacing, the grid's unit: above and below the tabs, at the
+/// row's ends, between tabs, on each side of the separator before the
+/// buttons, and between buttons.
+pub(crate) const SESSION_TAB_ROW_GAP: f32 = crate::layout_metrics::SPACE;
+/// The close button's lane: as wide as the tab's raised area is high, so the
+/// button has equal clearance at its top, bottom and trailing edge.
+const SESSION_TAB_CLOSE_LANE: f32 = SESSION_TAB_HEIGHT;
+/// How far the unsaved-changes indicator reaches back over the large tab's
+/// 16px leading padding, so its centre is as far from the tab's inner left
 /// edge as the close button's is from its inner right edge.
 const SESSION_TAB_INDICATOR_OVERHANG: f32 =
-    12. + SESSION_TAB_CLOSE_SIZE / 2. - SESSION_TAB_CLOSE_LANE / 2.;
+    16. + SESSION_TAB_CLOSE_SIZE / 2. - SESSION_TAB_CLOSE_LANE / 2.;
+
+/// A tab's frame around its raised area, as the tab row's outline buttons
+/// have one. On the row's own background, a tab that is not selected keeps
+/// the segmented track's grey; the selected tab is the raised white one. The
+/// corners follow the raised area: the large segmented track's radius,
+/// inset 3px.
+pub(super) fn session_tab_frame(selected: bool, cx: &App) -> gpui::Div {
+    gpui::div()
+        .absolute()
+        .inset_0()
+        .rounded((cx.theme().radius_lg - px(3.)).max(px(0.)))
+        .border_1()
+        .border_color(cx.theme().border)
+        .when(!selected, |frame| {
+            frame.bg(cx.theme().tokens.tab_bar_segmented)
+        })
+}
 
 fn session_tab_close_lane() -> gpui::Div {
-    // The stock medium segmented tab's raised area is 24px high; the
-    // extra-small close button (20px) sits in a square lane at its trailing
-    // edge, 2px clear of it all round, independent of text height.
+    // The tab's raised area is 32px high; the extra-small close button
+    // (20px) sits in a square lane at its trailing edge, 6px clear of it all
+    // round, independent of text height.
     h_flex()
         .absolute()
         .right_0()
@@ -26613,6 +26768,8 @@ impl Render for DocumentWorkspace {
         // Overlays this draw records are the ones open; a prompt for a tab
         // that has closed is no longer drawn, so it no longer blocks presses.
         crate::overlay_state::begin_overlay_render(cx);
+        self.step_view_motion(window, cx);
+        self.step_selection_fade(window, cx);
         self.open_requested_scale_panel(window, cx);
         self.sync_viewer_toolbar_scale(cx);
         // Release the GPU textures of tile and thumbnail images that are no
@@ -26677,6 +26834,7 @@ impl Render for DocumentWorkspace {
             cx.defer_in(window, Self::open_restricted_edit_prompt);
         }
         self.refresh_status_message(cx);
+        self.push_status_toast(window, cx);
         if let Some(document_id) = self.active_document_id {
             self.sync_document_edits(document_id, cx);
             self.prefetch_page_text(document_id, cx);
@@ -27292,6 +27450,45 @@ impl Render for DocumentWorkspace {
                 viewer_zoom_fallback,
             )
         };
+        let motion_now = cx.background_executor().now();
+        let page_turn = {
+            let viewer_session = self.session(document_id, cx).cloned();
+            self.page_turn_paint(
+                document_id,
+                |page| {
+                    viewer_session
+                        .map(|session| {
+                            let viewer = &session.read(cx).viewer;
+                            let rect = viewer.plan_snapshot().and_then(|plan| {
+                                plan.page_layouts
+                                    .iter()
+                                    .find(|layout| layout.page == page)
+                                    .map(|layout| layout.logical_rect)
+                            });
+                            (viewer.page_fallback_tiles(page), rect)
+                        })
+                        .unwrap_or_default()
+                },
+                motion_now,
+                window,
+            )
+        };
+        let page_markup_opacity = self.page_markup_opacity(document_id, motion_now, window);
+        let (semantic_snap_decision, object_snap_tracking_result, relationship_snap_guides) = self
+            .fade_snap_guides(
+                document_id,
+                (
+                    semantic_snap_decision,
+                    object_snap_tracking_result,
+                    relationship_snap_guides,
+                ),
+                motion_now,
+                window,
+                cx,
+            );
+        SNAP_GUIDE_FADE.with(|fade| fade.set(self.snap_guide_fade));
+        let flash = self.step_snapshot_flash(window, cx);
+        SNAPSHOT_FLASH.with(|cell| *cell.borrow_mut() = flash);
         // The selected markup's text first: a press there edits it.
         let markup_text_cursor =
             self.markup_text_hover
@@ -28206,17 +28403,22 @@ impl Render for DocumentWorkspace {
             .h_full()
             .flex_none()
             .min_h_0()
-            .border_l_1()
-            .border_color(cx.theme().border)
+            .child(crate::layout_metrics::inside_line(
+                crate::layout_metrics::Edge::Left,
+                cx.theme().border,
+            ))
             .child(
                 h_flex()
-                    .h_12()
+                    .h(px(crate::layout_metrics::BAR))
                     .flex_none()
                     .w_full()
+                    .relative()
                     .justify_center()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
+                    .gap(px(crate::layout_metrics::SPACE))
+                    .child(crate::layout_metrics::inside_line(
+                        crate::layout_metrics::Edge::Bottom,
+                        cx.theme().border,
+                    ))
                     .child(
                         rail_tool_button(
                             "document-workspace-rail-actions",
@@ -28253,14 +28455,13 @@ impl Render for DocumentWorkspace {
                     )
                     .children(right_rail_cues),
             );
-        let properties_resizable = window.use_keyed_state(
-            (
-                "document-workspace-properties-size-state",
-                usize::from(properties_visible),
-            ),
-            cx,
-            |_, _| ResizableState::default(),
-        );
+        // One state for both layouts, so the panel's show and hide motion
+        // carries on across the change; the sizing wrapper gives the panel its
+        // preferred width again each time it shows.
+        let properties_resizable =
+            window.use_keyed_state("document-workspace-properties-size-state", cx, |_, _| {
+                ResizableState::default()
+            });
         let rail_width = right_rail_width(RIGHT_RAIL_COLUMNS, window.rem_size());
         let viewport = self.render_document_viewport(
             ViewportInputs {
@@ -28272,6 +28473,8 @@ impl Render for DocumentWorkspace {
                 document_opening_batch_count,
                 focused_annotation_id,
                 viewer_zoom_fallback,
+                page_turn,
+                page_markup_opacity,
                 hot_annotation_handle,
                 hovered_annotation,
                 image_assets,
@@ -28406,39 +28609,34 @@ impl Render for DocumentWorkspace {
             &self.viewer_resizable,
             thumbnails_visible,
         );
-        // Expanded and collapsed layouts must not share measured panel sizes:
-        // the hidden properties slot has no bounds, while the canvas fills it.
         let properties_panels = self.right_sidebar_sizing.wrap(
-            h_resizable((
-                "document-workspace-right-properties-panels",
-                usize::from(properties_visible),
-            ))
-            .with_state(&properties_resizable)
-            .on_resize(cx.listener(|workspace, state, window, cx| {
-                workspace
-                    .right_sidebar_sizing
-                    .remember_drag(state, window, cx);
-                workspace.sync_active_viewer_toolbar(cx);
-                cx.notify();
-            }))
-            .child(
-                resizable_panel().child(
-                    gpui::div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .overflow_hidden()
-                        .child(viewer_panels),
+            h_resizable("document-workspace-right-properties-panels")
+                .with_state(&properties_resizable)
+                .on_resize(cx.listener(|workspace, state, window, cx| {
+                    workspace
+                        .right_sidebar_sizing
+                        .remember_drag(state, window, cx);
+                    workspace.sync_active_viewer_toolbar(cx);
+                    cx.notify();
+                }))
+                .child(
+                    resizable_panel().child(
+                        gpui::div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(viewer_panels),
+                    ),
+                )
+                .child(
+                    resizable_panel()
+                        .visible(self.right_rail_actions_open || inspector_visible)
+                        .size(window.rem_size() * 18.75)
+                        .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
+                        .flex_none()
+                        .child(supporting_actions),
                 ),
-            )
-            .child(
-                resizable_panel()
-                    .visible(self.right_rail_actions_open || inspector_visible)
-                    .size(window.rem_size() * 18.75)
-                    .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
-                    .flex_none()
-                    .child(supporting_actions),
-            ),
             &properties_resizable,
             properties_visible,
         );
@@ -28680,7 +28878,8 @@ mod tests {
         apply_recovery_preparation_result, block_recovery_after_authority_conflict,
         document_viewport_cursor_style, draw_tool_tooltip, point, px,
         rectangle_resize_cursor_style, replace_recovery_timeline_reconciled, size,
-        split_text_box_rich_lines, text_box_rich_line_x, validate_existing_text_editor_authority,
+        split_text_box_rich_lines, text_box_rich_line_x, tooltip_tool,
+        validate_existing_text_editor_authority,
     };
 
     #[test]
@@ -28726,17 +28925,16 @@ mod tests {
         use crate::shortcut_label::shortcut_label;
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Rectangle),
-            "Rectangle (R)\nPage scale: shows width and height while drawing"
+            "Rectangle\nPage scale: shows width and height while drawing"
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Line),
-            "Line (L)\nPage scale: shows length and angle while drawing"
+            "Line\nPage scale: shows length and angle while drawing"
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Polyline),
             format!(
-                "Polyline ({})\nPage scale: shows lengths while drawing, and the total ({})",
-                shortcut_label("Shift+N"),
+                "Polyline\nPage scale: shows lengths while drawing, and the total ({})",
                 shortcut_label("Shift+Alt+Q")
             )
         );
@@ -28744,21 +28942,25 @@ mod tests {
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Area),
             format!(
-                "Polygon ({})\nPage scale: shows lengths while drawing, and the area ({})",
-                shortcut_label("Shift+P"),
+                "Polygon\nPage scale: shows lengths while drawing, and the area ({})",
                 shortcut_label("Shift+Alt+A")
             )
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Dimension),
             format!(
-                "Dimension ({})\nPage scale: shows the line's length as its text ({})",
-                shortcut_label("Shift+L"),
+                "Dimension\nPage scale: shows the line's length as its text ({})",
                 shortcut_label("Shift+Alt+L")
             )
         );
         // Tools a scale does not change keep a single line.
-        assert_eq!(draw_tool_tooltip(AnnotationTool::Pen), "Pen (P)");
+        assert_eq!(draw_tool_tooltip(AnnotationTool::Pen), "Pen");
+        // The shortcut shows beside the text as a stock key binding.
+        assert!(
+            tooltip_tool(AnnotationTool::Area)
+                .tooltip_key_binding()
+                .is_some()
+        );
         assert!(
             [
                 AnnotationTool::Rectangle,

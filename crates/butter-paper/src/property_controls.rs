@@ -203,10 +203,14 @@ impl RenderOnce for PropertyGroup {
     }
 }
 
-/// A properties panel's content: its groups, spaced apart, inside the
-/// panel's margins.
+/// A properties panel's content: its groups, a group's space apart, inside
+/// the grid's margins.
 pub fn property_body() -> gpui::Div {
-    v_flex().w_full().min_w_0().px_3().pt_3().pb_4().gap_5()
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .p(gpui::px(crate::layout_metrics::SPACE))
+        .gap(gpui::px(crate::layout_metrics::GROUP_SPACE))
 }
 
 /// A colour as one control: its swatch and hex value, opening the palette.
@@ -558,12 +562,16 @@ impl RenderOnce for PropertyInspectorHeader {
             .id(self.id)
             .debug_selector(move || self.id.into())
             .w_full()
-            .h_12()
+            // A bar: 8 + 32 + 8 with the grid's margins, its line inside.
+            .h(gpui::px(crate::layout_metrics::BAR))
             .flex_shrink_0()
+            .relative()
             .items_center()
-            .px_3()
-            .border_b_1()
-            .border_color(cx.theme().border)
+            .px(gpui::px(crate::layout_metrics::SPACE))
+            .child(crate::layout_metrics::inside_line(
+                crate::layout_metrics::Edge::Bottom,
+                cx.theme().border,
+            ))
             // Equal lanes keep the title centred; each fits the standard X.
             .child(lane(div()).flex_none())
             // Only the title is semibold: a trailing control's menu or

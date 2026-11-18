@@ -249,11 +249,9 @@ impl DocumentWorkspace {
                     .id(DOCUMENT_ERROR_ID)
                     .debug_selector(|| DOCUMENT_ERROR_ID.into())
                     .w_full()
-                    .px_3()
-                    .py_2()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(error),
+                    .px(px(crate::layout_metrics::SPACE))
+                    .py(px(crate::layout_metrics::SPACE))
+                    .child(gpui_component::alert::Alert::error("document-error-alert", error)),
             )
         })
         .when_some(presentation_error.filter(|_| !recovery_only), |root, error| {

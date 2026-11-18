@@ -143,6 +143,8 @@ fn open_in<'a>(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let scratch = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(

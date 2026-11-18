@@ -97,6 +97,8 @@ struct Opened<'a> {
 fn three_pages(cx: &mut TestAppContext) -> Opened<'_> {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -544,6 +546,8 @@ fn merge_documents_lists_open_and_dropped_pdfs_and_merges_them_in_order(cx: &mut
     use butter_paper::generated_document::GeneratedDocumentStore;
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -632,6 +636,8 @@ fn merge_documents_cancel_closes_the_dialog(cx: &mut TestAppContext) {
     use std::time::Duration;
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -782,6 +788,8 @@ fn merge_documents_keeps_focus_when_a_focused_row_is_removed(cx: &mut TestAppCon
     use std::time::Duration;
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -909,6 +917,8 @@ fn merge_documents_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) 
     use butter_paper::generated_document::GeneratedDocumentStore;
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -970,6 +980,8 @@ fn the_page_scale_panel_drops_from_the_scale_and_closes_like_a_popup(cx: &mut Te
     use gpui::{Modifiers, point, px};
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1030,8 +1042,10 @@ fn the_page_scale_panel_drops_from_the_scale_and_closes_like_a_popup(cx: &mut Te
         panel.top() >= scale.bottom(),
         "the panel drops below the Scale"
     );
+    // The panel's content sits inside the stock popover's 12px padding,
+    // whose surface ends at the Scale's right edge.
     assert!(
-        (panel.right() - scale.right()).abs() <= px(1.),
+        panel.right() <= scale.right() && scale.right() - panel.right() <= px(13.),
         "and ends at its right edge"
     );
     assert!(panel.right() <= viewport.width && panel.bottom() <= viewport.height);

@@ -2172,6 +2172,7 @@ fn main() {
     });
     application.run(move |cx: &mut App| {
         gpui_component::init(cx);
+        butter_paper::reduce_motion::follow_system(cx);
         init_application_shell_actions(cx);
         init_document_workspace_actions(cx);
 
@@ -4896,11 +4897,11 @@ mod review_driver {
                         pause(cx, 600).await;
                     }
                     "dispatch" => {
-                        // dispatch W ACTION: a table row or page rotation
-                        // action, as its menu item sends it.
+                        // dispatch W ACTION: a save, table row or page
+                        // rotation action, as its menu item sends it.
                         use butter_paper::document_workspace::{
                             DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow,
-                            RotatePageLeft, RotatePageRight,
+                            RotatePageLeft, RotatePageRight, Save,
                         };
                         let action: Box<dyn gpui::Action> = match words[2] {
                             "rotate-left" => Box::new(RotatePageLeft),
@@ -4908,6 +4909,7 @@ mod review_driver {
                             "insert-row-above" => Box::new(InsertTableRowAbove),
                             "insert-row-below" => Box::new(InsertTableRowBelow),
                             "delete-row" => Box::new(DeleteTableRow),
+                            "save" => Box::new(Save),
                             other => {
                                 writeln!(log, "unknown action {other}").unwrap();
                                 continue;
@@ -5104,6 +5106,29 @@ mod review_driver {
                             )
                             .unwrap();
                         });
+                    }
+                    "move-id" => {
+                        // move-id W SELECTOR: the pointer moves to the centre of
+                        // the element painted with that debug selector, in one
+                        // event, as a fast pointer crosses adjacent buttons.
+                        let window = number(1) as usize;
+                        let selector = words[2];
+                        let Some(position) = element_point(cx, window, selector, false) else {
+                            failures += 1;
+                            writeln!(log, "FAIL: move-id {selector}: not painted").unwrap();
+                            continue;
+                        };
+                        writeln!(log, "move-id {selector} at {position:?}").unwrap();
+                        dispatch_raw(
+                            cx,
+                            window,
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                pressed_button: None,
+                                modifiers: Modifiers::default(),
+                            }),
+                        );
+                        pause(cx, 400).await;
                     }
                     "move" => {
                         // move W X Y: the pointer moves to window coordinates.
@@ -6441,12 +6466,13 @@ mod review_driver {
                 let mut focus = String::new();
                 let result = entry.handle.update(cx, |_, window, cx| {
                     focus = format!(
-                        "focused={} in_workspace={} cursor_visible={} context={:?}",
+                        "focused={} in_workspace={} cursor_visible={} reduce_motion={} context={:?}",
                         window.focused(cx).is_some(),
                         workspace_focus
                             .as_ref()
                             .is_some_and(|handle| handle.contains_focused(window, cx)),
                         cx.is_cursor_visible(),
+                        cx.reduce_motion(),
                         window.context_stack().iter().map(|context| format!("{context:?}")).collect::<Vec<_>>()
                     );
                     let image = window.render_to_image();

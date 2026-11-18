@@ -110,7 +110,11 @@ fn legacy_json_and_preview_preserve_complete_pattern_identity_and_spacing() {
 
 #[gpui::test]
 fn real_dialog_resets_state_and_returns_exact_focus(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manager_slot = Rc::new(RefCell::new(None));
     let focus_slot = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -163,7 +167,11 @@ fn real_dialog_resets_state_and_returns_exact_focus(cx: &mut TestAppContext) {
 fn rendered_browse_and_create_layouts_stay_horizontally_bounded_and_scrollable(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (_, cx) = cx.add_window_view(move |window, cx| {
         Root::new(
             cx.new(|cx| {
@@ -697,7 +705,11 @@ fn library_groups_templates_by_paper_size_with_a4_built_ins() {
 
 #[gpui::test]
 fn template_library_lists_one_paper_size_and_turns_its_paper(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let preview_record = |id: &str, name: &str| TemplateManagerRecord::built_in(id, name, "");
     let model = TemplateManagerModel::new(
         vec![
@@ -782,7 +794,11 @@ fn template_library_lists_one_paper_size_and_turns_its_paper(cx: &mut TestAppCon
 
 #[gpui::test]
 fn a_long_template_name_truncates_beside_its_remove_control(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let imported_id = "imported-00000000-0000-4000-8000-000000000000";
     let long_name = "Imported site inspection form with a very long descriptive name for the job";
     let model = TemplateManagerModel::new(
@@ -836,7 +852,11 @@ fn imported_preview_state(
     renderer: FirstPageRenderer,
     label: &str,
 ) -> (bool, bool) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = owned_test_root(label);
     let library_root = root.join("library");
     let source = root.join("Site Form.pdf");
@@ -1089,7 +1109,11 @@ fn save_document_as_template_copies_only_the_authorized_source_and_recovers_from
 fn workspace_save_command_routes_once_through_the_retained_manager_and_recovers(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = owned_test_root("workspace-save-route");
     let library_root = root.join("library");
     let source = root.join("Current Drawing.pdf");
@@ -1148,7 +1172,11 @@ fn workspace_save_command_routes_once_through_the_retained_manager_and_recovers(
 fn injected_native_picker_completion_imports_persistently_and_recovers_from_failure(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = owned_test_root("native-picker");
     let library_root = root.join("library");
     let source = root.join("Site Form.pdf");
@@ -1226,7 +1254,11 @@ fn injected_native_picker_completion_imports_persistently_and_recovers_from_fail
 
 #[gpui::test]
 fn real_list_keyboard_selection_tracks_stable_template_identity(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let model = TemplateManagerModel::new(
         vec![
             TemplateManagerRecord::built_in("built-in-blank", "Blank Paper", "A3 · Landscape"),
@@ -1268,7 +1300,11 @@ fn real_list_keyboard_selection_tracks_stable_template_identity(cx: &mut TestApp
 fn real_manager_primary_action_creates_an_independent_dirty_workspace_session(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = owned_test_root("manager-create-document");
     let library_root = root.join("library");
     let store_root = root.join("documents");
@@ -1330,7 +1366,11 @@ fn real_manager_primary_action_creates_an_independent_dirty_workspace_session(
 
 #[gpui::test]
 fn removable_template_requires_confirmation_before_library_mutation(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manager_slot = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let manager_slot = manager_slot.clone();
@@ -1404,7 +1444,11 @@ fn removable_template_requires_confirmation_before_library_mutation(cx: &mut Tes
 
 #[gpui::test]
 fn real_component_manager_renders_dynamic_rows_validation_and_create_flow(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let model = TemplateManagerModel::new(
         vec![
             TemplateManagerRecord::built_in(
@@ -1615,7 +1659,11 @@ impl Render for TemplateFocusShell {
 
 #[gpui::test]
 fn removing_a_template_by_keyboard_keeps_focus_in_the_manager(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -1718,7 +1766,11 @@ fn removing_a_template_by_keyboard_keeps_focus_in_the_manager(cx: &mut TestAppCo
 
 #[gpui::test]
 fn a_template_saved_in_another_window_appears_in_the_list(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = owned_test_root("shared-reload");
     let library_root = root.join("library");
     let manager_slot = Rc::new(RefCell::new(None));
@@ -1774,7 +1826,11 @@ impl Render for TemplateDialogLayerHarness {
 
 #[gpui::test]
 fn the_template_dialog_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manager_slot = Rc::new(RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let manager_slot = manager_slot.clone();

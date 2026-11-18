@@ -471,14 +471,12 @@ impl ViewerToolbarStrip {
             (None, _) => format!("Page {page} has no scale. Switch on to set one."),
         }
         .into();
-        let shortcut = crate::shortcut_label::shortcut_label("Shift+Alt+S");
         let menu_tooltip: SharedString = match &scale.label {
-            Some(label) if scale.on => {
-                format!("Page {page}'s scale: {label}. Change it… ({shortcut})")
-            }
-            _ => format!("Set page {page}'s scale… ({shortcut})"),
+            Some(label) if scale.on => format!("Page {page}'s scale: {label}. Change it…"),
+            _ => format!("Set page {page}'s scale…"),
         }
         .into();
+        let menu_key_binding = crate::shortcut_label::shortcut_kbd("Shift+Alt+S");
         let switch = Switch::new("viewer-scale-toggle")
             .checked(scale.on)
             .disabled(disabled)
@@ -521,7 +519,10 @@ impl ViewerToolbarStrip {
             .h_full()
             .px_2()
             .disabled(disabled)
-            .tooltip(menu_tooltip)
+            .map(|button| match menu_key_binding {
+                Some(key_binding) => button.tooltip_with_key_binding(menu_tooltip, key_binding),
+                None => button.tooltip(menu_tooltip),
+            })
             .when(fit == ViewerToolbarFit::Full, |button| {
                 button.child(
                     div()
@@ -560,7 +561,7 @@ impl ViewerToolbarStrip {
                     .h_full()
                     .items_center(),
             )
-            .child(div().w(px(1.)).h_full().bg(theme.border))
+            .child(gpui_component::separator::Separator::vertical().h_full())
             .child(menu)
             .into_any_element()
     }
@@ -794,16 +795,20 @@ impl Render for ViewerToolbarStrip {
         // spaces keep the view controls centred. All scroll with the
         // controls when the strip is narrow.
         let edit_pdf = self.edit_pdf.map(|on| {
-            let shortcut = crate::shortcut_label::shortcut_label("Shift+T");
             let tooltip = if on {
-                format!("Stop editing the PDF's text, drawings and images ({shortcut})")
+                "Stop editing the PDF's text, drawings and images"
             } else {
-                format!("Edit the PDF's text, drawings and images ({shortcut})")
+                "Edit the PDF's text, drawings and images"
             };
             let switch = Switch::new("viewer-edit-pdf-switch")
                 .checked(on)
                 .disabled(disabled)
-                .tooltip(tooltip)
+                .map(
+                    |switch| match crate::shortcut_label::shortcut_kbd("Shift+T") {
+                        Some(key_binding) => switch.tooltip_with_key_binding(tooltip, key_binding),
+                        None => switch.tooltip(tooltip),
+                    },
+                )
                 .on_click(cx.listener(|_, _: &bool, _, cx| {
                     cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
                 }));
@@ -852,7 +857,7 @@ impl Render for ViewerToolbarStrip {
                 .clone()
                 .map(|scale| self.render_scale_control(scale, fit, disabled, cx));
             h_flex()
-                .gap_1p5()
+                .gap_2()
                 .flex_shrink_0()
                 .whitespace_nowrap()
                 .items_center()
@@ -930,14 +935,17 @@ impl Render for ViewerToolbarStrip {
             .debug_selector(|| VIEWER_TOOLBAR_ID.into())
             .tab_group()
             .w_full()
-            .h_12()
+            // A bar: 8 + 32 + 8, its line drawn inside.
+            .h(px(crate::layout_metrics::BAR))
             .flex_shrink_0()
             .min_w_0()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .relative()
             .track_focus(&self.focus_handle)
+            .child(crate::layout_metrics::inside_line(
+                crate::layout_metrics::Edge::Bottom,
+                cx.theme().border,
+            ))
             .child(
                 h_flex()
                     .id(VIEWER_TOOLBAR_SCROLL_ID)
@@ -961,7 +969,7 @@ impl Render for ViewerToolbarStrip {
                             // as far from each (two equal spacers grow alike).
                             // Compact: the same order, packed from the left at
                             // the group gap.
-                            .child(h_flex().flex_shrink_0().items_center().pl_1p5().when_some(
+                            .child(h_flex().flex_shrink_0().items_center().pl_2().when_some(
                                 self.page_navigator.clone(),
                                 |slot, navigator| {
                                     slot.child(
@@ -981,11 +989,12 @@ impl Render for ViewerToolbarStrip {
                                     .flex_shrink_0()
                                     .justify_center()
                                     .items_center()
-                                    .gap_1p5()
-                                    // The edge inset matches the gap between groups;
+                                    .gap_2()
+                                    // The edge inset matches the gap between groups,
+                                    // the grid's unit;
                                     // controls keep their intrinsic sizes and scroll
                                     // rather than shrink.
-                                    .px_1p5()
+                                    .px_2()
                                     .py_1()
                                     .when_some(self.zoom_control.clone(), |toolbar, control| {
                                         toolbar.child(
@@ -1002,7 +1011,7 @@ impl Render for ViewerToolbarStrip {
                                             .debug_selector(|| VIEWER_PAGE_LAYOUT_ID.into())
                                             .flex_shrink_0()
                                             .items_center()
-                                            .gap_1p5()
+                                            .gap_2()
                                             .child(h_flex().flex_shrink_0().child(fit_controls))
                                             .child(
                                                 h_flex()
@@ -1036,11 +1045,11 @@ impl Render for ViewerToolbarStrip {
                                     .when(!full, |slot| slot.flex_1())
                                     .flex_shrink_0()
                                     .items_center()
-                                    .gap_1p5()
+                                    .gap_2()
                                     // The edge inset, unless the slot is empty
                                     // and the page layout's own inset ends the
                                     // toolbar.
-                                    .when(has_switches, |slot| slot.pr_1p5())
+                                    .when(has_switches, |slot| slot.pr_2())
                                     .children(edit_pdf)
                                     .when(!full, |slot| slot.child(h_flex().flex_1()))
                                     .children(signatures),

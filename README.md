@@ -9,7 +9,7 @@ workflows.
 
 **[Download Butter Paper](https://apotenza92.github.io/butter-paper/)**
 
-![Markups on a floor plan](assets/screenshots/1-markup.png)
+![Markups on a floor plan: captioned clouds, a highlight, a box and a note, with a cloud's properties open](assets/screenshots/1-markup.png)
 
 - Mark up PDFs with text boxes, callouts, clouds, arrows, highlights, ink,
   shapes, images and redactions.
@@ -28,7 +28,11 @@ workflows.
 
 | Measure a scaled drawing | Start from a paper template |
 | --- | --- |
-| ![Length and area measurements on a scaled floor plan](assets/screenshots/2-measure.png) | ![The New from template picker with grid paper templates](assets/screenshots/3-templates.png) |
+| ![An area and a length measured at 1:100 on a floor plan, with the area's properties open](assets/screenshots/2-measure.png) | ![The New from template picker with Dot Grid selected](assets/screenshots/3-templates.png) |
+| **Sign documents** | **Work through a drawing set** |
+| ![The Signature panel with Draw, Type and Image and a code to sign with a phone](assets/screenshots/4-sign.png) | ![Page Thumbnails beside a three-sheet drawing set](assets/screenshots/5-pages.png) |
+
+![Markups on a floor plan in the dark theme](assets/screenshots/6-dark.png)
 
 Butter Paper isn't affiliated with or endorsed by Bluebeam or Adobe; their
 names are trademarks of their respective owners.

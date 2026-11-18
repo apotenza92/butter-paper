@@ -579,7 +579,11 @@ fn native_document_ingress_rejects_malformed_percent_encoding_and_nul() {
 
 #[gpui::test]
 fn native_application_close_action_enters_the_dirty_close_transaction(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -628,7 +632,11 @@ fn native_application_close_action_enters_the_dirty_close_transaction(cx: &mut T
 fn native_application_root_accepts_real_external_pdf_drops_and_preserves_drop_origin_policy(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new({
         let backend = backend.clone();
@@ -801,7 +809,11 @@ fn native_application_root_accepts_real_external_pdf_drops_and_preserves_drop_or
 #[gpui::test]
 fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestAppContext) {
     use butter_paper::document_workspace::document_session_tab_id;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     let first = workspace.update(cx, |workspace, cx| {
@@ -825,13 +837,14 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
     let viewport = cx
         .debug_bounds("document-workspace-native-session-tab-bar")
         .unwrap();
-    // Stock segmented tabs: the bar is the whole row, its first tab inside
-    // the bar's 4px inset, and tabs 2px apart on it.
+    // Segmented tabs: the bar is the whole row. The row has one spacing,
+    // the room above and below its 32px tabs: the first tab's inset and the
+    // space between tabs.
     let gap = second_bounds.left() - first_bounds.right();
-    assert_eq!(gap, px(2.), "segmented tabs sit 2px apart on their track");
+    assert_eq!(gap, px(8.), "tabs sit the row's spacing apart");
     assert_eq!(
         first_bounds.left() - strip.left(),
-        px(4.),
+        px(8.),
         "the bar fills the strip, the first tab in its inset"
     );
     assert!(
@@ -844,14 +857,24 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
         .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID)
         .unwrap();
     let last_bounds = cx.debug_bounds("document-3-session-tab").unwrap();
-    assert_eq!(track_actions.left() - last_bounds.right(), px(4.));
+    // One spacing across the row: after the last tab, on each side of the
+    // separator, and between the buttons.
+    let row_gap = px(8.);
+    assert_eq!(track_actions.left() - last_bounds.right(), row_gap);
     let open = cx.debug_bounds("document-tab-open").unwrap();
     let new_pdf = cx.debug_bounds("document-tab-new-pdf").unwrap();
     let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
     let menu = cx.debug_bounds("document-tabs-overflow").unwrap();
-    assert!(open.left() >= track_actions.left());
-    assert!(new_pdf.left() > open.right() && picker.left() >= new_pdf.right());
-    assert!(menu.left() > picker.right());
+    // The separator line starts the actions and takes no width of its own:
+    // New Tab follows it by the same spacing.
+    assert_eq!(open.left() - track_actions.left(), row_gap);
+    assert_eq!(new_pdf.left() - open.right(), row_gap);
+    assert_eq!(
+        picker.left(),
+        new_pdf.right(),
+        "the split control is one piece"
+    );
+    assert_eq!(menu.left() - picker.right(), row_gap);
     // The bar runs to the window's edge.
     assert_eq!(viewport.right(), strip.right());
     cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
@@ -870,10 +893,10 @@ fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestA
                 butter_paper::document_workspace::document_session_close_id(id).into_boxed_str(),
             );
             let close = cx.debug_bounds(close_id).expect("close rendered");
-            // The segmented tab's raised area is 24px high; the close
-            // button sits in a square lane at its end, equally clear of it
-            // at the top, bottom and trailing edge.
-            let raised = px(24.);
+            // The tab's raised area is 32px high, as the row's buttons; the
+            // close button sits in a square lane at its end, equally clear
+            // of it at the top, bottom and trailing edge.
+            let raised = px(32.);
             assert_eq!(
                 close.size.width, close.size.height,
                 "close needs a square frame"
@@ -942,7 +965,11 @@ fn document_tabs_sit_on_a_segmented_track_that_fills_the_strip_and_scrolls_when_
     use butter_paper::document_workspace::{
         DOCUMENT_SESSION_TAB_TRACK_ID, document_session_close_id, document_session_tab_id,
     };
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     let ids = (0..2)
@@ -966,9 +993,9 @@ fn document_tabs_sit_on_a_segmented_track_that_fills_the_strip_and_scrolls_when_
     };
     let first = tab_bounds(cx, ids[0]);
     let last = tab_bounds(cx, ids[1]);
-    // shadcn's TabsList, inset 4px. A few tabs still take the whole strip:
+    // Inset by the row's spacing. A few tabs still take the whole strip:
     // the track is the whole row, edge to edge and top to bottom, square.
-    assert_eq!(first.left() - track.left(), px(4.));
+    assert_eq!(first.left() - track.left(), px(8.));
     assert!(
         track.right() - last.right() > px(100.),
         "the track continues past a few tabs: track={track:?}, last={last:?}"
@@ -1055,7 +1082,11 @@ fn document_tabs_sit_on_a_segmented_track_that_fills_the_strip_and_scrolls_when_
 
 #[gpui::test]
 fn empty_workspace_retains_tab_bar_boundaries_and_pinned_actions(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     let (_, cx) = cx.add_window_view(move |window, cx| Root::new(workspace, window, cx));
@@ -1070,11 +1101,15 @@ fn empty_workspace_retains_tab_bar_boundaries_and_pinned_actions(cx: &mut TestAp
     let picker = cx.debug_bounds("document-tab-template-picker").unwrap();
     assert_eq!(
         strip.size.height,
-        px(37.),
-        "empty row is shadcn's 36px TabsList and a bottom border"
+        px(48.),
+        "empty row is a bar: 8 + 32 + 8, its line drawn inside"
     );
     assert_eq!(divider.top(), strip.top());
-    assert_eq!(divider.bottom(), strip.bottom() - px(1.));
+    assert_eq!(
+        divider.bottom(),
+        strip.bottom(),
+        "the line takes no layout space"
+    );
     // New Tab sits on the empty track, New from template beside it; the
     // track is the whole row.
     let track = cx
@@ -1092,7 +1127,11 @@ fn empty_workspace_retains_tab_bar_boundaries_and_pinned_actions(cx: &mut TestAp
 
 #[gpui::test]
 fn workspace_tabs_reorder_with_one_pointer_move_and_cancel_outside(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     let ids = (0..3)
@@ -1164,7 +1203,11 @@ fn workspace_tabs_reorder_with_one_pointer_move_and_cancel_outside(cx: &mut Test
 fn workspace_integration_crowded_tabs_keep_actions_pinned_for_both_wheel_axes(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     for ix in 0..12 {
@@ -1212,8 +1255,8 @@ fn workspace_integration_crowded_tabs_keep_actions_pinned_for_both_wheel_axes(
     assert_eq!(cut.top(), tabs.top(), "the tab bar starts at the strip top");
     assert_eq!(
         cut.bottom(),
-        tabs.bottom() - px(1.),
-        "the tab bar meets the bottom border"
+        tabs.bottom(),
+        "the tab bar fills the strip; its line is drawn inside"
     );
     assert!(overflow.right() < cut.right());
     let target = point(tabs.left() + px(60.), tabs.center().y);
@@ -1256,7 +1299,11 @@ fn workspace_integration_crowded_tabs_keep_actions_pinned_for_both_wheel_axes(
 
 #[gpui::test]
 fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
@@ -1401,7 +1448,11 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
 fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_defaults(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
@@ -1490,7 +1541,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
     // The exact fit boundary has no extra rounding margin or oscillation:
     // both rails, both sidebars and the least page between them.
     let fit = 48.
-        + 84.
+        + 88.
         + 360.
         + 400.
         + 16. * butter_paper::document_workspace::PAGE_BESIDE_SIDEBARS_MIN_REMS;
@@ -1616,7 +1667,7 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
         if level == 3 {
             // Just too narrow at this interface size for the least page
             // between thumbnails and properties (3 + 15 + 18.75 + 18.75 rem,
-            // and the 5.25 rem tool rail).
+            // and the 5.5 rem tool rail).
             let narrow = rem * 60.5;
             cx.simulate_resize(gpui::size(narrow, px(1000.)));
             settle(cx);
@@ -1685,7 +1736,11 @@ fn workspace_sidebar_dividers_resize_independently_and_double_click_restores_def
 
 #[gpui::test]
 fn workspace_left_rail_toggles_existing_panel_without_moving_rail(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
@@ -1840,7 +1895,11 @@ fn workspace_right_rail_replaces_horizontal_tools_and_keeps_canvas_band_between_
     cx: &mut TestAppContext,
 ) {
     use butter_paper::annotation_adapter::AnnotationTool;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
@@ -1859,7 +1918,7 @@ fn workspace_right_rail_replaces_horizontal_tools_and_keeps_canvas_band_between_
         .expect("right rail");
     let left = cx.debug_bounds("document-left-rail").unwrap();
     let toolbar = cx.debug_bounds("viewer-toolbar").unwrap();
-    assert_eq!(rail.size.width, px(84.), "two tool columns by default");
+    assert_eq!(rail.size.width, px(88.), "two tool columns by default");
     assert_eq!(rail.top(), left.top(), "both rails meet the tab band");
     assert_eq!(
         rail.top(),
@@ -2020,7 +2079,11 @@ fn workspace_right_rail_replaces_horizontal_tools_and_keeps_canvas_band_between_
 #[gpui::test]
 fn right_rail_stays_at_two_columns_and_double_click_toggles_properties(cx: &mut TestAppContext) {
     use butter_paper::annotation_adapter::AnnotationTool;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend.clone(), cx));
     workspace.update(cx, |workspace, cx| {
@@ -2056,7 +2119,7 @@ fn right_rail_stays_at_two_columns_and_double_click_toggles_properties(cx: &mut 
     // New Tab and New PDF keep their sizes and spacing after each drag.
     let mut tab_action_layouts = Vec::new();
     for requested_width in [170., 20., 600.] {
-        let expected_width = 84.;
+        let expected_width = 88.;
         let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
         let start = point(rail.left(), rail.top() + px(100.));
         let end = point(rail.right() - px(requested_width), start.y);
@@ -2112,10 +2175,8 @@ fn right_rail_stays_at_two_columns_and_double_click_toggles_properties(cx: &mut 
             "pinned controls cannot clip into the scroll body"
         );
         assert_eq!(select.top(), hand.top());
-        assert_eq!(
-            (select.left() + hand.right()) / 2.,
-            resized.center().x + px(0.5)
-        );
+        // The rail's line is drawn inside, so the tools centre on the rail.
+        assert_eq!((select.left() + hand.right()) / 2., resized.center().x);
         // Edit PDF is a switch in the viewer toolbar, not a rail tool.
         assert!(
             cx.debug_bounds("document-workspace-edit-pdf-content-tool")
@@ -2298,7 +2359,7 @@ fn right_rail_stays_at_two_columns_and_double_click_toggles_properties(cx: &mut 
         let select = cx.debug_bounds("document-workspace-select-tool").unwrap();
         let hand = cx.debug_bounds("document-workspace-pan-tool").unwrap();
         assert!(
-            (rail.size.width - rem * 5.25).abs() < px(1.),
+            (rail.size.width - rem * 5.5).abs() < px(1.),
             "zoom preserves the two-column width"
         );
         assert_eq!(select.top(), hand.top());
@@ -2339,7 +2400,11 @@ fn highlight_defaults_panel_events_are_document_scoped_and_disabled_safe(cx: &mu
     use butter_paper::annotation_adapter::AnnotationTool;
     use butter_paper::document_workspace::PenAnnotationDefaults;
     use butter_paper::highlight_defaults_panel::HighlightDefaultsEvent;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     workspace.update(cx, |workspace, cx| {
@@ -2432,7 +2497,11 @@ fn highlight_defaults_panel_events_are_document_scoped_and_disabled_safe(cx: &mu
 fn pending_thumbnail_result_cannot_repopulate_a_closed_rotated_or_replaced_document(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     for invalidation in ["rotation", "close", "resource replacement"] {
         let backend = Arc::new(RecordingBackend {
             page_count: 30,
@@ -2497,7 +2566,11 @@ fn pending_thumbnail_result_cannot_repopulate_a_closed_rotated_or_replaced_docum
 
 #[gpui::test]
 fn workspace_empty_left_rail_is_inert(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
     let (_, cx) = cx.add_window_view(move |window, cx| Root::new(workspace, window, cx));
@@ -2513,7 +2586,11 @@ fn workspace_empty_left_rail_is_inert(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn thumbnail_click_scrolls_the_continuous_canvas_to_its_page(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend {
         page_count: 3,
         ..Default::default()
@@ -2570,7 +2647,11 @@ fn thumbnail_click_scrolls_the_continuous_canvas_to_its_page(cx: &mut TestAppCon
 fn sidebar_loads_visible_late_pages_and_retries_failure_without_navigation(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend {
         page_count: 30,
         ..Default::default()
@@ -2633,7 +2714,11 @@ fn sidebar_loads_visible_late_pages_and_retries_failure_without_navigation(
 
 #[gpui::test]
 fn sidebar_draws_the_rows_a_fling_stops_on_and_not_the_rows_it_passes(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend {
         page_count: 60,
         ..Default::default()
@@ -2702,7 +2787,11 @@ fn sidebar_draws_the_rows_a_fling_stops_on_and_not_the_rows_it_passes(cx: &mut T
 fn arriving_thumbnails_leave_the_canvas_tiles_alone(cx: &mut TestAppContext) {
     // Each thumbnail once redrew every canvas tile on Windows and Linux,
     // flashing the page while the sidebar filled in.
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend {
         page_count: 12,
         ..Default::default()
@@ -2766,7 +2855,11 @@ fn arriving_thumbnails_leave_the_canvas_tiles_alone(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn clicking_a_drawn_thumbnail_moves_to_its_page_at_once(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend {
         page_count: 6,
         ..Default::default()
@@ -2881,7 +2974,11 @@ fn sidebar_scale_label_uses_the_ratio_not_the_name() {
 
 #[gpui::test]
 fn sidebar_reveals_page_selected_by_external_canvas_scroll(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let backend = Arc::new(RecordingBackend {
         page_count: 30,
         ..Default::default()
@@ -3076,7 +3173,11 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
         native_updater::ReleaseVersion,
     };
     use std::{cell::Cell, rc::Rc};
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let opened = Rc::new(Cell::new(0));
     let downloaded = Rc::new(Cell::new(0));
     let restarted = Rc::new(Cell::new(0));

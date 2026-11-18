@@ -105,4 +105,17 @@ wait 600
 os-click-beside 0 tool-defaults-panel-reset-popover
 wait 400
 expect-hidden 0 tool-defaults-panel-reset-popover
+
+# Tooltips: the pointer moves straight from one button onto the next, and
+# the next button's tooltip shows and stays. A pointer away hides it.
+move-id 0 document-tab-new-pdf
+wait 1200
+expect-shown 0 tooltip-popup
+move-id 0 document-tab-template-picker
+wait 1000
+expect-shown 0 tooltip-popup
+move 0 600 400
+wait 1200
+expect-hidden 0 tooltip-popup
+
 quit

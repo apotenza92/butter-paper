@@ -16,9 +16,9 @@ use butter_paper::document_resource::{
 };
 use butter_paper::document_workspace::{
     DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID, DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID,
-    DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID, DOCUMENT_STATUS_MESSAGE_ID, DeferredStartupOpen,
-    DocumentWorkspace, NativeDocumentOpener, OpenDocumentRequest, StartupRecoveryAvailability,
-    StartupRecoveryItem, document_annotation_layer_id, init_document_workspace_actions,
+    DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID, DeferredStartupOpen, DocumentWorkspace,
+    NativeDocumentOpener, OpenDocumentRequest, StartupRecoveryAvailability, StartupRecoveryItem,
+    document_annotation_layer_id, init_document_workspace_actions,
 };
 use butter_paper::page_geometry::{PageCoordinateSpace, PdfRect, Rotation};
 use butter_paper::page_view_control::PageViewMode;
@@ -153,6 +153,8 @@ fn edit_pdf_content_types_shortcut_letters_into_the_line_and_commits_one_undoabl
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -326,6 +328,8 @@ fn edit_pdf_content_workspace(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -1223,7 +1227,11 @@ impl NativeDocumentOpener for RecordingTextOpener {
 
 #[gpui::test]
 fn recovered_text_edits_are_shown_and_stay_undoable(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-text-edit-recovery-{}-{}",
         std::process::id(),
@@ -1388,7 +1396,10 @@ fn a_click_on_read_only_text_says_why_in_the_status_bar(cx: &mut TestAppContext)
     let (workspace, document_id, _shown, cx) =
         edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds(DOCUMENT_STATUS_MESSAGE_ID).is_none());
+    let toasts = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| gpui_component::WindowExt::notifications(window, cx).len())
+    };
+    assert_eq!(toasts(cx), 0);
     let hello_width = 0.556 * 3. + 0.222 * 2.;
     click_page_point(
         cx,
@@ -1401,10 +1412,7 @@ fn a_click_on_read_only_text_says_why_in_the_status_bar(cx: &mut TestAppContext)
         cx.run_until_parked();
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
-    assert!(
-        cx.debug_bounds(DOCUMENT_STATUS_MESSAGE_ID).is_some(),
-        "the reason shows in the status bar"
-    );
+    assert_eq!(toasts(cx), 1, "the reason shows as a toast");
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
         Some(
@@ -1832,6 +1840,8 @@ fn select_tool_selects_page_text_by_dragging_and_double_click_and_copies_it(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));

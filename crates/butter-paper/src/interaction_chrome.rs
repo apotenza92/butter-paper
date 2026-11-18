@@ -89,6 +89,36 @@ pub(super) struct ChromeStyle {
 /// draws a line over or around the markup, so its own colour and thickness
 /// stay visible.
 pub(super) fn chrome_style(state: ChromeState) -> ChromeStyle {
+    let style = base_chrome_style(state);
+    ChromeStyle {
+        colour: selection_faded(style.colour, state),
+        ..style
+    }
+}
+
+thread_local! {
+    /// How far a new selection's outline and handles have faded in: 1 when
+    /// shown in full. Set each frame by the workspace.
+    static SELECTION_FADE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.) };
+}
+
+/// Sets how far a new selection's chrome has faded in (0 to 1).
+pub(super) fn set_selection_fade(fade: f32) {
+    SELECTION_FADE.with(|cell| cell.set(fade.clamp(0., 1.)));
+}
+
+/// `colour` as a selection state draws it this frame: a new selection fades
+/// in; hover and drafts show at once.
+fn selection_faded(colour: Hsla, state: ChromeState) -> Hsla {
+    match state {
+        ChromeState::Selected | ChromeState::Focused | ChromeState::Locked => {
+            colour.opacity(SELECTION_FADE.with(std::cell::Cell::get))
+        }
+        ChromeState::Hover | ChromeState::Draft => colour,
+    }
+}
+
+fn base_chrome_style(state: ChromeState) -> ChromeStyle {
     match state {
         ChromeState::Selected | ChromeState::Focused => ChromeStyle {
             colour: selection_colour(),
@@ -147,7 +177,7 @@ fn handle_paths(
             result.push((
                 path,
                 if filled && !hot {
-                    halo_colour()
+                    selection_faded(halo_colour(), state)
                 } else {
                     style.colour
                 },
@@ -322,7 +352,11 @@ fn handle_quad(
     Some(
         fill(
             Bounds::new(center - gpui::point(half, half), gpui::size(side, side)),
-            if hot { style.colour } else { halo_colour() },
+            if hot {
+                style.colour
+            } else {
+                selection_faded(halo_colour(), state)
+            },
         )
         .border_widths(px(if hot { 2. } else { style.width }))
         .border_color(style.colour),
@@ -344,7 +378,11 @@ fn rotation_feedback_quad(
     style.handle?;
     let border = if hot { 2. } else { style.width };
     let stroke = style.colour;
-    let fill_colour = if hot { style.colour } else { halo_colour() };
+    let fill_colour = if hot {
+        style.colour
+    } else {
+        selection_faded(halo_colour(), state)
+    };
     let radius = rotation_feedback_radius(state, hot) + border / 2.;
     Some(
         fill(

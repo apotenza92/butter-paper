@@ -52,6 +52,10 @@ pub(super) struct ViewportInputs {
     pub viewer_pages: Vec<ViewerPageRender>,
     /// Each page's tiles from before a zoom, drawn under its tiles.
     pub viewer_zoom_fallback: HashMap<usize, Vec<(crate::viewer::Rect, Arc<RenderImage>)>>,
+    /// The page whose picture is turning into a new orientation.
+    pub page_turn: Option<super::PageTurnPaint>,
+    /// The page whose markups are faded, and how opaque they are drawn.
+    pub page_markup_opacity: Option<(usize, f32)>,
     pub viewer_pan_margin: (f32, f32),
     pub viewer_plan: Option<ViewerPlanSnapshot>,
     pub viewer_scroll: ScrollHandle,
@@ -89,6 +93,8 @@ impl DocumentWorkspace {
             page_outline,
             viewer_pages,
             viewer_zoom_fallback,
+            page_turn,
+            page_markup_opacity,
             viewer_pan_margin,
             viewer_plan,
             viewer_scroll,
@@ -245,10 +251,17 @@ impl DocumentWorkspace {
                                                                         }),
                                                                 )
                                                         });
+                                                    // A turning page draws only its turning
+                                                    // picture.
+                                                    let turning = page_turn
+                                                        .as_ref()
+                                                        .filter(|turn| turn.page == layout.page)
+                                                        .cloned();
                                                     // Tiles from before a zoom, scaled under
                                                     // the new ones until those arrive.
                                                     let zoom_fallback_tiles = viewer_zoom_fallback
                                                         .get(&layout.page)
+                                                        .filter(|_| turning.is_none())
                                                         .into_iter()
                                                         .flatten()
                                                         .map(|(rect, image)| {
@@ -280,6 +293,7 @@ impl DocumentWorkspace {
                                                         .collect::<Vec<_>>();
                                                     let page_tiles = tiles
                                                         .into_iter()
+                                                        .filter(|_| turning.is_none())
                                                         .enumerate()
                                                         .map(|(tile_index, (request, image))| {
                                                             let scale = (request
@@ -346,9 +360,12 @@ impl DocumentWorkspace {
                                                         .top(px(layout.logical_rect.y))
                                                         .w(px(layout.logical_rect.width))
                                                         .h(px(layout.logical_rect.height))
-                                                        .bg(gpui::rgb(0xffffff))
+                                                        .when(turning.is_none(), |page| {
+                                                            page.bg(gpui::rgb(0xffffff))
+                                                        })
                                                         .when(
-                                                            page_index == current_page,
+                                                            page_index == current_page
+                                                                && turning.is_none(),
                                                             |page| {
                                                                 page.when_some(
                                                                     current_image.clone(),
@@ -369,6 +386,11 @@ impl DocumentWorkspace {
                                                         .children(zoom_fallback_tiles)
                                                         .children(page_tiles)
                                                         .children(
+                                                            turning
+                                                                .clone()
+                                                                .map(super::page_turn::page_turn_element),
+                                                        )
+                                                        .children(
                                                             content_sprite
                                                                 .clone()
                                                                 .filter(|sprite| sprite.page_index == page_index)
@@ -381,7 +403,16 @@ impl DocumentWorkspace {
                                                                 }),
                                                         )
                                                         .children(quality_marker)
-                                                        .child(annotation_layer(
+                                                        .child(gpui::div()
+                                                            .absolute()
+                                                            .inset_0()
+                                                            .when_some(
+                                                                page_markup_opacity
+                                                                    .filter(|(page, _)| *page == page_index as usize)
+                                                                    .map(|(_, opacity)| opacity),
+                                                                |layer, opacity| layer.opacity(opacity),
+                                                            )
+                                                            .child(annotation_layer(
                                                             document_id,
                                                             page_index,
                                                             page_size,
@@ -426,7 +457,7 @@ impl DocumentWorkspace {
                                                                 preview.document_id == document_id
                                                                     && preview.page_index == page_index
                                                             }),
-                                                        ))
+                                                        )))
                                                         .children(
                                                             page_text_overlays
                                                                 .iter()

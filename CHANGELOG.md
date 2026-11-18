@@ -4,6 +4,37 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.5]
+
+### Motion
+
+- Panels slide in and out. Zoom, Fit Width, Fit Page and rotate move the
+  view smoothly, and a rotated page turns into place.
+- Reordered thumbnails and tabs slide to their new places. The selection
+  fades in, snap guides fade in and out, and Snapshot flashes the area it
+  copies.
+- The app follows the reduce-motion setting of macOS, Windows, GNOME and
+  KDE. With it on, every change is immediate.
+
+### Layout
+
+- Spacing follows one 8 px grid. The tab row, the toolbar and the panel
+  headers are 48 px high, and every edge and gap is 8 px.
+- The tab row is white, and its tabs are as tall as its buttons. Unselected
+  tabs have a border, and a full-height line separates the tabs from the
+  buttons.
+- The template picker shows an open-book icon instead of a down arrow.
+
+### Controls
+
+- Settings, notifications, the page-scale panel, error messages, choice rows
+  and the Recovery count use the standard controls. Choice rows in the
+  template library stack in a narrow window.
+- Tooltips show shortcuts as keys beside the text.
+- Fixed: a tooltip disappeared when the pointer moved between New from
+  template and the template picker.
+- Fixed: Escape and a click outside did not close the page-scale panel.
+
 ## [0.5.4]
 
 ### View

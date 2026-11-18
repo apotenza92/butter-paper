@@ -566,7 +566,7 @@ impl NativeDocumentViewState {
     }
 }
 
-fn clamp_zoom_percent(zoom_percent: f32) -> f32 {
+pub(crate) fn clamp_zoom_percent(zoom_percent: f32) -> f32 {
     if !zoom_percent.is_finite() {
         return 6.25;
     }

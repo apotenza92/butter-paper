@@ -18,6 +18,12 @@ alone do not establish these behaviours.
 
 ## Interface
 
+- Stock motion and controls (see decisions.md), still open:
+  - Confirm reduce motion, the view and panel motion and the 8pt spacing on
+    Windows and on a Linux desktop (GNOME and KDE).
+  - The CAD view button and its settings chevron are two loose buttons:
+    the chevron is a Popover trigger, and the stock ButtonGroup takes only
+    plain Buttons.
 - Stock popup menus initially select a heading or disabled item on the first
   Down press, so titled mouse-wheel menus need a second Down to reach Zoom,
   and the page menu's first Down lands on a disabled Cut. Fix initial and

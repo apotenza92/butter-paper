@@ -4275,7 +4275,11 @@ fn opened_restart_page_failure_document(released: Arc<AtomicBool>) -> OpenedNati
 
 #[gpui::test]
 fn set_page_scale_command_opens_the_dialog_for_the_current_page(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     cx.update(init_document_workspace_actions);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -4317,7 +4321,11 @@ fn set_page_scale_command_opens_the_dialog_for_the_current_page(cx: &mut TestApp
 
 #[gpui::test]
 fn document_view_commands_share_workspace_state_and_dirty_close_authority(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     cx.update(init_document_workspace_actions);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -4531,6 +4539,8 @@ fn native_open_batch_preserves_a_valid_document_and_surfaces_a_failed_sibling(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let opener = Arc::new(ScriptedOpenBatchOpener::default());
@@ -4601,7 +4611,11 @@ fn native_open_batch_preserves_a_valid_document_and_surfaces_a_failed_sibling(
 
 #[gpui::test]
 fn native_open_batch_retains_ordered_failures_and_dismisses_only_feedback(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let opener = Arc::new(ScriptedOpenBatchOpener::default());
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -4679,7 +4693,11 @@ fn native_open_batch_retains_ordered_failures_and_dismisses_only_feedback(cx: &m
 fn native_open_origin_policy_cancels_focuses_existing_and_force_opens_drop(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let opener = Arc::new(ScriptedOpenBatchOpener::default());
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -4803,7 +4821,11 @@ fn native_open_origin_policy_cancels_focuses_existing_and_force_opens_drop(
 fn native_open_preserves_non_utf8_pdf_paths_without_consuming_ids_for_rejected_inputs(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let opener = Arc::new(ScriptedOpenBatchOpener::default());
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(opener.clone(), cx));
     assert_eq!(
@@ -4850,7 +4872,11 @@ fn native_open_preserves_non_utf8_pdf_paths_without_consuming_ids_for_rejected_i
 fn native_open_session_snapshot_filters_remaps_and_restores_stored_tab_order(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let first = workspace_save_target(&format!("session-first-{}.pdf", std::process::id()));
     let second = workspace_save_target(&format!("session-second-{}.PDF", std::process::id()));
     let opening = workspace_save_target(&format!("session-opening-{}.pdf", std::process::id()));
@@ -5038,7 +5064,11 @@ fn native_open_session_snapshot_filters_remaps_and_restores_stored_tab_order(
 fn session_recovery_warning_names_lost_documents_and_requires_explicit_dismissal(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(DocumentWorkspace::new);
     let snapshot = SessionRecoverySnapshot::new(vec![
         SessionRecoveryDocument::new(workspace_save_target("B-plan.pdf"), "B-plan.pdf", 3, false),
@@ -5075,7 +5105,11 @@ fn session_recovery_warning_names_lost_documents_and_requires_explicit_dismissal
 fn startup_recovery_holds_opens_until_nothing_more_can_be_recovered_automatically(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(DocumentWorkspace::new);
     workspace.update(cx, |workspace, cx| {
         let deferred = DeferredStartupOpen::Explicit(DocumentOpenBatchRequest::new(
@@ -5121,7 +5155,11 @@ fn startup_recovery_holds_opens_until_nothing_more_can_be_recovered_automaticall
 
 #[gpui::test]
 fn a_pdf_opened_while_a_clean_startup_is_checked_opens_after_the_launch(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(DocumentWorkspace::new);
     workspace.update(cx, |workspace, cx| {
         workspace.defer_startup_open(DeferredStartupOpen::None);
@@ -5158,7 +5196,11 @@ fn a_pdf_opened_while_a_clean_startup_is_checked_opens_after_the_launch(cx: &mut
 fn discarding_the_exact_startup_recovery_retires_it_and_resumes_deferred_launch(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-startup-recovery-discard-{}-{}",
         std::process::id(),
@@ -5223,7 +5265,11 @@ fn discarding_the_exact_startup_recovery_retires_it_and_resumes_deferred_launch(
 fn discarding_a_stale_startup_recovery_refreshes_without_erasing_the_new_checkpoint(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-startup-recovery-stale-discard-{}-{}",
         std::process::id(),
@@ -5297,7 +5343,11 @@ fn discarding_a_stale_startup_recovery_refreshes_without_erasing_the_new_checkpo
 fn recovering_an_unchanged_opened_source_restores_the_exact_dirty_timeline(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-startup-recovery-open-{}-{}",
         std::process::id(),
@@ -5405,7 +5455,11 @@ fn recovering_an_unchanged_opened_source_restores_the_exact_dirty_timeline(
 
 #[gpui::test]
 fn changed_opened_source_reopens_its_recovery_as_a_new_pdf(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-startup-recovery-changed-source-{}-{}",
         std::process::id(),
@@ -5497,7 +5551,11 @@ fn changed_opened_source_reopens_its_recovery_as_a_new_pdf(cx: &mut TestAppConte
 fn recovering_a_copy_rebinds_authority_and_restores_a_generated_save_as_session(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-startup-recovery-copy-{}-{}",
         std::process::id(),
@@ -5603,7 +5661,11 @@ fn recovering_a_copy_rebinds_authority_and_restores_a_generated_save_as_session(
 fn native_open_session_snapshot_deduplicates_lexical_paths_and_remaps_the_active_duplicate(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let plans = workspace_save_target("plans");
     let first_spelling = plans.join("a").join("..").join("same.pdf");
     let later_spelling = plans.join("same.pdf");
@@ -5658,7 +5720,11 @@ fn native_open_session_snapshot_deduplicates_lexical_paths_and_remaps_the_active
 fn native_open_session_restore_keeps_partial_failure_feedback_and_intended_valid_focus(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let valid_first = workspace_save_target(&format!("restore-first-{}.pdf", std::process::id()));
     let broken = workspace_save_target(&format!("broken-restore-{}.pdf", std::process::id()));
     let valid_active = workspace_save_target(&format!("restore-active-{}.pdf", std::process::id()));
@@ -5779,7 +5845,11 @@ fn native_open_session_restore_keeps_partial_failure_feedback_and_intended_valid
 fn native_open_session_restore_surfaces_saved_page_raster_failure_without_corrupting_live_views(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let valid = workspace_save_target(&format!("restore-live-{}.pdf", std::process::id()));
     let render_fail =
         workspace_save_target(&format!("render-fail-restore-{}.pdf", std::process::id()));
@@ -5880,7 +5950,11 @@ fn native_open_session_restore_surfaces_saved_page_raster_failure_without_corrup
 fn native_open_session_restore_falls_back_and_a_new_batch_prevents_stale_focus_theft(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let first = workspace_save_target(&format!("fallback-first-{}.pdf", std::process::id()));
     let broken = workspace_save_target(&format!("broken-fallback-{}.pdf", std::process::id()));
     let last = workspace_save_target(&format!("fallback-last-{}.pdf", std::process::id()));
@@ -5945,7 +6019,11 @@ fn native_open_session_restore_falls_back_and_a_new_batch_prevents_stale_focus_t
 
 #[gpui::test]
 fn native_open_session_restore_ignores_cancelled_and_rejected_non_batches(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let first = workspace_save_target(&format!("noop-first-{}.pdf", std::process::id()));
     let active = workspace_save_target(&format!("noop-active-{}.pdf", std::process::id()));
     let later = workspace_save_target(&format!("noop-later-{}.pdf", std::process::id()));
@@ -6035,7 +6113,11 @@ fn native_open_session_restore_ignores_cancelled_and_rejected_non_batches(cx: &m
 
 #[gpui::test]
 fn native_open_ctrl_o_dispatches_the_shared_picker_and_cancel_is_a_noop(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     cx.update(init_document_workspace_actions);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -6097,7 +6179,11 @@ fn imported_ellipse_first_press_resizes_preview_and_commits_once() {
 fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -6261,7 +6347,11 @@ fn imported_ellipse_first_press_resizes_preview_and_commits_once_on_native_stack
 fn ellipse_workspace_create_edit_lock_delete_undo_and_real_component_tool_are_coherent(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -6810,7 +6900,11 @@ fn page_thumbnails_open_at_the_least_window_width_and_yield_only_to_properties(
     cx: &mut TestAppContext,
 ) {
     use butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -6861,7 +6955,7 @@ fn page_thumbnails_open_at_the_least_window_width_and_yield_only_to_properties(
 fn page_thumbnails_fit_without_properties_at_any_width() {
     use butter_paper::document_workspace::thumbnails_fit_beside_properties;
     let rem = px(16.);
-    let (rail, thumbnails, properties) = (px(84.), px(300.), px(300.));
+    let (rail, thumbnails, properties) = (px(88.), px(300.), px(300.));
     assert!(thumbnails_fit_beside_properties(
         px(400.),
         rem,
@@ -6891,7 +6985,11 @@ fn page_thumbnails_fit_without_properties_at_any_width() {
 fn document_workspace_preserves_live_state_rejects_stale_results_and_releases_resources(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -7114,7 +7212,11 @@ fn document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements
 fn document_worker_recovery_preserves_dirty_state_and_rejects_stale_replacements_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let opener = Arc::new(RecoveryOpener::default());
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -7323,6 +7425,8 @@ fn workspace_tool_shortcuts_match_electron_and_preserve_modified_key_collisions(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -7400,6 +7504,8 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -7947,7 +8053,11 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
 
 #[gpui::test]
 fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -8008,7 +8118,11 @@ fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(cx: &mut
 fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -8098,6 +8212,8 @@ fn semantic_snapping_workspace_routes_real_line_input_and_transient_guide_eviden
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -8224,6 +8340,8 @@ fn semantic_snapping_workspace_routes_real_line_input_and_transient_guide_eviden
 fn opened_page_grid_metadata_reaches_real_workspace_pointer_routes(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -8484,7 +8602,11 @@ fn line_arrow_workspace_save_as_reconciles_two_typed_reopen_cycles() {
 fn page_rotation_is_one_document_revision_rejects_stale_pixels_and_preserves_failure_state(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -8783,7 +8905,11 @@ fn page_rotation_is_one_document_revision_rejects_stale_pixels_and_preserves_fai
 
 #[gpui::test]
 fn native_rotation_action_dispatches_the_retained_rotation_journey(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -8825,7 +8951,11 @@ fn native_rotation_action_dispatches_the_retained_rotation_journey(cx: &mut Test
 fn save_as_swaps_only_a_validated_reopen_and_preserves_the_live_document_on_failure(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -8999,7 +9129,11 @@ fn save_as_swaps_only_a_validated_reopen_and_preserves_the_live_document_on_fail
 
 #[gpui::test]
 fn ordinary_edit_undo_and_redo_publish_the_exact_recovery_timeline(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-workspace-history-recovery-{}-{}",
         std::process::id(),
@@ -9098,7 +9232,11 @@ fn ordinary_edit_undo_and_redo_publish_the_exact_recovery_timeline(cx: &mut Test
 
 #[gpui::test]
 fn rich_text_clipboard_paste_undo_redo_publishes_exact_recovery_timeline(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-workspace-rich-clipboard-recovery-{}-{}",
         std::process::id(),
@@ -9321,7 +9459,11 @@ fn rich_text_clipboard_paste_undo_redo_publishes_exact_recovery_timeline(cx: &mu
 fn stale_recovery_authority_rolls_back_an_ordinary_edit_and_blocks_later_edits(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-workspace-edit-rollback-recovery-{}-{}",
         std::process::id(),
@@ -9440,7 +9582,11 @@ fn stale_recovery_authority_rolls_back_an_ordinary_edit_and_blocks_later_edits(
 fn unavailable_recovery_store_rolls_back_undo_and_redo_without_changing_the_checkpoint(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-workspace-history-rollback-recovery-{}-{}",
         std::process::id(),
@@ -9610,7 +9756,11 @@ fn unavailable_recovery_store_rolls_back_undo_and_redo_without_changing_the_chec
 fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing_resumes(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = test_scratch().join(format!(
         "bp-workspace-save-recovery-{}-{}",
         std::process::id(),
@@ -9915,7 +10065,11 @@ fn successful_save_as_rebases_recovery_to_the_clean_opened_target_before_editing
 fn in_place_save_targets_the_opened_path_and_preserves_the_live_dirty_session_on_failure(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(DocumentWorkspace::new);
     let open_request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("opened-in-place.pdf"), cx)
@@ -10020,7 +10174,11 @@ fn opening_an_existing_pdf_through_a_filesystem_alias_retains_its_canonical_save
     std::fs::write(&source, b"test source identity").unwrap();
     let _scratch = ScratchDirectories(vec![root]);
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(DocumentWorkspace::new);
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(alias_parent.join("source.pdf"), cx)
@@ -10044,7 +10202,11 @@ fn opening_an_existing_pdf_through_a_filesystem_alias_retains_its_canonical_save
 fn in_place_save_keeps_the_published_document_live_when_durability_has_a_warning(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = test_scratch().join(format!(
         "bp-workspace-publication-warning-{}-{}",
         std::process::id(),
@@ -10191,7 +10353,11 @@ fn in_place_save_keeps_the_published_document_live_when_durability_has_a_warning
 
 #[gpui::test]
 fn in_place_save_registered_command_dispatches_the_active_opened_document(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -10237,7 +10403,11 @@ fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_docume
 fn in_place_save_failure_renders_real_recovery_actions_without_losing_the_document_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -10352,7 +10522,11 @@ fn recovery_preparation_failure_blocks_edits_and_retries_from_the_visible_alert(
 fn recovery_preparation_failure_blocks_edits_and_retries_from_the_visible_alert_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let root = std::env::temp_dir().join(format!(
         "bp-workspace-recovery-retry-{}-{}",
         std::process::id(),
@@ -10490,7 +10664,11 @@ fn real_enospc_initial_recovery_stream_blocks_edits_and_visible_retry_recovers_o
     const MAX_FIXTURE_BYTES: u64 = 256 * 1024 * 1024;
     const WRITE_BYTES: usize = 1024 * 1024;
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let mount_root = PathBuf::from(
         std::env::var_os("BP_RECOVERY_ENOSPC_MOUNT_ROOT")
             .expect("the fixed-size recovery-volume harness must provide its mount root"),
@@ -10819,7 +10997,11 @@ fn save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place() {
 fn save_as_adds_pdf_to_a_typed_name_and_saves_the_open_file_in_place_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let scratch = test_scratch().join(format!(
         "bp-workspace-save-as-names-{}-{}",
         std::process::id(),
@@ -10923,7 +11105,11 @@ fn a_folder_that_refuses_the_save_says_so_and_retry_saves_once_allowed_on_native
 ) {
     use butter_paper::document_workspace::DOCUMENT_SAVE_ERROR_SETTINGS_ID;
     use std::os::unix::fs::PermissionsExt as _;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let scratch = test_scratch().join(format!(
         "bp-workspace-folder-refused-save-{}-{}",
         std::process::id(),
@@ -11054,7 +11240,11 @@ fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without
 fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without_retry_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let scratch = test_scratch().join(format!(
         "bp-workspace-external-source-save-{}-{}",
         std::process::id(),
@@ -11226,7 +11416,11 @@ fn external_source_change_save_failure_keeps_recovery_and_offers_save_as_without
 fn imported_rectangle_selection_property_delete_and_history_stay_document_owned(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -11326,7 +11520,11 @@ fn imported_rectangle_selection_property_delete_and_history_stay_document_owned(
 fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each_event(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -11667,7 +11865,11 @@ fn engineering_visual_inspector_renders_exact_kind_controls_and_revalidates_each
 fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_each_event(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -11960,7 +12162,11 @@ fn straight_line_inspector_renders_exact_line_arrow_controls_and_revalidates_eac
 fn vertex_path_inspector_exact_controls_revalidate_and_preserve_hidden_state(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -12404,6 +12610,8 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -12840,6 +13048,8 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -13178,7 +13388,11 @@ fn real_line_arrow_save_as_two_reopens_preserve_pixels_identity_and_resources(
 fn ink_property_inspector_targets_exact_single_ink_and_commits_identity_bound_history(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -13484,7 +13698,11 @@ fn ink_property_inspector_targets_exact_single_ink_and_commits_identity_bound_hi
 fn text_box_property_inspector_uses_real_controls_and_exact_single_selection(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -13743,7 +13961,11 @@ fn text_box_property_inspector_uses_real_controls_and_exact_single_selection(
 fn measurement_property_inspector_toggles_exact_selected_length_caption_and_opens_scale(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -14119,7 +14341,11 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
 fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bound_history(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -14358,7 +14584,11 @@ fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bou
 fn shared_shape_property_inspector_ellipse_renders_and_commits_identity_bound_history(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -14544,7 +14774,11 @@ fn shared_shape_property_inspector_ellipse_rotation_geometry_matches_handles() {
 fn shared_shape_property_inspector_stays_open_across_rectangle_ellipse_selection(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -14620,7 +14854,11 @@ fn shared_shape_property_inspector_stays_open_across_rectangle_ellipse_selection
 
 #[gpui::test]
 fn shared_shape_property_inspector_global_lock_unlocks_a_selected_ellipse(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -14697,7 +14935,11 @@ fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry() {
 fn imported_rectangle_pointer_move_and_resize_commit_previewed_geometry_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -14877,6 +15119,8 @@ fn multi_selection_workspace_shift_click_group_move_is_ordered_lock_aware_and_on
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -15231,6 +15475,8 @@ fn measured_caption_marquee_routes_fresh_layout_through_preview_and_both_release
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -15716,6 +15962,8 @@ fn line_feedback_adapter_distinguishes_length_creation_from_committed_scene() {
 fn line_feedback_workspace_paints_endpoint_handles_without_model_mutation(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -15987,6 +16235,8 @@ fn unselected_line_arrow_and_length_hover_controls_start_endpoint_drag_on_first_
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -16304,6 +16554,8 @@ fn unselected_cloud_hover_controls_start_vertex_drag_on_first_press_on_native_st
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -16492,6 +16744,8 @@ fn unselected_arc_hover_controls_start_control_drag_on_first_press_on_native_sta
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -16705,6 +16959,8 @@ fn unselected_vertex_path_hover_controls_start_drag_on_first_press_on_native_sta
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -16916,6 +17172,8 @@ fn unselected_measurement_path_hover_controls_start_drag_on_first_press_on_nativ
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -17211,6 +17469,8 @@ fn unselected_snapshot_hover_controls_start_resize_on_first_press_on_native_stac
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -17451,6 +17711,8 @@ fn cross_family_body_targeting_moves_the_topmost_annotation_on_first_press_on_na
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -17666,6 +17928,8 @@ fn path_feedback_adapter_marks_creation_and_vertex_edit_previews() {
 fn path_feedback_workspace_paints_vertex_handles_without_model_mutation(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -17835,6 +18099,8 @@ fn shape_feedback_workspace_paints_resize_handles_and_locked_rotation_omission(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -18076,6 +18342,8 @@ fn trace_lasso(
 fn marquee_candidates_paint_multiple_hits_without_mutating_selection(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -18365,6 +18633,8 @@ fn multi_selection_workspace_marquee_routes_real_pointer_coordinates_and_modifie
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -18596,7 +18866,11 @@ fn fresh_workspace_reopen_advances_generated_annotation_ids_past_imported_ids(
 
 #[gpui::test]
 fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -18727,7 +19001,11 @@ fn image_picker_delayed_decode_preserves_newer_tool_gesture_and_pan(cx: &mut Tes
 
 #[gpui::test]
 fn image_picker_cancelled_repick_discards_previous_unplaced_asset(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -18815,7 +19093,11 @@ fn image_picker_cancelled_repick_discards_previous_unplaced_asset(cx: &mut TestA
 fn image_picker_composed_clicks_open_one_picker_and_toggle_properties_once(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -18917,7 +19199,11 @@ fn image_picker_composed_clicks_open_one_picker_and_toggle_properties_once(
 
 #[gpui::test]
 fn rectangle_pointer_placement_resets_select_only_after_creation(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -19066,7 +19352,11 @@ fn rectangle_pointer_placement_resets_select_only_after_creation(cx: &mut TestAp
 fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -19270,7 +19560,11 @@ fn pen_pointer_drag_creates_a_stable_selected_path_and_ignores_short_gestures(
 fn universal_shape_picker_alpha_commits_atomically_to_the_primary_selection(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -19441,7 +19735,11 @@ fn universal_shape_picker_alpha_commits_atomically_to_the_primary_selection(
 #[gpui::test]
 fn universal_paired_layout_and_selected_sliders_use_real_controls(cx: &mut TestAppContext) {
     use butter_paper::rectangle_property_inspector::*;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -19705,7 +20003,11 @@ fn universal_selected_properties_edit_only_primary_without_an_extra_sidebar(
         RECTANGLE_PROPERTY_INSPECTOR_ID, RectanglePropertyEvent, RectanglePropertyPatch,
         RectangularShapePropertyKind,
     };
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -19798,7 +20100,11 @@ fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut 
     use butter_paper::tool_defaults_panel::{
         TOOL_DEFAULTS_OPACITY_INPUT_ID, TOOL_DEFAULTS_OPACITY_SLIDER_ID, TOOL_DEFAULTS_PANEL_ID,
     };
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -19882,7 +20188,11 @@ fn universal_properties_real_controls_keep_live_values_and_one_sidebar(cx: &mut 
 #[gpui::test]
 fn universal_tool_defaults_are_scoped_validated_and_history_free(cx: &mut TestAppContext) {
     use butter_paper::{tool_defaults_panel::ToolDefaultsEvent, tool_properties::ToolProperties};
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (workspace, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("properties.pdf"), cx)
@@ -19997,6 +20307,8 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -20535,7 +20847,11 @@ fn highlight_real_control_pointer_history_and_scene_stay_application_owned(
 
 #[gpui::test]
 fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -20740,7 +21056,11 @@ fn text_box_click_opens_real_multiline_editor_and_blur_commits_once(cx: &mut Tes
 fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -20847,7 +21167,11 @@ fn text_box_escape_commits_while_empty_blur_discards_without_phantom_history(
 
 #[gpui::test]
 fn text_box_input_handler_composition_save_and_reopen_is_coherent(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -21022,7 +21346,11 @@ fn text_box_input_handler_composition_save_and_reopen_is_coherent(cx: &mut TestA
 
 #[gpui::test]
 fn text_box_edit_geometry_lock_delete_and_history_stay_document_owned(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(DocumentWorkspace::new);
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("text-box-domain.pdf"), cx)
@@ -21158,6 +21486,8 @@ fn unselected_text_box_and_image_hover_controls_start_resize_on_first_press_on_n
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -21409,6 +21739,8 @@ fn existing_text_box_pointer_move_resize_enter_escape_commit_history_and_lock_us
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -21786,6 +22118,8 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -22030,6 +22364,8 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -22261,7 +22597,11 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
 fn measurement_property_page_scale_hydration_preserves_exact_scale_until_an_input_changes(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -22469,6 +22809,8 @@ fn page_scale_dialog_custom_ratio_fraction_precision_and_page_range_are_one_revi
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -22611,7 +22953,11 @@ fn page_scale_dialog_custom_ratio_fraction_precision_and_page_range_are_one_revi
 
 #[gpui::test]
 fn page_scale_dialog_changing_the_unit_keeps_the_scale(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -22695,7 +23041,11 @@ fn page_scale_dialog_changing_the_unit_keeps_the_scale(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn page_scale_dialog_no_scale_removes_the_scale_and_keeps_measurements(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -22795,6 +23145,8 @@ fn the_length_shortcut_asks_for_a_page_scale_where_the_dimension_button_draws_te
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -22893,7 +23245,11 @@ fn the_length_shortcut_asks_for_a_page_scale_where_the_dimension_button_draws_te
 #[gpui::test]
 fn the_scale_switch_removes_brings_back_and_asks_for_a_page_scale(cx: &mut TestAppContext) {
     use butter_paper::viewer_toolbar_strip::{ScaleRequest, ScaleToolbarState};
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -22986,7 +23342,11 @@ fn the_scale_switch_on_a_page_never_scaled_opens_the_panel_and_shows_on_while_it
     cx: &mut TestAppContext,
 ) {
     use butter_paper::viewer_toolbar_strip::{ScaleRequest, ScaleToolbarState};
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -23472,7 +23832,11 @@ fn save_without_rotation_changes_preserves_every_direct_or_inherited_rotate_entr
 fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -23548,7 +23912,11 @@ fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
 fn retained_length_body_endpoint_lock_delete_and_undo_are_one_document_history(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -23697,6 +24065,8 @@ fn retained_length_body_endpoint_lock_delete_and_undo_are_one_document_history(
 fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -23800,6 +24170,8 @@ fn real_component_annotation_controls_dispatch_retained_commands(cx: &mut TestAp
 fn canvas_escape_preserves_tool_and_history_in_signature_input(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         butter_paper::application_shell::init_application_shell_actions(cx);
         init_document_workspace_actions(cx);
     });
@@ -23951,6 +24323,8 @@ fn canvas_escape_draft_case(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -24043,6 +24417,8 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -24473,6 +24849,8 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -24654,6 +25032,8 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
 fn measurement_enter_commits_hover_endpoint_without_a_click(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let scale = PageScale::from_factors(
@@ -24836,6 +25216,8 @@ fn polylength_area_workspace_renders_real_tools_and_retains_independent_measurem
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let scale = PageScale::from_factors(
@@ -25214,6 +25596,8 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -25659,6 +26043,8 @@ fn cloud_plus_workspace_renders_composite_and_opens_retained_text_editor_on_nati
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -26043,6 +26429,8 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -26956,6 +27344,8 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
 fn a_new_dimension_keeps_its_typed_text_when_clicking_away_on_the_page(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -27034,6 +27424,8 @@ fn markup_text_workspace(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -27427,6 +27819,8 @@ fn arc_workspace_renders_real_component_tool_three_click_preview_and_shift_snap(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -27527,6 +27921,8 @@ fn arc_workspace_pointer_move_and_three_controls_commit_once_and_cancel_cleanly(
     let _scratch_files = ScratchFiles(vec![busy_save_target.clone()]);
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -28137,6 +28533,8 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -28383,6 +28781,8 @@ fn redact_workspace_renders_real_component_tool_and_truthful_pending_overlay_on_
 fn snapshot_tool_copies_a_two_click_box_that_pastes_as_a_snapshot(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -28587,6 +28987,8 @@ fn copied_pdf(width: i64, height: i64) -> Vec<u8> {
 fn paste_lands_centred_on_the_pointer_or_where_the_page_menu_opened(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -28708,6 +29110,8 @@ fn a_pdf_copied_elsewhere_pastes_as_a_vector_snapshot_and_a_copy_here_wins_after
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -28859,6 +29263,8 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -29532,6 +29938,8 @@ fn real_redact_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContex
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -29980,6 +30388,8 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -30205,6 +30615,8 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -30901,6 +31313,8 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -31676,6 +32090,8 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -31939,6 +32355,8 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -32290,6 +32708,8 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -32620,6 +33040,8 @@ fn real_semantic_snapping_line_and_length_save_close_and_fresh_workspace_reopen(
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -33078,6 +33500,8 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -33476,6 +33900,8 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -34139,7 +34565,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn visible_tab_close_routes_a_dirty_document_through_confirmation(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -34198,7 +34628,11 @@ fn visible_tab_close_routes_a_dirty_document_through_confirmation(cx: &mut TestA
 
 #[gpui::test]
 fn workspace_template_split_is_joined_and_cad_controls_are_absent(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -34248,7 +34682,11 @@ fn workspace_template_split_is_joined_and_cad_controls_are_absent(cx: &mut TestA
 
 #[gpui::test]
 fn two_documents_switch_and_dirty_close_targets_only_the_stable_session(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -34430,7 +34868,11 @@ fn two_documents_switch_and_dirty_close_targets_only_the_stable_session(cx: &mut
 fn real_session_tab_strip_preserves_document_identity_through_selection_clean_dirty_close_and_keyboard_pointer_reorder(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     cx.update(butter_paper::document_workspace::init_document_workspace_actions);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -34727,7 +35169,11 @@ fn real_session_tab_strip_preserves_document_identity_through_selection_clean_di
 fn real_session_tab_strip_preserves_loading_and_failed_identity_without_a_ready_document(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -34778,7 +35224,11 @@ fn real_session_tab_strip_preserves_loading_and_failed_identity_without_a_ready_
 fn clean_close_selects_the_adjacent_successor_and_dirty_requests_keep_first_authority(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -34847,7 +35297,11 @@ fn clean_close_selects_the_adjacent_successor_and_dirty_requests_keep_first_auth
 fn retained_viewer_plans_continuous_and_single_page_work_with_bounded_tiles(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -34997,7 +35451,11 @@ fn retained_viewer_plans_continuous_and_single_page_work_with_bounded_tiles(
 fn visible_native_viewport_renders_async_tiles_and_replans_without_stale_application(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -35086,7 +35544,11 @@ fn visible_native_viewport_renders_async_tiles_and_replans_without_stale_applica
 fn painted_page_evidence_is_generation_scoped_and_advances_at_native_prepaint(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -35395,7 +35857,11 @@ fn painted_page_evidence_keeps_source_points_while_rotation_changes_contained_bo
 fn painted_page_evidence_keeps_source_points_while_rotation_changes_contained_bounds_on_native_stack(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -35627,6 +36093,8 @@ fn deleting_imported_rectangle_removes_only_its_native_pdf_annotation() {
 fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -35756,7 +36224,11 @@ fn native_view_navigation_routes_real_single_page_wheel_and_control_zoom(cx: &mu
 
 #[gpui::test]
 fn tab_activation_restores_ordinary_tools_and_normalises_image_to_select(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -35825,7 +36297,11 @@ fn tab_activation_restores_ordinary_tools_and_normalises_image_to_select(cx: &mu
 fn viewer_controls_preserve_independent_session_modes_and_responsive_layouts(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -35949,6 +36425,8 @@ fn virtualized_thumbnail_rail_exposes_all_pages_and_tracks_keyboard_navigation(
 ) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -36039,7 +36517,11 @@ fn virtualized_thumbnail_rail_exposes_all_pages_and_tracks_keyboard_navigation(
 fn rendered_viewer_quality_promotes_real_stable_tiles_without_replacing_page_identity(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -36106,7 +36588,11 @@ fn rendered_viewer_quality_promotes_real_stable_tiles_without_replacing_page_ide
 fn viewer_adaptive_runtime_applies_real_frame_pressure_to_the_live_session(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -36169,7 +36655,11 @@ fn viewer_adaptive_runtime_applies_real_frame_pressure_to_the_live_session(
 fn viewer_status_surfaces_real_opening_and_tile_progress_without_layout_shift(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -36257,7 +36747,11 @@ fn viewer_status_surfaces_real_opening_and_tile_progress_without_layout_shift(
 fn viewer_render_failure_shows_one_real_retry_surface_and_recovers_without_reopening(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -36329,7 +36823,11 @@ fn viewer_render_failure_shows_one_real_retry_surface_and_recovers_without_reope
 fn native_file_authority_opens_multiple_pdfs_and_rejects_a_stale_save_target(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -36493,7 +36991,11 @@ fn native_file_authority_dirty_close_picker_cancel_preserves_close_intent_and_li
     std::fs::remove_dir_all(&store_root).ok();
     let _scratch = ScratchDirectories(vec![store_root.clone()]);
     let store = GeneratedDocumentStore::new(store_root).unwrap();
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -36565,7 +37067,11 @@ fn native_file_authority_dirty_close_picker_cancel_preserves_close_intent_and_li
 #[cfg(windows)]
 #[gpui::test]
 fn windows_ordinary_save_targets_the_opened_pdf_without_a_picker(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -36830,7 +37336,11 @@ fn native_file_authority_workspace_save_as_rejects_parent_substitution_after_beg
 fn regular_png_native_picker_prepares_the_target_and_rejects_a_closed_session(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -36899,7 +37409,11 @@ fn regular_png_native_picker_prepares_the_target_and_rejects_a_closed_session(
 fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editing(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -37094,7 +37608,11 @@ fn regular_image_placement_consumes_asset_keeps_tool_and_deselects_without_editi
 
 #[gpui::test]
 fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let signature_path = manifest_dir.join(format!(
         "target/test-scratch/local-signature-{}.png",
@@ -37204,9 +37722,13 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
         layer.origin.x + px((f32::from(layer.size.width) - 612. * render_scale) / 2.),
         layer.origin.y + px((f32::from(layer.size.height) - 792. * render_scale) / 2.),
     );
+    // The centre of the part of the page in view: at a high zoom the page's
+    // own centre can lie below the window.
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let visible_bottom = (layer.bottom()).min(viewport.height - px(80.));
     let placement = point(
         page_origin.x + px(306. * render_scale),
-        page_origin.y + px((792. - 396.) * render_scale),
+        (layer.top().max(px(0.)) + visible_bottom) / 2.,
     );
     cx.simulate_click(placement, Modifiers::default());
     cx.simulate_event(MouseDownEvent {
@@ -37299,7 +37821,11 @@ fn local_signature_popover_sanitizes_previews_arms_and_places_once(cx: &mut Test
 
 #[gpui::test]
 fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -37498,6 +38024,8 @@ fn local_signature_draws_clears_and_arms_from_real_canvas(cx: &mut TestAppContex
 fn local_signature_typed_mode_uses_the_shared_placement_path(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         butter_paper::application_shell::init_application_shell_actions(cx);
         init_document_workspace_actions(cx);
     });
@@ -38029,6 +38557,8 @@ fn real_signature_image_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -38474,6 +39004,8 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -39220,7 +39752,11 @@ fn real_regular_png_image_create_move_resize_save_close_and_fresh_workspace_reop
 fn regular_png_workspace_create_move_resize_save_reopen_and_release_is_exact(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
     let checker = manifest_dir.join("tests/fixtures/bp-image-checker-v1.png");
@@ -40807,7 +41343,11 @@ fn generated_template_requires_save_as_and_releases_its_owned_source_after_reope
     let store = GeneratedDocumentStore::new(store_root.clone()).unwrap();
     let opener = Arc::new(PathRecordingOpener::default());
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(opener.clone(), cx));
     let document_id = workspace
         .update(cx, |workspace, cx| {
@@ -40955,7 +41495,11 @@ fn generated_template_failed_open_preserves_source_until_explicit_discard(cx: &m
     let store_root = manifest_dir.join("target/test-scratch").join(&run_key);
     let _ = std::fs::remove_dir_all(&store_root);
     let store = GeneratedDocumentStore::new(store_root.clone()).unwrap();
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RejectingOpener), cx));
     let document_id = workspace
         .update(cx, |workspace, cx| {
@@ -41045,7 +41589,11 @@ fn imported_template_library_restart_materializes_an_independent_dirty_workspace
     let temporary_source = owned.path().to_owned();
     assert_ne!(temporary_source, managed_source);
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(PathRecordingOpener::default()), cx));
     let document_id = workspace
@@ -41179,7 +41727,11 @@ fn real_imported_template_library_renders_saves_reopens_and_releases(cx: &mut Te
         surface_root.clone(),
     ));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let document_id = workspace
         .update(cx, |workspace, cx| {
@@ -41297,7 +41849,11 @@ fn generated_template_command_suppresses_a_duplicate_while_open_is_pending(
     let store = GeneratedDocumentStore::new(store_root.clone()).unwrap();
     let opener = Arc::new(PathRecordingOpener::default());
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace =
         cx.new(|cx| DocumentWorkspace::with_opener_and_generated_store(opener, store.clone(), cx));
     let (first, second) = workspace.update(cx, |workspace, cx| {
@@ -41356,7 +41912,11 @@ fn generated_template_split_creates_one_real_workspace_session_without_mock_tab_
     let opener = Arc::new(PathRecordingOpener::default());
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
         let store = store.clone();
@@ -41491,7 +42051,11 @@ fn real_generated_template_creates_opens_saves_reopens_and_releases(cx: &mut Tes
         surface_root.clone(),
     ));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace = cx.new(|cx| DocumentWorkspace::with_opener(backend, cx));
     let document_id = workspace
         .update(cx, |workspace, cx| {
@@ -41684,6 +42248,8 @@ fn real_user_unit_coordinate_space_renders_edits_saves_reopens_and_releases(
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -42585,7 +43151,11 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         "the worker client drop must kill and wait for the child"
     );
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -43716,7 +44286,11 @@ fn real_rectangle_property_inspector_save_close_and_fresh_workspace_reopen(
         surface_root.clone(),
     ));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -44034,6 +44608,8 @@ fn real_native_shell_preserves_independent_view_state_through_fit_scroll_thumbna
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -44417,7 +44993,11 @@ fn real_in_place_save_replaces_the_opened_pdf_and_reopens_cleanly(cx: &mut TestA
         surface_root.clone(),
     ));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -44651,6 +45231,8 @@ fn real_two_document_dirty_save_as_failure_is_isolated_and_recovers(cx: &mut Tes
 
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -45083,7 +45665,11 @@ fn real_save_as_collision_recovers_to_fresh_target_and_reopens(cx: &mut TestAppC
         surface_root.clone(),
     ));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -45239,7 +45825,11 @@ fn real_worker_crash_recovery_preserves_dirty_document_and_releases_resources(
         surface_root.clone(),
     ));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -45418,7 +46008,11 @@ fn real_worker_crash_while_viewing_offers_document_recovery(cx: &mut TestAppCont
     let _scratch_directories = ScratchDirectories(vec![surface_root.clone()]);
     let backend = Arc::new(PdfiumWorkerBackend::new(worker, library, surface_root));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -45521,7 +46115,11 @@ fn real_shared_shape_property_inspector_save_close_and_fresh_workspace_reopen(
         surface_root.clone(),
     ));
 
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -45752,7 +46350,11 @@ fn recent_signature_workspace_renders_order_reuses_and_confirms_removal(cx: &mut
         DOCUMENT_SIGNATURE_RECENT_REMOVE_CANCEL_ID, DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID,
     };
     use butter_paper::recent_signature_store::{RecentSignatureSource, RecentSignatureStore};
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let path = std::env::temp_dir().join(format!("bp-recent-workspace-{}.enc", std::process::id()));
     assert!(!path.exists());
     let _scratch = ScratchFiles(vec![path.clone()]);
@@ -46066,7 +46668,11 @@ fn workspace_pan_for_test(
 fn pdf_content_geometry_waits_for_visible_settled_page_retries_and_deduplicates(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -46141,6 +46747,8 @@ fn pdf_content_geometry_waits_for_visible_settled_page_retries_and_deduplicates(
 fn hold_space_pans_temporarily_and_double_tap_toggles_pan_select(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -46331,7 +46939,11 @@ fn scrolled_test_workspace(
     DocumentId,
     &mut gpui::VisualTestContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -46474,7 +47086,7 @@ fn middle_button_drag_pans_the_canvas_with_any_tool(cx: &mut TestAppContext) {
 fn tool_rail_stays_at_two_columns_when_its_edge_is_dragged(cx: &mut TestAppContext) {
     let (_workspace, _document_id, cx) = pan_test_workspace(cx);
     let rem = cx.update(|window, _| window.rem_size());
-    let two_columns = rem * (0.25 + 2.5 * 2.);
+    let two_columns = rem * (0.5 + 2.5 * 2.);
     let rail = |cx: &mut gpui::VisualTestContext| {
         cx.debug_bounds("document-workspace-right-rail").unwrap()
     };
@@ -46775,7 +47387,11 @@ fn layered_test_workspace(
     &mut gpui::VisualTestContext,
 ) {
     use gpui_component::GlobalState;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     cx.update(|cx| {
         let items = (0..24)
             .map(|index| gpui::MenuItem::action(format!("Item {index}"), gpui::NoAction))
@@ -47087,7 +47703,11 @@ fn trackpad_pinch_zooms_about_the_pinch_centre(cx: &mut TestAppContext) {
 fn opening_a_document_open_in_another_window_focuses_it_instead_of_duplicating(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let first = cx.new(DocumentWorkspace::new);
     let second = cx.new(DocumentWorkspace::new);
     let request = first.update(cx, |workspace, cx| {
@@ -47150,7 +47770,11 @@ fn tab_window_with_documents<'a>(
     Vec<Arc<AtomicBool>>,
     &'a mut gpui::VisualTestContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -47848,7 +48472,11 @@ fn viewport_scrollbars_stay_on_the_viewport_while_scrolling(cx: &mut TestAppCont
 fn a_click_in_a_selected_text_box_edits_it_in_place_without_opening_properties(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -47963,7 +48591,11 @@ fn a_click_in_a_selected_text_box_edits_it_in_place_without_opening_properties(
 
 #[gpui::test]
 fn signature_menu_opens_on_a_phone_qr_session_when_enabled(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -48005,7 +48637,11 @@ fn signature_menu_opens_on_a_phone_qr_session_when_enabled(cx: &mut TestAppConte
 
 #[gpui::test]
 fn rectangle_resizes_live_from_any_edge_and_cursors_follow_the_pointer(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -48433,7 +49069,11 @@ fn open_recovery_notifications(cx: &mut gpui::VisualTestContext) {
 
 #[gpui::test]
 fn recovery_notifications_are_conditional_wrapped_and_dismissible(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -48515,6 +49155,8 @@ fn recovery_notifications_are_conditional_wrapped_and_dismissible(cx: &mut TestA
 fn blank_workspace_recent_files_reopen_through_the_normal_open_route(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -48591,6 +49233,8 @@ fn blank_workspace_recent_files_reopen_through_the_normal_open_route(cx: &mut Te
 fn cmd_w_closes_a_window_with_no_document_tabs(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
         init_document_workspace_actions(cx);
     });
     let (_, visual) = cx.add_window_view(|window, cx| {
@@ -48712,7 +49356,11 @@ fn standard(label: &str) -> usize {
 #[gpui::test]
 fn new_tab_opens_the_start_page_and_gives_way_to_a_document(cx: &mut TestAppContext) {
     use butter_paper::document_workspace::{DOCUMENT_NEW_TAB_CLOSE_ID, DOCUMENT_NEW_TAB_ID};
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     cx.update(init_document_workspace_actions);
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
@@ -48844,7 +49492,11 @@ fn new_tab_opens_the_start_page_and_gives_way_to_a_document(cx: &mut TestAppCont
 
 #[gpui::test]
 fn closing_a_dirty_tab_from_its_prompt_leaves_no_overlay_open(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -48910,7 +49562,11 @@ fn closing_a_dirty_tab_from_its_prompt_leaves_no_overlay_open(cx: &mut TestAppCo
 
 #[gpui::test]
 fn a_copy_that_would_paste_off_the_page_is_moved_onto_it(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (workspace, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
     let open = |name: &str, cx: &mut gpui::VisualTestContext| {
         let request = workspace.update(cx, |workspace, cx| {
@@ -48978,7 +49634,11 @@ fn a_copy_that_would_paste_off_the_page_is_moved_onto_it(cx: &mut TestAppContext
 
 #[gpui::test]
 fn markups_copied_in_one_window_paste_into_another_document(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (first, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
     // A second workspace, as another window has: the clipboard is shared.
     let second = cx.update(|_, cx| cx.new(DocumentWorkspace::new));
@@ -49087,7 +49747,11 @@ fn markups_copied_in_one_window_paste_into_another_document(cx: &mut TestAppCont
 
 #[gpui::test]
 fn selection_handles_paint_above_markups_drawn_after_the_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (workspace, cx) = cx.add_window_view(|_, cx| DocumentWorkspace::new(cx));
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("handles.pdf"), cx)
@@ -49164,7 +49828,11 @@ fn signature_image_tab(
     OpenDocumentRequest,
     &mut gpui::VisualTestContext,
 ) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -49316,7 +49984,11 @@ fn close_page_scale_panel(
 /// the view must stay where it is.
 #[gpui::test]
 fn rotating_a_page_keeps_every_page_drawn_and_the_view_still(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -49432,7 +50104,11 @@ fn rotating_a_page_keeps_every_page_drawn_and_the_view_still(cx: &mut TestAppCon
 /// Fit Width that changes nothing must leave the page where it was.
 #[gpui::test]
 fn fit_and_layout_commands_draw_their_final_view_in_the_first_frame(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let workspace_slot = workspace_slot.clone();
@@ -49727,7 +50403,11 @@ fn tool_reset_confirms_in_a_popover_beside_its_button(cx: &mut TestAppContext) {
     };
     use gpui::{Entity, VisualTestContext};
     use gpui_component::WindowExt as _;
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();
@@ -49874,7 +50554,11 @@ fn tool_reset_confirms_in_a_popover_beside_its_button(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_rectangles_line_runs_through_the_centre_of_every_resize_handle(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
     let (_, cx) = cx.add_window_view({
         let slot = slot.clone();

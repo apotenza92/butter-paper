@@ -21,7 +21,11 @@ use gpui_component::{
 
 #[gpui::test]
 fn window_appearance_changes_project_complete_component_and_base_themes(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let (_, cx) = cx.add_window_view(|window, cx| {
         let view = cx.new(|_| CompatibilityView {
             clicks: Rc::new(Cell::new(0)),
@@ -150,7 +154,11 @@ impl Render for RotatedDecoratedEditorCompatibilityView {
 
 #[gpui::test]
 fn component_stack_initializes_renders_and_activates(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let clicks = Rc::new(Cell::new(0));
     let (_, cx) = cx.add_window_view({
         let clicks = clicks.clone();
@@ -173,7 +181,11 @@ fn component_stack_initializes_renders_and_activates(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn button_group_renders_and_reports_single_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let selections = Rc::new(RefCell::new(Vec::new()));
     let (_, cx) = cx.add_window_view({
         let selections = selections.clone();
@@ -199,7 +211,11 @@ fn button_group_renders_and_reports_single_selection(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn rotated_textarea_platform_range_and_point_geometry_round_trip(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let input_slot = Rc::new(RefCell::new(None::<Entity<TextareaState>>));
     let rotation = TextareaRotation::new(
         radians(std::f32::consts::FRAC_PI_6),
@@ -250,7 +266,11 @@ fn rotated_textarea_platform_range_and_point_geometry_round_trip(cx: &mut TestAp
 
 #[gpui::test]
 fn rotated_editor_strikethrough_paints_through_app_graph(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let rotation = TextareaRotation::new(
         radians(std::f32::consts::FRAC_PI_6),
         size(px(120.), px(80.)),
@@ -293,7 +313,11 @@ fn rotated_editor_strikethrough_paints_through_app_graph(cx: &mut TestAppContext
 
 #[gpui::test]
 fn rotated_editor_wavy_underline_paints_through_app_graph(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let rotation = TextareaRotation::new(
         radians(std::f32::consts::FRAC_PI_6),
         size(px(120.), px(80.)),
@@ -350,7 +374,11 @@ fn rotated_editor_wavy_underline_paints_through_app_graph(cx: &mut TestAppContex
 
 #[gpui::test]
 fn continuous_split_control_traces_primary_menu_and_selection(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let control_slot = Rc::new(RefCell::new(None::<Entity<ContinuousViewControl>>));
     let (_, cx) = cx.add_window_view({
         let control_slot = control_slot.clone();
@@ -436,7 +464,11 @@ impl Render for ContextMenuView {
 /// menu's dismiss subscription must not keep the menu's state alive.
 #[gpui::test]
 fn a_dismissed_context_menu_is_freed_with_its_window(cx: &mut TestAppContext) {
-    cx.update(gpui_component::init);
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
     let snapshot = cx.update(|cx| cx.leak_detector_snapshot());
     let (_, window_cx) = cx.add_window_view(|window, cx| {
         let view = cx.new(|_| ContextMenuView);

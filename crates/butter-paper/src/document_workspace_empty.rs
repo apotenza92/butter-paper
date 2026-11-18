@@ -166,6 +166,8 @@ impl DocumentWorkspace {
         Some(
             Tab::new()
                 .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
+                // The New Tab is the selected tab while it shows.
+                .child(session_tab_frame(true, cx))
                 .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| {
                     if workspace.new_tab_hovered != *hovered {
                         workspace.new_tab_hovered = *hovered;
@@ -274,6 +276,8 @@ impl DocumentWorkspace {
                         .absolute()
                         .inset_0();
                 Tab::new()
+                    // Not selected while the New Tab page shows.
+                    .child(session_tab_frame(false, cx))
                     .child(bounds_trace)
                     .on_hover(cx.listener(move |workspace, hovered, _, cx| {
                         let next = if *hovered {
@@ -322,9 +326,11 @@ impl DocumentWorkspace {
                 .id(DOCUMENT_SESSION_TABS_ID)
                 .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
                 .w_full()
+                // A bar: 8 + 32 + 8, its line drawn inside.
+                .h(px(crate::layout_metrics::BAR))
+                .flex_shrink_0()
                 .items_stretch()
-                .border_b_1()
-                .border_color(cx.theme().border)
+                .relative()
                 .child(
                     gpui::div()
                         .id("document-workspace-native-session-tab-bar")
@@ -333,8 +339,6 @@ impl DocumentWorkspace {
                         .flex()
                         .items_stretch()
                         .when(has_extras, |strip| strip.border_r_1())
-                        // A segmented tab's frame, even with no tabs.
-                        .min_h(px(32.))
                         .border_color(cx.theme().border)
                         .min_w_0()
                         .max_w_full()
@@ -348,6 +352,10 @@ impl DocumentWorkspace {
                             // Stock segmented tabs, as the loaded strip.
                             TabBar::new("document-workspace-session-tabs-component")
                                 .segmented()
+                                .large()
+                                .tab_height(px(SESSION_TAB_HEIGHT))
+                                .inset(px(SESSION_TAB_ROW_GAP))
+                                .tab_gap(px(SESSION_TAB_ROW_GAP))
                                 .min_w_0()
                                 .max_width(px(190.))
                                 // Use stock scrolling, not the always-visible optional tab menu.
@@ -374,6 +382,10 @@ impl DocumentWorkspace {
                         )),
                 )
                 .child(strip_end)
+                .child(crate::layout_metrics::inside_line(
+                    crate::layout_metrics::Edge::Bottom,
+                    cx.theme().border,
+                ))
         };
         root.child(session_tab_strip).child(
             h_flex()
@@ -485,9 +497,10 @@ impl DocumentWorkspace {
                                         gpui::div()
                                             .id(DOCUMENT_ERROR_ID)
                                             .debug_selector(|| DOCUMENT_ERROR_ID.into())
-                                            .text_sm()
-                                            .text_color(cx.theme().danger)
-                                            .child(error),
+                                            .child(gpui_component::alert::Alert::error(
+                                                "document-error-alert",
+                                                error,
+                                            )),
                                     )
                                 }),
                         ),

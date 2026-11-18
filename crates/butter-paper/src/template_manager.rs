@@ -2493,13 +2493,10 @@ impl Render for TemplateManagerView {
                             })
                     })
                     .collect::<Vec<_>>();
-                let paper_controls = if constrained {
-                    v_flex().gap_1().children(paper_buttons).into_any_element()
-                } else {
-                    ButtonGroup::new("template-manager-paper-group")
-                        .children(paper_buttons)
-                        .into_any_element()
-                };
+                // A narrow dialog stacks the choices.
+                let paper_controls = ButtonGroup::new("template-manager-paper-group")
+                    .when(constrained, |group| group.layout(gpui::Axis::Vertical))
+                    .children(paper_buttons);
                 let selected_orientation = self.model.draft_orientation;
                 let orientation_buttons = ["portrait", "landscape"]
                     .into_iter()
@@ -2559,16 +2556,9 @@ impl Render for TemplateManagerView {
                         })
                 })
                 .collect::<Vec<_>>();
-                let pattern_controls = if constrained {
-                    v_flex()
-                        .gap_1()
-                        .children(pattern_buttons)
-                        .into_any_element()
-                } else {
-                    ButtonGroup::new(TEMPLATE_MANAGER_PATTERN_GROUP_ID)
-                        .children(pattern_buttons)
-                        .into_any_element()
-                };
+                let pattern_controls = ButtonGroup::new(TEMPLATE_MANAGER_PATTERN_GROUP_ID)
+                    .when(constrained, |group| group.layout(gpui::Axis::Vertical))
+                    .children(pattern_buttons);
                 let selected_spacing = self.model.draft_spacing_preset;
                 let spacing_buttons = ["5", "10", "25", "custom"]
                     .into_iter()
@@ -2587,16 +2577,9 @@ impl Render for TemplateManagerView {
                             })
                     })
                     .collect::<Vec<_>>();
-                let spacing_controls = if constrained {
-                    v_flex()
-                        .gap_1()
-                        .children(spacing_buttons)
-                        .into_any_element()
-                } else {
-                    ButtonGroup::new("template-manager-spacing-group")
-                        .children(spacing_buttons)
-                        .into_any_element()
-                };
+                let spacing_controls = ButtonGroup::new("template-manager-spacing-group")
+                    .when(constrained, |group| group.layout(gpui::Axis::Vertical))
+                    .children(spacing_buttons);
                 let selected_color = self.model.draft_color_preset;
                 let color_buttons = ["black", "grey", "blue", "custom"]
                     .into_iter()
@@ -2615,13 +2598,9 @@ impl Render for TemplateManagerView {
                             })
                     })
                     .collect::<Vec<_>>();
-                let color_controls = if constrained {
-                    v_flex().gap_1().children(color_buttons).into_any_element()
-                } else {
-                    ButtonGroup::new("template-manager-color-group")
-                        .children(color_buttons)
-                        .into_any_element()
-                };
+                let color_controls = ButtonGroup::new("template-manager-color-group")
+                    .when(constrained, |group| group.layout(gpui::Axis::Vertical))
+                    .children(color_buttons);
                 let draft_summary = self.model.draft_request.to_pdf_bytes().map_or_else(
                     |error| error.to_string(),
                     |_| {

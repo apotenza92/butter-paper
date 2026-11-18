@@ -42,8 +42,14 @@ metadata. Change them together.
   and in the Store description. The Store says "your PC" where the others say
   "your computer".
 - **Screenshots:** [`assets/screenshots/`](../assets/screenshots/), used by the
-  README, the download page and the Store listing. Retake all three together
-  from a review build on the fictional floor plan.
+  README, the download page and the Store listing: six 2880×1800 images, each
+  a 2x window capture under a Geist headline, on Vellum (the dark-theme shot
+  on Ink). Retake them together from a review build. The fictional Harbour
+  Lane Studio drawings, the shot scripts and the framing are in
+  [`assets/screenshots/source/`](../assets/screenshots/source/): build the
+  set with `make_set.py`, write the scripts with `shots.py`, run each in a
+  review bundle with `BP_REVIEW_ACTIVE_CHROME=1` on a Retina display, and
+  frame each capture with `compose.py`.
 
 ## Master palette
 

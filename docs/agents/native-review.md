@@ -108,6 +108,11 @@ coordinates, so they survive layout changes and window margins:
 - `click-id W SELECTOR` clicks the element's centre; `click-beside W
   SELECTOR` clicks the backdrop halfway between the window's left edge and
   the element.
+- `move-id W SELECTOR` moves the pointer to the element's centre in one
+  event. Tooltips have the selector `tooltip-popup`.
+- `BP_REVIEW_ACTIVE_CHROME=1` draws a background review window as active
+  (macOS dims an inactive window's toolbar and rails), for captures that show
+  the window as a person sees it, such as the product screenshots.
 - `os-click-id` and `os-click-beside` click the same points through the
   operating system with `BP_REVIEW_OS_CLICK_CMD` (`{x} {y}`, screen device
   pixels), then fail unless the window saw the pointer arrive there. Without
