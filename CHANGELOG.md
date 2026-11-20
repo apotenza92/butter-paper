@@ -4,6 +4,29 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.6]
+
+### Drawing
+
+- A Polyline, Polygon, Polylength or Area that you draw snaps to its own
+  points and to the middles of its sides. With Nearest on, it also snaps to
+  its sides. A Polyline closes exactly on its start point.
+- An Area closes when you click within 10 px of its start point, as a
+  Polygon does.
+
+### Tooltips
+
+- A draw tool's tooltip shows its shortcut beside its name. Below them,
+  "Scale on:" tells what the tool measures on a page with a scale, for
+  example "Area measurement" for Polygon.
+- The tooltips no longer show the Revu measuring shortcuts. `Shift+Alt+L`,
+  `Shift+Alt+Q` and `Shift+Alt+A` still work.
+
+### Layout
+
+- With no document open, the tab row starts with its New Tab and New PDF
+  buttons, 8 px from the left edge, without a separator.
+
 ## [0.5.5]
 
 ### Motion

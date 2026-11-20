@@ -25194,47 +25194,27 @@ fn remove_markups_measure_turned(
     Ok(())
 }
 
-/// A scale-aware drawing tool's second tooltip line: what a page scale adds.
-fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<String> {
-    let line = match tool {
-        AnnotationTool::Rectangle | AnnotationTool::Ellipse => {
-            "shows width and height while drawing".to_owned()
-        }
-        AnnotationTool::Line | AnnotationTool::Arrow => {
-            "shows length and angle while drawing".to_owned()
-        }
-        // A Dimension measures by default; the Length shortcut also
-        // measures on a page without a scale.
-        AnnotationTool::Dimension => format!(
-            "shows the line's length as its text ({})",
-            crate::shortcut_label::shortcut_label("Shift+Alt+L")
-        ),
-        AnnotationTool::Polyline | AnnotationTool::Polygon => {
-            let family = MeasureFamily::of(tool)?;
-            let total = match family {
-                MeasureFamily::Polygon => "the area",
-                _ => "the total",
-            };
-            let shortcut = family
-                .tool(true)
-                .shortcut()
-                .map(|shortcut| format!(" ({})", crate::shortcut_label::shortcut_label(shortcut)))
-                .unwrap_or_default();
-            format!("shows lengths while drawing, and {total}{shortcut}")
-        }
+/// A scale-aware drawing tool's second tooltip line: what the tool measures
+/// when its page has a scale. The tooltip shows it after a bold `Scale on:`,
+/// named as the toolbar's Scale switch.
+fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<&'static str> {
+    Some(match tool {
+        AnnotationTool::Rectangle | AnnotationTool::Ellipse => "Width and height measurement",
+        AnnotationTool::Line | AnnotationTool::Arrow => "Length and angle measurement",
+        // The measuring shortcuts (Revu's) still work, but the tooltip
+        // does not name them.
+        AnnotationTool::Dimension => "Length measurement",
+        AnnotationTool::Polyline => "Total length measurement",
+        AnnotationTool::Polygon => "Area measurement",
         _ => return None,
-    };
-    Some(format!("Page scale: {line}"))
+    })
 }
 
-/// A Draw rail button's tooltip text: its name, and on a second line what a
-/// page scale adds, worded the same for every tool it enhances.
-fn draw_tool_tooltip(tool: AnnotationTool) -> String {
+/// A Draw rail button's tooltip text: its name, and for the second line
+/// what a page scale adds, worded the same for every tool it enhances.
+fn draw_tool_tooltip(tool: AnnotationTool) -> (&'static str, Option<&'static str>) {
     let tool = tooltip_tool(tool);
-    match page_scale_tooltip_line(tool) {
-        Some(line) => format!("{}\n{line}", tool.label()),
-        None => tool.label().to_owned(),
-    }
+    (tool.label(), page_scale_tooltip_line(tool))
 }
 
 /// A measured tool's tooltip reads as its family's plain tool.
@@ -25242,14 +25222,29 @@ fn tooltip_tool(tool: AnnotationTool) -> AnnotationTool {
     MeasureFamily::of(tool).map_or(tool, |family| family.tool(false))
 }
 
-/// A rail tool button's tooltip, with the tool's shortcut as a stock key
-/// binding beside the text.
+/// A rail tool button's tooltip: the tool's name with its shortcut as a
+/// stock key binding beside it, and below them a bold `Scale on:` with what
+/// the tool measures.
 fn with_tool_tooltip(button: Button, tool: AnnotationTool) -> Button {
-    let text = draw_tool_tooltip(tool);
-    match tooltip_tool(tool).tooltip_key_binding() {
-        Some(key_binding) => button.tooltip_with_key_binding(text, key_binding),
-        None => button.tooltip(text),
-    }
+    let (label, description) = draw_tool_tooltip(tool);
+    let key_binding = tooltip_tool(tool).tooltip_key_binding();
+    let Some(description) = description else {
+        return match key_binding {
+            Some(key_binding) => button.tooltip_with_key_binding(label, key_binding),
+            None => button.tooltip(label),
+        };
+    };
+    button.tooltip_builder(label, move |window, cx| {
+        gpui_component::tooltip::Tooltip::new(label)
+            .key_binding(key_binding.clone())
+            .description_element(move |_, _| {
+                h_flex()
+                    .gap_1()
+                    .child(gpui::div().font_semibold().child("Scale on:"))
+                    .child(description)
+            })
+            .build(window, cx)
+    })
 }
 
 fn rail_tool_secondary_click(
@@ -28921,41 +28916,31 @@ mod tests {
     }
 
     #[test]
-    fn draw_tool_tooltips_say_what_a_page_scale_adds_on_a_second_line() {
-        use crate::shortcut_label::shortcut_label;
+    fn draw_tool_tooltips_say_what_a_page_scale_adds_below_the_name() {
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Rectangle),
-            "Rectangle\nPage scale: shows width and height while drawing"
+            ("Rectangle", Some("Width and height measurement"))
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Line),
-            "Line\nPage scale: shows length and angle while drawing"
+            ("Line", Some("Length and angle measurement"))
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Polyline),
-            format!(
-                "Polyline\nPage scale: shows lengths while drawing, and the total ({})",
-                shortcut_label("Shift+Alt+Q")
-            )
+            ("Polyline", Some("Total length measurement"))
         );
         // A measured tool reads as its family's plain tool.
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Area),
-            format!(
-                "Polygon\nPage scale: shows lengths while drawing, and the area ({})",
-                shortcut_label("Shift+Alt+A")
-            )
+            ("Polygon", Some("Area measurement"))
         );
         assert_eq!(
             draw_tool_tooltip(AnnotationTool::Dimension),
-            format!(
-                "Dimension\nPage scale: shows the line's length as its text ({})",
-                shortcut_label("Shift+Alt+L")
-            )
+            ("Dimension", Some("Length measurement"))
         );
-        // Tools a scale does not change keep a single line.
-        assert_eq!(draw_tool_tooltip(AnnotationTool::Pen), "Pen");
-        // The shortcut shows beside the text as a stock key binding.
+        // Tools a scale does not change have no description.
+        assert_eq!(draw_tool_tooltip(AnnotationTool::Pen), ("Pen", None));
+        // The shortcut shows beside the name as a stock key binding.
         assert!(
             tooltip_tool(AnnotationTool::Area)
                 .tooltip_key_binding()
@@ -28972,7 +28957,15 @@ mod tests {
                 AnnotationTool::Dimension,
             ]
             .into_iter()
-            .all(|tool| !draw_tool_tooltip(tool).contains("Measure"))
+            .all(|tool| {
+                // The tool keeps its own name, and the hidden Revu
+                // shortcuts stay out of the text.
+                let (label, description) = draw_tool_tooltip(tool);
+                let description = description.unwrap_or_default();
+                !label.contains("Measure")
+                    && !description.contains("Shift")
+                    && !description.contains('⌥')
+            })
         );
     }
 

@@ -961,8 +961,8 @@ impl DocumentWorkspace {
                         });
                     })
                     .child(session_tab_track(
-                        native_session_tabs,
-                        self.render_session_tab_actions(Some(documents_menu), cx),
+                        Some(native_session_tabs),
+                        self.render_session_tab_actions(Some(documents_menu), true, cx),
                         cx,
                     )),
             )
@@ -1006,10 +1006,12 @@ impl DocumentWorkspace {
     }
 
     /// New Tab (+), New from template and the open documents menu, on the
-    /// tab track just after the last tab.
+    /// tab track just after the last tab. Without tabs (`after_tabs` false),
+    /// they start the strip, the row's spacing from its edge.
     pub(super) fn render_session_tab_actions(
         &self,
         documents_menu: Option<gpui::AnyElement>,
+        after_tabs: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let bounds = self.session_tab_actions_bounds.clone();
@@ -1036,14 +1038,17 @@ impl DocumentWorkspace {
             // it goes between these and after the last of them.
             .gap(px(SESSION_TAB_ROW_GAP))
             .pr(px(SESSION_TAB_ROW_GAP))
+            .when(!after_tabs, |actions| actions.pl(px(SESSION_TAB_ROW_GAP)))
             .child(
                 canvas(move |measured, _, _| bounds.set(measured), |_, _, _, _| {})
                     .absolute()
                     .inset_0(),
             )
             // Tabs on one side, buttons on the other: a line the bar's full
-            // height.
-            .child(gpui_component::separator::Separator::vertical().h_full())
+            // height. Without tabs there is nothing to divide.
+            .when(after_tabs, |actions| {
+                actions.child(gpui_component::separator::Separator::vertical().h_full())
+            })
             .child(open_document)
             .child(self.template_control.clone())
             .children(documents_menu)
@@ -1053,9 +1058,10 @@ impl DocumentWorkspace {
 /// The tab track: the stock segmented bar's muted colour across the whole
 /// strip, edge to edge and top to bottom, however many tabs are open. The tabs come first and `actions`
 /// follow the last one. When the tabs don't fit, they scroll and `actions`
-/// stay at the track's right end.
+/// stay at the track's right end. With no tabs (`None`), `actions` start the
+/// track.
 pub(super) fn session_tab_track(
-    tabs: TabBar,
+    tabs: Option<TabBar>,
     actions: impl IntoElement,
     cx: &App,
 ) -> gpui::Stateful<gpui::Div> {
@@ -1070,6 +1076,6 @@ pub(super) fn session_tab_track(
         .bg(cx.theme().background)
         // The stock segmented bar, square: it is the whole tab row, edge to
         // edge, not a rounded track inside it.
-        .child(tabs.h_full().rounded(px(0.)).bg(cx.theme().background))
+        .children(tabs.map(|tabs| tabs.h_full().rounded(px(0.)).bg(cx.theme().background)))
         .child(actions)
 }

@@ -311,6 +311,7 @@ impl DocumentWorkspace {
             .collect::<Vec<_>>();
         let new_tab_index = session_tabs.len();
         let new_tab = self.render_new_tab(cx);
+        let has_tabs = !inactive_session_tabs.is_empty() || new_tab.is_some();
         let inactive_tab_click_control = cx.entity().downgrade();
         let inactive_tab_click_ids = session_tabs
             .iter()
@@ -349,35 +350,43 @@ impl DocumentWorkspace {
                             }),
                         )
                         .child(session_tab_track(
-                            // Stock segmented tabs, as the loaded strip.
-                            TabBar::new("document-workspace-session-tabs-component")
-                                .segmented()
-                                .large()
-                                .tab_height(px(SESSION_TAB_HEIGHT))
-                                .inset(px(SESSION_TAB_ROW_GAP))
-                                .tab_gap(px(SESSION_TAB_ROW_GAP))
-                                .min_w_0()
-                                .max_width(px(190.))
-                                // Use stock scrolling, not the always-visible optional tab menu.
-                                .menu(false)
-                                .children(inactive_session_tabs)
-                                .children(new_tab)
-                                .when(self.new_tab_open, |tabs| tabs.selected_index(new_tab_index))
-                                .on_click(move |tab_ix, window, cx| {
-                                    let focus = inactive_tab_click_control
-                                        .update(cx, |workspace, cx| {
-                                            let &document_id =
-                                                inactive_tab_click_ids.get(*tab_ix)?;
-                                            let _ = workspace.activate_document(document_id, cx);
-                                            inactive_tab_focus_handles.get(&document_id).cloned()
-                                        })
-                                        .ok()
-                                        .flatten();
-                                    if let Some(focus) = focus {
-                                        focus.focus(window, cx);
-                                    }
-                                }),
-                            self.render_session_tab_actions(None, cx),
+                            // Stock segmented tabs, as the loaded strip. With
+                            // no tabs, the actions start the strip.
+                            has_tabs.then(|| {
+                                TabBar::new("document-workspace-session-tabs-component")
+                                    .segmented()
+                                    .large()
+                                    .tab_height(px(SESSION_TAB_HEIGHT))
+                                    .inset(px(SESSION_TAB_ROW_GAP))
+                                    .tab_gap(px(SESSION_TAB_ROW_GAP))
+                                    .min_w_0()
+                                    .max_width(px(190.))
+                                    // Use stock scrolling, not the always-visible optional tab menu.
+                                    .menu(false)
+                                    .children(inactive_session_tabs)
+                                    .children(new_tab)
+                                    .when(self.new_tab_open, |tabs| {
+                                        tabs.selected_index(new_tab_index)
+                                    })
+                                    .on_click(move |tab_ix, window, cx| {
+                                        let focus = inactive_tab_click_control
+                                            .update(cx, |workspace, cx| {
+                                                let &document_id =
+                                                    inactive_tab_click_ids.get(*tab_ix)?;
+                                                let _ =
+                                                    workspace.activate_document(document_id, cx);
+                                                inactive_tab_focus_handles
+                                                    .get(&document_id)
+                                                    .cloned()
+                                            })
+                                            .ok()
+                                            .flatten();
+                                        if let Some(focus) = focus {
+                                            focus.focus(window, cx);
+                                        }
+                                    })
+                            }),
+                            self.render_session_tab_actions(None, has_tabs, cx),
                             cx,
                         )),
                 )

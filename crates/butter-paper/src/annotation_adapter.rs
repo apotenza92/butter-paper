@@ -3708,19 +3708,36 @@ impl AnnotationAdapter {
                 })
                 .unwrap_or((Vec::new(), None)),
         };
-        let annotation_decision = self
-            .semantic_snap_index(
-                document_id,
-                page_index,
-                &excluded_ids,
-                &AnnotationSelectionSupplement::new(),
-            )
-            .resolve_point_with_orthogonal_anchor(
-                point,
-                &self.semantic_snap_settings,
-                self.observed_pixels_per_point.0,
-                constrain_orthogonal.then_some(creation_anchor).flatten(),
-            );
+        // A path being drawn snaps to its own placed points, to close it.
+        let draft_path = self
+            .vertex_path_draft
+            .as_ref()
+            .filter(|draft| (draft.document_id, draft.page_index) == (document_id, page_index))
+            .map(|draft| (&draft.points, &draft.id))
+            .or_else(|| {
+                self.measurement_path_draft
+                    .as_ref()
+                    .filter(|draft| {
+                        (draft.document_id, draft.page_index) == (document_id, page_index)
+                    })
+                    .map(|draft| (&draft.points, &draft.id))
+            })
+            .map(|(points, id)| Arc::new(SemanticSnapIndex::from_draft_path(points, id)));
+        let mut snap_index = self.semantic_snap_index(
+            document_id,
+            page_index,
+            &excluded_ids,
+            &AnnotationSelectionSupplement::new(),
+        );
+        if let Some(draft_path) = draft_path {
+            snap_index = snap_index.with_shared_index(draft_path);
+        }
+        let annotation_decision = snap_index.resolve_point_with_orthogonal_anchor(
+            point,
+            &self.semantic_snap_settings,
+            self.observed_pixels_per_point.0,
+            constrain_orthogonal.then_some(creation_anchor).flatten(),
+        );
         let construction_grid_decision = self
             .semantic_snap_page_sizes
             .get(&(document_id, page_index))
@@ -7561,6 +7578,23 @@ impl AnnotationAdapter {
                 {
                     self.measurement_path_draft = None;
                     return Err(AnnotationError::NoActiveGesture);
+                }
+                // An Area closes, as a Polygon does, on a click at its start.
+                let closes_area = draft.kind == MeasurementPathKind::Area
+                    && draft.points.len() >= draft.kind.minimum_points()
+                    && point_distance_css_px(
+                        draft.points[0],
+                        point,
+                        self.observed_pixels_per_point.0,
+                    ) <= 10.0;
+                if closes_area {
+                    // The hover rests on the last point, so the finish adds
+                    // no point back on the start.
+                    draft.hover = *draft
+                        .points
+                        .last()
+                        .expect("a measurement draft has a first point");
+                    return self.finish_measurement_path(document_id);
                 }
                 let last = *draft
                     .points
@@ -20707,6 +20741,69 @@ mod tests {
         assert_eq!(
             area.snapshot(7).unwrap().measurement_paths[0].appearance,
             area_preview.appearance
+        );
+    }
+
+    #[test]
+    fn a_path_being_drawn_snaps_back_to_its_own_points() {
+        let mut polyline = AnnotationAdapter::default();
+        polyline.set_observed_pixels_per_point(1.).unwrap();
+        polyline.set_tool(AnnotationTool::Polyline).unwrap();
+        for (pointer_id, vertex) in [
+            (1, point(20., 20.)),
+            (2, point(100., 20.)),
+            (3, point(100., 80.)),
+        ] {
+            polyline.pointer_down(7, 0, pointer_id, vertex, 4.).unwrap();
+        }
+        let draft_id = polyline.vertex_path_draft.as_ref().unwrap().id.clone();
+        // Near its start, the next point snaps to the start.
+        polyline.pointer_move(4, point(22., 23.)).unwrap();
+        let hover = polyline.vertex_path_draft.as_ref().unwrap().hover;
+        assert_eq!((hover.x, hover.y), (20., 20.));
+        let decision = polyline.semantic_snap_decision().unwrap();
+        assert_eq!(decision.owner_id.as_ref(), Some(&draft_id));
+        assert_eq!(decision.role, SemanticSnapRole::Endpoint);
+        // Its last point is where the next side starts, not a target.
+        polyline.pointer_move(4, point(101., 81.)).unwrap();
+        let hover = polyline.vertex_path_draft.as_ref().unwrap().hover;
+        assert_eq!((hover.x, hover.y), (101., 81.));
+        // A click near the start places the closing point on it exactly.
+        polyline.pointer_down(7, 0, 4, point(22., 23.), 4.).unwrap();
+        polyline.finish_vertex_path(7).unwrap();
+        let points = polyline.snapshot(7).unwrap().vertex_paths[0]
+            .points()
+            .to_vec();
+        assert_eq!(points.len(), 4);
+        assert_eq!((points[3].x, points[3].y), (20., 20.));
+
+        // An Area closes on a click at its start, as a Polygon does,
+        // without a point added back on the start.
+        let mut area = AnnotationAdapter::default();
+        area.set_observed_pixels_per_point(1.).unwrap();
+        area.set_document_page_length_calibration(
+            7,
+            0,
+            LengthCalibration::new(1.0, "mm", "Scale", true).unwrap(),
+        )
+        .unwrap();
+        area.set_tool(AnnotationTool::Area).unwrap();
+        for (pointer_id, vertex) in [
+            (1, point(20., 20.)),
+            (2, point(100., 20.)),
+            (3, point(100., 80.)),
+        ] {
+            area.pointer_down(7, 0, pointer_id, vertex, 4.).unwrap();
+        }
+        assert!(matches!(
+            area.pointer_down(7, 0, 4, point(22., 23.), 4.).unwrap(),
+            PointerPhaseOutcome::AnnotationCreated(_)
+        ));
+        assert_eq!(
+            area.snapshot(7).unwrap().measurement_paths[0]
+                .points()
+                .len(),
+            3
         );
     }
 

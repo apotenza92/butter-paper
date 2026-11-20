@@ -807,6 +807,30 @@ fn native_application_root_accepts_real_external_pdf_drops_and_preserves_drop_or
 }
 
 #[gpui::test]
+fn empty_workspace_strip_starts_with_its_actions(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let workspace =
+        cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(RecordingBackend::default()), cx));
+    let (_, cx) = cx.add_window_view(move |window, cx| Root::new(workspace, window, cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let strip = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TABS_ID)
+        .unwrap();
+    let track_actions = cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID)
+        .unwrap();
+    let open = cx.debug_bounds("document-tab-open").unwrap();
+    // No tabs: no empty tab track and no separator before New Tab, which
+    // sits the row's spacing from the strip's edge.
+    assert_eq!(track_actions.left(), strip.left());
+    assert_eq!(open.left() - strip.left(), px(8.));
+    assert_eq!(open.top() - strip.top(), px(8.));
+}
+
+#[gpui::test]
 fn workspace_tab_hover_truncates_and_restores_without_moving_tabs(cx: &mut TestAppContext) {
     use butter_paper::document_workspace::document_session_tab_id;
     cx.update(|cx| {

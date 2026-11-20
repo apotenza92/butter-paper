@@ -1726,6 +1726,50 @@ impl SemanticSnapIndex {
         }
     }
 
+    /// Targets on a path still being drawn: its placed points and the
+    /// middles of its sides, so it can snap back to itself (to its start,
+    /// to close it). The last point is where the next side starts, so it is
+    /// no target, nor is the side ending there anywhere along it.
+    pub fn from_draft_path(points: &[PdfPoint], owner_id: &MarkupId) -> Self {
+        let mut candidates = Vec::new();
+        let candidate = |geometry, role| Candidate {
+            geometry,
+            owner_id: Some(owner_id.clone()),
+            role,
+            source: SemanticSnapSource::Annotation,
+            stroke_width: None,
+        };
+        if let Some((_, placed)) = points.split_last() {
+            for point in placed.iter().copied() {
+                candidates.push(candidate(
+                    CandidateGeometry::Point(point),
+                    SemanticSnapRole::Endpoint,
+                ));
+            }
+        }
+        let sides = points.len().saturating_sub(1);
+        for (ix, side) in points.windows(2).enumerate() {
+            let (start, end) = (side[0], side[1]);
+            candidates.push(candidate(
+                CandidateGeometry::Point(PdfPoint {
+                    x: (start.x + end.x) * 0.5,
+                    y: (start.y + end.y) * 0.5,
+                }),
+                SemanticSnapRole::Midpoint,
+            ));
+            if ix + 1 < sides {
+                candidates.push(candidate(
+                    CandidateGeometry::Segment { start, end },
+                    SemanticSnapRole::Nearest,
+                ));
+            }
+        }
+        Self {
+            candidates,
+            ..Self::default()
+        }
+    }
+
     pub fn with_construction_grid(
         mut self,
         page_width_pdf_points: f64,

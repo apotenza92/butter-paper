@@ -33,8 +33,8 @@ reference; entries marked *native* are deliberate departures from it.
 | --- | --- | --- |
 | Rectangle, Ellipse, Line, Arrow, Redact, Cloud | Drag, or click then click | Release past 3px, or the second click; Escape cancels |
 | Length, Dimension | Drag, or click then click | Release past 3px, or the second click; Dimension then edits its text on the page |
-| Polyline, Polygon | Click per point | Double-click or Enter; click the start marker (within 10px) to close. A Polygon with Cloud outline on is created as a Cloud |
-| Polylength, Area | Click per point | Double-click or Enter; Escape discards |
+| Polyline, Polygon | Click per point | Double-click or Enter; a Polygon closes on a click at its start (within 10px). A Polygon with Cloud outline on is created as a Cloud |
+| Polylength, Area | Click per point | Double-click or Enter; an Area closes on a click at its start (within 10px). Escape discards |
 | Cloud+ | Drag, or click then click | Release past 3px, or the second click; then type its caption |
 | Arc | Three clicks: start, end, bulge | Third click |
 | Text box | Drag its box, or click then click | Type in place; the box grows to fit its text. Click away or Escape commits, empty text discards |
@@ -48,7 +48,11 @@ own. Clouds of any shape are drawn with the Polygon tool, by turning on Cloud
 outline in its properties (Revu's cloud line style).
 
 Drawn and moved markups snap to other markups' corners, midpoints and (with
-Nearest on) edges, rectangles and ellipses included. A stroked line also
+Nearest on) edges, rectangles and ellipses included. A path being drawn
+(Polyline, Polygon, Polylength, Area) also snaps to its own placed points,
+the middles of its sides and (with Nearest on) its sides, so a Polyline
+closes on its start. Its last point is no target, and the side ending there
+is one only at its middle. A stroked line also
 snaps beside another markup's stroke, by both widths: its outer edge touching
 the other's on either side, or sitting flush inside the wider stroke, with
 the corners and edge midpoints of those positions. Those count a few pixels
@@ -70,9 +74,12 @@ tool's properties and in a selected one's. On, they draw Revu's
 measurements: a Dimension a Length, a Polyline a Polylength (its total
 length), a Polygon an Area. The rail button and the properties title keep
 the tool's own name. Every drawing tool a page scale enhances (Rectangle,
-Ellipse, Line, Arrow, Polyline, Polygon, Dimension) has a second tooltip
-line starting `Page scale:` that says what the scale adds, and for the
-three Measure tools what they can measure, with its shortcut.
+Ellipse, Line, Arrow, Polyline, Polygon, Dimension) has a tooltip with the
+tool's name and shortcut on the first line. The muted second line says what
+the tool measures on a page with a scale, after a bold `Scale on:` (the
+toolbar's Scale switch): for example `Scale on: Area measurement` for
+Polygon. The tooltip does not name the measuring shortcuts (`Shift+Alt+L`,
+`Shift+Alt+Q`, `Shift+Alt+A`), which stay for Revu users.
 
 - Dimension's starts on: from the rail, each press draws a Length where its
   page has a scale and a Dimension with typed text where it has none.
