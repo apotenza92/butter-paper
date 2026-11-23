@@ -30047,6 +30047,11 @@ fn real_snapshot_capture_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     });
     cx.simulate_resize(size(px(1500.), px(900.)));
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // The knob is turned to 30 degrees: angle snap (on at 90° by default)
+    // would round the turn to a multiple of 90.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let document_id = workspace.update(cx, |workspace, cx| {
         workspace.open_path(source_path.clone(), cx)
@@ -31399,6 +31404,12 @@ fn real_polyline_polygon_edit_save_close_and_fresh_workspace_reopen(cx: &mut Tes
     });
     cx.simulate_resize(size(px(1920.), px(1600.)));
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // The paths are drawn at free angles: angle snap (on at 90° by default)
+    // would hold each segment level or upright, away from the points the
+    // test then presses.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let document_id =
         workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
@@ -33138,6 +33149,11 @@ fn real_callout_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppConte
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // The leader is drawn at a free angle: angle snap (on at 90° by default)
+    // would hold it level, away from the knee the test then grabs.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let document_id =
         workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
@@ -34283,6 +34299,11 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // The drawn length is checked exactly: Snap dimensions (on at 1 mm by
+    // default) would round it to whole millimetres on the paper.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_dimension_increment_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let document_id =
         workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
