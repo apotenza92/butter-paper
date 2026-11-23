@@ -226,7 +226,7 @@ impl DocumentWorkspace {
             return;
         };
         let workspace = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let theme = cx.theme();
             let rows = reports.iter().enumerate().map(|(index, report)| {
                 signature_row(document_id, index, report, workspace.clone(), theme)
@@ -246,7 +246,7 @@ impl DocumentWorkspace {
                 } else {
                     "Signatures"
                 })
-                .w(px(520.))
+                .w(crate::layout_metrics::scaled_px(520., window.rem_size()))
                 .max_w_full()
                 .close_button(true)
                 .child(

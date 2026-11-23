@@ -42,7 +42,7 @@ impl DocumentWorkspace {
         session.update(cx, |session, _| session.source_place_asked = true);
         let downloads = self.downloads_folder().is_some();
         let workspace = cx.entity().downgrade();
-        window.open_dialog(cx, move |dialog, _, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let choose = {
                 let workspace = workspace.clone();
                 Button::new(DOCUMENT_SOURCE_PLACE_CHOOSE_ID)
@@ -75,7 +75,7 @@ impl DocumentWorkspace {
             let workspace = workspace.clone();
             dialog
                 .title(place.title())
-                .w(px(540.))
+                .w(crate::layout_metrics::scaled_px(540., window.rem_size()))
                 .max_w_full()
                 .close_button(false)
                 .child(

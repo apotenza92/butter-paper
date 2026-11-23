@@ -4,6 +4,108 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.5.7]
+
+### Selecting
+
+- A click away from highlighted page text or selected markups only clears
+  them. It no longer also starts a selection box, a text selection or a
+  fill, and the pointer and status bar say so. The next click acts as
+  usual.
+
+### Tabs
+
+- The selected tab is grey, as a selected toggle button is, with no
+  shadow. The other tabs look like the buttons beside them, in light and
+  dark. A click on a tab no longer leaves its close button showing; the
+  keyboard focus ring shows on a tab only when you move to it with the
+  keyboard.
+- A selected tab, and a selected toolbar toggle such as Fit Width, now
+  fills with the colour of its border. It is clearly darker than a hovered
+  one in light mode and clearly lighter in dark mode.
+- The menu of open documents (the chevron) is now just after the last tab,
+  with a gap before it, and left of the separator. New Tab and New from
+  template come after the separator.
+- When tabs are scrolled out of sight, the tabs fade at that edge of the
+  row.
+
+### Toolbar
+
+- The Scale switch is now labelled Page Scale. The draw tools' tooltips say
+  "Page Scale on:".
+- Every toolbar control shows at every window width, in one row. The
+  toolbar no longer scrolls sideways.
+- As the window gets narrower, the whole toolbar changes to a more compact
+  form in steps. First, the First, Previous, Next and Last page buttons go.
+  Then Zoom Out and Zoom In, and after them Fit Width and Fit Page, move into
+  the zoom menu. Then the two page-view menus become one, and icons replace
+  the Edit and Page Scale labels.
+- In every form, the page navigator stays at the left edge, and Edit and
+  Page Scale stay at the right edge. Zoom and the page view stay in the
+  centre while they fit there.
+- Side panels give way before the toolbar gets too narrow. Page Thumbnails
+  and the properties panel get narrower, and Page Thumbnails hide when both
+  do not fit. A window on half of a 1080p display, with Page Thumbnails
+  collapsed, shows the Edit and Page Scale labels.
+
+### Page Scale
+
+- Choose a scale in two steps: first the group (Metric, Architectural,
+  Engineering, Custom or No scale), then a scale in that group. A page
+  without a scale opens on Metric, or on Architectural for Letter, ARCH and
+  ANSI sheets.
+- A custom ratio starts in millimetres on paper (inches when you measure in
+  feet or inches). The page keeps the paper unit of a custom ratio
+  (`1 mm = 0.1 m`), so the ratio opens again in that unit.
+- Calibrate tells you what to click only in the banner over the page. No
+  toast repeats it. If you click the second end on a different page, the
+  banner tells you where that end goes.
+- Fixed: the Page Scale panel, Snap settings and Select default template
+  cut off the focus ring of a control at their edge.
+
+### Snapping
+
+- New: angle snap in Snap settings, on at 90° by default. Choose 90°, 45°,
+  30°, 15° or a custom angle. Lines, arrows, dimensions, callout leaders,
+  path segments and the calibration line keep their direction at a
+  multiple of the angle. Rotation knobs turn in steps of the angle.
+- Shift inverts angle snap while you hold it. With angle snap on, Shift
+  frees the direction. With angle snap off, Shift snaps it to the angle.
+  This replaces Shift's horizontal-or-vertical rule for lines and its
+  15° rule for Edit PDF content.
+- A point snap (an end, midpoint, centre or intersection) wins over the
+  angle, so a path still closes exactly on its start point.
+- Snap dimensions is on by default, at 1 mm.
+- Snap settings opens beside the tool rail, wider, in two columns. At the
+  default window size and on half of a 1080p display, all its settings
+  show with no scroll bar.
+
+### Templates
+
+- The open-book button beside New from template opens "Select default
+  template". A template, paper size or orientation that you choose there
+  becomes the default at once. The panel makes no document and has no
+  Create button. New from template makes a document from the default.
+- The New from template tooltip shows the template's name and, below it,
+  its paper size, orientation and pattern (`A3 · Landscape · No page
+  grid`).
+- In Select default template, Up and Down move among the templates, and
+  Enter or Space chooses one. The rows show the standard hover, selected and
+  keyboard focus states.
+
+### Messages
+
+- Toasts show at the bottom right of the page area, clear of the right
+  rail, open side panels and the status bar.
+
+### Interface size
+
+- Make Interface Bigger, Make Interface Smaller and Reset Interface Size
+  are removed from the View menu, with their shortcuts, for now: the layout
+  was not correct at larger sizes. If you chose a larger size, the app
+  opens at the default size. Your operating system's display scaling still
+  makes the whole app larger.
+
 ## [0.5.6]
 
 ### Drawing

@@ -94,6 +94,10 @@ pub struct TemplateLibrary {
     root: PathBuf,
     records: Vec<TemplateRecord>,
     last_template_id: String,
+    /// The way the default template is turned, when it is not its own way,
+    /// with the template it applies to: a later default of another template
+    /// leaves it behind.
+    last_template_turned: Option<(String, crate::template_preview::PaperOrientation)>,
     legacy_blank_migrated: bool,
 }
 
@@ -112,6 +116,7 @@ impl TemplateLibrary {
             version,
             records: stored_records,
             last_template_id,
+            last_template_orientation,
             legacy_blank_migrated,
         } = stored;
         if version != INDEX_VERSION {
@@ -133,10 +138,15 @@ impl TemplateLibrary {
             }
             records.push(record);
         }
+        let last_template_turned = last_template_orientation
+            .as_deref()
+            .and_then(orientation_from_stored)
+            .map(|orientation| (last_template_id.clone(), orientation));
         let mut library = Self {
             root,
             records,
             last_template_id,
+            last_template_turned,
             legacy_blank_migrated,
         };
         if !library.contains_id(&library.last_template_id) {
@@ -148,6 +158,14 @@ impl TemplateLibrary {
 
     pub fn last_template_id(&self) -> &str {
         &self.last_template_id
+    }
+
+    /// The way the default template is turned, when it is not its own way.
+    pub fn last_template_orientation(&self) -> Option<crate::template_preview::PaperOrientation> {
+        self.last_template_turned
+            .as_ref()
+            .filter(|(id, _)| *id == self.last_template_id)
+            .map(|(_, orientation)| *orientation)
     }
 
     pub fn record_ids(&self) -> Vec<&str> {
@@ -282,12 +300,28 @@ impl TemplateLibrary {
     }
 
     pub fn select(&mut self, id: &str) -> Result<(), TemplateLibraryError> {
+        self.select_oriented(id, None)
+    }
+
+    /// Makes `id` the default template, turned to `orientation` when it is
+    /// given (generated paper only; the caller leaves it out for a template
+    /// made its own way).
+    pub fn select_oriented(
+        &mut self,
+        id: &str,
+        orientation: Option<crate::template_preview::PaperOrientation>,
+    ) -> Result<(), TemplateLibraryError> {
         if !self.contains_id(id) {
             return Err(TemplateLibraryError("the template does not exist".into()));
         }
         let previous = std::mem::replace(&mut self.last_template_id, id.into());
+        let previous_turned = std::mem::replace(
+            &mut self.last_template_turned,
+            orientation.map(|orientation| (id.to_owned(), orientation)),
+        );
         if let Err(error) = self.persist() {
             self.last_template_id = previous;
+            self.last_template_turned = previous_turned;
             return Err(error);
         }
         Ok(())
@@ -438,6 +472,9 @@ impl TemplateLibrary {
             version: INDEX_VERSION,
             records: self.records.iter().map(StoredRecord::from_record).collect(),
             last_template_id: self.last_template_id.clone(),
+            last_template_orientation: self
+                .last_template_orientation()
+                .map(|orientation| orientation_to_stored(orientation).to_owned()),
             legacy_blank_migrated: self.legacy_blank_migrated,
         };
         let bytes = serde_json::to_vec_pretty(&stored)?;
@@ -470,6 +507,14 @@ struct StoredIndex {
     records: Vec<StoredRecord>,
     #[serde(rename = "lastTemplateId")]
     last_template_id: String,
+    /// "portrait" or "landscape": the default template turned from its own
+    /// orientation. Absent when it is made its own way.
+    #[serde(
+        rename = "lastTemplateOrientation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    last_template_orientation: Option<String>,
     #[serde(rename = "legacyBlankMigrated", default)]
     legacy_blank_migrated: bool,
 }
@@ -480,8 +525,25 @@ impl Default for StoredIndex {
             version: INDEX_VERSION,
             records: Vec::new(),
             last_template_id: BUILT_IN_BLANK_ID.into(),
+            last_template_orientation: None,
             legacy_blank_migrated: false,
         }
+    }
+}
+
+fn orientation_to_stored(orientation: crate::template_preview::PaperOrientation) -> &'static str {
+    match orientation {
+        crate::template_preview::PaperOrientation::Portrait => "portrait",
+        crate::template_preview::PaperOrientation::Landscape => "landscape",
+    }
+}
+
+/// An unknown value reads as the template's own orientation.
+fn orientation_from_stored(value: &str) -> Option<crate::template_preview::PaperOrientation> {
+    match value {
+        "portrait" => Some(crate::template_preview::PaperOrientation::Portrait),
+        "landscape" => Some(crate::template_preview::PaperOrientation::Landscape),
+        _ => None,
     }
 }
 
@@ -865,6 +927,36 @@ mod tests {
         }
         assert!(built_in_request("built-in-unknown-a4").is_none());
         assert!(built_in_request("built-in-blank-a3").is_none());
+    }
+
+    #[test]
+    fn the_default_template_keeps_its_orientation_across_reopen() {
+        use crate::template_preview::PaperOrientation;
+        let root = scratch("default-orientation");
+        let mut library = TemplateLibrary::open(root.clone()).unwrap();
+        assert_eq!(library.last_template_orientation(), None);
+        library
+            .select_oriented("built-in-dots", Some(PaperOrientation::Portrait))
+            .unwrap();
+        let index = fs::read_to_string(root.join(INDEX_FILE)).unwrap();
+        assert!(
+            index.contains(r#""lastTemplateOrientation": "portrait""#),
+            "{index}"
+        );
+        let reopened = TemplateLibrary::open(root.clone()).unwrap();
+        assert_eq!(reopened.last_template_id(), "built-in-dots");
+        assert_eq!(
+            reopened.last_template_orientation(),
+            Some(PaperOrientation::Portrait)
+        );
+
+        // A template made its own way writes no orientation.
+        library.select("built-in-grid-a4").unwrap();
+        let index = fs::read_to_string(root.join(INDEX_FILE)).unwrap();
+        assert!(!index.contains("lastTemplateOrientation"), "{index}");
+        let reopened = TemplateLibrary::open(root.clone()).unwrap();
+        assert_eq!(reopened.last_template_orientation(), None);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

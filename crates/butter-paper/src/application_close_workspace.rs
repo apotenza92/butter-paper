@@ -1554,8 +1554,8 @@ impl Render for ApplicationCloseShell {
                 )
             })
             .children(dialog_layer)
-            // Timed messages show here as stock toasts.
-            .children(Root::render_notification_layer(window, cx))
+        // Timed messages show as stock toasts over the document workspace's
+        // canvas, which lays out their layer (`toast_layer`).
     }
 }
 

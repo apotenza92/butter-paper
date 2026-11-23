@@ -643,8 +643,8 @@ pub(super) fn content_warning_label(
             .left(relative(x))
             .bottom(relative(1. - page_bottom))
             .h(relative(page_bottom - y))
-            .min_h(px(WARNING_LABEL_ROOM_PX))
-            .pt(px(WARNING_LABEL_GAP_PX))
+            .min_h(crate::layout_metrics::scaled(WARNING_LABEL_ROOM_PX))
+            .pt(crate::layout_metrics::scaled(WARNING_LABEL_GAP_PX))
             .child(label)
             .into_any_element(),
     )

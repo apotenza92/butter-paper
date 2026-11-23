@@ -65,10 +65,11 @@ pub fn format_window_title_for_application(
 }
 
 /// The least content size of a document window: the view toolbar shows all
-/// its controls, centred, between the left rail and the two-column tool rail
-/// (open Page Thumbnails squeeze it, and it scrolls sideways); the
-/// tool rail folds into its overflow menu, but the page, dialogs (the signing
-/// dialog is 460 points wide) and panels such as Snap settings still fit.
+/// its controls in its compact form between the left rail and the
+/// two-column tool rail, and a side panel still opens beside it (the toolbar
+/// steps into its tighter forms, and the panel narrows); the tool rail folds
+/// into its overflow menu, but the page, dialogs (the signing dialog is 460
+/// points wide) and panels such as Snap settings still fit.
 pub const DOCUMENT_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
     width: gpui::px(
         LEFT_RAIL_WIDTH
@@ -79,7 +80,7 @@ pub const DOCUMENT_WINDOW_MIN_SIZE: gpui::Size<gpui::Pixels> = gpui::Size {
 };
 /// The left rail and default two-column tool rail, at the default interface
 /// size.
-const LEFT_RAIL_WIDTH: f32 = 48.;
+pub(crate) const LEFT_RAIL_WIDTH: f32 = 48.;
 const TOOL_RAIL_WIDTH: f32 = 88.;
 
 /// The least content size of the Settings window: its category rail, list

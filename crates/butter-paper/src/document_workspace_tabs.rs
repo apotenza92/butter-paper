@@ -132,8 +132,12 @@ impl DocumentWorkspace {
                     let keyboard_ids = session_tab_ids.clone();
                     let keyboard_focus_handles = self.session_tab_focus_handles.clone();
                     let keyboard_tab_focus = tab_focus.clone();
-                    let reveal_close = self.session_tab_hovered == Some(tab_document_id)
-                        || tab_focus.contains_focused(window, cx);
+                    // Keyboard focus, not the focus a click gives for the
+                    // arrow keys, reveals the close button and the ring.
+                    let keyboard_focus =
+                        tab_focus.contains_focused(window, cx) && window.last_input_was_keyboard();
+                    let reveal_close =
+                        self.session_tab_hovered == Some(tab_document_id) || keyboard_focus;
                     // Under the label and close button: a right-click
                     // anywhere else on the tab opens its menu.
                     let menu_control = cx.entity().downgrade();
@@ -180,13 +184,13 @@ impl DocumentWorkspace {
                         });
                     // A reordered tab slides from where it was.
                     let slide_offset = self.tab_slide_offset(tab_document_id, slide_now);
-                    // The selected tab is raised; the others keep the grey.
+                    // The selected tab is filled grey; the others are plain.
                     let selected = is_active && !self.new_tab_open;
                     let tab = Tab::new()
                         // Short titles still leave a grab area clear of the
                         // close button, as browsers keep a minimum tab width.
-                        .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
-                        .child(session_tab_frame(selected, cx))
+                        .min_w(crate::layout_metrics::scaled(DOCUMENT_SESSION_TAB_MIN_WIDTH))
+                        .child(session_tab_frame(tab_id.clone(), selected, keyboard_focus, cx))
                         .when_some(slide_offset, |tab, offset| tab.left(px(offset)))
                         .when(is_dragged, |tab| tab.opacity(0.6))
                         .on_hover(cx.listener(move |workspace, hovered, _, cx| {
@@ -594,8 +598,8 @@ impl DocumentWorkspace {
             )
             .collect::<Vec<_>>();
         let (has_extras, strip_end) = self.render_tab_strip_end(cx);
-        // Every open document, on the track beside New Tab: the way to the
-        // tabs scrolled out of sight.
+        // Every open document, just after the last tab and before the
+        // separator: the way to the tabs scrolled out of sight.
         let documents_menu = {
             let control = cx.entity().downgrade();
             accessible_icon_button(
@@ -634,20 +638,30 @@ impl DocumentWorkspace {
         let tab_bar_click_control = cx.entity().downgrade();
         let tab_bar_click_ids = session_tab_ids.clone();
         let tab_bar_focus_handles = self.session_tab_focus_handles.clone();
-        // Stock segmented tabs, shadcn's default, with the active document
-        // raised on the track (see `session_tab_track`).
+        // Stock segmented tabs. The selected tab shows through its frame
+        // (`session_tab_frame`), not the stock selection: the stock
+        // segmented indicator is a raised white tab with a shadow.
         let native_session_tabs = TabBar::new("document-workspace-session-tabs-component")
             .segmented()
             // Large: the row is the toolbar's height, with medium buttons.
             .large()
             // Raised tabs as tall as the row's buttons, spaced as far apart
             // and from the strip's edge as from its top and bottom.
-            .tab_height(px(SESSION_TAB_HEIGHT))
-            .inset(px(SESSION_TAB_ROW_GAP))
-            .tab_gap(px(SESSION_TAB_ROW_GAP))
+            .tab_height(crate::layout_metrics::scaled_px(
+                SESSION_TAB_HEIGHT,
+                window.rem_size(),
+            ))
+            .inset(crate::layout_metrics::scaled_px(
+                SESSION_TAB_ROW_GAP,
+                window.rem_size(),
+            ))
+            .tab_gap(crate::layout_metrics::scaled_px(
+                SESSION_TAB_ROW_GAP,
+                window.rem_size(),
+            ))
             .min_w_0()
             .track_scroll(&self.session_tab_scroll)
-            .max_width(px(190.))
+            .max_width(crate::layout_metrics::scaled_px(190., window.rem_size()))
             // The pinned option is unconditional; the application supplies the
             // measured overflow state rather than enabling it for every document.
             .menu(false)
@@ -673,12 +687,6 @@ impl DocumentWorkspace {
                 if let Some(focus) = focus {
                     focus.focus(window, cx);
                 }
-            })
-            .when_some(selected_session_ix, |tabs, selected_ix| {
-                tabs.selected_index(selected_ix)
-            })
-            .when(self.new_tab_open, |tabs| {
-                tabs.selected_index(session_tab_count)
             });
         let reorder_announcement = self.session_tab_reorder_announcement.clone();
         let reorder_status = gpui::div()
@@ -835,7 +843,7 @@ impl DocumentWorkspace {
                                 .id(DOCUMENT_TAB_DRAG_GHOST_ID)
                                 .debug_selector(|| DOCUMENT_TAB_DRAG_GHOST_ID.into())
                                 .px_3()
-                                .h(px(24.))
+                                .h(crate::layout_metrics::scaled(24.))
                                 .flex()
                                 .items_center()
                                 .gap_2()
@@ -862,7 +870,7 @@ impl DocumentWorkspace {
             .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
             .w_full()
             // A bar: 8 + 32 + 8, its line drawn inside.
-            .h(px(crate::layout_metrics::BAR))
+            .h(crate::layout_metrics::scaled(crate::layout_metrics::BAR))
             .flex_shrink_0()
             .items_stretch()
             .relative()
@@ -957,12 +965,22 @@ impl DocumentWorkspace {
                                     workspace.session_tabs_overflow = overflow;
                                     cx.notify();
                                 }
+                                let hidden_edges = session_tab_hidden_edges(
+                                    overflow,
+                                    workspace.session_tab_scroll.offset().x,
+                                    workspace.session_tab_scroll.max_offset().x,
+                                );
+                                if workspace.session_tab_hidden_edges != hidden_edges {
+                                    workspace.session_tab_hidden_edges = hidden_edges;
+                                    cx.notify();
+                                }
                             });
                         });
                     })
                     .child(session_tab_track(
                         Some(native_session_tabs),
                         self.render_session_tab_actions(Some(documents_menu), true, cx),
+                        self.session_tab_hidden_edges.0,
                         cx,
                     )),
             )
@@ -989,8 +1007,8 @@ impl DocumentWorkspace {
             h_flex()
                 .flex_shrink_0()
                 .items_center()
-                .px(px(SESSION_TAB_ROW_GAP))
-                .gap(px(SESSION_TAB_ROW_GAP))
+                .px(crate::layout_metrics::scaled(SESSION_TAB_ROW_GAP))
+                .gap(crate::layout_metrics::scaled(SESSION_TAB_ROW_GAP))
                 .children(recovery_button)
                 .children(update_button)
         });
@@ -1005,9 +1023,10 @@ impl DocumentWorkspace {
         )
     }
 
-    /// New Tab (+), New from template and the open documents menu, on the
-    /// tab track just after the last tab. Without tabs (`after_tabs` false),
-    /// they start the strip, the row's spacing from its edge.
+    /// The open documents menu, then a separator, New Tab (+) and New from
+    /// template, on the tab track just after the last tab: the menu sits with
+    /// the tabs it lists. Without tabs (`after_tabs` false), New Tab and New
+    /// from template start the strip, the row's spacing from its edge.
     pub(super) fn render_session_tab_actions(
         &self,
         documents_menu: Option<gpui::AnyElement>,
@@ -1036,22 +1055,32 @@ impl DocumentWorkspace {
             .items_center()
             // The tabs' spacing: the track leaves it after the last tab, and
             // it goes between these and after the last of them.
-            .gap(px(SESSION_TAB_ROW_GAP))
-            .pr(px(SESSION_TAB_ROW_GAP))
-            .when(!after_tabs, |actions| actions.pl(px(SESSION_TAB_ROW_GAP)))
+            .gap(crate::layout_metrics::scaled(SESSION_TAB_ROW_GAP))
+            .pr(crate::layout_metrics::scaled(SESSION_TAB_ROW_GAP))
+            .when(!after_tabs, |actions| {
+                actions.pl(crate::layout_metrics::scaled(SESSION_TAB_ROW_GAP))
+            })
             .child(
                 canvas(move |measured, _, _| bounds.set(measured), |_, _, _, _| {})
                     .absolute()
                     .inset_0(),
             )
-            // Tabs on one side, buttons on the other: a line the bar's full
-            // height. Without tabs there is nothing to divide.
+            // Tabs scrolled out of sight on the right fade out just before
+            // the actions. Only the document strip scrolls its tabs.
+            .when(
+                documents_menu.is_some() && self.session_tab_hidden_edges.1,
+                |actions| actions.child(session_tab_edge_fade(false, cx)),
+            )
+            // The tabs' menu stays beside them when they scroll.
+            .children(documents_menu)
+            // Tabs and their menu on one side, new documents on the other: a
+            // line the bar's full height. Without tabs there is nothing to
+            // divide.
             .when(after_tabs, |actions| {
                 actions.child(gpui_component::separator::Separator::vertical().h_full())
             })
             .child(open_document)
             .child(self.template_control.clone())
-            .children(documents_menu)
     }
 }
 
@@ -1063,19 +1092,78 @@ impl DocumentWorkspace {
 pub(super) fn session_tab_track(
     tabs: Option<TabBar>,
     actions: impl IntoElement,
+    hidden_left: bool,
     cx: &App,
 ) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(DOCUMENT_SESSION_TAB_TRACK_ID)
         .debug_selector(|| DOCUMENT_SESSION_TAB_TRACK_ID.into())
+        .relative()
         .w_full()
         .h_full()
         .min_w_0()
         .items_center()
-        // The viewer toolbar's background; the tabs carry the segmented grey.
+        // The viewer toolbar's background; the selected tab carries the
+        // selected grey.
         .bg(cx.theme().background)
         // The stock segmented bar, square: it is the whole tab row, edge to
         // edge, not a rounded track inside it.
         .children(tabs.map(|tabs| tabs.h_full().rounded(px(0.)).bg(cx.theme().background)))
+        // Tabs scrolled out of sight on the left fade out at the strip's edge.
+        .when(hidden_left, |track| {
+            track.child(session_tab_edge_fade(true, cx))
+        })
         .child(actions)
+}
+
+/// The width of a fade over the tab strip's edge: a gradient to the row's
+/// background, then the row's spacing in its solid colour, so the visible
+/// tabs end one spacing from the edge.
+const SESSION_TAB_EDGE_FADE_WIDTH: f32 = 3. * SESSION_TAB_ROW_GAP;
+
+/// Whether tabs are scrolled out of sight on the left and on the right of a
+/// strip scrolled to `offset` (zero or less) of `max_offset`.
+pub(super) fn session_tab_hidden_edges(
+    overflow: bool,
+    offset: Pixels,
+    max_offset: Pixels,
+) -> (bool, bool) {
+    if !overflow || max_offset <= px(0.) {
+        return (false, false);
+    }
+    (offset < px(-0.5), offset > -max_offset + px(0.5))
+}
+
+/// A fade over the tab strip's left (`left`) or right edge, where tabs are
+/// scrolled out of sight. It draws the row's own background, takes no
+/// layout space and no pointer input: the tabs under it stay clickable. The
+/// right one hangs just before the actions that hold it.
+fn session_tab_edge_fade(left: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+    let background = cx.theme().background;
+    // The gradient over the inner two spacings; the outer one is solid.
+    let fade_end = 2. / 3.;
+    let (id, angle) = if left {
+        (DOCUMENT_SESSION_TAB_FADE_LEFT_ID, 270.)
+    } else {
+        (DOCUMENT_SESSION_TAB_FADE_RIGHT_ID, 90.)
+    };
+    gpui::div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .w(crate::layout_metrics::scaled(SESSION_TAB_EDGE_FADE_WIDTH))
+        .map(|fade| {
+            if left {
+                fade.left_0()
+            } else {
+                fade.right_full()
+            }
+        })
+        .bg(gpui::linear_gradient(
+            angle,
+            gpui::linear_color_stop(background.opacity(0.), 0.),
+            gpui::linear_color_stop(background, fade_end),
+        ))
 }

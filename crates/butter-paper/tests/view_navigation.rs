@@ -1919,27 +1919,123 @@ fn a_narrow_toolbar_keeps_the_page_field_and_drops_the_page_buttons(cx: &mut Tes
         content.size.width, toolbar.size.width,
         "the toolbar scrolls"
     );
-    // The whole toolbar turns full at once: just narrower than it needs,
-    // still compact; at its width, Edit PDF's label and every page button.
-    let full =
-        16. * butter_paper::viewer_toolbar_strip::viewer_toolbar_rems(
-            butter_paper::viewer_toolbar_strip::ViewerToolbarFit::Full,
-            false,
-            4,
-        ) + f32::from(butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE.width)
-            - 16. * butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS;
-    let labelled =
-        |h: &mut Harness<'_>| h.cx.debug_bounds("viewer-edit-pdf").unwrap().size.width > px(100.);
-    h.cx.simulate_resize(size(px(full - 1.), px(800.)));
+    // The whole toolbar changes form at once. Just narrower than the middle
+    // form needs, still compact; at its width, the labels with the page
+    // field alone; at the full form's width, every page button too.
+    let window_at = |fit| {
+        16. * butter_paper::viewer_toolbar_strip::viewer_toolbar_rems(fit, false, 4)
+            + f32::from(butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE.width)
+            - 16. * butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_MIN_REMS
+    };
+    use butter_paper::viewer_toolbar_strip::ViewerToolbarFit;
+    let full = window_at(ViewerToolbarFit::Full);
+    let middle = window_at(ViewerToolbarFit::Middle);
+    let compact = window_at(ViewerToolbarFit::Compact);
+    let labelled = |h: &mut Harness<'_>| {
+        h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::EDIT_PDF_ICON_ID)
+            .is_none()
+    };
+    let zoom_steps = |h: &mut Harness<'_>| {
+        h.cx.debug_bounds(butter_paper::zoom_control::ZOOM_OUT_ID)
+            .is_some()
+    };
+    let page_field = [false, false, true, false, false];
+    for (width, pages, labels, steps) in [
+        (compact - 1., page_field, false, false),
+        (compact, page_field, false, false),
+        (middle - 1., page_field, true, false),
+        (middle, page_field, true, true),
+        (full - 1., page_field, true, true),
+        (full, [true; 5], true, true),
+    ] {
+        h.cx.simulate_resize(size(px(width), px(800.)));
+        h.settle();
+        h.settle();
+        assert_eq!(shown(&mut h), pages, "{width}");
+        assert_eq!(labelled(&mut h), labels, "{width}");
+        assert_eq!(zoom_steps(&mut h), steps, "{width}");
+        let toolbar = h.cx.debug_bounds("viewer-toolbar").unwrap();
+        let content = h.cx.debug_bounds("viewer-toolbar-content").unwrap();
+        assert_eq!(
+            content.size.width, toolbar.size.width,
+            "the toolbar scrolls at {width}"
+        );
+    }
+}
+
+static PAGES_12: [(f32, f32); 12] = [(612., 792.); 12];
+
+/// Half a 1920-pixel screen, as macOS tiles a window.
+const HALF_1080P_MAC_WIDTH: f32 = 960.;
+
+#[gpui::test]
+fn a_960_px_window_shows_the_middle_toolbar_with_both_labels(cx: &mut TestAppContext) {
+    use butter_paper::page_navigator::{
+        PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_LAST_ID, PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
+    };
+    use butter_paper::viewer_toolbar_strip::{
+        EDIT_PDF_ICON_ID, EDIT_PDF_ID, VIEWER_PAGE_LAYOUT_ID, VIEWER_PAGES_GROUP_ID,
+        VIEWER_SCALE_ICON_ID, VIEWER_SCALE_ID, VIEWER_SCALE_MENU_ID, VIEWER_SCALE_VALUE_ID,
+        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_ID, VIEWER_ZOOM_GROUP_ID,
+    };
+    // Page Thumbnails start collapsed.
+    let mut h = setup(cx, &PAGES_12);
+    h.cx.simulate_resize(size(px(HALF_1080P_MAC_WIDTH), px(900.)));
     h.settle();
     h.settle();
-    assert_eq!(shown(&mut h), [false, false, true, false, false]);
-    assert!(!labelled(&mut h));
-    h.cx.simulate_resize(size(px(full), px(800.)));
+    let toolbar = h.cx.debug_bounds(VIEWER_TOOLBAR_ID).unwrap();
+    let content = h.cx.debug_bounds(VIEWER_TOOLBAR_CONTENT_ID).unwrap();
+    assert_eq!(
+        content.size.width, toolbar.size.width,
+        "the toolbar scrolls at 960 px"
+    );
+    // The middle form: both labels, the page field alone, the Scale menu
+    // without the scale shown.
+    for id in [
+        EDIT_PDF_ICON_ID,
+        VIEWER_SCALE_ICON_ID,
+        VIEWER_SCALE_VALUE_ID,
+    ] {
+        assert!(h.cx.debug_bounds(id).is_none(), "{id} shows at 960 px");
+    }
+    for id in [PAGE_FIRST_ID, PAGE_PREVIOUS_ID, PAGE_NEXT_ID, PAGE_LAST_ID] {
+        assert!(h.cx.debug_bounds(id).is_none(), "{id} shows at 960 px");
+    }
+    // Every group shows whole, in order, inside the toolbar.
+    let order = [
+        VIEWER_PAGES_GROUP_ID,
+        VIEWER_ZOOM_GROUP_ID,
+        VIEWER_PAGE_LAYOUT_ID,
+        EDIT_PDF_ID,
+        VIEWER_SCALE_ID,
+    ]
+    .map(|id| {
+        h.cx.debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} hidden at 960 px"))
+    });
+    for pair in order.windows(2) {
+        assert!(pair[0].right() <= pair[1].left(), "{order:?}");
+    }
+    assert!(order[0].left() >= toolbar.left() + px(8.));
+    assert!(order[4].right() <= toolbar.right() - px(8.));
+    for id in [PAGE_INDICATOR_ID, VIEWER_SCALE_MENU_ID] {
+        let bounds =
+            h.cx.debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} hidden at 960 px"));
+        assert!(
+            bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(),
+            "{id}"
+        );
+    }
+    // The page field still goes to a page, as the keys still turn them.
+    h.click(PAGE_INDICATOR_ID);
+    h.cx.simulate_input("4");
+    h.cx.simulate_keystrokes("enter");
     h.settle();
+    assert_eq!(h.frame().current_page, 3);
+    h.action(NavigateNextPage);
     h.settle();
-    assert_eq!(shown(&mut h), [true; 5]);
-    assert!(labelled(&mut h));
+    assert_eq!(h.frame().current_page, 4);
 }
 
 static PAGES_999: [(f32, f32); 999] = [(612., 792.); 999];
@@ -1972,9 +2068,14 @@ fn a_signed_document_s_whole_toolbar_fits_half_a_1080p_screen(cx: &mut TestAppCo
     let (mut h, _) = setup_tabs(cx, &PAGES_1000, &[signed]);
     let wide_edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
     whole_toolbar_fits(&mut h, "signed");
-    // Compact: Edit PDF shows its icon for its label.
+    // Edit PDF keeps its label: the zoom and fit buttons step into the
+    // zoom menu first.
     let edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
-    assert!(edit_pdf.size.width < wide_edit_pdf.size.width);
+    assert_eq!(edit_pdf.size.width, wide_edit_pdf.size.width);
+    assert!(
+        h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::EDIT_PDF_ICON_ID)
+            .is_none()
+    );
     let toolbar = h.cx.debug_bounds("viewer-toolbar").unwrap();
     let controls =
         h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
@@ -2030,13 +2131,12 @@ fn whole_toolbar_fits(h: &mut Harness<'_>, document: &str) {
         edit_pdf.right() <= scale.left() && scale.right() <= toolbar.right(),
         "the Scale overlaps at half 1080p for {document}"
     );
+    // Every group shows whole; narrow, the fit and page-view buttons are in
+    // menus.
     for id in [
         PAGE_INDICATOR_ID,
         "viewer-zoom-menu",
-        "viewer-fit-width",
-        "viewer-fit-page",
-        "continuous-view-split",
-        "single-page-view-split",
+        butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
     ] {
         let bounds =
             h.cx.debug_bounds(id)
@@ -2046,4 +2146,112 @@ fn whole_toolbar_fits(h: &mut Harness<'_>, document: &str) {
             "{id}"
         );
     }
+}
+
+/// Sweeps the window from its least width to wide in 8px steps, with each
+/// combination of Page Thumbnails and the properties panel, and checks that
+/// every viewer toolbar group shows whole in one row without scrolling.
+fn every_toolbar_group_shows_at_every_window_width(h: &mut Harness<'_>, signed: bool) {
+    use butter_paper::document_workspace::DOCUMENT_THUMBNAIL_STRIP_ID;
+    use butter_paper::page_navigator::PAGE_INDICATOR_ID;
+    use butter_paper::viewer_toolbar_strip::{
+        EDIT_PDF_ID, VIEWER_PAGE_LAYOUT_ID, VIEWER_SCALE_ID, VIEWER_SCALE_MENU_ID,
+        VIEWER_SIGNATURES_ID, VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_ID,
+        VIEWER_TOOLBAR_NARROWEST_REMS,
+    };
+    use butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE;
+    let least = f32::from(DOCUMENT_WINDOW_MIN_SIZE.width);
+    let toggle = |h: &mut Harness<'_>, id: &'static str| {
+        h.cx.simulate_resize(size(px(1600.), px(800.)));
+        h.cx.update(|window, cx| window.draw(cx).clear(cx));
+        let target = h.cx.debug_bounds(id).unwrap().center();
+        h.cx.simulate_click(target, gpui::Modifiers::default());
+        h.cx.run_until_parked();
+    };
+    // Closed; thumbnails; thumbnails and properties; properties.
+    for (step, (thumbnails, properties)) in [
+        (None, (false, false)),
+        (Some("document-left-rail-pages"), (true, false)),
+        (Some("document-workspace-rail-actions"), (true, true)),
+        (Some("document-left-rail-pages"), (false, true)),
+    ] {
+        if let Some(id) = step {
+            toggle(h, id);
+        }
+        let mut width = least;
+        while width <= 1600. {
+            h.cx.simulate_resize(size(px(width), px(800.)));
+            // The toolbar's form follows the width laid out last frame.
+            h.cx.update(|window, cx| window.draw(cx).clear(cx));
+            h.cx.update(|window, cx| window.draw(cx).clear(cx));
+            let case = format!(
+                "at {width} with thumbnails {thumbnails}, properties {properties}, signed \
+                 {signed}"
+            );
+            let toolbar = h.cx.debug_bounds(VIEWER_TOOLBAR_ID).unwrap();
+            let content = h.cx.debug_bounds(VIEWER_TOOLBAR_CONTENT_ID).unwrap();
+            assert!(
+                toolbar.size.width >= px(16. * VIEWER_TOOLBAR_NARROWEST_REMS) - px(1.),
+                "the panels squeeze the toolbar {case}: {toolbar:?}"
+            );
+            assert_eq!(content.size.width, toolbar.size.width, "overflow {case}");
+            let mut groups = vec![
+                PAGE_INDICATOR_ID,
+                "viewer-zoom-menu",
+                VIEWER_PAGE_LAYOUT_ID,
+                EDIT_PDF_ID,
+                VIEWER_SCALE_ID,
+            ];
+            if signed {
+                groups.push(VIEWER_SIGNATURES_ID);
+            }
+            let bounds = groups
+                .iter()
+                .map(|id| {
+                    h.cx.debug_bounds(id)
+                        .unwrap_or_else(|| panic!("{id} hidden {case}"))
+                })
+                .collect::<Vec<_>>();
+            for (id, group) in groups.iter().zip(&bounds) {
+                assert!(
+                    group.left() >= toolbar.left() && group.right() <= toolbar.right(),
+                    "{id} cut {case}: {group:?} in {toolbar:?}"
+                );
+            }
+            for pair in bounds.windows(2) {
+                assert!(
+                    pair[0].right() <= pair[1].left(),
+                    "overlap {case}: {bounds:?}"
+                );
+            }
+            assert!(
+                h.cx.debug_bounds(VIEWER_SCALE_MENU_ID).is_some(),
+                "the Scale's menu hidden {case}"
+            );
+            // Page Thumbnails alone open at every window width.
+            if thumbnails && !properties {
+                assert!(
+                    h.cx.debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID).is_some(),
+                    "thumbnails hidden {case}"
+                );
+            }
+            width += 8.;
+        }
+    }
+}
+
+#[gpui::test]
+fn every_toolbar_group_shows_at_every_window_width_and_panel_combination(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &PAGES_1000);
+    every_toolbar_group_shows_at_every_window_width(&mut h, false);
+}
+
+#[gpui::test]
+fn every_toolbar_group_shows_at_every_window_width_for_a_signed_document(cx: &mut TestAppContext) {
+    let signed = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/signatures/signed-rsa.pdf"
+    );
+    let (mut h, _) = setup_tabs(cx, &PAGES_1000, &[signed]);
+    every_toolbar_group_shows_at_every_window_width(&mut h, true);
 }

@@ -28,7 +28,7 @@ workflows.
 
 | Measure a scaled drawing | Start from a paper template |
 | --- | --- |
-| ![An area and a length measured at 1:100 on a floor plan, with the area's properties open](assets/screenshots/2-measure.png) | ![The New from template picker with Dot Grid selected](assets/screenshots/3-templates.png) |
+| ![An area and a length measured at 1:100 on a floor plan, with the area's properties open](assets/screenshots/2-measure.png) | ![The Select default template panel with Dot Grid chosen as the default](assets/screenshots/3-templates.png) |
 | **Sign documents** | **Work through a drawing set** |
 | ![The Signature panel with Draw, Type and Image and a code to sign with a phone](assets/screenshots/4-sign.png) | ![Page Thumbnails beside a three-sheet drawing set](assets/screenshots/5-pages.png) |
 

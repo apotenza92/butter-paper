@@ -1,7 +1,7 @@
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 use gpui::{
-    Anchor, AppContext as _, Bounds, ClickEvent, Context, DispatchPhase, Entity, EventEmitter,
+    Anchor, App, AppContext as _, Bounds, ClickEvent, Context, DispatchPhase, Entity, EventEmitter,
     FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, Role, ScrollHandle,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
@@ -10,7 +10,7 @@ use gpui::{
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     StyledExt as _,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     dialog::Cancel,
     h_flex,
     popover::Popover,
@@ -19,7 +19,9 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::accessible_button::{accessible_icon_button, close_icon_button};
+use crate::accessible_button::{
+    accessible_described_icon_button, accessible_icon_button, close_icon_button,
+};
 use crate::application_assets::NEW_DOCUMENT_ICON;
 use crate::template_preview::{
     PaperOrientation, TemplatePreview, group_by_paper_size, orientation_toggle,
@@ -35,11 +37,11 @@ pub const DOCUMENT_TAB_OPEN_ID: &str = "document-tab-open";
 pub const TEMPLATE_CONTROL_GROUP_ID: &str = "document-tab-template-controls";
 pub const TEMPLATE_PRIMARY_ID: &str = "document-tab-new-pdf";
 pub const TEMPLATE_PICKER_ID: &str = "document-tab-template-picker";
-/// The template menu button's tooltip and accessible label.
-pub const TEMPLATE_PICKER_LABEL: &str = "Select and customise templates";
+/// The template menu button's tooltip and accessible label, and the title of
+/// the panel it opens.
+pub const TEMPLATE_PICKER_LABEL: &str = "Select default template";
 pub const TEMPLATE_PICKER_POPOVER_ID: &str = "template-picker";
 pub const TEMPLATE_MANAGE_ID: &str = "template-picker-manage";
-pub const TEMPLATE_CREATE_ID: &str = "template-picker-create";
 pub const TEMPLATE_PICKER_CLOSE_ID: &str = "template-picker-close";
 pub const TEMPLATE_SAVE_DOCUMENT_ID: &str = "template-picker-save-document";
 pub const TEMPLATE_PICKER_LIST_ID: &str = "template-picker-list";
@@ -247,11 +249,11 @@ pub struct ExperimentDocumentTab {
     pub dirty: bool,
 }
 
+/// What asked for a document from a template. Only the primary button does:
+/// the picker chooses the default template and makes no document.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TemplateCreationOrigin {
     Primary,
-    Create,
-    RowDoubleClick,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -278,7 +280,12 @@ pub enum DocumentTabBarCommand {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TemplateSplitEvent {
     OpenChanged(bool),
-    SelectionChanged(String),
+    /// The picker made `template_id`, turned to `orientation` when that
+    /// turns its paper, the default template.
+    DefaultChanged {
+        template_id: String,
+        orientation: Option<PaperOrientation>,
+    },
     CreateRequested {
         template_id: String,
         origin: TemplateCreationOrigin,
@@ -351,23 +358,30 @@ pub struct DirtyCloseConfirmationEvent {
 
 /// Owns the retained picker state and emits semantic template intents without
 /// creating, naming, selecting, or closing document tabs.
+///
+/// The primary button makes a document from the default template; the picker
+/// (Select default template) chooses that default. A choice there, of a
+/// template, paper size or orientation, is the default at once.
 pub struct TemplateSplitControl {
     picker_open: bool,
     templates: Vec<TemplateCatalogItem>,
-    selected_template_id: String,
+    /// The default template: what the primary button makes.
     last_template_id: String,
+    /// The way the default template is turned, when it is not its own way.
+    default_orientation: Option<PaperOrientation>,
     /// The paper size whose templates the picker lists.
     paper_size: String,
     /// Created on first render, which owns the window a Select needs.
     paper_size_select: Option<Entity<SelectState<Vec<SharedString>>>>,
     paper_size_select_synced: Option<(Vec<SharedString>, SharedString)>,
     _paper_size_subscription: Option<Subscription>,
-    /// Which way the listed paper is turned; each paper size starts the way
-    /// its templates are.
+    /// Which way the listed paper is turned: the default template's way.
     orientation: PaperOrientation,
     creating: bool,
     save_document_enabled: bool,
     picker_focus: FocusHandle,
+    /// Holds the template rows, so arrow keys stay among them.
+    picker_list_focus: FocusHandle,
 }
 
 impl TemplateSplitControl {
@@ -381,8 +395,8 @@ impl TemplateSplitControl {
         Self {
             picker_open: false,
             templates,
-            selected_template_id: BUILT_IN_TEMPLATES[0].id.into(),
             last_template_id: BUILT_IN_TEMPLATES[0].id.into(),
+            default_orientation: None,
             orientation,
             paper_size,
             paper_size_select: None,
@@ -391,6 +405,7 @@ impl TemplateSplitControl {
             creating: false,
             save_document_enabled: false,
             picker_focus: cx.focus_handle(),
+            picker_list_focus: cx.focus_handle(),
         }
     }
 
@@ -416,22 +431,31 @@ impl TemplateSplitControl {
             .collect()
     }
 
-    /// Which way the picker turns the listed paper.
+    /// Which way the picker turns the listed paper: the default template's
+    /// way.
     pub fn orientation(&self) -> PaperOrientation {
         self.orientation
     }
 
+    /// The way the default template is turned, when it is not its own way:
+    /// how the primary button makes it.
+    pub fn default_orientation(&self) -> Option<PaperOrientation> {
+        self.default_orientation
+    }
+
+    /// Turns the listed paper, and the default template with it.
     pub fn set_orientation(&mut self, orientation: PaperOrientation, cx: &mut Context<Self>) {
         if self.orientation != orientation {
             self.orientation = orientation;
-            cx.notify();
+            let id = self.last_template_id.clone();
+            self.make_default(id, cx);
         }
     }
 
-    /// Whether the selected template's paper can be turned: imported PDFs
+    /// Whether the default template's paper can be turned: imported PDFs
     /// keep their own pages.
     pub fn orientation_available(&self) -> bool {
-        self.template(&self.selected_template_id)
+        self.template(&self.last_template_id)
             .preview
             .orientation()
             .is_some()
@@ -460,26 +484,41 @@ impl TemplateSplitControl {
     }
 
     fn paper_size_of(&self, template_id: &str) -> String {
-        self.templates
-            .iter()
-            .find(|template| template.id == template_id)
-            .unwrap_or(&self.templates[0])
-            .preview
-            .paper_size()
+        self.template(template_id).preview.paper_size()
     }
 
-    /// Lists the templates of `paper_size` and selects the one most like the
-    /// current selection: the same template name (Dot Grid A3 → Dot Grid
-    /// A4), else the same pattern, else the first in that size.
+    /// Makes `template_id` the default template, turned the way the picker
+    /// shows its paper, and says so.
+    fn make_default(&mut self, template_id: String, cx: &mut Context<Self>) {
+        let template_id = self.template(&template_id).id.clone();
+        self.default_orientation = self.turned_orientation(&template_id);
+        self.paper_size = self.paper_size_of(&template_id);
+        self.last_template_id = template_id.clone();
+        cx.emit(TemplateSplitEvent::DefaultChanged {
+            template_id,
+            orientation: self.default_orientation,
+        });
+        cx.notify();
+    }
+
+    /// Makes `template_id` the default template, turned the way the picker
+    /// shows the listed paper: a click on its row.
+    pub fn select_template(&mut self, template_id: &str, cx: &mut Context<Self>) {
+        if template_id == self.last_template_id {
+            return;
+        }
+        self.make_default(template_id.to_owned(), cx);
+    }
+
+    /// Lists the templates of `paper_size` and makes the one most like the
+    /// default the new default: the same template name (Dot Grid A3 → Dot
+    /// Grid A4), else the same pattern, else the first in that size. It is
+    /// turned the way its templates are.
     pub fn select_paper_size(&mut self, paper_size: &str, cx: &mut Context<Self>) {
         if paper_size == self.paper_size {
             return;
         }
-        let current = self
-            .templates
-            .iter()
-            .find(|template| template.id == self.selected_template_id)
-            .cloned();
+        let current = self.template(&self.last_template_id).clone();
         let candidates = self
             .templates
             .iter()
@@ -488,26 +527,19 @@ impl TemplateSplitControl {
         let Some(first) = candidates.first() else {
             return;
         };
-        let successor = current
-            .as_ref()
-            .and_then(|current| {
-                candidates
-                    .iter()
-                    .find(|template| template.name == current.name)
-                    .or_else(|| {
-                        candidates.iter().find(|template| {
-                            template.preview.pattern_kind() == current.preview.pattern_kind()
-                        })
-                    })
+        let successor = candidates
+            .iter()
+            .find(|template| template.name == current.name)
+            .or_else(|| {
+                candidates.iter().find(|template| {
+                    template.preview.pattern_kind() == current.preview.pattern_kind()
+                })
             })
             .unwrap_or(first)
             .id
             .clone();
-        self.paper_size = paper_size.into();
         self.orientation = self.natural_orientation(&successor);
-        self.selected_template_id = successor.clone();
-        cx.emit(TemplateSplitEvent::SelectionChanged(successor));
-        cx.notify();
+        self.make_default(successor, cx);
     }
 
     fn sync_paper_size_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -554,10 +586,12 @@ impl TemplateSplitControl {
         &self.templates
     }
 
+    /// The template the picker shows selected: the default template.
     pub fn selected_template_id(&self) -> String {
-        self.selected_template_id.clone()
+        self.last_template_id.clone()
     }
 
+    /// The default template: what the primary button makes.
     pub fn last_template_id(&self) -> String {
         self.last_template_id.clone()
     }
@@ -586,10 +620,13 @@ impl TemplateSplitControl {
         cx.notify();
     }
 
+    /// Takes the library's templates and its default: the last-used template,
+    /// turned to `default_orientation` when that turns its paper.
     pub fn apply_template_catalog(
         &mut self,
         templates: Vec<TemplateCatalogItem>,
         durable_last_used_id: impl Into<String>,
+        default_orientation: Option<PaperOrientation>,
         cx: &mut Context<Self>,
     ) {
         if templates.is_empty() {
@@ -600,81 +637,93 @@ impl TemplateSplitControl {
             .iter()
             .find(|template| template.id == requested)
             .unwrap_or(&templates[0])
-            .id
             .clone();
         self.templates = templates;
-        self.paper_size = self.paper_size_of(&last_used);
-        self.last_template_id = last_used.clone();
-        self.selected_template_id = last_used;
+        self.paper_size = last_used.preview.paper_size();
+        let natural = last_used.preview.orientation();
+        self.default_orientation =
+            default_orientation.filter(|orientation| natural.is_some_and(|n| n != *orientation));
+        if let Some(natural) = natural {
+            self.orientation = self.default_orientation.unwrap_or(natural);
+        }
+        self.last_template_id = last_used.id;
         cx.notify();
     }
 
-    /// What the primary button makes: a document from the last template used.
+    /// What the primary button makes: a document from the default template.
     pub fn last_template_label(&self) -> String {
-        let name = self
-            .templates
-            .iter()
-            .find(|template| template.id == self.last_template_id)
-            .unwrap_or(&self.templates[0])
-            .name
-            .clone();
-        format!("New {name} document")
+        format!(
+            "New {} document",
+            self.template(&self.last_template_id).name
+        )
     }
 
     /// The primary button's tooltip and accessible label: what a click
-    /// makes, from the last template used.
+    /// makes, from the default template.
     pub fn last_template_tooltip(&self) -> String {
-        let name = self
-            .templates
-            .iter()
-            .find(|template| template.id == self.last_template_id)
-            .unwrap_or(&self.templates[0])
-            .name
-            .clone();
-        format!("New from template: {name}")
+        format!(
+            "New from template: {}",
+            self.template(&self.last_template_id).name
+        )
     }
 
-    /// Creates a document from the last template used, as the primary button
+    /// The primary button tooltip's second line: the default template's
+    /// paper size, orientation and pattern, worded as the picker's row is.
+    pub fn last_template_description(&self) -> String {
+        let template = self.template(&self.last_template_id);
+        match self.default_orientation {
+            Some(orientation) => template.preview.oriented(orientation).detail(),
+            None => template.preview.detail(),
+        }
+    }
+
+    /// Creates a document from the default template, as the primary button
     /// does.
     pub fn create_from_last_template(&mut self, cx: &mut Context<Self>) {
-        let id = self.last_template_id.clone();
-        self.request_create(&id, TemplateCreationOrigin::Primary, cx);
-    }
-
-    fn request_create(
-        &mut self,
-        template_id: &str,
-        origin: TemplateCreationOrigin,
-        cx: &mut Context<Self>,
-    ) {
-        if self.creating && origin == TemplateCreationOrigin::Create {
-            return;
-        }
-        let template_id = self
-            .templates
-            .iter()
-            .find(|template| template.id == template_id)
-            .unwrap_or(&self.templates[0])
-            .id
-            .clone();
-        // The picker's own Create turns the paper as it shows it; the
-        // primary button makes the template as it is.
-        let orientation = match origin {
-            TemplateCreationOrigin::Primary => None,
-            TemplateCreationOrigin::Create | TemplateCreationOrigin::RowDoubleClick => {
-                self.turned_orientation(&template_id)
-            }
-        };
-        self.paper_size = self.paper_size_of(&template_id);
-        self.last_template_id = template_id.clone();
-        self.selected_template_id = template_id.clone();
+        let template_id = self.template(&self.last_template_id).id.clone();
         self.picker_open = false;
         cx.emit(TemplateSplitEvent::CreateRequested {
             template_id,
-            origin,
-            orientation,
+            origin: TemplateCreationOrigin::Primary,
+            orientation: self.default_orientation,
         });
         cx.notify();
+    }
+}
+
+/// The key context of Select default template's rows.
+pub const TEMPLATE_PICKER_LIST_CONTEXT: &str = "TemplatePickerList";
+
+/// Frees Up, Down, Enter and Space among the template rows. The panel opens
+/// inside the document workspace, whose bindings for those keys (scroll the
+/// page, finish a path) would otherwise take them before the rows' own key
+/// handling: Up and Down move among the rows, Enter and Space choose one.
+pub fn bind_template_picker_keys(cx: &mut App) {
+    cx.bind_keys(
+        ["up", "down", "enter", "space"].map(|key| {
+            gpui::KeyBinding::new(key, gpui::NoAction, Some(TEMPLATE_PICKER_LIST_CONTEXT))
+        }),
+    );
+}
+
+/// Moves keyboard focus to the next (`forward`) or previous template row in
+/// `list`, staying among the rows.
+fn focus_adjacent_row(list: &FocusHandle, forward: bool, window: &mut Window, cx: &mut App) {
+    if !list.contains_focused(window, cx) {
+        return;
+    }
+    if forward {
+        window.focus_next(cx);
+    } else {
+        window.focus_prev(cx);
+    }
+    if !list.contains_focused(window, cx) {
+        // Past the first or last row: stay on it.
+        if forward {
+            window.focus_prev(cx);
+        } else {
+            window.focus_next(cx);
+        }
     }
 }
 
@@ -684,16 +733,12 @@ impl Render for TemplateSplitControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::overlay_state::begin_overlay_render(cx);
         self.sync_paper_size_select(window, cx);
-        let current_template = self
-            .templates
-            .iter()
-            .find(|template| template.id == self.last_template_id)
-            .unwrap_or(&self.templates[0])
-            .clone();
         let primary_control = cx.entity().downgrade();
-        // Says what a click makes: the last template used, ready to draw on.
+        // Says what a click makes: the default template's name, and below it
+        // its paper, worded as the picker's row is.
         let primary_label = self.last_template_tooltip();
-        let primary = accessible_icon_button(
+        let primary_description = self.last_template_description();
+        let primary = accessible_described_icon_button(
             Button::new(TEMPLATE_PRIMARY_ID)
                 .outline()
                 .rounded_r_none()
@@ -701,17 +746,14 @@ impl Render for TemplateSplitControl {
                 .accessibility_id(TEMPLATE_PRIMARY_ID)
                 .icon(Icon::default().path(NEW_DOCUMENT_ICON))
                 .disabled(self.creating)
-                .tooltip(primary_label.clone())
+                .tooltip_with_description(primary_label.clone(), primary_description.clone(), None)
                 .on_click(move |_: &ClickEvent, _, cx| {
                     let _ = primary_control.update(cx, |control, cx| {
-                        control.request_create(
-                            &current_template.id,
-                            TemplateCreationOrigin::Primary,
-                            cx,
-                        );
+                        control.create_from_last_template(cx);
                     });
                 }),
             primary_label,
+            primary_description,
         );
 
         let picker = accessible_icon_button(
@@ -732,7 +774,8 @@ impl Render for TemplateSplitControl {
         let picker_content_control = cx.entity().downgrade();
         let picker_open_focus = self.picker_focus.clone();
         let picker_content_focus = self.picker_focus.clone();
-        let selected_template_id = self.selected_template_id.clone();
+        let picker_list_focus = self.picker_list_focus.clone();
+        let selected_template_id = self.last_template_id.clone();
         let templates = self.templates.clone();
         let visible_templates = self
             .visible_templates()
@@ -754,13 +797,11 @@ impl Render for TemplateSplitControl {
                 let _ = picker_control.update(cx, |control, cx| {
                     control.picker_open = *open;
                     if *open {
-                        control.selected_template_id = control.last_template_id.clone();
+                        // The default template's size, turned its way.
                         control.paper_size = control.paper_size_of(&control.last_template_id);
-                        control.orientation =
-                            control.natural_orientation(&control.last_template_id);
-                        cx.emit(TemplateSplitEvent::SelectionChanged(
-                            control.selected_template_id.clone(),
-                        ));
+                        control.orientation = control.default_orientation.unwrap_or(
+                            control.natural_orientation(&control.last_template_id),
+                        );
                         picker_focus.focus(window, cx);
                     }
                     cx.emit(TemplateSplitEvent::OpenChanged(*open));
@@ -781,9 +822,14 @@ impl Render for TemplateSplitControl {
                     let control = picker_content_control.clone();
                     let is_selected = selected_template_id == template.id;
                     // Rows describe the paper as it would be made, turned.
-                    let preview = template.preview.oriented(orientation);
-                    let description =
-                        format!("{} · {}", preview.summary(), preview.grid_summary());
+                    let description = template.preview.oriented(orientation).detail();
+                    // A list row's stock states, as a List's rows show them:
+                    // hover fills with the list hover colour; the default
+                    // template has the list's selected fill and edge, and a
+                    // tick; keyboard focus draws the stock focus ring.
+                    let row_colors = ButtonCustomVariant::new(cx)
+                        .hover(cx.theme().list_hover)
+                        .active(cx.theme().list_active);
                     accessible_icon_button(
                         Button::new(stable_id.clone())
                             .debug_selector({
@@ -791,12 +837,20 @@ impl Render for TemplateSplitControl {
                                 move || stable_id.clone()
                             })
                             .accessibility_id(stable_id)
-                            .ghost()
+                            .custom(row_colors)
                             .selected(is_selected)
                             .toggled(is_selected)
                             .w_full()
                             .h_auto()
-                            .py_1p5()
+                            // The edge takes a pixel of the stock padding, so
+                            // a row is the same height in every state.
+                            .py(crate::layout_metrics::scaled(5.))
+                            .border_1()
+                            .border_color(if is_selected {
+                                cx.theme().list_active_border
+                            } else {
+                                cx.theme().transparent
+                            })
                             .child(
                                 h_flex()
                                     .w_full()
@@ -828,21 +882,11 @@ impl Render for TemplateSplitControl {
                                         )
                                     }),
                             )
-                            .on_click(move |event: &ClickEvent, _, cx| {
+                            // A click, Enter or Space makes it the default;
+                            // the picker stays open for its size and way.
+                            .on_click(move |_: &ClickEvent, _, cx| {
                                 let _ = control.update(cx, |control, cx| {
-                                    control.selected_template_id = template.id.clone();
-                                    if event.click_count() == 2 {
-                                        control.request_create(
-                                            &template.id,
-                                            TemplateCreationOrigin::RowDoubleClick,
-                                            cx,
-                                        );
-                                    } else {
-                                        cx.emit(TemplateSplitEvent::SelectionChanged(
-                                            template.id.clone(),
-                                        ));
-                                        cx.notify();
-                                    }
+                                    control.select_template(&template.id, cx);
                                 });
                             }),
                         template.name.clone(),
@@ -851,36 +895,17 @@ impl Render for TemplateSplitControl {
 
                 let manage_control = picker_content_control.clone();
                 let save_document_control = picker_content_control.clone();
-                let create_control = picker_content_control.clone();
-                let create = Button::new(TEMPLATE_CREATE_ID)
-                    .debug_selector(|| TEMPLATE_CREATE_ID.into())
-                    .accessibility_id(TEMPLATE_CREATE_ID)
-                    .primary()
-                    .label(if creating { "Creating…" } else { "Create" })
-                    // The stock busy state, as well as the label.
-                    .loading(creating)
-                    .on_click(move |_: &ClickEvent, _, cx| {
-                        let _ = create_control.update(cx, |control, cx| {
-                            if !control.creating {
-                                let selected = control.selected_template_id.clone();
-                                control.request_create(
-                                    &selected,
-                                    TemplateCreationOrigin::Create,
-                                    cx,
-                                );
-                            }
-                        });
-                    });
+                let list_key_focus = picker_list_focus.clone();
 
                 v_flex()
                     .id(TEMPLATE_PICKER_POPOVER_ID)
                     .debug_selector(|| TEMPLATE_PICKER_POPOVER_ID.into())
                     .track_focus(&picker_content_focus)
                     .tab_group()
-                    .w(px(TEMPLATE_PICKER_WIDTH))
+                    .w(crate::layout_metrics::scaled(TEMPLATE_PICKER_WIDTH))
                     .gap_3()
                     .child(crate::property_controls::popover_header(
-                        "New from template",
+                        TEMPLATE_PICKER_LABEL,
                         close_icon_button(TEMPLATE_PICKER_CLOSE_ID, "Close").on_click(
                             move |_: &ClickEvent, window, cx| {
                                 close_popover.update(cx, |popover, cx| popover.dismiss(window, cx));
@@ -923,9 +948,40 @@ impl Render for TemplateSplitControl {
                                     .child(
                                         v_flex()
                                             .id(TEMPLATE_PICKER_LIST_ID)
+                                            .debug_selector(|| TEMPLATE_PICKER_LIST_ID.into())
+                                            .track_focus(&picker_list_focus)
+                                            // Up and Down move among the rows;
+                                            // Enter or Space chooses one. Its
+                                            // key context frees those keys from
+                                            // the workspace's bindings.
+                                            .key_context(TEMPLATE_PICKER_LIST_CONTEXT)
+                                            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                                                let forward = match event.keystroke.key.as_str() {
+                                                    "down" => true,
+                                                    "up" => false,
+                                                    _ => return,
+                                                };
+                                                if event.keystroke.modifiers.modified() {
+                                                    return;
+                                                }
+                                                focus_adjacent_row(
+                                                    &list_key_focus,
+                                                    forward,
+                                                    window,
+                                                    cx,
+                                                );
+                                                cx.stop_propagation();
+                                            })
                                             .min_w_0()
                                             // Six built-in rows fit; custom templates scroll.
-                                            .max_h(px(356.))
+                                            .max_h(crate::layout_metrics::scaled(
+                                                356. + 2. * crate::layout_metrics::FOCUS_RING_ROOM,
+                                            ))
+                                            // The list scrolls, so it clips: room
+                                            // inside its edge keeps a focused
+                                            // row's ring whole.
+                                            .m(px(-crate::layout_metrics::FOCUS_RING_ROOM))
+                                            .p(px(crate::layout_metrics::FOCUS_RING_ROOM))
                                             .overflow_y_scroll()
                                             .gap_1()
                                             .children(template_rows),
@@ -943,7 +999,6 @@ impl Render for TemplateSplitControl {
                     )
                     .child(
                         h_flex()
-                            .justify_between()
                             .gap_2()
                             .child(
                                 h_flex()
@@ -982,13 +1037,12 @@ impl Render for TemplateSplitControl {
                                                 });
                                             }),
                                     ),
-                            )
-                            .child(create),
+                            ),
                     )
             });
 
         // Join stock Buttons using public corner/edge helpers. DropdownButton's menu-only
-        // API cannot host this retained select-then-create Popover; keep that
+        // API cannot host this retained Select default template Popover; keep that
         // behaviour without introducing a custom control or changing the library.
         h_flex()
             .id(TEMPLATE_CONTROL_GROUP_ID)
@@ -1067,8 +1121,9 @@ impl DocumentTabBarTemplateSeam {
             |control, _, event: &TemplateSplitEvent, cx| {
                 match event {
                     TemplateSplitEvent::OpenChanged(open) => control.picker_open = *open,
-                    TemplateSplitEvent::SelectionChanged(template_id) => {
+                    TemplateSplitEvent::DefaultChanged { template_id, .. } => {
                         control.selected_template_id = template_id.clone();
+                        control.last_template_id = template_id.clone();
                     }
                     TemplateSplitEvent::CreateRequested {
                         template_id,
@@ -1248,7 +1303,7 @@ impl DocumentTabBarTemplateSeam {
         self.last_template_id = selected;
         self.templates = templates.clone();
         self.template_control.update(cx, |control, cx| {
-            control.apply_template_catalog(templates, durable_last_used_id, cx);
+            control.apply_template_catalog(templates, durable_last_used_id, None, cx);
         });
         cx.notify();
     }
@@ -1991,7 +2046,7 @@ impl Render for DocumentTabBarTemplateSeam {
             };
             let compact_visual_label = gpui::div()
                 .min_w_0()
-                .mx(px(-3.))
+                .mx(crate::layout_metrics::scaled(-3.))
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .child(visual_label);
@@ -2003,8 +2058,8 @@ impl Render for DocumentTabBarTemplateSeam {
                 .id(label_selector)
                 .debug_selector(move || label_debug_selector.clone())
                 .absolute()
-                .left(px(10.))
-                .right(px(10.))
+                .left(crate::layout_metrics::scaled(10.))
+                .right(crate::layout_metrics::scaled(10.))
                 .top_0()
                 .bottom_0();
             let bounds_trace = canvas(
@@ -2059,7 +2114,7 @@ impl Render for DocumentTabBarTemplateSeam {
                     .right_0()
                     .top_0()
                     .bottom_0()
-                    .w(px(DOCUMENT_TAB_HOVER_MASK_WIDTH))
+                    .w(crate::layout_metrics::scaled(DOCUMENT_TAB_HOVER_MASK_WIDTH))
                     .bg(linear_gradient(
                         90.,
                         linear_color_stop(mask_background.opacity(0.), 0.),

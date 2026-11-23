@@ -86,8 +86,6 @@ pub(super) const ROTATION_KNOB_OFFSET_PIXELS: f64 =
 /// without it, and how often it looks.
 const SPRITE_DRAW_WAIT: std::time::Duration = std::time::Duration::from_millis(1_500);
 const SPRITE_DRAW_POLL: std::time::Duration = std::time::Duration::from_millis(16);
-/// The angle Shift turns content in steps of, in degrees.
-const ROTATION_SNAP_DEGREES: f64 = 15.;
 
 /// The picture of content being dragged, cut from the page as shown when
 /// the drag began, each piece painted where the drag puts it while the
@@ -1499,7 +1497,14 @@ impl DocumentWorkspace {
                 pivot,
                 from,
                 rotation,
-            } => rotate_change(pivot, from, rotation, (point.x, point.y), modifiers.shift),
+            } => rotate_change(
+                pivot,
+                from,
+                rotation,
+                (point.x, point.y),
+                self.semantic_snap_settings
+                    .angle_snap_step_degrees(modifiers.shift),
+            ),
         };
         if !drag.moved {
             self.take_content_sprite(drag.document_id, drag.page_index, cx);
@@ -3359,19 +3364,18 @@ fn angle_about(pivot: (f64, f64), point: (f64, f64)) -> f64 {
 }
 
 /// The turn that takes the knob, pressed at angle `from` about `pivot` on
-/// content turned `rotation`, to `point`; Shift turns the content to whole
-/// steps of [`ROTATION_SNAP_DEGREES`].
+/// content turned `rotation`, to `point`; with a `step`, the content turns
+/// to whole multiples of it (the angle snap setting, which Shift inverts).
 fn rotate_change(
     pivot: (f64, f64),
     from: f64,
     rotation: f64,
     point: (f64, f64),
-    snap: bool,
+    step: Option<f64>,
 ) -> ContentChange {
     let mut degrees = angle_about(pivot, point) - from;
-    if snap {
-        let turned = rotation + degrees;
-        degrees = (turned / ROTATION_SNAP_DEGREES).round() * ROTATION_SNAP_DEGREES - rotation;
+    if step.is_some() {
+        degrees = crate::semantic_snapping::snap_angle_degrees(rotation + degrees, step) - rotation;
     }
     ContentChange::Rotate {
         pivot,
@@ -4196,27 +4200,40 @@ mod tests {
     }
 
     #[test]
-    fn the_knob_turns_content_about_its_centre_and_shift_snaps_it() {
+    fn the_knob_turns_content_about_its_centre_and_snaps_to_the_angle_step() {
         let pivot = (100., 100.);
         // Pressed straight above the centre, dragged to its left: a
         // quarter turn anticlockwise.
         let from = angle_about(pivot, (100., 150.));
         let ContentChange::Rotate { degrees, .. } =
-            rotate_change(pivot, from, 0., (50., 100.), false)
+            rotate_change(pivot, from, 0., (50., 100.), None)
         else {
             unreachable!("the knob turns");
         };
         assert!((degrees - 90.).abs() < 1e-9);
-        // Shift turns content already turned 10 degrees to a whole 15.
+        // A 15-degree step turns content already turned 10 degrees to a
+        // whole 15.
         let near = (
             100. + 50. * 37f64.to_radians().sin(),
             100. + 50. * 37f64.to_radians().cos(),
         );
-        let ContentChange::Rotate { degrees, .. } = rotate_change(pivot, from, 10., near, true)
+        let ContentChange::Rotate { degrees, .. } =
+            rotate_change(pivot, from, 10., near, Some(15.))
         else {
             unreachable!("the knob turns");
         };
         assert!((10. + degrees - -30.).abs() < 1e-9, "{degrees}");
+        // The default 90-degree step turns it to a whole quarter.
+        let ContentChange::Rotate { degrees, .. } =
+            rotate_change(pivot, from, 10., near, Some(90.))
+        else {
+            unreachable!("the knob turns");
+        };
+        assert!((10. + degrees).abs() < 1e-9, "{degrees}");
+        // The step follows the setting, and Shift inverts it.
+        let settings = crate::semantic_snapping::SemanticSnapSettings::default();
+        assert_eq!(settings.angle_snap_step_degrees(false), Some(90.));
+        assert_eq!(settings.angle_snap_step_degrees(true), None);
     }
 
     #[test]

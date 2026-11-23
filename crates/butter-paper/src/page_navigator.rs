@@ -36,6 +36,16 @@ pub const PAGE_INPUT_ID: &str = "viewer-page-input";
 pub enum PageNavigatorFit {
     Full,
     Indicator,
+    /// The page field shows the page in view alone; its tooltip, and the
+    /// field while a page is typed, name the page count. Only the narrowest
+    /// toolbar form needs it.
+    Current,
+}
+
+/// The current-page-alone field's least width, in rems, for a page count of
+/// `digits` digits.
+pub const fn current_indicator_min_rems(digits: u32) -> f32 {
+    1.5 + 0.625 * digits as f32
 }
 
 /// A page the navigator asks for. Pages are counted from 0.
@@ -135,7 +145,11 @@ impl PageNavigator {
     }
 
     pub fn indicator_label(&self) -> String {
-        format_page_indicator(self.current, self.page_count)
+        if self.fit == PageNavigatorFit::Current && self.page_count > 0 {
+            (self.current + 1).to_string()
+        } else {
+            format_page_indicator(self.current, self.page_count)
+        }
     }
 
     /// Follows the active document. A page typed but not yet entered is
@@ -333,7 +347,12 @@ impl Render for PageNavigator {
         // Room for the longest label this document can show, so the
         // buttons beside it stay put as pages turn.
         let digits = page_count_digits(self.page_count);
-        let indicator_width = rems(indicator_min_rems(digits));
+        let current_alone = self.fit == PageNavigatorFit::Current;
+        let indicator_width = rems(if current_alone {
+            current_indicator_min_rems(digits)
+        } else {
+            indicator_min_rems(digits)
+        });
         let indicator = match &self.entry {
             Some(entry) => h_flex()
                 .id(PAGE_INPUT_ID)
@@ -349,13 +368,15 @@ impl Render for PageNavigator {
                         .w(rems(0.8 + digits as f32 * 0.6))
                         .child(Input::new(&entry.input).small()),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(muted_colour)
-                        .whitespace_nowrap()
-                        .child(format!("/ {}", self.page_count)),
-                )
+                .when(!current_alone, |entry| {
+                    entry.child(
+                        div()
+                            .text_sm()
+                            .text_color(muted_colour)
+                            .whitespace_nowrap()
+                            .child(format!("/ {}", self.page_count)),
+                    )
+                })
                 .into_any_element(),
             None => Button::new(PAGE_INDICATOR_ID)
                 .ghost()

@@ -71,7 +71,7 @@ impl DocumentWorkspace {
         cx.notify();
     }
 
-    /// The Scale switch: removes the page's scale, brings back the one it
+    /// The Page Scale switch: removes the page's scale, brings back the one it
     /// last had, or opens the panel to choose one, the switch showing on
     /// until the panel closes.
     pub fn toggle_page_scale(
@@ -93,7 +93,7 @@ impl DocumentWorkspace {
             match self.remove_page_scale(document_id, PageScaleApplyTarget::Current(page_index), cx)
             {
                 Ok(_) => format!(
-                    "Removed the scale from page {page}. Switch Scale on to bring back {}.",
+                    "Removed the scale from page {page}. Switch Page Scale on to bring back {}.",
                     crate::page_scale_catalog::scale_label(&current)
                 ),
                 Err(error) => error,
@@ -298,21 +298,36 @@ impl DocumentWorkspace {
             .and_then(|control| control.read(cx).preview())
     }
 
-    /// A calibration point at `point`: snapped to the page's drawing.
+    /// A calibration point at `point`: snapped to the page's drawing, its
+    /// direction from the line's first end held by the angle snap rule
+    /// (the setting, inverted while `shift` is held), as a Line's is.
     fn calibration_point(
         &self,
+        control: &Entity<PageScaleControl>,
         document_id: DocumentId,
         page_index: u32,
         point: PdfPoint,
+        shift: bool,
         cx: &mut Context<Self>,
     ) -> PdfPoint {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return point;
         };
+        let start = {
+            let control = control.read(cx);
+            control
+                .points()
+                .0
+                .filter(|_| control.target() == Some((document_id, page_index)))
+        };
         session.update(cx, |session, _| {
-            session
-                .annotations
-                .resolve_calibration_point(document_id.value(), page_index, point)
+            session.annotations.resolve_calibration_point(
+                document_id.value(),
+                page_index,
+                point,
+                start,
+                shift,
+            )
         })
     }
 
@@ -322,14 +337,14 @@ impl DocumentWorkspace {
         document_id: DocumentId,
         page_index: u32,
         point: PdfPoint,
-        constrain: bool,
+        shift: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(control) = self.page_scale_control.clone() else {
             return;
         };
-        let point = self.calibration_point(document_id, page_index, point, cx);
+        let point = self.calibration_point(&control, document_id, page_index, point, shift, cx);
         // The first end may be on another page than the dialog's: the line
         // is measured, and the scale set, where it is drawn.
         if control.read(cx).picking_from(document_id, page_index)
@@ -338,22 +353,12 @@ impl DocumentWorkspace {
             control.update(cx, |control, cx| control.retarget(request, cx));
         }
         let disposition = control.update(cx, |control, cx| {
-            control.record_point(document_id, page_index, point, constrain, window, cx)
+            control.record_point(document_id, page_index, point, window, cx)
         });
-        match disposition {
-            CalibrationPointDisposition::Ignored => {
-                self.annotation_statuses.insert(
-                    document_id,
-                    "Click both ends on the page the scale is for.".into(),
-                );
-            }
-            CalibrationPointDisposition::FirstPoint => {
-                self.annotation_statuses.remove(&document_id);
-            }
-            CalibrationPointDisposition::Completed => {
-                self.annotation_statuses.remove(&document_id);
-                self.clear_calibration_snap(document_id, cx);
-            }
+        // The banner says what to do next, and corrects a click on the
+        // wrong page itself: no toast repeats it.
+        if disposition == CalibrationPointDisposition::Completed {
+            self.clear_calibration_snap(document_id, cx);
         }
         cx.notify();
     }
@@ -364,15 +369,15 @@ impl DocumentWorkspace {
         document_id: DocumentId,
         page_index: u32,
         point: PdfPoint,
-        constrain: bool,
+        shift: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(control) = self.page_scale_control.clone() else {
             return;
         };
-        let point = self.calibration_point(document_id, page_index, point, cx);
+        let point = self.calibration_point(&control, document_id, page_index, point, shift, cx);
         control.update(cx, |control, cx| {
-            control.hover_point(document_id, page_index, point, constrain, cx)
+            control.hover_point(document_id, page_index, point, cx)
         });
         cx.notify();
     }
@@ -394,7 +399,7 @@ impl DocumentWorkspace {
     /// top of the page so the page does not move.
     pub(super) fn render_calibration_hint(
         &self,
-        instruction: &'static str,
+        instruction: SharedString,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         gpui::div()

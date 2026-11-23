@@ -98,7 +98,8 @@ changes it; history is in git.
   viewport). The view toolbar's Scale turns the current page's scale on and
   off, and its menu drops down the one Page Scale panel that chooses it
   (decided 2026-11-11, replacing a Page Scale button among the measuring
-  tools, which read as one of them): standard scales, the ones the
+  tools, which read as one of them): standard scales, chosen by group
+  (Metric, Architectural, Engineering) and then by scale, the ones the
   page states (suggested, never applied without Apply), a custom ratio, or
   calibration from a line of known length; then the measuring unit,
   precision and pages. Saved scale presets were dropped: they lived only in
@@ -114,6 +115,19 @@ changes it; history is in git.
   saved is the same ordinary markup, as Sketch to Scale's is. A page without
   a scale shows no size and takes no typed size. Properties show and edit a
   shape's size in the page's real units.
+- Angle snap is a snap setting, on at 90° by default (decided 2026-11-23 at
+  the owner's request; it replaces Shift's fixed horizontal-or-vertical rule
+  for lines and its 15-degree rule for turning Edit PDF content). Lines and
+  path segments being drawn keep their direction at a multiple of the
+  increment (90°, 45°, 30°, 15° or custom), and every rotation knob turns to
+  a multiple of it. Shift inverts the setting while it is held. A typed
+  angle is exact. The Page Scale calibration line follows it as a line
+  does. A point snap (an end, midpoint, centre or intersection in range of
+  the pointer) wins over the held direction, as AutoCAD's object snaps win
+  over Ortho; grids, Nearest and snap guides act only along the held
+  direction (decided 2026-11-23 by the owner). Snap dimensions is on at
+  1 mm by default (same date and request). Like the other snap settings, both apply to every open document
+  and last while the app is open.
 - Measuring is a switch on the drawing tools, not separate tools (decided
   2026-11-11, replacing the Measure section of Length, Polylength and
   Area): Dimension, Polyline and Polygon each have Measure, in the tool's
@@ -137,27 +151,65 @@ changes it; history is in git.
   page navigator's page field and a signed document's signatures button, for
   documents of up to 9,999 pages. (Its First, Previous, Next and Last buttons
   showed there too until the Scale joined the toolbar, 2026-11-11; the page
-  keys and menu still turn pages.) Changes to the view toolbar keep to that. Narrower than it
-  needs, the whole toolbar turns compact at once, not control by control:
-  the Edit PDF switch (labelled Edit) and the Scale switch show icons in
-  place of their labels, the Scale its menu without the scale, and the page
-  navigator only its page field. Each group of toolbar controls sits in its
+  keys and menu still turn pages.) Changes to the view toolbar keep to that.
+  Every toolbar control shows at every window size and with every side
+  panel open or closed, in one row (decided 2026-11-23); it never
+  scrolls. The toolbar has eight forms, and the whole toolbar changes form at once, not control by
+  control. Each step gives up the least-used control it can, and the Edit
+  and Page Scale labels stay to the last; every function stays reachable by
+  pointer and keyboard:
+  - Full: the labels Edit and Page Scale beside their switches, the scale
+    shown beside the Page Scale switch, and the whole page navigator.
+  - Middle: the scale shown and the First, Previous, Next and Last buttons
+    go (the status bar shows the scale; the page field and page keys turn
+    pages). A 960-pixel window (half a 1080p screen on macOS) with Page
+    Thumbnails collapsed shows it for an unsigned document of up to 99
+    pages; a longer page count or a signed document's shield takes the
+    next form there.
+  - Zoom Out and Zoom In move into the zoom menu (their keys still work).
+  - Fit Width and Fit Page move into the zoom menu too, as Acrobat and Revu
+    keep them.
+  - Continuous View, Single Page View and their mouse-wheel menus merge
+    into one menu button showing the view in use.
+  - Compact: icons in place of the Edit and Page Scale labels.
+  - Tightest: small switches. It is 521 points wide for a signed document
+    of a four-digit page count, the widest case.
+  - Narrowest: the zoom menu shows a magnifier for the zoom (its tooltip
+    and menu give the zoom), and the page field the page in view alone (its
+    tooltip gives the page count). It shows only between side panels in
+    a narrow band of widths: the panels keep it 423 points wide for a
+    signed document of a four-digit page count, the widest case.
+  Every form lays its groups out alike (decided 2026-11-23): the page
+  navigator pinned at the left edge, Edit and Page Scale pinned at the
+  right edge, and zoom with the page layout in the toolbar's centre while
+  it fits there; a wider side pushes them toward the narrower side, and at
+  a form's least width the groups meet at the 8-point group gap.
+  Each group of toolbar controls sits in its
   own frame. The signatures button is always the shield
   alone, coloured by the verdict; its tooltip says the verdict, and a click
   lists the signatures.
-- Windows have a least size: document windows 906 × 480, where the view
-  toolbar shows Edit PDF, Scale, the signatures button and all its view controls,
-  with the page field, between the left
+- Windows have a least size: document windows 918 × 480, where the view
+  toolbar shows Edit PDF, Page Scale, the signatures button and all its view
+  controls, with the page field, between the left
   rail and the two-column tool rail (the tool rail folds into its overflow
-  menu when short), Settings 600 × 420. Page Thumbnails open at any window
-  width. They yield only to an open properties panel: they hide while the
-  page between the two is narrower than 15 rem (240 points), and return
-  when it widens. The toolbar scrolls sideways only when something else
-  squeezes it (Page Thumbnails, an open properties panel or a larger
-  interface size). A restored or cascaded window smaller than
+  menu when short), Settings 600 × 420. Side panels give way before the
+  viewer toolbar gets narrower than its narrowest form (decided
+  2026-11-23): the page column between them keeps that width (26.4375 rem,
+  never less than 15 rem). So a 1200-point window holds Page Thumbnails
+  and the properties panel side by side at their usual widths. Alone, Page Thumbnails or the properties panel opens at any
+  window width, narrower than its preferred width when it must (down to
+  16 rem and 15 rem), and back at that width when the window widens.
+  Together, Page Thumbnails yield to the properties panel: they hide while
+  both do not fit at their preferred widths, the Page Thumbnails button
+  says to widen the window or close properties, and they return when the
+  window widens. A restored or cascaded window smaller than
   that opens at it. Dialogs stay within the window: a taller one scrolls
   its body between its title and buttons; panels such as Snap settings do
-  the same.
+  the same. Snap settings opens beside the tool rail, over the page, in two
+  columns (what to snap to; angles, dimension increments and the
+  construction grid), all in view at the default window size and at half a
+  1080p screen. In a window too narrow for both columns, it shows them as
+  one scrolling column, in the same order.
 - Every dialog dims the window behind it and closes by Escape, its Cancel
   or X, and a press on the dimmed backdrop outside it. Alert prompts (a
   decision with a commit or destructive action) and a dialog busy with
@@ -179,28 +231,49 @@ changes it; history is in git.
 - Controls are stock gpui-component controls; the property toolkit in
   `property_controls.rs` composes them. Canvas, renderers, annotation layers
   and the scroll area are domain UI.
-- Document tabs: stock Segmented appearance, shadcn's default Tabs. The bar
-  is the whole tab row, edge to edge and top to bottom, with square corners
-  and the viewer toolbar's 48px height: a muted track however many tabs are
-  open, with the active document raised on it (decided 2026-11-17, replacing
-  a rounded track inset in the strip and a New PDF lane over the tool rail).
+- Document tabs: the stock Segmented tab bar. The bar is the whole tab row,
+  edge to edge and top to bottom, with square corners and the viewer
+  toolbar's 48px height, on the row's own background (decided 2026-11-17,
+  replacing a rounded track inset in the strip and a New PDF lane over the
+  tool rail).
   The tabs are the stock large size with 14px titles, their raised area
   32px high to match the row's medium buttons (decided 2026-11-18,
   replacing the 36px row and small buttons). The row has one spacing, the
   7.5px above and below the tabs: at both ends, between tabs, on each side
   of a vertical separator between the tabs and the buttons, and between
-  buttons. Tabs that are not selected are outlined as the buttons are; the
-  selected tab is raised.
+  buttons. Each tab is drawn by the stock outline button that draws the
+  row's buttons and the toolbar's Fit Width and Fit Page toggles (decided
+  2026-11-23, replacing a white raised selected tab with a shadow on grey
+  tabs): a tab that is not selected looks like those buttons at rest,
+  hovered and pressed, in both themes, and the selected tab looks like a
+  selected toggle: no shadow and no other border. A selected outline
+  button fills with its border's colour (decided 2026-11-23, in gpui-kit),
+  one step past its press, so it reads apart from hover in both themes. Keyboard focus draws the stock
+  focus ring's colours inside the tab; a click on a tab focuses it for the
+  arrow keys but shows no ring, as a click on a stock button shows none.
   Width follows the title up to 190px; the close button is hidden at rest
-  and appears on hover or focus over the end of the title, which keeps its
-  position and truncates. New Tab (+), the New from template split control
-  and a menu of every open document (a chevron) sit on the track just after
-  the last tab, in that order, as medium outline buttons with their own
-  background (white in light, dark in dark). When the tabs don't fit, they scroll and these stay at the track's
-  right end. With no document open, the track holds New Tab and New from
-  template. The split control's button says what a click makes ("New from
-  template: Blank Paper"); its second half, an open book, opens "Select
-  and customise templates". Recovery and Update sit at the strip's end. Close buttons use
+  and appears on hover or keyboard focus over the end of the title, which
+  keeps its position and truncates. A menu of every open document (a chevron) sits on
+  the track just after the last tab, with the tabs it lists; then the
+  separator, New Tab (+) and the New from template split control, in that
+  order (decided 2026-11-23, replacing the menu after New from template).
+  They are medium outline buttons with their own background (white in
+  light, dark in dark), and keyboard focus moves through them in that
+  order. When the tabs don't fit, they scroll and these stay at the
+  track's right end. An edge with tabs scrolled out of sight fades: 16px of
+  gradient to the row's background, then the row's 8px spacing in solid
+  background at the edge, so the visible tabs end one spacing before the
+  documents menu and the strip's left edge, as they do when every tab fits.
+  An edge with nothing hidden has no fade; the fade takes no pointer input
+  (decided 2026-11-23, replacing tabs clipped hard against the menu). With no document open, the track holds New Tab and
+  New from template, and no documents menu. The split control's button
+  makes a document from the default template; its tooltip says what a
+  click makes, the template's name ("New from template: Blank Paper") and
+  below it the template list row's line ("A3 · Landscape · No page
+  grid"). Its second half, an open book, opens "Select default template":
+  a choice there of template, paper size or orientation is the default at
+  once, and the panel makes no document (decided 2026-11-23, replacing a
+  "New from template" panel with Create). Recovery and Update sit at the strip's end. Close buttons use
   the stock extra-small ghost icon Button, centred in a square lane at the
   end of the tab's raised area with equal clearance on three sides.
   Filenames keep their leading position when close appears; only the
@@ -246,7 +319,7 @@ changes it; history is in git.
   panel too. Another app's copy
   never enters Open Recent, which would reopen a stale copy rather than the
   person's file; once saved, the saved PDF is the document and its entry.
-- New from template and Manage templates split list and preview 50/50.
+- Select default template and Manage templates split list and preview 50/50.
 - Transient panels and dialogs close with an icon-only top-right X inside the
   content; the word Cancel is reserved for a decision prompt beside a commit or
   destructive action.
@@ -269,11 +342,12 @@ changes it; history is in git.
 - The viewer toolbar has zoom, fit and page-mode controls, and the Edit PDF
   switch at its left; CAD View was removed from it. A page navigator sits
   right of the zoom percentage, after Revu's: First page, Previous page, "3
-  / 12" (click it to type a page), Next page and Last page. A compact
-  toolbar drops the four page buttons; the page field always shows. The view
-  controls are centred while the Edit PDF slot's width is free on both
-  sides; in a narrower toolbar the empty space opposite Edit PDF gives way
-  first and they move right, rather than losing controls.
+  / 12" (click it to type a page), Next page and Last page. The narrower
+  toolbar forms drop the four page buttons; the page field always shows,
+  and the page keys and menu still turn pages. The view
+  controls are centred in the toolbar while they fit between its sides;
+  in a narrower toolbar they meet the wider side and move toward the
+  narrower one, rather than losing controls.
 - Page text editing takes the best of Revu, Acrobat and OnlyOffice rather
   than matching Revu alone (Revu's Edit Text is line-only, for minor
   changes). The target:
@@ -385,8 +459,17 @@ changes it; history is in git.
   release notes. Failed downloads can be retried there or in Settings.
   Default automatic checks run at startup for
   beta builds and weekly for stable builds, preserving saved user choices.
-  Interface size stays in the View menu, not Settings. Restart uses the normal
-  unsaved-work quit flow.
+  Restart uses the normal unsaved-work quit flow.
+- Interface size: users cannot change it for now (decided 2026-11-23). At
+  larger sizes the layout was not correct: button outlines collapsed,
+  rows collided, icons stayed small and padding squeezed. The View menu
+  has no interface size items, and Cmd+Shift+=, Cmd+Shift+− and
+  Cmd+Shift+0 (Ctrl on Windows and Linux) do nothing. Page zoom keeps
+  Cmd+=, Cmd+− and Cmd+0. A profile saved at a larger size opens at the
+  default size, and the next save stores the default. To make the app
+  larger, use the operating system's display scaling (a Retina or scaled
+  macOS display, Windows 125% or 150%), which scales the whole window
+  evenly. The backlog has the item to bring the control back.
 - The view never flashes (decided 2026-11-17, after flashes were fixed one
   command at a time). Two rules in the viewer apply to every change, so a
   new command gets them without its own fix:
@@ -430,9 +513,11 @@ changes it; history is in git.
     change takes its end state at once.
 - Errors use the stock Alert, choice rows the stock ButtonGroup (vertical in a
   narrow dialog), shortcut hints in tooltips the stock Kbd, and the Recovery
-  count the stock Badge. Clickable rows in lists (recent documents, the
-  template picker, the merge list, startup recovery) stay Buttons: the stock
-  ListItem has no keyboard focus, accessibility role or tooltip.
+  count the stock Badge. Clickable rows in lists (recent documents, Select
+  default template, the merge list, startup recovery) stay Buttons: the stock
+  ListItem has no keyboard focus, accessibility role or tooltip. Select
+  default template's rows take the stock list's hover and selected colours
+  and the stock focus ring, as the Template Library's ListItem rows do.
 
 ## Release
 

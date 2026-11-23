@@ -345,7 +345,7 @@ impl DocumentWorkspace {
                 cx.notify();
             }))
             .size_full()
-            .min_h(px(360.))
+            .min_h(crate::layout_metrics::scaled(360.))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
     }
@@ -404,8 +404,12 @@ impl DocumentWorkspace {
                     }
                     // A press while a popover, menu or dialog is open only
                     // dismisses it (or acts inside it); it never also starts a
-                    // canvas selection or edit.
+                    // canvas selection or edit, and a double click that began
+                    // with it counts from the click after it.
                     if crate::overlay_state::press_owned_by_overlay(window, cx) {
+                        let _ = down_control.update(cx, |workspace, _| {
+                            workspace.note_overlay_press(event.click_count)
+                        });
                         return;
                     }
                     // A press on anything drawn over the page (the in-window

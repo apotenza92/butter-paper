@@ -249,8 +249,8 @@ impl DocumentWorkspace {
                     .id(DOCUMENT_ERROR_ID)
                     .debug_selector(|| DOCUMENT_ERROR_ID.into())
                     .w_full()
-                    .px(px(crate::layout_metrics::SPACE))
-                    .py(px(crate::layout_metrics::SPACE))
+                    .px(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
+                    .py(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
                     .child(gpui_component::alert::Alert::error("document-error-alert", error)),
             )
         })

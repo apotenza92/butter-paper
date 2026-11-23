@@ -209,8 +209,10 @@ pub fn property_body() -> gpui::Div {
     v_flex()
         .w_full()
         .min_w_0()
-        .p(gpui::px(crate::layout_metrics::SPACE))
-        .gap(gpui::px(crate::layout_metrics::GROUP_SPACE))
+        .p(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
+        .gap(crate::layout_metrics::scaled(
+            crate::layout_metrics::GROUP_SPACE,
+        ))
 }
 
 /// A colour as one control: its swatch and hex value, opening the palette.
@@ -563,11 +565,11 @@ impl RenderOnce for PropertyInspectorHeader {
             .debug_selector(move || self.id.into())
             .w_full()
             // A bar: 8 + 32 + 8 with the grid's margins, its line inside.
-            .h(gpui::px(crate::layout_metrics::BAR))
+            .h(crate::layout_metrics::scaled(crate::layout_metrics::BAR))
             .flex_shrink_0()
             .relative()
             .items_center()
-            .px(gpui::px(crate::layout_metrics::SPACE))
+            .px(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
             .child(crate::layout_metrics::inside_line(
                 crate::layout_metrics::Edge::Bottom,
                 cx.theme().border,

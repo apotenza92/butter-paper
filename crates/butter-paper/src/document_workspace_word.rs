@@ -418,7 +418,7 @@ impl DocumentWorkspace {
         });
         self.word_dialog = Some(dialog.downgrade());
         let workspace = cx.entity().downgrade();
-        window.open_dialog(cx, move |surface, _, cx| {
+        window.open_dialog(cx, move |surface, window, cx| {
             let state = dialog.read(cx);
             let ready = matches!(state.stage, WordDialogStage::Ready);
             let working = matches!(
@@ -547,7 +547,7 @@ impl DocumentWorkspace {
             let (stop, close_workspace) = (state.stop.clone(), workspace.clone());
             surface
                 .title("Convert to Word document")
-                .w(px(460.))
+                .w(crate::layout_metrics::scaled_px(460., window.rem_size()))
                 .max_w_full()
                 // Cancel decides while it asks; afterwards the X closes it.
                 .close_button(!ready)

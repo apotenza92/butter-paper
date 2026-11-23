@@ -51,11 +51,12 @@ use butter_paper::document_recovery_store::{
 use butter_paper::document_session::DocumentRecoveryPreparation;
 use butter_paper::document_tab_bar::{
     DOCUMENT_TAB_OPEN_ID, DOCUMENT_TAB_POINTER_DRAG_THRESHOLD, DOCUMENT_TAB_REORDER_STATUS_ID,
-    TEMPLATE_CONTROL_GROUP_ID, TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_PICKER_ID,
-    TEMPLATE_PRIMARY_ID, document_tab_drag_id, document_tab_drop_target_id,
+    TEMPLATE_CONTROL_GROUP_ID, TEMPLATE_ITEM_IDS, TEMPLATE_PICKER_ID, TEMPLATE_PRIMARY_ID,
+    document_tab_drag_id, document_tab_drop_target_id,
 };
 #[cfg(unix)]
 use butter_paper::document_workspace::DOCUMENT_RECOVERY_REBASE_RETRY_ID;
+use butter_paper::document_workspace::DOCUMENT_TOAST_LAYER_ID;
 use butter_paper::document_workspace::{
     ActualSize, ApplyDisposition, CloseDocument, CloseRequestDisposition, ContinuousView,
     DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID,
@@ -78,7 +79,8 @@ use butter_paper::document_workspace::{
     DOCUMENT_SIGNATURE_FROM_PAGE_ID, DOCUMENT_SIGNATURE_LOADING_ID,
     DOCUMENT_SIGNATURE_MODE_IMAGE_ID, DOCUMENT_SIGNATURE_MODE_TYPE_ID,
     DOCUMENT_SIGNATURE_NAME_INPUT_ID, DOCUMENT_SIGNATURE_PASTE_ID, DOCUMENT_SIGNATURE_PREVIEW_ID,
-    DOCUMENT_SIGNATURE_TOOL_ID, DOCUMENT_SNAP_CLOSE_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
+    DOCUMENT_SIGNATURE_TOOL_ID, DOCUMENT_SNAP_ANGLE_CUSTOM_VALUE_ID, DOCUMENT_SNAP_ANGLE_ID,
+    DOCUMENT_SNAP_ANGLE_PRESET_IDS, DOCUMENT_SNAP_CLOSE_ID, DOCUMENT_SNAP_CONSTRUCTION_GRID_ID,
     DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID, DOCUMENT_SNAP_DIMENSION_INCREMENT_ID,
     DOCUMENT_SNAP_GUIDES_ID, DOCUMENT_SNAP_MARKUP_ID, DOCUMENT_SNAP_POPOVER_ID,
     DOCUMENT_SNAP_SETTINGS_ID, DOCUMENT_SNAPSHOT_TOOL_ID, DOCUMENT_TEXT_BOX_EDITOR_CONTENT_ID,
@@ -131,8 +133,9 @@ use butter_paper::page_geometry::{
     Rotation as CoordinateRotation,
 };
 use butter_paper::page_scale_catalog::STANDARD_SCALES;
+use butter_paper::page_scale_catalog::ScaleSystem;
 use butter_paper::page_scale_control::{
-    PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID, PageScalePages, ScaleChoice,
+    PAGE_SCALE_PICK_CANCEL_ID, PAGE_SCALE_PICK_HINT_ID, PageScalePages, ScaleChoice, ScaleGroup,
 };
 use butter_paper::page_view_control::{CONTINUOUS_PRIMARY_ID, SINGLE_PAGE_PRIMARY_ID};
 use butter_paper::page_view_control::{PageViewMode, WheelBehavior};
@@ -213,7 +216,8 @@ use butter_paper::pdf_content_geometry::{
     PageSnapGeometry, PdfContentPrimitive, PdfPoint as ContentPoint,
 };
 use butter_paper::semantic_snapping::{
-    PageGridDefinition, PageGridKind, PageGridSource, SemanticSnapRole, SemanticSnapSource,
+    AngleSnapPreset, PageGridDefinition, PageGridKind, PageGridSource, SemanticSnapRole,
+    SemanticSnapSource,
 };
 use butter_paper::template_library::{BUILT_IN_BLANK_ID, TemplateLibrary};
 use gpui::{
@@ -4319,6 +4323,104 @@ fn set_page_scale_command_opens_the_dialog_for_the_current_page(cx: &mut TestApp
     );
 }
 
+/// Users cannot change the interface size for now (decisions.md, "Interface
+/// size"). Its old shortcuts do nothing at all: they change neither the
+/// interface size nor the page zoom, which keeps its own shortcuts.
+#[gpui::test]
+fn the_old_interface_size_shortcuts_do_nothing_and_page_zoom_still_works(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+        butter_paper::application_shell::init_application_shell_actions(cx);
+    });
+    cx.update(init_document_workspace_actions);
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace =
+                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(SuccessfulOpener), cx));
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let document_id = workspace.update(cx, |workspace, cx| {
+        workspace.open_path(PathBuf::from("interface-size.pdf"), cx)
+    });
+    cx.run_until_parked();
+    let workspace_focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| {
+        window.activate_window();
+        workspace_focus.focus(window, cx);
+        window.draw(cx).clear(cx);
+    });
+    let view = |cx: &mut gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.document_view_state(document_id, cx)
+            })
+            .unwrap()
+    };
+    let interface_size = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| {
+            use gpui_component::ActiveTheme as _;
+            (cx.theme().font_size, window.rem_size())
+        })
+    };
+    let before = view(cx);
+    let default_size = interface_size(cx);
+    assert_eq!(default_size, (px(16.), px(16.)));
+    // No binding anywhere answers the old keys.
+    cx.update(|_, cx| {
+        let keymap = cx.key_bindings();
+        let keymap = keymap.borrow();
+        for keys in [
+            "secondary-shift-=",
+            "secondary-shift--",
+            "secondary-shift-0",
+        ] {
+            let old = gpui::Keystroke::parse(keys).unwrap();
+            for binding in keymap.bindings() {
+                let first = binding.keystrokes()[0].inner();
+                assert!(
+                    !(first.key == old.key && first.modifiers == old.modifiers),
+                    "{keys} is bound to {}",
+                    binding.action().name()
+                );
+            }
+        }
+    });
+
+    // The keys with and without the character a US keyboard types: with
+    // Shift, "=" types "+" and "0" types ")".
+    for keys in [
+        "secondary-shift-=",
+        "secondary-shift-=->+",
+        "secondary-shift--",
+        "secondary-shift-0",
+        "secondary-shift-0->)",
+    ] {
+        cx.simulate_keystrokes(keys);
+        cx.run_until_parked();
+        assert_eq!(interface_size(cx), default_size, "{keys}");
+        let after = view(cx);
+        assert_eq!(after.zoom_percent(), before.zoom_percent(), "{keys}");
+        assert_eq!(after.zoom_preset(), before.zoom_preset(), "{keys}");
+    }
+
+    cx.simulate_keystrokes("secondary-=");
+    cx.run_until_parked();
+    assert!(view(cx).zoom_percent() > before.zoom_percent());
+    cx.simulate_keystrokes("secondary-0");
+    cx.run_until_parked();
+    assert_eq!(view(cx).zoom_percent(), 100.);
+    cx.simulate_keystrokes("secondary--");
+    cx.run_until_parked();
+    assert!(view(cx).zoom_percent() < 100.);
+    assert_eq!(interface_size(cx), default_size);
+}
+
 #[gpui::test]
 fn document_view_commands_share_workspace_state_and_dirty_close_authority(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -6928,7 +7030,7 @@ fn page_thumbnails_open_at_the_least_window_width_and_yield_only_to_properties(
     cx.simulate_resize(DOCUMENT_WINDOW_MIN_SIZE);
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    // The narrowest window still opens them; the toolbar scrolls instead.
+    // The least window still opens them.
     show_page_thumbnails(cx);
     let strip = cx
         .debug_bounds(DOCUMENT_THUMBNAIL_STRIP_ID)
@@ -6952,33 +7054,47 @@ fn page_thumbnails_open_at_the_least_window_width_and_yield_only_to_properties(
 }
 
 #[test]
-fn page_thumbnails_fit_without_properties_at_any_width() {
-    use butter_paper::document_workspace::thumbnails_fit_beside_properties;
+fn side_panels_give_way_before_the_viewer_toolbar_gets_narrower_than_its_narrowest() {
+    use butter_paper::document_workspace::{PAGE_BESIDE_SIDEBARS_MIN_REMS, side_panel_room};
+    use butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_NARROWEST_REMS;
+    use butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE;
     let rem = px(16.);
-    let (rail, thumbnails, properties) = (px(88.), px(300.), px(300.));
-    assert!(thumbnails_fit_beside_properties(
-        px(400.),
-        rem,
-        rail,
-        thumbnails,
-        None
-    ));
-    // Left rail 48, page 240, tool rail, thumbnails and properties.
-    let least = px(48. + 240.) + rail + thumbnails + properties;
-    assert!(thumbnails_fit_beside_properties(
-        least,
-        rem,
-        rail,
-        thumbnails,
-        Some(properties)
-    ));
-    assert!(!thumbnails_fit_beside_properties(
-        least - px(1.),
-        rem,
-        rail,
-        thumbnails,
-        Some(properties)
-    ));
+    let rail = px(88.);
+    // The page column keeps the narrowest toolbar, never less than 15 rems.
+    assert_eq!(
+        PAGE_BESIDE_SIDEBARS_MIN_REMS,
+        VIEWER_TOOLBAR_NARROWEST_REMS.max(15.)
+    );
+    // So a 1200px window holds Page Thumbnails beside properties at their
+    // usual widths (300px each).
+    let usual = side_panel_room(px(1200.), rem, rail, Some(px(300.)), Some(px(300.)));
+    assert!(
+        usual.thumbnails.is_some_and(|width| width >= px(300.))
+            && usual.properties.is_some_and(|width| width >= px(300.)),
+        "{usual:?}"
+    );
+    let page = px(16. * PAGE_BESIDE_SIDEBARS_MIN_REMS);
+    let least = DOCUMENT_WINDOW_MIN_SIZE.width;
+    // Alone at the least window, either panel opens at its greatest
+    // preferred width, narrowed to what the page column leaves.
+    let alone = side_panel_room(least, rem, rail, Some(px(384.)), None);
+    assert_eq!(alone.thumbnails, Some(least - px(48.) - rail - page));
+    assert!(alone.thumbnails.unwrap() >= px(256.), "{alone:?}");
+    let alone = side_panel_room(least, rem, rail, None, Some(px(420.)));
+    assert_eq!(alone.properties, Some(least - px(48.) - rail - page));
+    assert!(alone.properties.unwrap() >= px(240.), "{alone:?}");
+    // With room, each may grow to its own greatest width.
+    let wide = side_panel_room(px(1800.), rem, rail, Some(px(300.)), Some(px(300.)));
+    assert_eq!(wide.thumbnails, Some(px(384.)));
+    assert_eq!(wide.properties, Some(px(420.)));
+    // Beside properties, thumbnails yield exactly where both would squeeze
+    // the page column at their preferred widths, and return at that width.
+    let both = px(48.) + page + rail + px(300.) + px(300.);
+    let at = side_panel_room(both, rem, rail, Some(px(300.)), Some(px(300.)));
+    assert_eq!(at.thumbnails, Some(px(300.)));
+    let below = side_panel_room(both - px(1.), rem, rail, Some(px(300.)), Some(px(300.)));
+    assert_eq!(below.thumbnails, None);
+    assert!(below.properties.unwrap() >= px(300.));
 }
 
 #[gpui::test]
@@ -7518,6 +7634,10 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // The Line is drawn at a free angle; the Arrow checks Shift's inversion.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("bp-line-arrow-bridge.pdf"), cx)
@@ -7639,6 +7759,8 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
     );
     let arrow_start = project(90., 300.);
     let arrow_end = project(306., 324.);
+    // With angle snap off for this test, Shift snaps it to the 90-degree
+    // increment.
     let shift = Modifiers {
         shift: true,
         ..Modifiers::default()
@@ -7682,7 +7804,7 @@ fn line_arrow_workspace_pointer_create_body_move_and_endpoint_edit_share_one_his
     assert_eq!(arrow.id.as_str(), "workspace:arrow:2");
     assert!(
         (arrow.start.y - arrow.end.y).abs() < 0.001,
-        "Shift must preserve the gallery's orthogonal Arrow constraint"
+        "With angle snap off, Shift must keep the Arrow orthogonal"
     );
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace
@@ -8115,6 +8237,218 @@ fn contextual_actions_workspace_canvas_menu_routes_shared_select_action(cx: &mut
 }
 
 #[gpui::test]
+fn snap_settings_opens_beside_the_rail_in_two_columns_and_one_when_narrow(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{
+        DOCUMENT_SNAP_CONTENT_ID, DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID,
+        DOCUMENT_SNAP_ENDPOINT_ID, DOCUMENT_SNAP_FIRST_COLUMN_ID, DOCUMENT_SNAP_SECOND_COLUMN_ID,
+    };
+    use butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE;
+
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("bp-snap-settings-layout.pdf"), cx)
+    });
+    assert_eq!(
+        workspace.update(cx, |workspace, cx| workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )),
+        ApplyDisposition::Applied,
+    );
+
+    // Opens the panel in a window `width` x `height` and returns the
+    // trigger's, the panel's and its columns' bounds, and the viewport.
+    let mut open_at = |width: f32, height: f32| {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let trigger = cx.debug_bounds(DOCUMENT_SNAP_SETTINGS_ID).unwrap();
+        cx.simulate_click(trigger.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let panel = cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).unwrap();
+        let first = cx.debug_bounds(DOCUMENT_SNAP_FIRST_COLUMN_ID).unwrap();
+        let second = cx.debug_bounds(DOCUMENT_SNAP_SECOND_COLUMN_ID).unwrap();
+        let viewport = cx.update(|window, _| window.viewport_size());
+        // The panel scrolls, so it clips at its edge: every control at its
+        // left edge, its right edge and the column join keeps room inside
+        // that edge for its 3px focus ring.
+        for id in [
+            DOCUMENT_SNAP_CONTENT_ID,
+            DOCUMENT_SNAP_MARKUP_ID,
+            DOCUMENT_SNAP_ENDPOINT_ID,
+            DOCUMENT_SNAP_GUIDES_ID,
+            DOCUMENT_SNAP_ANGLE_ID,
+            DOCUMENT_SNAP_ANGLE_PRESET_IDS[0],
+            DOCUMENT_SNAP_ANGLE_PRESET_IDS[4],
+            DOCUMENT_SNAP_ANGLE_CUSTOM_VALUE_ID,
+            DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID,
+            DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID,
+        ] {
+            let control = cx
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("{width}: {id} is shown"));
+            assert!(
+                control.left() - panel.left() >= px(3.)
+                    && panel.right() - control.right() >= px(3.),
+                "{width}: {id} at {control:?} leaves room for its focus ring in {panel:?}"
+            );
+            for column in [first, second] {
+                assert!(
+                    control.right() + px(3.) <= column.left()
+                        || control.left() >= column.left() && control.right() <= column.right()
+                        || control.left() >= column.right() + px(3.),
+                    "{width}: {id} at {control:?} keeps its ring clear of {column:?}"
+                );
+            }
+        }
+        let content = cx.debug_bounds(DOCUMENT_SNAP_CONTENT_ID).unwrap();
+        assert!(content.top() - panel.top() >= px(3.));
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).is_none(),
+            "Escape closes the panel"
+        );
+        (trigger, panel, first, second, viewport)
+    };
+    // The scrolling body and the surface's padding below it stay inside
+    // the window.
+    let contained = |panel: gpui::Bounds<gpui::Pixels>, viewport: gpui::Size<gpui::Pixels>| {
+        panel.left() >= px(0.)
+            && panel.top() >= px(0.)
+            && panel.right() <= viewport.width
+            && panel.bottom() + px(12.) <= viewport.height
+    };
+
+    // The default window and a half-1080p window: two columns side by side,
+    // all of both in view without scrolling, beside the rail.
+    for (width, height) in [(1200., 832.), (960., 1000.)] {
+        let (trigger, panel, first, second, viewport) = open_at(width, height);
+        assert!(
+            contained(panel, viewport),
+            "{width}: {panel:?} in {viewport:?}"
+        );
+        assert!(
+            panel.right() <= trigger.left(),
+            "{width}: the panel opens toward the page and leaves the rail button clear"
+        );
+        assert!(
+            first.right() <= second.left(),
+            "{width}: {first:?} {second:?}"
+        );
+        assert_eq!(first.top(), second.top());
+        assert!(
+            first.bottom() <= panel.bottom() && second.bottom() <= panel.bottom(),
+            "{width}: both columns show in full, without scrolling"
+        );
+    }
+
+    // The least window: one column, the second group under the first, the
+    // panel still inside the window (it scrolls).
+    let (trigger, panel, first, second, viewport) = open_at(
+        DOCUMENT_WINDOW_MIN_SIZE.width.into(),
+        DOCUMENT_WINDOW_MIN_SIZE.height.into(),
+    );
+    assert!(contained(panel, viewport), "{panel:?} in {viewport:?}");
+    assert!(panel.right() <= trigger.left());
+    assert!(second.top() >= first.bottom(), "{first:?} {second:?}");
+    assert_eq!(first.left(), second.left());
+}
+
+#[gpui::test]
+fn snap_settings_switches_show_a_whole_focus_ring_from_the_keyboard(cx: &mut TestAppContext) {
+    use butter_paper::accessible_button::SWITCH_FOCUS_RING_ID;
+    use butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE;
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("bp-snap-focus-ring.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    // Both forms: two columns, and one at the least window.
+    for (width, height) in [
+        (1200., 832.),
+        (
+            f32::from(DOCUMENT_WINDOW_MIN_SIZE.width),
+            f32::from(DOCUMENT_WINDOW_MIN_SIZE.height),
+        ),
+    ] {
+        cx.simulate_resize(size(px(width), px(height)));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let trigger = cx.debug_bounds(DOCUMENT_SNAP_SETTINGS_ID).unwrap();
+        cx.simulate_click(trigger.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds(SWITCH_FOCUS_RING_ID).is_none(),
+            "no ring after a press"
+        );
+        let panel = cx.debug_bounds(DOCUMENT_SNAP_POPOVER_ID).unwrap();
+        let mut rings = 0;
+        for _ in 0..40 {
+            // A key as the platform delivers it, so the window knows the
+            // keyboard moved focus.
+            let tab = gpui::Keystroke::parse("tab").unwrap();
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: tab.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke: tab });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            if let Some(ring) = cx.debug_bounds(SWITCH_FOCUS_RING_ID) {
+                rings += 1;
+                // The ring is drawn 3px outside the switch; the scrolling
+                // panel clips at its edge.
+                let ring = ring.dilate(px(3.));
+                if ring.bottom() <= panel.bottom() && ring.top() >= panel.top() {
+                    assert!(
+                        ring.left() >= panel.left() && ring.right() <= panel.right(),
+                        "{width}: a switch ring {ring:?} is cut by {panel:?}"
+                    );
+                }
+            }
+        }
+        assert!(
+            rings >= 4,
+            "{width}: the switches show their ring ({rings})"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+#[gpui::test]
 fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state(
     cx: &mut TestAppContext,
 ) {
@@ -8196,6 +8530,41 @@ fn semantic_snapping_workspace_uses_real_component_controls_and_controlled_state
     assert!(settings.is_source_enabled(SemanticSnapSource::ConstructionGrid));
     assert_eq!(settings.construction_grid_spacing_mm(), 10.);
 
+    // Angle snap: on at 90 degrees; its switch and increments update the
+    // setting the active session draws with.
+    assert!(settings.angle_snap_enabled());
+    assert_eq!(settings.angle_snap_preset(), AngleSnapPreset::Degrees90);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let fifteen = cx
+        .debug_bounds(DOCUMENT_SNAP_ANGLE_PRESET_IDS[3])
+        .expect("the 15-degree increment renders");
+    cx.simulate_click(fifteen.center(), Modifiers::default());
+    let settings = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.semantic_snap_settings(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(settings.angle_snap_preset(), AngleSnapPreset::Degrees15);
+    assert_eq!(settings.angle_snap_step_degrees(false), Some(15.));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_SNAP_ANGLE_CUSTOM_VALUE_ID)
+            .is_some()
+    );
+    let angle = cx
+        .debug_bounds(DOCUMENT_SNAP_ANGLE_ID)
+        .expect("the angle snap switch renders");
+    cx.simulate_click(angle.center(), Modifiers::default());
+    let settings = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.semantic_snap_settings(document_id, cx)
+        })
+        .unwrap();
+    assert!(!settings.angle_snap_enabled());
+    // Off, Shift still snaps to the chosen increment.
+    assert_eq!(settings.angle_snap_step_degrees(false), None);
+    assert_eq!(settings.angle_snap_step_degrees(true), Some(15.));
+
     // The popover's top-right X dismisses it like Escape or an outside press.
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let close = cx
@@ -8226,6 +8595,10 @@ fn semantic_snapping_workspace_routes_real_line_input_and_transient_guide_eviden
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // These checks draw at free angles; angle snap has its own tests.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("bp-semantic-snapping-line.pdf"), cx)
@@ -8354,6 +8727,10 @@ fn opened_page_grid_metadata_reaches_real_workspace_pointer_routes(cx: &mut Test
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // These checks draw at free angles; angle snap has its own tests.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("bp-page-grid-snapping.pdf"), cx)
@@ -22113,9 +22490,7 @@ fn existing_text_box_pointer_move_resize_enter_escape_commit_history_and_lock_us
 }
 
 #[gpui::test]
-fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
-    cx: &mut TestAppContext,
-) {
+fn length_uses_two_click_placement_scale_guard_preview_and_angle_snap(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         // Behaviour tests check end states; motion has its own tests.
@@ -22225,13 +22600,18 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         })
         .unwrap();
     assert_eq!((pending.revision, pending.undo_depth), (1, 1));
-    cx.simulate_mouse_move(to_view(216., 264.), None, Modifiers::default());
+    // Shift frees the direction from the default 90-degree angle snap.
+    let free = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    cx.simulate_mouse_move(to_view(216., 264.), None, free);
     let preview = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
     assert_eq!(preview.lengths.len(), 1);
     assert_eq!(preview.lengths[0].id.as_str(), "workspace:length:1");
-    cx.simulate_click(to_view(216., 264.), Modifiers::default());
+    cx.simulate_click(to_view(216., 264.), free);
     let committed = workspace
         .read_with(cx, |workspace, cx| {
             workspace.annotation_snapshot(request.document_id, cx)
@@ -22264,14 +22644,8 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         })
         .unwrap();
     cx.simulate_click(to_view(300., 300.), Modifiers::default());
-    cx.simulate_mouse_move(
-        to_view(340., 330.),
-        None,
-        Modifiers {
-            shift: true,
-            ..Modifiers::default()
-        },
-    );
+    // Without Shift, the default angle snap holds it level or plumb.
+    cx.simulate_mouse_move(to_view(340., 330.), None, Modifiers::default());
     let constrained = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(request.document_id, 0, cx)
     });
@@ -22280,13 +22654,7 @@ fn length_uses_two_click_placement_scale_guard_preview_and_shift_constraint(
         constrained_preview.start.x == constrained_preview.end.x
             || constrained_preview.start.y == constrained_preview.end.y
     );
-    cx.simulate_click(
-        to_view(340., 330.),
-        Modifiers {
-            shift: true,
-            ..Modifiers::default()
-        },
-    );
+    cx.simulate_click(to_view(340., 330.), Modifiers::default());
     assert_eq!(
         workspace
             .read_with(cx, |workspace, cx| workspace
@@ -22429,13 +22797,8 @@ fn page_scale_dialog_picks_two_points_applies_current_page_and_enables_length(
     let to_view =
         |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
     cx.simulate_click(to_view(72., 240.), Modifiers::default());
-    cx.simulate_click(
-        to_view(144., 260.),
-        Modifiers {
-            shift: true,
-            ..Modifiers::default()
-        },
-    );
+    // Angle snap is on at 90° by default, so the line is held level.
+    cx.simulate_click(to_view(144., 260.), Modifiers::default());
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(page_scale_panel_open(&workspace, cx));
@@ -23040,6 +23403,212 @@ fn page_scale_dialog_changing_the_unit_keeps_the_scale(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn page_scale_dialog_groups_list_their_scales_and_custom_starts_in_millimetres(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let open = |workspace: &gpui::Entity<DocumentWorkspace>,
+                name: &str,
+                scales: Vec<PageScale>,
+                cx: &mut gpui::VisualTestContext| {
+        let request = workspace.update(cx, |workspace, cx| {
+            workspace.begin_open(PathBuf::from(name), cx)
+        });
+        workspace.update(cx, |workspace, cx| {
+            workspace.apply_open_result(
+                &request,
+                Ok(opened_document(Arc::new(AtomicBool::new(false))).with_page_scales(scales)),
+                cx,
+            )
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_page_scale_dialog(request.document_id, 0, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        request.document_id
+    };
+    let metric = ScaleGroup::Standard(ScaleSystem::Metric);
+    let architectural = ScaleGroup::Standard(ScaleSystem::Architectural);
+
+    // A Letter page without a scale lists architectural scales, nothing
+    // chosen.
+    let document_id = open(&workspace, "page-scale-groups.pdf", Vec::new(), cx);
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .unwrap();
+    let state = |cx: &mut gpui::VisualTestContext| {
+        control.read_with(cx, |control, _| (control.group(), control.choice()))
+    };
+    assert_eq!(state(cx), (architectural, ScaleChoice::Unset));
+    let choose_group = |group, cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| {
+                control.choose_group_for_test(group, window, cx)
+            })
+        })
+    };
+    // Metric lists its scales; one chosen keeps the group in step.
+    choose_group(metric, cx);
+    assert_eq!(state(cx), (metric, ScaleChoice::Unset));
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.choose_for_test(ScaleChoice::Standard(standard("1:100")), window, cx)
+        })
+    });
+    assert_eq!(
+        state(cx),
+        (metric, ScaleChoice::Standard(standard("1:100")))
+    );
+    // Another family chooses nothing until one of its scales is chosen.
+    choose_group(architectural, cx);
+    assert_eq!(state(cx), (architectural, ScaleChoice::Unset));
+    assert!(!control.update(cx, |control, cx| control.apply(cx)));
+    // Custom is the ratio itself, in millimetres on paper while measuring in
+    // metres.
+    choose_group(ScaleGroup::Custom, cx);
+    assert_eq!(state(cx), (ScaleGroup::Custom, ScaleChoice::Custom));
+    assert_eq!(
+        control.read_with(cx, |control, _| control.custom_paper_unit()),
+        ScaleUnit::Mm
+    );
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .custom_real_input()
+                .update(cx, |input, cx| input.set_value("0.123", window, cx));
+        })
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(control.update(cx, |control, cx| control.apply(cx)));
+    let applied = workspace
+        .read_with(cx, |workspace, cx| workspace.page_scale(document_id, 0, cx))
+        .unwrap();
+    assert_eq!(
+        (applied.pdf_units, applied.real_units),
+        (ScaleUnit::Mm, ScaleUnit::M),
+        "a custom ratio is stored as typed: 1 mm = 0.123 m"
+    );
+    assert!((butter_paper::page_scale_catalog::ratio_of(&applied) - 123.).abs() < 1e-9);
+    close_page_scale_panel(&workspace, cx);
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_page_scale_dialog(document_id, 0, window, cx)
+    });
+    assert_eq!(state(cx), (ScaleGroup::Custom, ScaleChoice::Custom));
+    assert_eq!(
+        control.read_with(cx, |control, _| control.custom_paper_unit()),
+        ScaleUnit::Mm
+    );
+    // No scale is a group of its own.
+    choose_group(ScaleGroup::None, cx);
+    assert_eq!(state(cx), (ScaleGroup::None, ScaleChoice::None));
+    close_page_scale_panel(&workspace, cx);
+
+    // A page at a standard scale opens on its group.
+    let plan = STANDARD_SCALES[standard("1:100")].page_scale(
+        0,
+        ScaleUnit::M,
+        ScalePrecision::decimal(0.01).unwrap(),
+    );
+    open(&workspace, "page-scale-groups-plan.pdf", vec![plan], cx);
+    assert_eq!(
+        state(cx),
+        (metric, ScaleChoice::Standard(standard("1:100")))
+    );
+    close_page_scale_panel(&workspace, cx);
+
+    // A custom ratio set in centimetres on paper keeps them.
+    let imported = PageScale::from_factors(
+        0,
+        ScaleSource::Custom,
+        "1 cm = 1.23 m",
+        ScaleUnit::Cm,
+        ScaleUnit::M,
+        1.23 / ScaleUnit::Cm.points(),
+        1.23 / ScaleUnit::Cm.points(),
+        ScalePrecision::decimal(0.01).unwrap(),
+    )
+    .unwrap();
+    open(&workspace, "page-scale-groups-cm.pdf", vec![imported], cx);
+    assert_eq!(state(cx), (ScaleGroup::Custom, ScaleChoice::Custom));
+    assert_eq!(
+        control.read_with(cx, |control, _| control.custom_paper_unit()),
+        ScaleUnit::Cm
+    );
+    assert_eq!(
+        control
+            .read_with(cx, |control, _| control.custom_real_input())
+            .read_with(cx, |input, _| input.value().to_string()),
+        "1.23"
+    );
+}
+
+#[gpui::test]
+fn toasts_are_laid_out_over_the_canvas_clear_of_the_rail_and_status_bar(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(DOCUMENT_TOAST_LAYER_ID).is_some(),
+        "a window without a document still shows toasts"
+    );
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("toast-layer.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let layer = cx.debug_bounds(DOCUMENT_TOAST_LAYER_ID).unwrap();
+    let page = cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap();
+    let rail = cx.debug_bounds("document-workspace-right-rail").unwrap();
+    let status_bar = cx.debug_bounds("document-status-bar").unwrap();
+    assert!(
+        layer.right() <= rail.left() && layer.bottom() <= status_bar.top(),
+        "toasts at the canvas's bottom right, {layer:?}, stay clear of the rail \
+         {rail:?} and the status bar {status_bar:?}"
+    );
+    assert!(
+        layer.left() <= page.left()
+            && layer.top() <= page.top()
+            && layer.right() >= page.right()
+            && layer.bottom() >= page.bottom(),
+        "the toast layer, {layer:?}, covers the canvas {page:?}"
+    );
+}
+
+#[gpui::test]
 fn page_scale_dialog_no_scale_removes_the_scale_and_keeps_measurements(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -23524,6 +24093,45 @@ fn page_scale_dialog_save_as_round_trips_scale_without_a_length_annotation() {
     std::fs::remove_file(target).unwrap();
 }
 
+#[test]
+fn a_custom_page_scale_saves_and_reopens_in_its_own_paper_unit() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = manifest_dir.join("tests/fixtures/bp-annotation-all-v1.pdf");
+    let target = manifest_dir.join(format!(
+        "target/test-scratch/page-scale-mm-paper-{}.pdf",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&target);
+    // 1 mm on paper = 0.123 m, as the Page Scale panel's Custom stores it.
+    let mut scale = butter_paper::page_scale_catalog::scale_from_ratio(
+        0,
+        ScaleSource::Custom,
+        "1:123",
+        123.,
+        ScaleUnit::M,
+        ScalePrecision::decimal(0.01).unwrap(),
+    );
+    scale.pdf_units = ScaleUnit::Mm;
+    let mut annotations = snapshot_of_persistence(&PdfPersistenceSession::open(&source).unwrap());
+    // Without measurements, which Apply would measure again at the scale.
+    annotations.lengths.clear();
+    annotations.measurement_paths.clear();
+    annotations.annotation_order.clear();
+    annotations.page_scales = vec![scale.clone()];
+    annotations.page_length_calibrations =
+        vec![(0, LengthCalibration::from_page_scale(&scale).unwrap())];
+    save_snapshot_as(&source, &target, annotations);
+    let reopened = PdfPersistenceSession::open(&target).unwrap();
+    let reopened_scale = reopened
+        .page_scales()
+        .iter()
+        .find(|scale| scale.page_index == 0)
+        .unwrap();
+    assert_eq!(reopened_scale.pdf_units, ScaleUnit::Mm);
+    assert!(reopened_scale.same_persisted_scale_as(&scale));
+    std::fs::remove_file(target).unwrap();
+}
+
 /// Every markup a Revu file opens with, as a save request's snapshot.
 fn snapshot_of_persistence(session: &PdfPersistenceSession) -> AnnotationSnapshot {
     AnnotationSnapshot {
@@ -23829,6 +24437,127 @@ fn save_without_rotation_changes_preserves_every_direct_or_inherited_rotate_entr
 }
 
 #[gpui::test]
+fn page_scale_calibration_line_follows_the_angle_snap_setting_and_shift_inverts_it(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("page-scale-angle-snap.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let page_scale_trigger = cx
+        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID)
+        .unwrap()
+        .center();
+    cx.simulate_click(page_scale_trigger, Modifiers::default());
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .unwrap();
+    // Draws a line from (72, 240) towards (144, 270), Shift held or not at
+    // the second end, and returns where that end goes.
+    let draw = |cx: &mut gpui::VisualTestContext, shift: bool| {
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| control.begin_pick(window, cx));
+        });
+        for (x, y, shift) in [(72., 240., false), (144., 270., shift)] {
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace.press_calibration_point(
+                    request.document_id,
+                    0,
+                    PdfPoint::new(x, y).unwrap(),
+                    shift,
+                    window,
+                    cx,
+                )
+            });
+        }
+        control
+            .read_with(cx, |control, _| control.points())
+            .1
+            .unwrap()
+    };
+    let instruction = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| {
+            control.update(cx, |control, cx| control.begin_pick(window, cx));
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.press_calibration_point(
+                request.document_id,
+                0,
+                PdfPoint::new(72., 240.).unwrap(),
+                false,
+                window,
+                cx,
+            )
+        });
+        let angle_snap = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.semantic_snap_settings(request.document_id, cx)
+            })
+            .unwrap()
+            .angle_snap_enabled();
+        control.read_with(cx, |control, _| control.pick_instruction(angle_snap))
+    };
+
+    // Angle snap on (the default, 90°): the line is held level; Shift
+    // frees it, as it frees a Line.
+    let end = draw(cx, false);
+    assert!(
+        (end.x - 144.).abs() < 0.001 && (end.y - 240.).abs() < 0.001,
+        "{end:?}"
+    );
+    let end = draw(cx, true);
+    assert!(
+        (end.x - 144.).abs() < 0.001 && (end.y - 270.).abs() < 0.001,
+        "{end:?}"
+    );
+    assert_eq!(
+        instruction(cx).as_deref(),
+        Some("Click the other end. Hold Shift to draw freely.")
+    );
+
+    // Angle snap off: the line is free; Shift holds it to the increment.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
+    let end = draw(cx, false);
+    assert!(
+        (end.x - 144.).abs() < 0.001 && (end.y - 270.).abs() < 0.001,
+        "{end:?}"
+    );
+    let end = draw(cx, true);
+    assert!(
+        (end.x - 144.).abs() < 0.001 && (end.y - 240.).abs() < 0.001,
+        "{end:?}"
+    );
+    assert_eq!(
+        instruction(cx).as_deref(),
+        Some("Click the other end. Hold Shift to snap the angle.")
+    );
+}
+
+#[gpui::test]
 fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
     cx: &mut TestAppContext,
 ) {
@@ -23892,6 +24621,28 @@ fn page_scale_dialog_first_pick_binds_its_page_and_closed_targets_cannot_apply(
         matches!(press(cx, 0, 144.), (Some(_), None)),
         "the second end must be on the first end's page"
     );
+    // The banner says where the second end goes; no status or toast
+    // repeats it.
+    assert_eq!(
+        control
+            .read_with(cx, |control, _| control.pick_instruction(true))
+            .as_deref(),
+        Some("Click the other end on page 2, where the line starts.")
+    );
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        None
+    );
+    let toasts = cx.update(|window, cx| {
+        window
+            .root::<Root>()
+            .flatten()
+            .map(|root| root.read(cx).notification.read(cx).notifications().len())
+    });
+    assert_eq!(toasts, Some(0), "a click on the wrong page raises no toast");
     assert!(matches!(press(cx, 1, 144.), (Some(_), Some(_))));
     assert!(page_scale_panel_open(&workspace, cx));
     assert_eq!(
@@ -24431,6 +25182,10 @@ fn polyline_polygon_workspace_pointer_create_finish_cancel_move_vertex_lock_hist
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // These checks draw at free angles; angle snap has its own tests.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("polyline-polygon-pointer.pdf"), cx)
     });
@@ -24863,6 +25618,10 @@ fn polyline_polygon_workspace_renders_real_tools_and_retains_independent_vertex_
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // These checks draw at free angles; angle snap has its own tests.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("vertex-paths.pdf"), cx)
     });
@@ -25610,6 +26369,10 @@ fn callout_workspace_engineering_pointer_renders_real_tool_and_retains_two_click
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // These checks draw at free angles; angle snap has its own tests.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("callout.pdf"), cx)
     });
@@ -26443,6 +27206,11 @@ fn dimension_workspace_engineering_pointer_renders_real_component_tool_two_click
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // The pointer checks aim at fixed fractions of the drawn line; a length
+    // rounded to whole millimetres puts the body press on the caption.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_dimension_increment_enabled(false, cx)
+    });
     cx.simulate_resize(size(px(1200.), px(900.)));
     let request = workspace.update(cx, |workspace, cx| {
         workspace.begin_open(PathBuf::from("dimension.pdf"), cx)
@@ -34627,6 +35395,77 @@ fn visible_tab_close_routes_a_dirty_document_through_confirmation(cx: &mut TestA
 }
 
 #[gpui::test]
+fn up_and_down_move_among_template_rows_inside_the_workspace(cx: &mut TestAppContext) {
+    // The workspace binds Up and Down to scroll the page; the panel's rows
+    // take them first.
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+        init_document_workspace_actions(cx);
+    });
+    let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let slot = slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("template-rows-keys.pdf"), cx)
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))),
+            cx,
+        );
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let picker = cx.debug_bounds(TEMPLATE_PICKER_ID).unwrap();
+    cx.simulate_click(picker.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let control = workspace.read_with(cx, |workspace, _| workspace.template_control());
+    // A key as the platform delivers it: down, then up.
+    let press_key = |cx: &mut gpui::VisualTestContext, key: &str| {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+    };
+    // Tab past the X, the paper size and the two orientations to the first
+    // row; Down moves to the second, and Enter chooses it (the workspace
+    // binds both keys: Down scrolls the page, Enter finishes a path).
+    for _ in 0..5 {
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    press_key(cx, "down");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    press_key(cx, "enter");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        control.read_with(cx, |control, _| control.last_template_id()),
+        "built-in-dots",
+        "Down moved focus to the next row, and Enter chose it"
+    );
+    // Up, then Space, chooses the first row again.
+    press_key(cx, "up");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    press_key(cx, "space");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        control.read_with(cx, |control, _| control.last_template_id()),
+        "built-in-blank"
+    );
+}
+
+#[gpui::test]
 fn workspace_template_split_is_joined_and_cad_controls_are_absent(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
@@ -34673,7 +35512,11 @@ fn workspace_template_split_is_joined_and_cad_controls_are_absent(cx: &mut TestA
     assert!(cx.debug_bounds("single-page-view-primary").is_some());
     cx.simulate_click(picker.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds("template-picker-create").is_some());
+    assert!(cx.debug_bounds("template-picker").is_some());
+    assert!(
+        cx.debug_bounds("template-picker-create").is_none(),
+        "Select default template makes no document"
+    );
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.active_document_id()),
         Some(request.document_id)
@@ -36405,15 +37248,26 @@ fn viewer_controls_preserve_independent_session_modes_and_responsive_layouts(
                 assert!(workspace_bounds.contains(&page.center()));
                 assert!(page.contains(&viewport.center()));
                 assert!(page.size.width > px(0.) && page.size.height > px(0.));
+                // Narrow, the fit and page-view buttons step into menus;
+                // the zoom menu and the page-view group always show, and
+                // the toolbar never overflows.
                 for target in [
-                    FIT_WIDTH_ID,
-                    FIT_PAGE_ID,
-                    CONTINUOUS_PRIMARY_ID,
-                    SINGLE_PAGE_PRIMARY_ID,
+                    butter_paper::zoom_control::ZOOM_MENU_ID,
+                    butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
                 ] {
                     let bounds = cx.debug_bounds(target).unwrap();
                     assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
                 }
+                let toolbar = cx
+                    .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_ID)
+                    .unwrap();
+                let content = cx
+                    .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTENT_ID)
+                    .unwrap();
+                assert!(
+                    content.size.width <= toolbar.size.width + px(1.),
+                    "the toolbar overflows at {width} x{scale_factor}: {content:?} {toolbar:?}"
+                );
             }
         }
     }
@@ -41939,8 +42793,15 @@ fn generated_template_split_creates_one_real_workspace_session_without_mock_tab_
     let grid = cx.debug_bounds(TEMPLATE_ITEM_IDS[2]).unwrap();
     cx.simulate_click(grid.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    let create = cx.debug_bounds(TEMPLATE_CREATE_ID).unwrap();
-    cx.simulate_click(create.center(), Modifiers::default());
+    assert!(
+        workspace.read_with(cx, |workspace, _| workspace.sessions().is_empty()),
+        "choosing the default template makes no document"
+    );
+    // The chosen default is what the primary button makes.
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let primary = cx.debug_bounds(TEMPLATE_PRIMARY_ID).unwrap();
+    cx.simulate_click(primary.center(), Modifiers::default());
 
     assert_eq!(
         workspace.read_with(cx, |workspace, _| workspace.sessions().len()),

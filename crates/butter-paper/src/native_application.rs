@@ -6,9 +6,9 @@ use gpui_component::{GlobalState, menu::AppMenuBar};
 use crate::{
     application_close_workspace::{RequestApplicationClose, RequestApplicationQuit},
     application_shell::{
-        AboutButterPaper, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
-        MoveDocumentToNewWindow, NewWindow, OpenSettings, ResetInterfaceSize, SetAsDefaultPdfApp,
-        ToggleApplicationFullScreen, ToggleApplicationMenuBar, ToggleReverseScrollZoom, ZoomWindow,
+        AboutButterPaper, MinimiseWindow, MoveDocumentToNewWindow, NewWindow, OpenSettings,
+        SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+        ToggleReverseScrollZoom, ZoomWindow,
     },
     document_workspace::{
         ActualSize, CloseDocument, ContinuousView, ConvertToWord, DocumentOpenBatchRequest,
@@ -280,10 +280,6 @@ fn build_in_window_view_items(shell: ApplicationMenuShellState) -> Vec<MenuItem>
         items.push(MenuItem::separator());
     }
     items.extend([
-        MenuItem::action("Make Interface Bigger", MakeInterfaceBigger),
-        MenuItem::action("Make Interface Smaller", MakeInterfaceSmaller),
-        MenuItem::action("Reset Interface Size", ResetInterfaceSize),
-        MenuItem::separator(),
         MenuItem::action("Reverse Scroll Zoom", ToggleReverseScrollZoom)
             .checked(shell.reverse_scroll_zoom),
         MenuItem::separator(),

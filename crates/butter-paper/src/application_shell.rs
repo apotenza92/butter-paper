@@ -67,9 +67,6 @@ gpui::actions!(
         MoveDocumentToNewWindow,
         MinimiseWindow,
         ZoomWindow,
-        MakeInterfaceBigger,
-        MakeInterfaceSmaller,
-        ResetInterfaceSize,
         ToggleApplicationFullScreen,
         SetAsDefaultPdfApp,
         AboutButterPaper,
@@ -94,6 +91,11 @@ gpui::actions!(
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApplicationShellPreferences {
     menu_bar_visible: bool,
+    /// The interface size. Users cannot change it for now (decisions.md,
+    /// "Interface size"): load ignores a stored level and save writes the
+    /// default, so a profile from an earlier version opens at the default
+    /// size. The key stays so that an earlier version can read the file.
+    #[serde(default)]
     ui_zoom_level: i8,
     /// Flips wheel zoom for mice whose scroll direction is reversed by a
     /// utility such as LinearMouse, which apps cannot detect.
@@ -174,13 +176,8 @@ impl ApplicationShellPreferences {
         self.menu_bar_visible = visible;
     }
 
-    pub fn set_ui_zoom_level(&mut self, level: i8) {
-        self.ui_zoom_level =
-            level.clamp(APPLICATION_UI_ZOOM_MIN_LEVEL, APPLICATION_UI_ZOOM_MAX_LEVEL);
-    }
-
     fn normalise(mut self) -> Self {
-        self.set_ui_zoom_level(self.ui_zoom_level);
+        self.ui_zoom_level = APPLICATION_UI_ZOOM_DEFAULT_LEVEL;
         self
     }
 }
@@ -300,27 +297,6 @@ pub fn application_data_directory() -> Option<PathBuf> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ApplicationUiZoomAction {
-    In,
-    Out,
-    Reset,
-}
-
-pub fn resolve_application_ui_zoom_level(current_level: i8, action: ApplicationUiZoomAction) -> i8 {
-    match action {
-        ApplicationUiZoomAction::Reset => APPLICATION_UI_ZOOM_DEFAULT_LEVEL,
-        ApplicationUiZoomAction::In => current_level
-            .clamp(APPLICATION_UI_ZOOM_MIN_LEVEL, APPLICATION_UI_ZOOM_MAX_LEVEL)
-            .saturating_add(1)
-            .min(APPLICATION_UI_ZOOM_MAX_LEVEL),
-        ApplicationUiZoomAction::Out => current_level
-            .clamp(APPLICATION_UI_ZOOM_MIN_LEVEL, APPLICATION_UI_ZOOM_MAX_LEVEL)
-            .saturating_sub(1)
-            .max(APPLICATION_UI_ZOOM_MIN_LEVEL),
-    }
-}
-
 pub fn application_ui_zoom_font_size(base_font_size: Pixels, level: i8) -> Pixels {
     let level = level.clamp(APPLICATION_UI_ZOOM_MIN_LEVEL, APPLICATION_UI_ZOOM_MAX_LEVEL);
     px(f32::from(base_font_size) * UI_ZOOM_STEP.powi(i32::from(level)))
@@ -382,18 +358,6 @@ pub fn init_application_shell_actions(cx: &mut App) {
         KeyBinding::new("ctrl-shift-n", NewWindow, None),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-m", MinimiseWindow, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-=", MakeInterfaceBigger, None),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-=", MakeInterfaceBigger, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift--", MakeInterfaceSmaller, None),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift--", MakeInterfaceSmaller, None),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-0", ResetInterfaceSize, None),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-0", ResetInterfaceSize, None),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-z", Undo, None),
         #[cfg(not(target_os = "macos"))]
@@ -502,36 +466,6 @@ mod tests {
     }
 
     #[test]
-    fn ui_zoom_uses_reference_bounds_steps_and_reset() {
-        assert_eq!(
-            resolve_application_ui_zoom_level(
-                APPLICATION_UI_ZOOM_MIN_LEVEL,
-                ApplicationUiZoomAction::Out
-            ),
-            APPLICATION_UI_ZOOM_MIN_LEVEL
-        );
-        assert_eq!(
-            resolve_application_ui_zoom_level(
-                APPLICATION_UI_ZOOM_MAX_LEVEL,
-                ApplicationUiZoomAction::In
-            ),
-            APPLICATION_UI_ZOOM_MAX_LEVEL
-        );
-        assert_eq!(
-            resolve_application_ui_zoom_level(2, ApplicationUiZoomAction::Reset),
-            APPLICATION_UI_ZOOM_DEFAULT_LEVEL
-        );
-        assert_eq!(
-            resolve_application_ui_zoom_level(0, ApplicationUiZoomAction::In),
-            1
-        );
-        assert_eq!(
-            resolve_application_ui_zoom_level(0, ApplicationUiZoomAction::Out),
-            -1
-        );
-    }
-
-    #[test]
     fn preferences_roundtrip_isolated_from_the_real_application_directory() {
         let directory = ScratchDirectory::new();
         let store = ApplicationShellPreferencesStore::new(&directory.0);
@@ -542,25 +476,60 @@ mod tests {
 
         let mut preferences = ApplicationShellPreferences::default();
         preferences.set_menu_bar_visible(false);
-        preferences.set_ui_zoom_level(APPLICATION_UI_ZOOM_MAX_LEVEL);
         store.save(preferences).unwrap();
 
         assert_eq!(store.load().unwrap(), preferences);
     }
 
+    /// Users cannot change the interface size for now: a profile that an
+    /// earlier version saved at a larger size opens at the default size, and
+    /// the next save writes the default.
     #[test]
-    fn persisted_zoom_is_clamped_before_use() {
-        let directory = ScratchDirectory::new();
-        let store = ApplicationShellPreferencesStore::new(&directory.0);
-        fs::write(
-            store.path(),
-            br#"{"menu_bar_visible":false,"ui_zoom_level":99}"#,
-        )
-        .unwrap();
+    fn a_stored_interface_size_opens_and_saves_at_the_default_size() {
+        for stored in [
+            APPLICATION_UI_ZOOM_MAX_LEVEL,
+            1,
+            APPLICATION_UI_ZOOM_MIN_LEVEL,
+            99,
+        ] {
+            let directory = ScratchDirectory::new();
+            let store = ApplicationShellPreferencesStore::new(&directory.0);
+            fs::write(
+                store.path(),
+                format!(r#"{{"menu_bar_visible":false,"ui_zoom_level":{stored}}}"#),
+            )
+            .unwrap();
 
-        let preferences = store.load().unwrap();
-        assert!(!preferences.menu_bar_visible());
-        assert_eq!(preferences.ui_zoom_level(), APPLICATION_UI_ZOOM_MAX_LEVEL);
+            let preferences = store.load().unwrap();
+            assert!(!preferences.menu_bar_visible());
+            assert_eq!(
+                preferences.ui_zoom_level(),
+                APPLICATION_UI_ZOOM_DEFAULT_LEVEL
+            );
+            assert_eq!(
+                application_ui_zoom_font_size(
+                    default_application_ui_font_size(),
+                    preferences.ui_zoom_level()
+                ),
+                default_application_ui_font_size()
+            );
+
+            store.save(preferences).unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+            assert_eq!(saved["ui_zoom_level"], 0, "stored level {stored}");
+            assert_eq!(saved["menu_bar_visible"], false);
+        }
+    }
+
+    #[test]
+    fn preferences_without_an_interface_size_load() {
+        let preferences: ApplicationShellPreferences =
+            serde_json::from_slice(br#"{"menu_bar_visible":true}"#).unwrap();
+        assert_eq!(
+            preferences.ui_zoom_level(),
+            APPLICATION_UI_ZOOM_DEFAULT_LEVEL
+        );
     }
 
     #[test]

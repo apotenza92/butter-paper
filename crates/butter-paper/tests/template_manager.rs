@@ -1169,6 +1169,86 @@ fn workspace_save_command_routes_once_through_the_retained_manager_and_recovers(
 }
 
 #[gpui::test]
+fn select_default_template_stores_the_latest_choice_with_its_orientation(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
+    let root = owned_test_root("select-default-route");
+    let library_root = root.join("library");
+    let manager_slot = Rc::new(RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let manager_slot = manager_slot.clone();
+        let library_root = library_root.clone();
+        move |window, cx| {
+            let manager = cx
+                .new(|cx| TemplateManagerView::open_persistent(library_root, window, cx).unwrap());
+            manager_slot.replace(Some(manager.clone()));
+            Root::new(manager, window, cx)
+        }
+    });
+    let manager = manager_slot.borrow().clone().unwrap();
+    // Two choices in a row: the panel's latest is the one stored.
+    for (template_id, orientation) in [
+        ("built-in-grid", None),
+        ("built-in-dots", Some(PaperOrientation::Portrait)),
+    ] {
+        let command = DocumentWorkspaceTemplateCommand::SelectDefault {
+            template_id: template_id.into(),
+            orientation,
+        };
+        cx.update(|window, cx| route_workspace_template_command(&manager, &command, window, cx));
+    }
+    // The window's model changes at once, before the library is written.
+    manager.read_with(cx, |manager, _| {
+        assert_eq!(manager.model().last_used_id(), "built-in-dots");
+        assert_eq!(
+            manager.model().last_used_orientation(),
+            Some(PaperOrientation::Portrait)
+        );
+        assert!(!manager.is_storage_busy(), "choosing a default is not busy");
+    });
+    cx.run_until_parked();
+    let stored = PersistentTemplateManager::open(library_root.clone())
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    assert_eq!(stored.last_used_id(), "built-in-dots");
+    assert_eq!(
+        stored.last_used_orientation(),
+        Some(PaperOrientation::Portrait)
+    );
+
+    // A template's own way stores no turn.
+    let command = DocumentWorkspaceTemplateCommand::SelectDefault {
+        template_id: "built-in-grid-a4".into(),
+        orientation: Some(PaperOrientation::Portrait),
+    };
+    cx.update(|window, cx| route_workspace_template_command(&manager, &command, window, cx));
+    cx.run_until_parked();
+    let stored = PersistentTemplateManager::open(library_root.clone())
+        .unwrap()
+        .snapshot()
+        .unwrap();
+    assert_eq!(stored.last_used_id(), "built-in-grid-a4");
+    assert_eq!(stored.last_used_orientation(), None);
+
+    // An unknown template changes nothing and says why.
+    let command = DocumentWorkspaceTemplateCommand::SelectDefault {
+        template_id: "custom-missing".into(),
+        orientation: None,
+    };
+    cx.update(|window, cx| route_workspace_template_command(&manager, &command, window, cx));
+    cx.run_until_parked();
+    manager.read_with(cx, |manager, _| {
+        assert_eq!(manager.model().last_used_id(), "built-in-grid-a4");
+        assert!(manager.model().error().is_some());
+    });
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
 fn injected_native_picker_completion_imports_persistently_and_recovers_from_failure(
     cx: &mut TestAppContext,
 ) {

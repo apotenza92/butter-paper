@@ -56,6 +56,8 @@ pub use certificate_signing::{
     DOCUMENT_SIGN_PASSWORD_ID, DOCUMENT_SIGN_PLACE_ID, DOCUMENT_SIGN_REASON_ID,
     DOCUMENT_SIGN_TIMESTAMP_ID, DOCUMENT_SIGN_TIMESTAMP_SETTINGS_ID,
 };
+#[path = "document_workspace_click_out.rs"]
+mod click_out;
 #[path = "document_workspace_page_turn.rs"]
 mod page_turn;
 #[path = "space_pan.rs"]
@@ -96,12 +98,16 @@ mod markup_text;
 mod settings_popovers;
 #[path = "document_workspace_status_bar.rs"]
 mod status_bar;
-pub use status_bar::{DOCUMENT_STATUS_MESSAGE_ID, DOCUMENT_STATUS_SCALE_ID};
+pub use status_bar::{
+    CALIBRATE_STATUS, CLICK_OUT_MARKUP_STATUS, CLICK_OUT_TEXT_STATUS, DOCUMENT_STATUS_MESSAGE_ID,
+    DOCUMENT_STATUS_SCALE_ID, DOCUMENT_TOAST_LAYER_ID,
+};
 #[path = "document_workspace_tabs.rs"]
 mod tabs;
 #[path = "document_workspace_root.rs"]
 mod workspace_root;
 use alerts::DocumentAlerts;
+use status_bar::toast_layer;
 use viewport::ViewportInputs;
 
 use gpui_component::ElementExt as _;
@@ -243,9 +249,9 @@ use crate::{
     },
     selection_geometry::{SelectionMarquee, SelectionPoint},
     semantic_snapping::{
-        EqualSpacingPlacement, ObjectSnapTrackingResult, OrthogonalAxis, RelationshipSnapGuide,
-        SemanticSnapDecision, SemanticSnapGuideType, SemanticSnapRole, SemanticSnapSettings,
-        SemanticSnapSource, SemanticSnapTarget,
+        AngleSnapPreset, EqualSpacingPlacement, ObjectSnapTrackingResult, OrthogonalAxis,
+        RelationshipSnapGuide, SemanticSnapDecision, SemanticSnapGuideType, SemanticSnapRole,
+        SemanticSnapSettings, SemanticSnapSource, SemanticSnapTarget,
     },
     viewer::{PageLayout, TileRequest},
 };
@@ -360,6 +366,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
     let _ = cx.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(
         include_bytes!("../assets/fonts/Allura-Regular.ttf").as_slice(),
     )]);
+    crate::document_tab_bar::bind_template_picker_keys(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-o", OpenPdf, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("ctrl-o", OpenPdf, Some(DOCUMENT_WORKSPACE_CONTEXT)),
@@ -676,6 +683,9 @@ pub const DOCUMENT_RESTRICTED_EDIT_CANCEL_ID: &str = "document-workspace-restric
 /// The New PDF lane above the tool rail.
 /// New Tab and the open documents menu, on the tab track after the last tab.
 pub const DOCUMENT_SESSION_TAB_TRACK_ACTIONS_ID: &str = "document-session-tab-track-actions";
+/// The fades over the tab strip's edges where tabs are scrolled out of sight.
+pub const DOCUMENT_SESSION_TAB_FADE_LEFT_ID: &str = "document-session-tab-fade-left";
+pub const DOCUMENT_SESSION_TAB_FADE_RIGHT_ID: &str = "document-session-tab-fade-right";
 /// The menu of every open document, on the tab track.
 pub const DOCUMENT_TABS_MENU_ID: &str = "document-tabs-overflow";
 pub const DOCUMENT_ACTIVE_INSPECTOR_SLOT_ID: &str = "document-workspace-active-inspector-slot";
@@ -722,6 +732,10 @@ pub const DOCUMENT_SIGNATURE_BOX_CANCEL_ID: &str = "document-signature-box-cance
 pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
 pub const DOCUMENT_SNAP_CLOSE_ID: &str = "viewer-snap-close";
+/// The Snap settings panel's columns: what to snap to, then constraints and
+/// grids. One column shows both in turn when the window is narrow.
+pub const DOCUMENT_SNAP_FIRST_COLUMN_ID: &str = "viewer-snap-first-column";
+pub const DOCUMENT_SNAP_SECOND_COLUMN_ID: &str = "viewer-snap-second-column";
 pub const DOCUMENT_HIGHLIGHT_SETTINGS_CLOSE_ID: &str =
     "document-workspace-highlight-defaults-close";
 pub const DOCUMENT_SNAP_MARKUP_ID: &str = "viewer-snap-markup";
@@ -735,6 +749,17 @@ pub const DOCUMENT_SNAP_CONSTRUCTION_GRID_SPACING_ID: &str =
 pub const DOCUMENT_SNAP_DIMENSION_INCREMENT_ID: &str = "viewer-snap-dimension-increment";
 pub const DOCUMENT_SNAP_DIMENSION_INCREMENT_VALUE_ID: &str =
     "viewer-snap-dimension-increment-value";
+pub const DOCUMENT_SNAP_ANGLE_ID: &str = "viewer-snap-angle";
+pub const DOCUMENT_SNAP_ANGLE_INCREMENT_GROUP_ID: &str = "viewer-snap-angle-increment";
+/// One per [`AngleSnapPreset::ALL`], in its order.
+pub const DOCUMENT_SNAP_ANGLE_PRESET_IDS: [&str; 5] = [
+    "viewer-snap-angle-90",
+    "viewer-snap-angle-45",
+    "viewer-snap-angle-30",
+    "viewer-snap-angle-15",
+    "viewer-snap-angle-custom",
+];
+pub const DOCUMENT_SNAP_ANGLE_CUSTOM_VALUE_ID: &str = "viewer-snap-angle-custom-value";
 pub const DOCUMENT_SNAP_GUIDES_ID: &str = "viewer-snap-guides";
 pub const DOCUMENT_SNAP_GUIDE_ALIGNMENT_ID: &str = "viewer-snap-guide-alignment";
 pub const DOCUMENT_SNAP_GUIDE_EQUAL_SIZE_ID: &str = "viewer-snap-guide-equal-size";
@@ -1317,6 +1342,12 @@ pub enum GeneratedTemplateRequestDisposition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DocumentWorkspaceTemplateCommand {
     Create(TemplateCreationEvent),
+    /// Select default template chose `template_id`, turned to `orientation`
+    /// when that turns its paper: the library stores it as the default.
+    SelectDefault {
+        template_id: String,
+        orientation: Option<crate::template_preview::PaperOrientation>,
+    },
     Manage,
     SaveDocumentAsTemplate {
         document_id: DocumentId,
@@ -2925,6 +2956,9 @@ pub struct DocumentWorkspace {
     /// Scroll the New Tab into view once it is laid out.
     new_tab_reveal: bool,
     session_tabs_overflow: bool,
+    /// Whether tabs are scrolled out of sight on the left and on the right:
+    /// that edge of the tab strip fades out.
+    session_tab_hidden_edges: (bool, bool),
     session_tab_reveal: Option<DocumentId>,
     session_tab_last_active: Option<DocumentId>,
     session_tab_hovered: Option<DocumentId>,
@@ -2961,6 +2995,7 @@ pub struct DocumentWorkspace {
     semantic_snap_settings: SemanticSnapSettings,
     semantic_snap_grid_spacing_input: Option<Entity<InputState>>,
     semantic_snap_dimension_increment_input: Option<Entity<InputState>>,
+    semantic_snap_angle_custom_input: Option<Entity<InputState>>,
     semantic_snap_input_subscriptions: Vec<Subscription>,
     right_rail_actions_open: bool,
     /// Zoom and fit commands move the view over a short motion.
@@ -3087,6 +3122,8 @@ pub struct DocumentWorkspace {
     text_selection: Option<text_selection::TextSelection>,
     /// The document whose page text is under the pointer, with Select.
     text_selection_hover: Option<DocumentId>,
+    /// A press that dismissed something, until its release (`click_out`).
+    click_out: click_out::ClickOutState,
     selectable_text: text_selection::SelectableTextCache,
     /// Form filling with the Select tool: the field widget under the
     /// pointer, the focused one, its text editor and its choice menu, and
@@ -4593,13 +4630,13 @@ impl DocumentWorkspace {
             .id("document-left-rail")
             .debug_selector(|| "document-left-rail".into())
             // A bar's width: 8 + 32 + 8, its line drawn inside.
-            .w(px(crate::layout_metrics::BAR))
+            .w(crate::layout_metrics::scaled(crate::layout_metrics::BAR))
             .h_full()
             .flex_shrink_0()
             .relative()
             .items_center()
-            .pt(px(crate::layout_metrics::SPACE))
-            .gap(px(crate::layout_metrics::SPACE))
+            .pt(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
+            .gap(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
             .bg(cx.theme().background)
             // With thumbnails collapsed, the viewer's stock resize divider
             // already owns this edge. Do not paint a second adjacent line.
@@ -4764,6 +4801,7 @@ impl DocumentWorkspace {
             new_tab_hovered: false,
             new_tab_reveal: false,
             session_tabs_overflow: false,
+            session_tab_hidden_edges: (false, false),
             session_tab_reveal: None,
             session_tab_last_active: None,
             session_tab_hovered: None,
@@ -4789,6 +4827,7 @@ impl DocumentWorkspace {
             semantic_snap_settings: SemanticSnapSettings::default(),
             semantic_snap_grid_spacing_input: None,
             semantic_snap_dimension_increment_input: None,
+            semantic_snap_angle_custom_input: None,
             semantic_snap_input_subscriptions: Vec::new(),
             right_rail_actions_open: false,
             view_motion: None,
@@ -4851,6 +4890,7 @@ impl DocumentWorkspace {
             adjacent_page_renders_in_flight: HashSet::new(),
             text_selection: None,
             text_selection_hover: None,
+            click_out: Default::default(),
             selectable_text: HashMap::new(),
             form_field_hover: None,
             form_field_focus: None,
@@ -6793,10 +6833,16 @@ impl DocumentWorkspace {
         &mut self,
         templates: Vec<TemplateCatalogItem>,
         durable_last_used_id: impl Into<String>,
+        default_orientation: Option<crate::template_preview::PaperOrientation>,
         cx: &mut Context<Self>,
     ) {
         self.template_control.update(cx, |control, cx| {
-            control.apply_template_catalog(templates, durable_last_used_id, cx);
+            control.apply_template_catalog(
+                templates,
+                durable_last_used_id,
+                default_orientation,
+                cx,
+            );
         });
         cx.notify();
     }
@@ -6858,7 +6904,18 @@ impl DocumentWorkspace {
                 }
                 cx.notify();
             }
-            TemplateSplitEvent::OpenChanged(_) | TemplateSplitEvent::SelectionChanged(_) => {}
+            TemplateSplitEvent::DefaultChanged {
+                template_id,
+                orientation,
+            } => {
+                if self.external_template_authority {
+                    cx.emit(DocumentWorkspaceTemplateCommand::SelectDefault {
+                        template_id,
+                        orientation,
+                    });
+                }
+            }
+            TemplateSplitEvent::OpenChanged(_) => {}
         }
     }
 
@@ -8906,6 +8963,12 @@ impl DocumentWorkspace {
         self.workspace_focus.clone()
     }
 
+    /// The tab row's New from template control and its Select default
+    /// template panel.
+    pub fn template_control(&self) -> Entity<TemplateSplitControl> {
+        self.template_control.clone()
+    }
+
     pub fn set_length_calibration(
         &mut self,
         document_id: DocumentId,
@@ -10154,7 +10217,8 @@ impl DocumentWorkspace {
         );
     }
 
-    fn set_semantic_snap_dimension_increment_enabled(
+    /// Turns Snap dimensions on or off, as the Snap settings switch does.
+    pub fn set_semantic_snap_dimension_increment_enabled(
         &mut self,
         enabled: bool,
         cx: &mut Context<Self>,
@@ -10162,6 +10226,21 @@ impl DocumentWorkspace {
         self.apply_semantic_snap_settings(
             self.semantic_snap_settings
                 .with_dimension_increment_enabled(enabled),
+            cx,
+        );
+    }
+
+    /// Turns angle snap on or off, as the Snap settings switch does.
+    pub fn set_semantic_snap_angle_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.apply_semantic_snap_settings(
+            self.semantic_snap_settings.with_angle_snap_enabled(enabled),
+            cx,
+        );
+    }
+
+    fn set_semantic_snap_angle_preset(&mut self, preset: AngleSnapPreset, cx: &mut Context<Self>) {
+        self.apply_semantic_snap_settings(
+            self.semantic_snap_settings.with_angle_snap_preset(preset),
             cx,
         );
     }
@@ -18029,12 +18108,13 @@ impl DocumentWorkspace {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (Entity<InputState>, Entity<InputState>) {
-        if let (Some(spacing), Some(increment)) = (
+    ) -> (Entity<InputState>, Entity<InputState>, Entity<InputState>) {
+        if let (Some(spacing), Some(increment), Some(angle)) = (
             &self.semantic_snap_grid_spacing_input,
             &self.semantic_snap_dimension_increment_input,
+            &self.semantic_snap_angle_custom_input,
         ) {
-            return (spacing.clone(), increment.clone());
+            return (spacing.clone(), increment.clone(), angle.clone());
         }
         let spacing = cx.new(|cx| {
             InputState::new(window, cx)
@@ -18090,9 +18170,37 @@ impl DocumentWorkspace {
                 }
             },
         ));
+        let angle = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(
+                    self.semantic_snap_settings
+                        .angle_snap_custom_degrees()
+                        .to_string(),
+                )
+                .step(1.)
+                .min(crate::semantic_snapping::MIN_ANGLE_SNAP_DEGREES)
+                .max(crate::semantic_snapping::MAX_ANGLE_SNAP_DEGREES)
+        });
+        self.semantic_snap_input_subscriptions.push(cx.subscribe_in(
+            &angle,
+            window,
+            |workspace, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change)
+                    && let Ok(value) = input.read(cx).value().parse::<f64>()
+                {
+                    workspace.apply_semantic_snap_settings(
+                        workspace
+                            .semantic_snap_settings
+                            .with_angle_snap_custom_degrees(value),
+                        cx,
+                    );
+                }
+            },
+        ));
         self.semantic_snap_grid_spacing_input = Some(spacing.clone());
         self.semantic_snap_dimension_increment_input = Some(increment.clone());
-        (spacing, increment)
+        self.semantic_snap_angle_custom_input = Some(angle.clone());
+        (spacing, increment, angle)
     }
 
     fn prepare_typed_signature(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
@@ -19101,6 +19209,10 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> bool {
         self.placement_press = None;
+        // A new press; a double or triple click that began by dismissing
+        // something counts from the click after it.
+        self.click_out.held = false;
+        let click_count = self.click_count_after_dismissal(click_count);
         let pressed_hot_annotation_handle = self.hot_annotation_handle.clone();
         // The cursor a drag keeps: the grabbed control's, or the moving cursor
         // when the press lands on an item to move it.
@@ -19154,6 +19266,8 @@ impl DocumentWorkspace {
                 } else {
                     self.workspace_focus.focus(window, cx);
                 }
+                // A click-out commits the text and does nothing else.
+                self.note_dismissing_press(click_count);
                 cx.notify();
                 return true;
             }
@@ -19276,6 +19390,15 @@ impl DocumentWorkspace {
             }
         }
         let box_armed = box_armed || force_box;
+        // A click-out only dismisses: a press that dismisses highlighted text
+        // or selected markups does nothing else, drag and release included.
+        if tool == AnnotationTool::Select
+            && !box_armed
+            && let Some(dismissal) = self.canvas_press_dismissal(&interaction, point, modifiers, cx)
+        {
+            self.dismiss_on_press(dismissal, interaction.document_id, click_count, cx);
+            return true;
+        }
         // A press in the selected markup's text, where the pointer shows the
         // I-beam, edits that text with the caret where it landed.
         if tool == AnnotationTool::Select
@@ -20120,7 +20243,7 @@ impl DocumentWorkspace {
             if tool != AnnotationTool::Select {
                 return self.clear_hover_candidate(cx);
             }
-            return self.update_hover_candidate(&session, &interaction, point, cx);
+            return self.update_hover_candidate(&session, &interaction, point, modifiers, cx);
         }
         let updated = session
             .update(cx, |session, cx| {
@@ -20192,9 +20315,18 @@ impl DocumentWorkspace {
         session: &Entity<NativeDocumentSession>,
         interaction: &PageInteraction,
         point: PdfPoint,
+        modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) -> bool {
         let document_id = interaction.document_id;
+        // Where a press would only dismiss something, nothing under the
+        // pointer offers anything else: hover and press share the hit test.
+        if self
+            .canvas_press_dismissal(interaction, point, modifiers, cx)
+            .is_some()
+        {
+            return self.clear_hover_candidate(cx);
+        }
         let marquee_active = session
             .read(cx)
             .annotations
@@ -20344,6 +20476,10 @@ impl DocumentWorkspace {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) -> bool {
+        // The drag of a press that dismissed something moves nothing.
+        if self.click_out_drag() {
+            return true;
+        }
         self.note_drawing_pointer(position, modifiers);
         if let Some((document_id, origin, offset)) = self.pan_drag {
             if self.active_document_id != Some(document_id) {
@@ -20422,6 +20558,10 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // The release of a press that dismissed something does nothing.
+        if self.finish_click_out() {
+            return true;
+        }
         if self.pan_drag.is_some() {
             self.update_annotation_pointer(position, modifiers, cx);
             self.pan_drag = None;
@@ -25195,8 +25335,8 @@ fn remove_markups_measure_turned(
 }
 
 /// A scale-aware drawing tool's second tooltip line: what the tool measures
-/// when its page has a scale. The tooltip shows it after a bold `Scale on:`,
-/// named as the toolbar's Scale switch.
+/// when its page has a scale. The tooltip shows it after a bold
+/// `Page Scale on:`, named as the toolbar's Page Scale switch.
 fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<&'static str> {
     Some(match tool {
         AnnotationTool::Rectangle | AnnotationTool::Ellipse => "Width and height measurement",
@@ -25223,7 +25363,7 @@ fn tooltip_tool(tool: AnnotationTool) -> AnnotationTool {
 }
 
 /// A rail tool button's tooltip: the tool's name with its shortcut as a
-/// stock key binding beside it, and below them a bold `Scale on:` with what
+/// stock key binding beside it, and below them a bold `Page Scale on:` with what
 /// the tool measures.
 fn with_tool_tooltip(button: Button, tool: AnnotationTool) -> Button {
     let (label, description) = draw_tool_tooltip(tool);
@@ -25240,7 +25380,7 @@ fn with_tool_tooltip(button: Button, tool: AnnotationTool) -> Button {
             .description_element(move |_, _| {
                 h_flex()
                     .gap_1()
-                    .child(gpui::div().font_semibold().child("Scale on:"))
+                    .child(gpui::div().font_semibold().child("Page Scale on:"))
                     .child(description)
             })
             .build(window, cx)
@@ -25338,13 +25478,14 @@ fn snap_switch_row(
 ) -> gpui::AnyElement {
     gpui::div()
         .debug_selector(move || id.into())
-        .child(
+        .child(crate::accessible_button::focus_ring_switch(
+            SharedString::from(format!("{id}-focus-ring")),
             gpui_component::switch::Switch::new(id)
                 .label(label)
                 .checked(checked)
                 .disabled(disabled)
                 .on_click(move |checked, _, cx| on_toggle(*checked, cx)),
-        )
+        ))
         .into_any_element()
 }
 
@@ -25414,7 +25555,7 @@ fn rail_overflow_hint(
         .when(edge == RailOverflowEdge::Bottom, |fade| {
             fade.bottom_0().items_end()
         })
-        .h(px(56.))
+        .h(crate::layout_metrics::scaled(56.))
         .flex()
         .justify_center()
         .occlude()
@@ -25503,26 +25644,71 @@ fn recovered_document_edits(timeline: &[u8]) -> crate::pdf_worker::DocumentEdits
 /// The tool rail's columns. Its width is fixed: it has no resize handle.
 const RIGHT_RAIL_COLUMNS: usize = 2;
 
-/// The least width of the page between Page Thumbnails and an open
-/// properties panel, in rems: the least width of either panel.
-pub const PAGE_BESIDE_SIDEBARS_MIN_REMS: f32 = 15.;
+/// The least width of the page column between the side panels, in rems:
+/// the narrowest viewer toolbar's (a signed document of a four-digit page
+/// count), and never less than 15 rems. Side panels give way before the
+/// toolbar would get narrower, so every toolbar control always shows.
+pub const PAGE_BESIDE_SIDEBARS_MIN_REMS: f32 = {
+    let toolbar = crate::viewer_toolbar_strip::VIEWER_TOOLBAR_NARROWEST_REMS;
+    if toolbar > 15. { toolbar } else { 15. }
+};
+/// Page Thumbnails' least and greatest widths, in rems.
+pub const THUMBNAILS_WIDTH_REMS: std::ops::Range<f32> = 16.0..24.0;
+/// The properties panel's least and greatest widths, in rems.
+pub const PROPERTIES_WIDTH_REMS: std::ops::Range<f32> = 15.0..26.25;
 
-/// Whether Page Thumbnails `thumbnails` wide fit in a window `window_width`
-/// wide, beside the left rail, the tool rail `rail` wide and a properties
-/// panel `properties` wide, if one is open. Without properties they always
-/// fit, as the viewer toolbar scrolls sideways when squeezed. With
-/// properties, the page between them keeps
-/// [`PAGE_BESIDE_SIDEBARS_MIN_REMS`].
-pub fn thumbnails_fit_beside_properties(
+/// How wide the side panels may be in a window `window_width` wide, beside
+/// the left rail and the tool rail `rail` wide, so the page column keeps
+/// [`PAGE_BESIDE_SIDEBARS_MIN_REMS`]. A panel shows at its preferred width
+/// up to its greatest width here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SidePanelRoom {
+    /// The open properties panel's greatest width, or `None` when it
+    /// yields: only when even its least width would squeeze the viewer
+    /// toolbar, which the least window at the default interface size never
+    /// does (a larger interface size, not offered for now, can).
+    pub properties: Option<Pixels>,
+    /// Page Thumbnails' greatest width, or `None` when they yield.
+    pub thumbnails: Option<Pixels>,
+}
+
+/// The side panels' room: `thumbnails` and `properties` are the open
+/// panels' preferred widths.
+/// - The properties panel keeps its preferred width while the page column
+///   keeps its least width; narrower, it narrows, down to its least width,
+///   and narrower still (never at the default interface size) it yields
+///   until the window widens.
+/// - Page Thumbnails beside properties yield (hide) when both do not fit
+///   at their preferred widths, and return when the window widens again.
+/// - Page Thumbnails alone narrow, down to their least width, rather than
+///   squeeze the page column.
+pub fn side_panel_room(
     window_width: Pixels,
     rem: Pixels,
     rail: Pixels,
-    thumbnails: Pixels,
+    thumbnails: Option<Pixels>,
     properties: Option<Pixels>,
-) -> bool {
-    properties.is_none_or(|properties| {
-        window_width >= rem * (3. + PAGE_BESIDE_SIDEBARS_MIN_REMS) + rail + thumbnails + properties
-    })
+) -> SidePanelRoom {
+    let left_rail = crate::layout_metrics::scaled_px(crate::window_title_bar::LEFT_RAIL_WIDTH, rem);
+    let room = window_width - left_rail - rail - rem * PAGE_BESIDE_SIDEBARS_MIN_REMS;
+    let properties_max = properties
+        .filter(|_| room >= rem * PROPERTIES_WIDTH_REMS.start)
+        .map(|_| room.min(rem * PROPERTIES_WIDTH_REMS.end));
+    let properties_shown = properties
+        .zip(properties_max)
+        .map(|(preferred, max)| preferred.min(max));
+    let thumbnails = thumbnails.and_then(|preferred| {
+        let thumbnails_room = room - properties_shown.unwrap_or_default();
+        let max = thumbnails_room.min(rem * THUMBNAILS_WIDTH_REMS.end);
+        match properties_shown {
+            Some(_) => (thumbnails_room >= preferred).then_some(max),
+            None => (thumbnails_room >= rem * THUMBNAILS_WIDTH_REMS.start).then_some(max),
+        }
+    });
+    SidePanelRoom {
+        properties: properties_max,
+        thumbnails,
+    }
 }
 
 /// The tool rail's width: one unit, then a control and a unit per column
@@ -25601,7 +25787,7 @@ fn signature_input_surface(
                 gpui::div()
                     .id(DOCUMENT_SIGNATURE_TYPED_PREVIEW_ID)
                     .debug_selector(|| DOCUMENT_SIGNATURE_TYPED_PREVIEW_ID.into())
-                    .h(px(112.))
+                    .h(crate::layout_metrics::scaled(112.))
                     .w_full()
                     .px_4()
                     .flex()
@@ -26255,7 +26441,10 @@ fn annotation_tool_group(
             v_flex()
                 .id("document-workspace-signature-content")
                 .debug_selector(|| "document-workspace-signature-content".into())
-                .w(px(SIGNATURE_POPOVER_WIDTH).min(window.viewport_size().width - px(16.)))
+                .w(
+                    crate::layout_metrics::scaled_px(SIGNATURE_POPOVER_WIDTH, window.rem_size())
+                        .min(window.viewport_size().width - px(16.)),
+                )
                 .max_h(window.viewport_size().height - window.rem_size() * 4.)
                 .child(
                     v_flex()
@@ -26644,8 +26833,10 @@ fn session_tab_overlay_label(
             .id(id.clone())
             .debug_selector(move || id.clone())
             .flex_none()
-            .size(px(SESSION_TAB_CLOSE_SIZE))
-            .ml(px(-SESSION_TAB_INDICATOR_OVERHANG))
+            .size(crate::layout_metrics::scaled(SESSION_TAB_CLOSE_SIZE))
+            .ml(crate::layout_metrics::scaled(
+                -SESSION_TAB_INDICATOR_OVERHANG,
+            ))
             .justify_center()
             .rounded_full()
             .bg(disc)
@@ -26653,7 +26844,10 @@ fn session_tab_overlay_label(
             .tooltip(|window, cx| {
                 gpui_component::tooltip::Tooltip::new("Unsaved changes").build(window, cx)
             })
-            .child(gpui_component::Icon::new(IconName::Asterisk).size(px(14.)))
+            .child(
+                gpui_component::Icon::new(IconName::Asterisk)
+                    .size(crate::layout_metrics::scaled(14.)),
+            )
     };
     gpui::div()
         .relative()
@@ -26661,14 +26855,16 @@ fn session_tab_overlay_label(
         .min_w_0()
         // The large tab's text is 16px; titles keep the shell's 14px.
         .text_sm()
+        // The outline buttons' text colour, in every state: the tab is one.
+        .text_color(cx.theme().button_foreground)
         .child(
             h_flex()
                 .gap_1()
                 .opacity(0.)
                 .children(dirty.then(|| {
-                    gpui::div()
-                        .flex_none()
-                        .w(px(SESSION_TAB_CLOSE_SIZE - SESSION_TAB_INDICATOR_OVERHANG))
+                    gpui::div().flex_none().w(crate::layout_metrics::scaled(
+                        SESSION_TAB_CLOSE_SIZE - SESSION_TAB_INDICATOR_OVERHANG,
+                    ))
                 }))
                 .child(
                     gpui::div()
@@ -26682,7 +26878,9 @@ fn session_tab_overlay_label(
                 .absolute()
                 .inset_0()
                 .gap_1()
-                .when(revealed, |this| this.pr(px(SESSION_TAB_CLOSE_LANE)))
+                .when(revealed, |this| {
+                    this.pr(crate::layout_metrics::scaled(SESSION_TAB_CLOSE_LANE))
+                })
                 .children(dirty.then(|| indicator(format!("{group}-unsaved-indicator"))))
                 .child(
                     gpui::div()
@@ -26728,22 +26926,73 @@ const SESSION_TAB_CLOSE_LANE: f32 = SESSION_TAB_HEIGHT;
 const SESSION_TAB_INDICATOR_OVERHANG: f32 =
     16. + SESSION_TAB_CLOSE_SIZE / 2. - SESSION_TAB_CLOSE_LANE / 2.;
 
-/// A tab's frame around its raised area, as the tab row's outline buttons
-/// have one. On the row's own background, a tab that is not selected keeps
-/// the segmented track's grey; the selected tab is the raised white one. The
-/// corners follow the raised area: the large segmented track's radius,
-/// inset 3px.
-pub(super) fn session_tab_frame(selected: bool, cx: &App) -> gpui::Div {
+/// A tab's frame: a stock outline button filling the tab, so that a tab
+/// takes exactly the colours of the outline buttons beside it on the row
+/// (the tab menu, New Tab, New PDF) and of the toolbar's outline toggles
+/// (Fit Width, Fit Page). A tab that is not selected looks like such a button
+/// at rest, with its hover and pressed states; the selected tab looks like a
+/// selected toggle. There is no shadow and no other border. The button is
+/// only paint: it has no role, no tab stop and no action, and the tab's own
+/// handlers answer the pointer and keys.
+///
+/// `focus_ring` draws the stock focus ring's colours (the ring-coloured
+/// border and a 3px half-opaque band) inside the frame, because the tab
+/// clips what lies outside it. Show it only for keyboard focus, as stock
+/// buttons do: a click on a tab focuses it for the arrow keys, but leaves no
+/// ring.
+pub(super) fn session_tab_frame(
+    id: impl Into<SharedString>,
+    selected: bool,
+    focus_ring: bool,
+    cx: &App,
+) -> gpui::AnyElement {
+    let id: SharedString = id.into();
+    let radius = cx.theme().radius;
     gpui::div()
         .absolute()
         .inset_0()
-        .rounded((cx.theme().radius_lg - px(3.)).max(px(0.)))
-        .border_1()
-        .border_color(cx.theme().border)
-        .when(!selected, |frame| {
-            frame.bg(cx.theme().tokens.tab_bar_segmented)
+        .child(
+            Button::new(SharedString::from(format!("{id}-frame")))
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("{id}-frame")
+                })
+                .outline()
+                .selected(selected)
+                .tab_stop(false)
+                .role(gpui_component::RoleOverride::Presentational)
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                // A child makes it a text button, sized by the frame.
+                .child(gpui::div()),
+        )
+        .when(focus_ring, |frame| {
+            frame.child(
+                gpui::div()
+                    .id(SESSION_TAB_FOCUS_RING_ID)
+                    .debug_selector(|| SESSION_TAB_FOCUS_RING_ID.into())
+                    .absolute()
+                    .inset_0()
+                    .rounded(radius)
+                    .border_1()
+                    .border_color(cx.theme().ring)
+                    .child(
+                        gpui::div()
+                            .absolute()
+                            .inset_0()
+                            .rounded((radius - px(1.)).max(px(0.)))
+                            .border(px(3.))
+                            .border_color(cx.theme().ring.opacity(0.5)),
+                    ),
+            )
         })
+        .into_any_element()
 }
+
+/// Where a tab's keyboard focus ring is drawn, for tests to find.
+pub const SESSION_TAB_FOCUS_RING_ID: &str = "document-session-tab-focus-ring";
 
 fn session_tab_close_lane() -> gpui::Div {
     // The tab's raised area is 32px high; the extra-small close button
@@ -26754,7 +27003,7 @@ fn session_tab_close_lane() -> gpui::Div {
         .right_0()
         .top_0()
         .h_full()
-        .w(px(SESSION_TAB_CLOSE_LANE))
+        .w(crate::layout_metrics::scaled(SESSION_TAB_CLOSE_LANE))
         .justify_center()
 }
 
@@ -26859,7 +27108,7 @@ impl Render for DocumentWorkspace {
         self.page_interactions.clear();
         let page_scale_control = self.ensure_page_scale_control(window, cx);
         let signature_name_input = self.ensure_signature_name_input(window, cx);
-        let (snap_grid_spacing_input, snap_dimension_increment_input) =
+        let (snap_grid_spacing_input, snap_dimension_increment_input, snap_angle_custom_input) =
             self.ensure_semantic_snap_inputs(window, cx);
         let rectangle_property_inspector = self.ensure_rectangle_property_inspector(window, cx);
         let ellipse_property_inspector = self.ensure_ellipse_property_inspector(window, cx);
@@ -26875,7 +27124,9 @@ impl Render for DocumentWorkspace {
         let caption_property_inspector = self.ensure_caption_property_inspector(window, cx);
         let measurement_property_inspector = self.ensure_measurement_property_inspector(window, cx);
         let dimension_property_inspector = self.ensure_dimension_property_inspector(window, cx);
-        let page_scale_pick_instruction = page_scale_control.read(cx).pick_instruction();
+        let page_scale_pick_instruction = page_scale_control
+            .read(cx)
+            .pick_instruction(self.semantic_snap_settings.angle_snap_enabled());
         let calibration_pick_active = page_scale_pick_instruction.is_some();
         let session_tabs = self
             .sessions
@@ -28016,6 +28267,8 @@ impl Render for DocumentWorkspace {
             save_busy,
             snap_grid_spacing_input,
             snap_dimension_increment_input,
+            snap_angle_custom_input,
+            window.rem_size(),
             cx,
         );
         let tool_group = annotation_tool_group(
@@ -28276,13 +28529,18 @@ impl Render for DocumentWorkspace {
         // leaves too little page between the two. The user's open state and
         // widths stay as they were.
         let rem = window.rem_size();
-        let thumbnails_fit = thumbnails_fit_beside_properties(
+        let side_panel_room = side_panel_room(
             window.viewport_size().width,
             rem,
             right_rail_width(RIGHT_RAIL_COLUMNS, rem),
-            self.left_sidebar_sizing.preferred_width(rem),
+            Some(self.left_sidebar_sizing.preferred_width(rem)),
             properties_visible.then(|| self.right_sidebar_sizing.preferred_width(rem)),
         );
+        let thumbnails_fit = side_panel_room.thumbnails.is_some();
+        // Properties yield only when even their least width would squeeze
+        // the toolbar (never at the default interface size); they return
+        // when the window widens.
+        let properties_shown = properties_visible && side_panel_room.properties.is_some();
         let thumbnails_visible = self.pages_panel_open && thumbnails_fit;
         let sidebar_panel = self.render_thumbnail_sidebar(
             ThumbnailSidebarInputs {
@@ -28290,6 +28548,7 @@ impl Render for DocumentWorkspace {
                 current_page,
                 thumbnails,
                 thumbnails_visible,
+                thumbnails_max_width: side_panel_room.thumbnails,
                 thumbnail_scroll: thumbnail_scroll.clone(),
                 hovered_annotation: hovered_annotation.clone(),
                 focused_annotation_id: focused_annotation_id.clone(),
@@ -28404,12 +28663,12 @@ impl Render for DocumentWorkspace {
             ))
             .child(
                 h_flex()
-                    .h(px(crate::layout_metrics::BAR))
+                    .h(crate::layout_metrics::scaled(crate::layout_metrics::BAR))
                     .flex_none()
                     .w_full()
                     .relative()
                     .justify_center()
-                    .gap(px(crate::layout_metrics::SPACE))
+                    .gap(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
                     .child(crate::layout_metrics::inside_line(
                         crate::layout_metrics::Edge::Bottom,
                         cx.theme().border,
@@ -28577,7 +28836,8 @@ impl Render for DocumentWorkspace {
                     .child(canvas)
                     .when_some(page_scale_pick_instruction, |canvas, instruction| {
                         canvas.child(self.render_calibration_hint(instruction, cx))
-                    }),
+                    })
+                    .children(toast_layer(window, cx)),
             )
             .child(pointer_event_bridge)
             .child(
@@ -28626,14 +28886,21 @@ impl Render for DocumentWorkspace {
                 )
                 .child(
                     resizable_panel()
-                        .visible(self.right_rail_actions_open || inspector_visible)
+                        .visible(properties_shown)
                         .size(window.rem_size() * 18.75)
-                        .size_range(window.rem_size() * 15.0..window.rem_size() * 26.25)
+                        // Narrower than preferred when the page column
+                        // would otherwise squeeze the viewer toolbar.
+                        .size_range(
+                            window.rem_size() * PROPERTIES_WIDTH_REMS.start
+                                ..side_panel_room
+                                    .properties
+                                    .unwrap_or(window.rem_size() * PROPERTIES_WIDTH_REMS.end),
+                        )
                         .flex_none()
                         .child(supporting_actions),
                 ),
             &properties_resizable,
-            properties_visible,
+            properties_shown,
         );
         root.child(session_tab_strip)
             .child(

@@ -249,7 +249,7 @@ impl DocumentWorkspace {
                 .child(div().text_color(theme.muted_foreground).child(field.label))
                 .child(
                     div()
-                        .min_w(px(56.))
+                        .min_w(crate::layout_metrics::scaled(56.))
                         .px_1()
                         .rounded_sm()
                         .border_1()

@@ -19,6 +19,25 @@ pub const CONTROL: f32 = 32.;
 pub const BAR: f32 = SPACE + CONTROL + SPACE;
 /// The status bar: one unit, its 20px extra-small controls, one unit.
 pub const STATUS_BAR: f32 = SPACE + 20. + SPACE;
+/// The room a clipping region (a scrolling dialog body) leaves inside its
+/// edge, taken back with a negative margin so the layout does not move:
+/// GPUI Component paints a focused control's 3px ring outside its border,
+/// and a clip at the control's edge cuts the ring off.
+pub const FOCUS_RING_ROOM: f32 = 4.;
+
+/// The design's size `value`, given in points at the default interface size
+/// (16 points to the rem), as a length that scales with the interface size.
+/// Bars, rails, tabs and their spacing use it, so they grow with the text
+/// and controls they hold.
+pub fn scaled(value: f32) -> gpui::Rems {
+    gpui::rems(value / 16.)
+}
+
+/// As [`scaled`], in pixels for a window whose rem is `rem`, for APIs that
+/// take pixels.
+pub fn scaled_px(value: f32, rem: gpui::Pixels) -> gpui::Pixels {
+    rem * (value / 16.)
+}
 
 /// The edge of a bar its line runs along.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +71,29 @@ mod tests {
         assert_eq!(STATUS_BAR, 36.);
         for value in [SPACE, GROUP_SPACE, CONTROL, BAR] {
             assert_eq!(value % 8., 0., "{value} is on the 8pt grid");
+        }
+    }
+
+    /// The interface size stays at its default for now (decisions.md,
+    /// "Interface size"), where a rem is 16 pixels. There, every size given
+    /// through `scaled` or `scaled_px` is exactly the pixel size it replaced:
+    /// dividing and multiplying by 16 loses nothing.
+    #[test]
+    fn scaled_sizes_are_exact_pixels_at_the_default_interface_size() {
+        let rem = gpui::px(16.);
+        assert_eq!(
+            crate::application_shell::default_application_ui_font_size(),
+            rem
+        );
+        let mut value = -1024.;
+        while value <= 2048. {
+            assert_eq!(scaled(value).to_pixels(rem), gpui::px(value), "{value}");
+            assert_eq!(scaled_px(value, rem), gpui::px(value), "{value}");
+            value += 0.0625;
+        }
+        for value in [5.5, 9.1, 13.3, 18.75, 25.25, 356. + 2. * FOCUS_RING_ROOM] {
+            assert_eq!(scaled(value).to_pixels(rem), gpui::px(value), "{value}");
+            assert_eq!(scaled_px(value, rem), gpui::px(value), "{value}");
         }
     }
 }

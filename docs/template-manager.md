@@ -19,30 +19,45 @@ and stay unsuffixed because stored libraries refer to them.
 
 Templates are shown by paper size. A size that matches a named sheet of the
 page-scale paper catalogue in either orientation shows its name (`A3 ·
-Landscape`); any other size shows `W × H mm`. The New from template picker and
-the Template Library both list one size at a time, chosen from a paper-size
+Landscape`); any other size shows `W × H mm`. The Select default template
+panel and the Template Library both list one size at a time, chosen from a paper-size
 Select (named sheets in catalogue order, then custom sizes in
 first-appearance order, then `Imported PDFs`, whose page size is not
 recorded) that starts at the selected template's size. Changing the size
 selects the template with the same name in that size, else one with the same
-pattern, else the first. Their rows look alike: the selected one filled and
-ticked.
+pattern, else the first. Their rows look alike and show the stock list
+states: the selected one has the list's selected fill and edge and a tick, a
+hovered row the list's hover fill, and a row with keyboard focus the stock
+focus ring.
 
 An Orientation toggle (Portrait, Landscape) beside the size turns the listed
 paper; each size starts the way its templates are. Rows and the preview
-describe the paper turned, and Create makes the document turned (width and
-height swapped). The picker's primary button makes the last template as it
-is. Imported PDFs keep their own pages, so the toggle is disabled for them.
+describe the paper turned. Imported PDFs keep their own pages, so the toggle
+is disabled for them.
+
+The tab row's New from template button makes a document from the default
+template, turned as the default is (width and height swapped). Its tooltip
+names the template and, on a second line, gives the row's own text
+(`A3 · Landscape · No page grid`). The open-book button beside it opens
+Select default template. A row chosen by click, Enter or Space becomes the
+default at once, turned as the panel shows; a new paper size or orientation
+changes the default too. The panel stays open, makes no document, and has
+no Create button. Up and Down move focus among the rows and stop at the
+first and last. Escape or the X closes the panel.
 
 One application-owned template library is the durable authority. It owns
 custom settings, imported metadata and managed PDF bytes, and the last-used
-stable ID. Presentation state owns only the transient selected ID, create
+stable ID, which is the default template. `library.json` keeps the default's
+orientation as `lastTemplateOrientation` (`portrait` or `landscape`) only
+when it turns generated paper from its own way; any other change of the
+default template drops it. Presentation state owns only the transient selected ID, create
 draft, validation result, pending operation generation, and focus owner.
 Imported source paths never enter presentation persistence.
 
-Opening the manager selects the last-used template, exits create mode, and
-clears its current error. Selecting a row changes only the preview. A successful
-create or import becomes last-used. Removing the last-used custom or imported
+Opening the manager selects the last-used template, turned as the default
+is, exits create mode, and clears its current error. Selecting a row in the
+manager changes only the preview. A choice in Select default template, a
+successful create or an import becomes last-used. Removing the last-used custom or imported
 record falls back to Blank Paper. Built-ins cannot be removed.
 
 ## Generated templates

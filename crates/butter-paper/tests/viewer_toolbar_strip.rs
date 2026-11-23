@@ -17,8 +17,7 @@ use butter_paper::{
     viewer_toolbar_strip::{
         EDIT_PDF_ID, FIT_BUTTON_GROUP_ID, FIT_PAGE_ID, FIT_WIDTH_ID, FitPreset, ScaleToolbarState,
         VIEWER_SCALE_ID, VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_CONTROLS_ID, VIEWER_TOOLBAR_ID,
-        VIEWER_TOOLBAR_MIN_REMS, VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarFit, ViewerToolbarStrip,
-        viewer_toolbar_rems,
+        VIEWER_TOOLBAR_SCROLL_ID, ViewerToolbarFit, ViewerToolbarStrip, viewer_toolbar_rems,
     },
     zoom_control::{
         DEFAULT_VIEWER_ZOOM, MAX_VIEWER_ZOOM, MIN_VIEWER_ZOOM, ZOOM_GROUP_ID, ZOOM_IN_ID,
@@ -29,7 +28,7 @@ use butter_paper::{
 use gpui::{
     AppContext as _, Bounds, Context, Entity, IntoElement, KeyDownEvent, KeyUpEvent, Keystroke,
     Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
-    ScrollDelta, ScrollWheelEvent, Styled as _, TestAppContext, Window, point, px,
+    Styled as _, TestAppContext, Window, point, px,
 };
 use gpui_component::Root;
 
@@ -678,30 +677,6 @@ fn cad_toolbar_preserves_non_wrapping_targets_at_fixed_widths(cx: &mut TestAppCo
     for target in minimum_targets {
         assert_fully_inside(minimum_toolbar, target);
     }
-
-    set_width(cx, &entities.harness, CONSTRAINED_OVERFLOW_WIDTH);
-    let constrained_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
-    let constrained_content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
-    assert!(constrained_content.size.width > constrained_toolbar.size.width);
-    let constrained_targets = cad_interactive_bounds(cx);
-    assert_target_geometry_is_preserved(&normal_targets, &constrained_targets);
-    for target in constrained_targets {
-        assert_fully_inside(constrained_content, target);
-    }
-    assert_cad_target_order(&constrained_targets);
-    assert!(constrained_targets[10].right() > constrained_toolbar.right());
-
-    cx.simulate_event(ScrollWheelEvent {
-        position: constrained_toolbar.center(),
-        delta: ScrollDelta::Pixels(point(px(-700.), px(0.))),
-        ..Default::default()
-    });
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let scrolled_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
-    let scrolled_targets = cad_interactive_bounds(cx);
-    assert_target_geometry_is_preserved(&normal_targets, &scrolled_targets);
-    assert_fully_inside(scrolled_toolbar, scrolled_targets[9]);
-    assert_fully_inside(scrolled_toolbar, scrolled_targets[10]);
 }
 
 #[gpui::test]
@@ -761,39 +736,36 @@ fn toolbar_composition_preserves_targets_across_representative_widths(cx: &mut T
         assert_fully_inside(minimum_toolbar, target);
     }
 
+    // Narrow, the toolbar never scrolls: its controls step into tighter
+    // forms instead. Zoom Out and In and the fit presets move into the zoom
+    // menu, and the two page views merge into one menu button.
     set_width(cx, &entities.harness, CONSTRAINED_OVERFLOW_WIDTH);
     let constrained_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
     assert_eq!(
         constrained_toolbar.size.width,
         px(CONSTRAINED_OVERFLOW_WIDTH)
     );
-    let constrained_targets = interactive_bounds(cx);
-    assert_target_geometry_is_preserved(&normal_targets, &constrained_targets);
-    assert!(constrained_targets[0].right() <= constrained_targets[1].left());
-    assert!(constrained_targets[1].right() <= constrained_targets[2].left());
-    assert!(constrained_targets[2].right() <= constrained_targets[3].left());
-    assert!(constrained_targets[3].right() <= constrained_targets[4].left());
-    assert!(constrained_targets[4].right() <= constrained_targets[6].left());
-    assert!(constrained_targets[6].right() <= constrained_targets[8].left());
-    assert_fully_inside(constrained_targets[6], constrained_targets[5]);
-    assert_fully_inside(constrained_targets[8], constrained_targets[7]);
-    assert!(
-        constrained_targets[8].right() > constrained_toolbar.right(),
-        "the constrained fixture must exercise horizontal overflow"
+    let constrained_content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
+    assert_eq!(
+        constrained_content.size.width,
+        constrained_toolbar.size.width
     );
-
-    cx.simulate_event(ScrollWheelEvent {
-        position: constrained_toolbar.center(),
-        delta: ScrollDelta::Pixels(point(px(-500.), px(0.))),
-        ..Default::default()
-    });
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    let scrolled_toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
-    let scrolled_targets = interactive_bounds(cx);
-    assert_target_geometry_is_preserved(&normal_targets, &scrolled_targets);
-    assert_fully_inside(scrolled_toolbar, scrolled_targets[8]);
-    assert_fully_inside(scrolled_targets[8], scrolled_targets[7]);
-    assert!(scrolled_targets[6].right() <= scrolled_targets[8].left());
+    for id in [
+        ZOOM_OUT_ID,
+        ZOOM_IN_ID,
+        FIT_WIDTH_ID,
+        FIT_PAGE_ID,
+        CONTINUOUS_SPLIT_ID,
+        SINGLE_PAGE_SPLIT_ID,
+    ] {
+        assert!(cx.debug_bounds(id).is_none(), "{id} at 320px");
+    }
+    for id in [
+        ZOOM_MENU_ID,
+        butter_paper::viewer_toolbar_strip::VIEWER_PAGE_VIEW_MENU_ID,
+    ] {
+        assert_fully_inside(constrained_toolbar, bounds(cx, id));
+    }
 }
 
 #[gpui::test]
@@ -1434,14 +1406,43 @@ fn toolbar_traces_pointer_menu_escape_disabled_and_double_click(cx: &mut TestApp
     );
 }
 
-#[gpui::test]
-fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
+/// The form a laid-out toolbar shows, read from the controls it shows.
+fn form_shown(cx: &mut gpui::VisualTestContext) -> ViewerToolbarFit {
+    use butter_paper::viewer_toolbar_strip::{
+        EDIT_PDF_ICON_ID, VIEWER_PAGE_VIEW_MENU_ID, VIEWER_SCALE_VALUE_ID,
+    };
+    let shown = |cx: &mut gpui::VisualTestContext, id: &'static str| cx.debug_bounds(id).is_some();
+    if shown(cx, VIEWER_SCALE_VALUE_ID) {
+        ViewerToolbarFit::Full
+    } else if shown(cx, ZOOM_OUT_ID) {
+        ViewerToolbarFit::Middle
+    } else if shown(cx, FIT_WIDTH_ID) {
+        ViewerToolbarFit::StepsInMenu
+    } else if !shown(cx, VIEWER_PAGE_VIEW_MENU_ID) {
+        ViewerToolbarFit::FitInMenu
+    } else if !shown(cx, EDIT_PDF_ICON_ID) {
+        ViewerToolbarFit::ViewMenu
+    } else if bounds(cx, EDIT_PDF_ID).size.width >= px(78.) {
+        ViewerToolbarFit::Compact
+    } else if bounds(cx, ZOOM_MENU_ID).size.width >= px(80.) {
+        ViewerToolbarFit::Tightest
+    } else {
+        ViewerToolbarFit::Narrowest
+    }
+}
+
+/// A harness toolbar for a four-digit page count with Edit PDF and the
+/// longest scale, signed or not.
+fn worst_case_toolbar(
     cx: &mut TestAppContext,
-) {
+    signed: bool,
+) -> (&mut gpui::VisualTestContext, HarnessEntities) {
     let (cx, entities) = open_harness(cx);
+    let navigator = cx.new(|_| butter_paper::page_navigator::PageNavigator::new());
     entities.toolbar.update(cx, |toolbar, cx| {
+        toolbar.set_page_navigator(navigator, cx);
+        toolbar.sync_pages(0, 9_999, cx);
         toolbar.set_edit_pdf(Some(false), cx);
-        // The longest scale the menu shows is cut short to its width.
         toolbar.set_scale(
             Some(ScaleToolbarState {
                 page_number: 9_999,
@@ -1450,79 +1451,187 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
             }),
             cx,
         );
+        if signed {
+            toolbar.set_signatures(
+                Some(butter_paper::pdf_signatures::SignatureStatus::Checking),
+                cx,
+            );
+        }
     });
-    let minimum = 16. * VIEWER_TOOLBAR_MIN_REMS;
-    for width in [1400., 1100., 900., minimum + 64., minimum] {
-        set_width(cx, &entities.harness, width);
-        // How much of the page navigator shows follows the width laid out
-        // last frame.
-        cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-        let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
-        let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
+    (cx, entities)
+}
 
-        let pages = bounds(cx, butter_paper::page_navigator::PAGE_NAVIGATOR_ID);
-        let zoom = bounds(cx, butter_paper::zoom_control::ZOOM_OUT_ID);
+fn lay_out_at(cx: &mut gpui::VisualTestContext, entities: &HarnessEntities, width: f32) {
+    set_width(cx, &entities.harness, width);
+    // The form follows the width laid out last frame.
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+#[gpui::test]
+fn every_toolbar_group_shows_whole_at_every_width_from_the_narrowest(cx: &mut TestAppContext) {
+    for signed in [false, true] {
+        let mut app = cx.clone();
+        let (cx, entities) = worst_case_toolbar(&mut app, signed);
+        let narrowest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Narrowest, signed, 4);
+        let mut width = narrowest;
+        while width <= 1400. {
+            lay_out_at(cx, &entities, width);
+            let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
+            let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
+            assert_eq!(
+                content.size.width, toolbar.size.width,
+                "the toolbar scrolls at {width} (signed {signed})"
+            );
+            // Every group, whole, in order, inside the toolbar.
+            let mut groups = vec![
+                bounds(
+                    cx,
+                    butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID,
+                ),
+                bounds(cx, ZOOM_MENU_ID),
+                bounds(
+                    cx,
+                    butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
+                ),
+                bounds(cx, EDIT_PDF_ID),
+                bounds(cx, VIEWER_SCALE_ID),
+            ];
+            if signed {
+                groups.push(bounds(
+                    cx,
+                    butter_paper::viewer_toolbar_strip::VIEWER_SIGNATURES_ID,
+                ));
+            }
+            for pair in groups.windows(2) {
+                assert!(
+                    pair[0].right() <= pair[1].left(),
+                    "overlap at {width} (signed {signed}): {groups:?}"
+                );
+            }
+            for group in &groups {
+                assert!(
+                    group.left() >= toolbar.left() && group.right() <= toolbar.right(),
+                    "{group:?} outside {toolbar:?} at {width}"
+                );
+            }
+            // The Page Scale control always shows its switch, its ruler or
+            // label, and its menu; Edit its switch and icon or label.
+            for id in [
+                butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID,
+                "viewer-scale-switch",
+            ] {
+                assert!(cx.debug_bounds(id).is_some(), "{id} at {width}");
+            }
+            width += 8.;
+        }
+    }
+}
+
+#[gpui::test]
+fn each_toolbar_form_starts_at_its_planned_width(cx: &mut TestAppContext) {
+    for signed in [false, true] {
+        let mut app = cx.clone();
+        let (cx, entities) = worst_case_toolbar(&mut app, signed);
+        for (index, fit) in ViewerToolbarFit::ALL.into_iter().enumerate() {
+            let at = 16. * viewer_toolbar_rems(fit, signed, 4);
+            lay_out_at(cx, &entities, at);
+            assert_eq!(form_shown(cx), fit, "at {at} (signed {signed})");
+            let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
+            assert_eq!(
+                bounds(cx, VIEWER_TOOLBAR_CONTENT_ID).size.width,
+                toolbar.size.width,
+                "{fit:?} does not fit its own width {at} (signed {signed})"
+            );
+            if let Some(next) = ViewerToolbarFit::ALL.get(index + 1) {
+                lay_out_at(cx, &entities, at - 1.);
+                assert_eq!(form_shown(cx), *next, "at {} (signed {signed})", at - 1.);
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
+    cx: &mut TestAppContext,
+) {
+    let (cx, entities) = worst_case_toolbar(cx, false);
+    let tightest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Tightest, false, 4);
+    let at = |fit| 16. * viewer_toolbar_rems(fit, false, 4);
+    let widths =
+        ViewerToolbarFit::ALL
+            .into_iter()
+            .map(at)
+            .chain([1400., 1100., 900., tightest + 40.]);
+    for width in widths {
+        lay_out_at(cx, &entities, width);
+        let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
+        let pages_group = bounds(
+            cx,
+            butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID,
+        );
+        let zoom = bounds(cx, ZOOM_MENU_ID);
         let layout = bounds(
             cx,
             butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
         );
         let edit_pdf = bounds(cx, EDIT_PDF_ID);
         let scale = bounds(cx, VIEWER_SCALE_ID);
+        // The group gap and edge inset: 8px, halved in the narrowest form.
+        let unit = if form_shown(cx) == ViewerToolbarFit::Narrowest {
+            px(4.)
+        } else {
+            px(8.)
+        };
+        // Every form pins the pages left and the switches right, and keeps
+        // zoom with the layout centred in the toolbar unless a wider side
+        // would reach them there; then they meet that side.
+        assert!(
+            pages_group.left() - toolbar.left() >= unit
+                && pages_group.left() - toolbar.left() <= unit * 2.,
+            "pages at the left edge at {width}: {pages_group:?}"
+        );
         assert_eq!(
-            content.size.width, toolbar.size.width,
-            "the toolbar scrolls at {width}"
+            scale.right(),
+            toolbar.right() - unit,
+            "switches pinned right at {width}"
         );
-        // Ordered by complexity: pages, zoom, page layout, Edit PDF, Scale.
-        assert!(pages.right() <= zoom.left(), "pages before zoom at {width}");
-        assert!(
-            zoom.right() <= layout.left(),
-            "zoom before layout at {width}"
-        );
-        assert!(
-            layout.right() <= edit_pdf.left(),
-            "layout before Edit PDF at {width}"
-        );
-        assert!(
-            edit_pdf.right() <= scale.left(),
-            "Edit PDF before Scale at {width}"
-        );
-        assert!(scale.right() <= toolbar.right() - px(8.));
-        // The page navigator's frame keeps the edge inset that matches the
-        // group gap.
-        assert!(
-            pages.left() - toolbar.left() >= px(8.) && pages.left() - toolbar.left() <= px(16.),
-            "pages at the left edge at {width}: {pages:?}"
-        );
-        let labelled =
-            toolbar.size.width >= px(16. * viewer_toolbar_rems(ViewerToolbarFit::Full, false, 4));
-        if labelled {
-            // Full: zoom and the layout as far from the pages as from the
-            // switches; the switches pinned right.
-            let before = bounds(cx, butter_paper::viewer_toolbar_strip::VIEWER_ZOOM_GROUP_ID)
-                .left()
-                - bounds(
-                    cx,
-                    butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID,
-                )
-                .right();
-            let after = edit_pdf.left() - layout.right();
+        let controls = bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID);
+        let centre = toolbar.center().x;
+        let half = controls.size.width / 2.;
+        if centre - half >= pages_group.right() && centre + half <= edit_pdf.left() {
             assert!(
-                (before - after).abs() <= px(1.),
-                "zoom and layout not midway at {width}: {before:?} vs {after:?}"
-            );
-            assert_eq!(
-                scale.right(),
-                toolbar.right() - px(8.),
-                "switches pinned right at {width}"
+                (controls.center().x - centre).abs() <= px(1.),
+                "zoom and layout not centred at {width}: {controls:?} in {toolbar:?}"
             );
         } else {
-            // Compact: packed from the left at the group gap.
             assert!(
-                edit_pdf.left() - layout.right() <= px(16.),
-                "compact switches pack after the layout at {width}: layout={layout:?}, edit={edit_pdf:?}"
+                (controls.left() - pages_group.right()).abs() <= px(1.)
+                    || (edit_pdf.left() - controls.right()).abs() <= px(1.),
+                "zoom and layout not against the wider side at {width}: {controls:?}"
             );
         }
+        // The groups never come nearer than the 8px group gap; at each
+        // form's least width they meet at it, give or take the few pixels
+        // the planned widths keep in hand.
+        let zoom_group = bounds(cx, butter_paper::viewer_toolbar_strip::VIEWER_ZOOM_GROUP_ID);
+        let gaps = [
+            zoom_group.left() - pages_group.right(),
+            edit_pdf.left() - layout.right(),
+        ];
+        assert!(gaps.iter().all(|gap| *gap >= unit), "{gaps:?} at {width}");
+        if ViewerToolbarFit::ALL
+            .into_iter()
+            .map(at)
+            .any(|least| least == width)
+        {
+            assert!(
+                gaps[0] + gaps[1] <= unit * 2. + px(16.),
+                "the groups do not meet at {width}: {gaps:?}"
+            );
+        }
+        let _ = zoom;
     }
 }
 
@@ -1545,5 +1654,52 @@ fn the_zoom_percentage_keeps_one_width_at_every_zoom(cx: &mut TestAppContext) {
     for (zoom, w, l) in &widths {
         assert_eq!(*w, width, "the percentage resized at {zoom}: {widths:?}");
         assert_eq!(*l, left, "the toolbar shifted at {zoom}: {widths:?}");
+    }
+}
+
+#[gpui::test]
+fn toolbar_switches_show_a_whole_focus_ring_from_the_keyboard(cx: &mut TestAppContext) {
+    use butter_paper::accessible_button::SWITCH_FOCUS_RING_ID;
+    for fit in [ViewerToolbarFit::Full, ViewerToolbarFit::Narrowest] {
+        let mut app = cx.clone();
+        let (cx, entities) = worst_case_toolbar(&mut app, false);
+        lay_out_at(cx, &entities, 16. * viewer_toolbar_rems(fit, false, 4));
+        let focus = entities
+            .toolbar
+            .read_with(cx, |toolbar, _| toolbar.focus_handle());
+        cx.update(|window, cx| focus.focus(window, cx));
+        let mut groups = Vec::new();
+        for _ in 0..30 {
+            let tab = gpui::Keystroke::parse("tab").unwrap();
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: tab.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            cx.simulate_event(gpui::KeyUpEvent { keystroke: tab });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let Some(ring) = cx.debug_bounds(SWITCH_FOCUS_RING_ID) else {
+                continue;
+            };
+            // The ring, 3px outside the switch, stays inside its framed
+            // group, which clips at its edge.
+            let ring = ring.dilate(px(3.));
+            let group = [EDIT_PDF_ID, VIEWER_SCALE_ID]
+                .into_iter()
+                .find(|id| bounds(cx, id).contains(&ring.center()))
+                .expect("a ring in the Edit or Scale group");
+            let frame = bounds(cx, group);
+            assert!(
+                ring.left() >= frame.left()
+                    && ring.right() <= frame.right()
+                    && ring.top() >= frame.top()
+                    && ring.bottom() <= frame.bottom(),
+                "{fit:?}: the ring {ring:?} is cut by {group} {frame:?}"
+            );
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        assert_eq!(groups.len(), 2, "{fit:?}: both switches show a ring");
     }
 }

@@ -707,8 +707,12 @@ impl DocumentWorkspace {
             return;
         };
         let owner = cx.entity().downgrade();
+        let rem = window.rem_size();
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            let mut menu = menu.scrollable(true).max_h(px(320.)).min_w(px(160.));
+            let mut menu = menu
+                .scrollable(true)
+                .max_h(crate::layout_metrics::scaled_px(320., rem))
+                .min_w(crate::layout_metrics::scaled_px(160., rem));
             for option in &options {
                 let owner = owner.clone();
                 let export = option.export.clone();

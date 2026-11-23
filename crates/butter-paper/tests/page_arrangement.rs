@@ -974,7 +974,10 @@ fn merge_documents_keeps_the_dialog_dismissal_contract(cx: &mut TestAppContext) 
 fn the_page_scale_panel_drops_from_the_scale_and_closes_like_a_popup(cx: &mut TestAppContext) {
     use butter_paper::generated_document::GeneratedDocumentStore;
     use butter_paper::page_scale_control::{
-        PAGE_SCALE_CANCEL_ID, PAGE_SCALE_CLOSE_ID, PAGE_SCALE_DIALOG_ID,
+        PAGE_SCALE_BODY_ID, PAGE_SCALE_CALIBRATE_ID, PAGE_SCALE_CANCEL_ID, PAGE_SCALE_CLOSE_ID,
+        PAGE_SCALE_CUSTOM_PAPER_ID, PAGE_SCALE_CUSTOM_PAPER_UNIT_ID, PAGE_SCALE_CUSTOM_REAL_ID,
+        PAGE_SCALE_DIALOG_ID, PAGE_SCALE_GROUP_ID, PAGE_SCALE_PRECISION_ID, PAGE_SCALE_SELECT_ID,
+        PAGE_SCALE_UNIT_ID, ScaleGroup,
     };
     use butter_paper::viewer_toolbar_strip::{VIEWER_SCALE_ID, VIEWER_SCALE_MENU_ID};
     use gpui::{Modifiers, point, px};
@@ -1049,6 +1052,62 @@ fn the_page_scale_panel_drops_from_the_scale_and_closes_like_a_popup(cx: &mut Te
         "and ends at its right edge"
     );
     assert!(panel.right() <= viewport.width && panel.bottom() <= viewport.height);
+
+    // The body scrolls, so it clips at its edge: every control in it keeps
+    // room inside that edge for its 3px focus ring, and lines up with the
+    // header all the same.
+    let ring_room = |cx: &mut gpui::VisualTestContext, ids: &[&'static str]| {
+        let body = cx.debug_bounds(PAGE_SCALE_BODY_ID).unwrap();
+        for id in ids {
+            let control = cx
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("{id} is shown"));
+            assert!(
+                control.left() - body.left() >= px(3.)
+                    && body.right() - control.right() >= px(3.)
+                    && control.top() - body.top() >= px(3.),
+                "{id} at {control:?} leaves room for its focus ring in {body:?}"
+            );
+        }
+    };
+    ring_room(
+        cx,
+        &[
+            PAGE_SCALE_GROUP_ID,
+            PAGE_SCALE_SELECT_ID,
+            PAGE_SCALE_CALIBRATE_ID,
+        ],
+    );
+    let group = cx.debug_bounds(PAGE_SCALE_GROUP_ID).unwrap();
+    assert_eq!(
+        group.left(),
+        panel.left(),
+        "the body lines up with the header"
+    );
+    let control = workspace
+        .read_with(cx, |workspace, _| workspace.page_scale_control())
+        .unwrap();
+    cx.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.choose_group_for_test(ScaleGroup::Custom, window, cx)
+        })
+    });
+    settle(cx);
+    assert!(
+        cx.debug_bounds(PAGE_SCALE_SELECT_ID).is_none(),
+        "Custom shows its ratio in place of a list of scales"
+    );
+    ring_room(
+        cx,
+        &[
+            PAGE_SCALE_GROUP_ID,
+            PAGE_SCALE_CUSTOM_PAPER_ID,
+            PAGE_SCALE_CUSTOM_PAPER_UNIT_ID,
+            PAGE_SCALE_CUSTOM_REAL_ID,
+            PAGE_SCALE_UNIT_ID,
+            PAGE_SCALE_PRECISION_ID,
+        ],
+    );
 
     // The menu button closes it again.
     cx.simulate_click(menu.center(), Modifiers::none());

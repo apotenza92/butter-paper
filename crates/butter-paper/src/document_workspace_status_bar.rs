@@ -3,6 +3,17 @@ use super::*;
 
 pub const DOCUMENT_STATUS_SCALE_ID: &str = "document-status-scale";
 pub const DOCUMENT_STATUS_MESSAGE_ID: &str = "document-status-message";
+/// The area toasts are laid out in: the canvas.
+pub const DOCUMENT_TOAST_LAYER_ID: &str = "document-toast-layer";
+
+/// The status bar while a calibration line is picked.
+pub const CALIBRATE_STATUS: &str = "Calibrate · Esc to go back to Page Scale";
+/// The status bar with page text highlighted: a click away only clears it.
+pub const CLICK_OUT_TEXT_STATUS: &str =
+    "Text selected · Click away to deselect · Shift-click to extend";
+/// The status bar with markups selected: a click away only deselects them.
+pub const CLICK_OUT_MARKUP_STATUS: &str =
+    "Click another markup to select it · Click away to deselect · Shift-click to add or remove";
 
 /// How long a status message replaces the status bar's guidance.
 const STATUS_MESSAGE_SHOWN: std::time::Duration = std::time::Duration::from_secs(6);
@@ -89,8 +100,9 @@ impl DocumentWorkspace {
             .page_text_editing
             .is_some_and(|editing| Some(editing.document_id) == self.active_document_id);
         let context = if self.page_scale_picking(cx) {
-            "Calibrate · Click both ends of a length you know · Shift keeps it straight · Esc to go back"
-                .to_owned()
+            // The banner over the page says what to click and what Shift
+            // does; the bar names the mode and its key alone.
+            CALIBRATE_STATUS.to_owned()
         } else if self.pending_text_box_editor.is_some() {
             "Text Box · Click away to finish".to_owned()
         } else if let Some(guidance) = self.signature_box_guidance() {
@@ -108,6 +120,11 @@ impl DocumentWorkspace {
             )
         } else if self.pan_tool_active {
             "Pan · Drag to move the page".to_owned()
+        } else if let Some(status) = self
+            .active_document_id
+            .and_then(|document_id| self.click_out_status(document_id, cx))
+        {
+            status.to_owned()
         } else if let Some(tool) = tool {
             let help = match tool {
                 AnnotationTool::Select if cfg!(target_os = "macos") => {
@@ -264,10 +281,12 @@ impl DocumentWorkspace {
         let bar = gpui_component::status_bar::StatusBar::new()
             .w_full()
             .min_w_0()
-            .h(px(crate::layout_metrics::STATUS_BAR))
+            .h(crate::layout_metrics::scaled(
+                crate::layout_metrics::STATUS_BAR,
+            ))
             .py_0()
-            .px(px(crate::layout_metrics::SPACE))
-            .gap(px(crate::layout_metrics::SPACE))
+            .px(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
+            .gap(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
             .border_t_0()
             .child(context_help)
             .when_some(scale, |bar, (document_id, page_index, label)| {
@@ -339,8 +358,29 @@ impl DocumentWorkspace {
         window.push_notification(
             gpui_component::notification::Notification::new()
                 .id::<StatusToast>()
+                .placement(TOAST_PLACEMENT)
                 .message(text),
             cx,
         );
     }
+}
+
+/// Toasts show at the bottom right of the layer [`toast_layer`] lays over
+/// the canvas.
+const TOAST_PLACEMENT: gpui::Anchor = gpui::Anchor::BottomRight;
+
+/// The window's stock toasts, laid over the area it is placed in: the
+/// canvas, under the view toolbar, between the side panels and above the
+/// status bar, so a toast never covers the rails or the status bar. The
+/// stock margins keep it 16px from that area's edges.
+pub(super) fn toast_layer(window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
+    let layer = gpui_component::Root::render_notification_layer(window, cx)?;
+    Some(
+        gpui::div()
+            .absolute()
+            .inset_0()
+            .debug_selector(|| DOCUMENT_TOAST_LAYER_ID.into())
+            .child(layer)
+            .into_any_element(),
+    )
 }

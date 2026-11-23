@@ -16,6 +16,9 @@ const MIN_CONSTRUCTION_GRID_SPACING_MM: f64 = 1.;
 const MAX_CONSTRUCTION_GRID_SPACING_MM: f64 = 500.;
 const MIN_DIMENSION_INCREMENT_MM: f64 = 0.1;
 const MAX_DIMENSION_INCREMENT_MM: f64 = 500.;
+pub const MIN_ANGLE_SNAP_DEGREES: f64 = 0.1;
+pub const MAX_ANGLE_SNAP_DEGREES: f64 = 90.;
+const DEFAULT_CUSTOM_ANGLE_SNAP_DEGREES: f64 = 5.;
 pub const MAX_CONSTRUCTION_GRID_POINTS: usize = 100_000;
 pub const MAX_PAGE_GRID_CANDIDATES: usize = 100_000;
 
@@ -40,6 +43,7 @@ pub enum SemanticSnapError {
     InvalidConstructionGridSpacing,
     ConstructionGridPointLimitExceeded,
     InvalidDimensionIncrement,
+    InvalidAngleSnapIncrement,
     InvalidMeasuredDistance,
     InvalidPageGrid,
     PageGridCandidateLimitExceeded,
@@ -172,6 +176,48 @@ pub enum SemanticSnapTarget {
     Nearest,
 }
 
+/// The step a constrained direction or turn snaps to: a preset, or the
+/// custom angle in the settings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AngleSnapPreset {
+    Degrees90,
+    Degrees45,
+    Degrees30,
+    Degrees15,
+    Custom,
+}
+
+impl AngleSnapPreset {
+    pub const ALL: [Self; 5] = [
+        Self::Degrees90,
+        Self::Degrees45,
+        Self::Degrees30,
+        Self::Degrees15,
+        Self::Custom,
+    ];
+
+    /// The preset's own step; `None` for Custom.
+    pub fn degrees(self) -> Option<f64> {
+        match self {
+            Self::Degrees90 => Some(90.),
+            Self::Degrees45 => Some(45.),
+            Self::Degrees30 => Some(30.),
+            Self::Degrees15 => Some(15.),
+            Self::Custom => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Degrees90 => "90°",
+            Self::Degrees45 => "45°",
+            Self::Degrees30 => "30°",
+            Self::Degrees15 => "15°",
+            Self::Custom => "Custom",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SemanticSnapSettings {
     content_enabled: bool,
@@ -182,6 +228,9 @@ pub struct SemanticSnapSettings {
     construction_grid_spacing_mm: f64,
     dimension_increment_enabled: bool,
     dimension_increment_mm: f64,
+    angle_snap_enabled: bool,
+    angle_snap_preset: AngleSnapPreset,
+    angle_snap_custom_degrees: f64,
     guides_enabled: bool,
     alignment_guides: bool,
     equal_size_guides: bool,
@@ -265,9 +314,54 @@ impl SemanticSnapSettings {
         self.dimension_increment_mm = if increment_mm.is_finite() {
             increment_mm.clamp(MIN_DIMENSION_INCREMENT_MM, MAX_DIMENSION_INCREMENT_MM)
         } else {
-            5.
+            1.
         };
         self
+    }
+
+    pub fn angle_snap_enabled(self) -> bool {
+        self.angle_snap_enabled
+    }
+
+    pub fn with_angle_snap_enabled(mut self, enabled: bool) -> Self {
+        self.angle_snap_enabled = enabled;
+        self
+    }
+
+    pub fn angle_snap_preset(self) -> AngleSnapPreset {
+        self.angle_snap_preset
+    }
+
+    pub fn with_angle_snap_preset(mut self, preset: AngleSnapPreset) -> Self {
+        self.angle_snap_preset = preset;
+        self
+    }
+
+    pub fn angle_snap_custom_degrees(self) -> f64 {
+        self.angle_snap_custom_degrees
+    }
+
+    pub fn with_angle_snap_custom_degrees(mut self, degrees: f64) -> Self {
+        self.angle_snap_custom_degrees = if degrees.is_finite() {
+            degrees.clamp(MIN_ANGLE_SNAP_DEGREES, MAX_ANGLE_SNAP_DEGREES)
+        } else {
+            DEFAULT_CUSTOM_ANGLE_SNAP_DEGREES
+        };
+        self
+    }
+
+    /// The step directions and turns snap to when they snap.
+    pub fn angle_snap_increment_degrees(self) -> f64 {
+        self.angle_snap_preset
+            .degrees()
+            .unwrap_or(self.angle_snap_custom_degrees)
+    }
+
+    /// The step a direction or turn snaps to with Shift held or not, or
+    /// `None` when it is free. Shift inverts the setting while it is held.
+    pub fn angle_snap_step_degrees(self, shift: bool) -> Option<f64> {
+        angle_snap_applies(self.angle_snap_enabled, shift)
+            .then(|| self.angle_snap_increment_degrees())
     }
 
     pub fn guides_enabled(self) -> bool {
@@ -308,6 +402,12 @@ impl SemanticSnapSettings {
                 .contains(&self.dimension_increment_mm)
         {
             return Err(SemanticSnapError::InvalidDimensionIncrement);
+        }
+        if !self.angle_snap_custom_degrees.is_finite()
+            || !(MIN_ANGLE_SNAP_DEGREES..=MAX_ANGLE_SNAP_DEGREES)
+                .contains(&self.angle_snap_custom_degrees)
+        {
+            return Err(SemanticSnapError::InvalidAngleSnapIncrement);
         }
         Ok(())
     }
@@ -358,8 +458,11 @@ impl Default for SemanticSnapSettings {
             construction_grid_enabled: false,
             construction_grid_visible: true,
             construction_grid_spacing_mm: 10.,
-            dimension_increment_enabled: false,
-            dimension_increment_mm: 5.,
+            dimension_increment_enabled: true,
+            dimension_increment_mm: 1.,
+            angle_snap_enabled: true,
+            angle_snap_preset: AngleSnapPreset::Degrees90,
+            angle_snap_custom_degrees: DEFAULT_CUSTOM_ANGLE_SNAP_DEGREES,
             guides_enabled: true,
             alignment_guides: true,
             equal_size_guides: true,
@@ -371,6 +474,85 @@ impl Default for SemanticSnapSettings {
             intersection: true,
             nearest: false,
         }
+    }
+}
+
+/// Whether a direction or turn snaps: the angle snap setting, inverted
+/// while Shift is held.
+pub fn angle_snap_applies(setting_enabled: bool, shift: bool) -> bool {
+    setting_enabled != shift
+}
+
+/// `degrees` to the nearest whole multiple of `step`; unchanged for `None`
+/// or a step that is not a positive number.
+pub fn snap_angle_degrees(degrees: f64, step: Option<f64>) -> f64 {
+    match step {
+        Some(step) if step.is_finite() && step > 0. && degrees.is_finite() => {
+            (degrees / step).round() * step
+        }
+        _ => degrees,
+    }
+}
+
+/// The unit direction from `anchor` towards `point`, turned to the nearest
+/// multiple of `step` degrees anticlockwise from +x. `None` when the two
+/// points are the same.
+fn snapped_direction(anchor: PdfPoint, point: PdfPoint, step: f64) -> Option<(f64, f64)> {
+    let (dx, dy) = (point.x - anchor.x, point.y - anchor.y);
+    if dx == 0. && dy == 0. {
+        return None;
+    }
+    if step == 90. {
+        // A tie goes level, as Shift's horizontal-or-vertical rule always did.
+        return Some(if dx.abs() >= dy.abs() {
+            (dx.signum(), 0.)
+        } else {
+            (0., dy.signum())
+        });
+    }
+    let degrees = snap_angle_degrees(dy.atan2(dx).to_degrees(), Some(step));
+    // Whole quarter turns are exact, so a level or plumb line stays exact.
+    let quarter = degrees / 90.;
+    if (quarter - quarter.round()).abs() < 1e-12 {
+        return Some(match (quarter.round() as i64).rem_euclid(4) {
+            0 => (1., 0.),
+            1 => (0., 1.),
+            2 => (-1., 0.),
+            _ => (0., -1.),
+        });
+    }
+    let radians = degrees.to_radians();
+    Some((radians.cos(), radians.sin()))
+}
+
+/// `point` held to a direction from `anchor` at a multiple of `step`
+/// degrees: the nearest such direction, at the pointer's distance along it.
+/// Unchanged for `None`. Drawing and rotation share this rule through
+/// [`SemanticSnapSettings::angle_snap_step_degrees`].
+pub fn constrain_direction(anchor: PdfPoint, point: PdfPoint, step: Option<f64>) -> PdfPoint {
+    let Some(step) = step.filter(|step| step.is_finite() && *step > 0.) else {
+        return point;
+    };
+    let Some((ux, uy)) = snapped_direction(anchor, point, step) else {
+        return point;
+    };
+    // A level or plumb direction keeps the pointer's own coordinate exactly.
+    if uy == 0. {
+        return PdfPoint {
+            x: point.x,
+            y: anchor.y,
+        };
+    }
+    if ux == 0. {
+        return PdfPoint {
+            x: anchor.x,
+            y: point.y,
+        };
+    }
+    let along = (point.x - anchor.x) * ux + (point.y - anchor.y) * uy;
+    PdfPoint {
+        x: anchor.x + along * ux,
+        y: anchor.y + along * uy,
     }
 }
 
@@ -474,6 +656,77 @@ pub fn resolve_construction_grid_point(
         point_candidate: true,
         distance_window_px,
     })
+}
+
+/// The construction grid's snap for `point` held to the direction from
+/// `anchor` at a multiple of `step` degrees: where a grid line crosses that
+/// ray, in range of the held point. The grid acts only along the ray, so it
+/// never turns the held direction.
+pub fn resolve_construction_grid_point_on_ray(
+    point: PdfPoint,
+    page_width_pdf_points: f64,
+    page_height_pdf_points: f64,
+    settings: &SemanticSnapSettings,
+    window_pixels_per_pdf_point: f64,
+    anchor: PdfPoint,
+    step: f64,
+) -> Option<SemanticSnapDecision> {
+    if !settings.is_source_enabled(SemanticSnapSource::ConstructionGrid)
+        || !page_width_pdf_points.is_finite()
+        || !page_height_pdf_points.is_finite()
+        || page_width_pdf_points < 0.
+        || page_height_pdf_points < 0.
+        || !window_pixels_per_pdf_point.is_finite()
+        || window_pixels_per_pdf_point <= 0.
+    {
+        return None;
+    }
+    let constraint = AngleConstraint::new(anchor, point, step)?;
+    let held = constraint.point;
+    let spacing = settings.construction_grid_spacing_mm() * POINTS_PER_INCH / MILLIMETRES_PER_INCH;
+    let line = |value: f64, extent: f64| {
+        (value / spacing)
+            .round()
+            .clamp(0., (extent / spacing).floor())
+            * spacing
+    };
+    // The nearest vertical and horizontal grid lines, where they cross the
+    // held line.
+    let column = line(held.x, page_width_pdf_points);
+    let row = line(held.y, page_height_pdf_points);
+    let crossings = [
+        constraint.crossing(
+            PdfPoint { x: column, y: 0. },
+            PdfPoint {
+                x: column,
+                y: page_height_pdf_points,
+            },
+        ),
+        constraint.crossing(
+            PdfPoint { x: 0., y: row },
+            PdfPoint {
+                x: page_width_pdf_points,
+                y: row,
+            },
+        ),
+    ];
+    crossings
+        .into_iter()
+        .flatten()
+        .map(|crossing| {
+            let distance_window_px =
+                squared_distance(held, crossing).sqrt() * window_pixels_per_pdf_point;
+            SemanticSnapDecision {
+                point: crossing,
+                owner_id: None,
+                role: SemanticSnapRole::Intersection,
+                source: SemanticSnapSource::ConstructionGrid,
+                point_candidate: true,
+                distance_window_px,
+            }
+        })
+        .filter(|decision| decision.distance_window_px <= settings.sensitivity_window_px())
+        .min_by(|left, right| left.distance_window_px.total_cmp(&right.distance_window_px))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1812,13 +2065,61 @@ impl SemanticSnapIndex {
         window_pixels_per_pdf_point: f64,
         orthogonal_anchor: Option<PdfPoint>,
     ) -> Option<SemanticSnapDecision> {
+        self.resolve_point_with_angle_constraint(
+            point,
+            settings,
+            window_pixels_per_pdf_point,
+            orthogonal_anchor.map(|anchor| (anchor, 90.)),
+        )
+    }
+
+    /// Resolves `point` held to a direction from an anchor at a multiple of
+    /// a step in degrees, when one is given. A point target (an end,
+    /// midpoint, centre or intersection) in range of the pointer wins over
+    /// the held direction, off the step if it must, as an object snap wins
+    /// over Ortho in CAD. Otherwise the direction holds, and only targets on
+    /// its ray count: grid points, sides (where they cross the ray) and
+    /// point targets on it.
+    pub fn resolve_point_with_angle_constraint(
+        &self,
+        point: PdfPoint,
+        settings: &SemanticSnapSettings,
+        window_pixels_per_pdf_point: f64,
+        angle_constraint: Option<(PdfPoint, f64)>,
+    ) -> Option<SemanticSnapDecision> {
         if !window_pixels_per_pdf_point.is_finite() || window_pixels_per_pdf_point <= 0. {
             return None;
         }
-        let constraint = orthogonal_anchor.map(|anchor| OrthogonalConstraint::new(anchor, point));
-        let point = constraint
-            .as_ref()
-            .map_or(point, |constraint| constraint.point);
+        let constraint =
+            angle_constraint.and_then(|(anchor, step)| AngleConstraint::new(anchor, point, step));
+        if constraint.is_some()
+            && let Some(decision) =
+                self.resolve_near(point, settings, window_pixels_per_pdf_point, None, true)
+        {
+            return Some(decision);
+        }
+        self.resolve_near(
+            constraint
+                .as_ref()
+                .map_or(point, |constraint| constraint.point),
+            settings,
+            window_pixels_per_pdf_point,
+            constraint,
+            false,
+        )
+    }
+
+    /// The best target in range of `point`: only targets on the ray of
+    /// `constraint` when one is given, and only point targets when
+    /// `point_targets_only`.
+    fn resolve_near(
+        &self,
+        point: PdfPoint,
+        settings: &SemanticSnapSettings,
+        window_pixels_per_pdf_point: f64,
+        constraint: Option<AngleConstraint>,
+        point_targets_only: bool,
+    ) -> Option<SemanticSnapDecision> {
         let tolerance_pdf = settings.sensitivity_window_px() / window_pixels_per_pdf_point;
         let tolerance_pdf_squared = tolerance_pdf * tolerance_pdf;
         let mut best: Option<(f64, SemanticSnapDecision)> = None;
@@ -1830,6 +2131,9 @@ impl SemanticSnapIndex {
         };
         let mut consider = |candidate: &Candidate, penalty_px: f64| {
             if !settings.is_source_enabled(candidate.source) {
+                return;
+            }
+            if point_targets_only && !candidate.is_point_target() {
                 return;
             }
             if candidate.source == SemanticSnapSource::Content
@@ -1846,9 +2150,10 @@ impl SemanticSnapIndex {
             }
             let resolved = match candidate.geometry {
                 CandidateGeometry::Point(point) => point,
-                CandidateGeometry::Segment { start, end } => {
-                    project_point_to_segment(point, start, end)
-                }
+                CandidateGeometry::Segment { start, end } => constraint
+                    .as_ref()
+                    .and_then(|constraint| constraint.crossing(start, end))
+                    .unwrap_or_else(|| project_point_to_segment(point, start, end)),
             };
             if constraint
                 .as_ref()
@@ -2091,44 +2396,81 @@ pub fn moving_annotation_snap_anchor_points_with_selection_supplement(
         .collect()
 }
 
+/// A direction from an anchor held to a multiple of a step in degrees.
 #[derive(Clone, Copy, Debug)]
-struct OrthogonalConstraint {
+struct AngleConstraint {
     anchor: PdfPoint,
+    /// The pointer held to the ray.
     point: PdfPoint,
-    axis: OrthogonalAxis,
+    /// The ray's unit direction.
+    direction: (f64, f64),
 }
 
-impl OrthogonalConstraint {
-    fn new(anchor: PdfPoint, point: PdfPoint) -> Self {
-        let dx = point.x - anchor.x;
-        let dy = point.y - anchor.y;
-        if dx.abs() >= dy.abs() {
-            Self {
-                anchor,
-                point: PdfPoint {
-                    x: point.x,
-                    y: anchor.y,
-                },
-                axis: OrthogonalAxis::Horizontal,
-            }
-        } else {
-            Self {
-                anchor,
-                point: PdfPoint {
-                    x: anchor.x,
-                    y: point.y,
-                },
-                axis: OrthogonalAxis::Vertical,
-            }
-        }
+impl Candidate {
+    /// An end, midpoint, centre or intersection: a target that wins over a
+    /// held direction. Grid points, sides and edges do not.
+    fn is_point_target(&self) -> bool {
+        matches!(self.geometry, CandidateGeometry::Point(_))
+            && matches!(
+                self.role,
+                SemanticSnapRole::Endpoint
+                    | SemanticSnapRole::Midpoint
+                    | SemanticSnapRole::Center
+                    | SemanticSnapRole::Intersection
+            )
+    }
+}
+
+impl AngleConstraint {
+    fn new(anchor: PdfPoint, point: PdfPoint, step: f64) -> Option<Self> {
+        let constrained = constrain_direction(anchor, point, Some(step));
+        let direction = snapped_direction(anchor, point, step)?;
+        Some(Self {
+            anchor,
+            point: constrained,
+            direction,
+        })
     }
 
     fn contains(self, point: PdfPoint) -> bool {
         const EPSILON: f64 = 0.000_1;
-        match self.axis {
-            OrthogonalAxis::Horizontal => (point.y - self.anchor.y).abs() <= EPSILON,
-            OrthogonalAxis::Vertical => (point.x - self.anchor.x).abs() <= EPSILON,
+        let (ux, uy) = self.direction;
+        ((point.x - self.anchor.x) * uy - (point.y - self.anchor.y) * ux).abs() <= EPSILON
+    }
+
+    /// Where the segment crosses the constrained line, if it does and is
+    /// not parallel to it.
+    fn crossing(self, start: PdfPoint, end: PdfPoint) -> Option<PdfPoint> {
+        let (ux, uy) = self.direction;
+        let (sx, sy) = (end.x - start.x, end.y - start.y);
+        let denominator = ux * sy - uy * sx;
+        let length = sx.hypot(sy);
+        if length <= f64::EPSILON || denominator.abs() <= 1e-9 * length {
+            return None;
         }
+        let (ax, ay) = (start.x - self.anchor.x, start.y - self.anchor.y);
+        // Parameter along the segment, 0 at `start` and 1 at `end`.
+        let along_segment = (ax * uy - ay * ux) / denominator;
+        if !(-1e-9..=1. + 1e-9).contains(&along_segment) {
+            return None;
+        }
+        let along_ray = (ax * sy - ay * sx) / denominator;
+        let mut crossing = PdfPoint {
+            x: self.anchor.x + along_ray * ux,
+            y: self.anchor.y + along_ray * uy,
+        };
+        // Level and plumb lines keep their own coordinates exactly.
+        if sx == 0. {
+            crossing.x = start.x;
+        } else if ux == 0. {
+            crossing.x = self.anchor.x;
+        }
+        if sy == 0. {
+            crossing.y = start.y;
+        } else if uy == 0. {
+            crossing.y = self.anchor.y;
+        }
+        Some(crossing)
     }
 }
 
@@ -2787,8 +3129,8 @@ mod tests {
         assert!(!defaults.is_source_enabled(SemanticSnapSource::ConstructionGrid));
         assert!(defaults.construction_grid_visible());
         assert_eq!(defaults.construction_grid_spacing_mm(), 10.);
-        assert!(!defaults.dimension_increment_enabled());
-        assert_eq!(defaults.dimension_increment_mm(), 5.);
+        assert!(defaults.dimension_increment_enabled());
+        assert_eq!(defaults.dimension_increment_mm(), 1.);
         assert!(defaults.guides_enabled());
         for guide in [
             SemanticSnapGuideType::Alignment,
@@ -2809,6 +3151,269 @@ mod tests {
         assert!(changed.is_guide_enabled(SemanticSnapGuideType::Alignment));
         assert!(!changed.is_guide_enabled(SemanticSnapGuideType::EqualSize));
         assert!(changed.is_guide_enabled(SemanticSnapGuideType::EqualSpacing));
+    }
+
+    #[test]
+    fn angle_snap_is_on_at_ninety_degrees_by_default_and_shift_inverts_it() {
+        let defaults = SemanticSnapSettings::default();
+        assert!(defaults.angle_snap_enabled());
+        assert_eq!(defaults.angle_snap_preset(), AngleSnapPreset::Degrees90);
+        assert_eq!(defaults.angle_snap_increment_degrees(), 90.);
+        assert_eq!(defaults.angle_snap_custom_degrees(), 5.);
+        assert_eq!(defaults.validate(), Ok(()));
+        // The setting XOR Shift.
+        assert!(angle_snap_applies(true, false));
+        assert!(!angle_snap_applies(true, true));
+        assert!(!angle_snap_applies(false, false));
+        assert!(angle_snap_applies(false, true));
+        assert_eq!(defaults.angle_snap_step_degrees(false), Some(90.));
+        assert_eq!(defaults.angle_snap_step_degrees(true), None);
+        let off = defaults
+            .with_angle_snap_enabled(false)
+            .with_angle_snap_preset(AngleSnapPreset::Degrees15);
+        assert_eq!(off.angle_snap_step_degrees(false), None);
+        assert_eq!(off.angle_snap_step_degrees(true), Some(15.));
+        // Each preset gives its own step; Custom gives the custom angle,
+        // which is kept while another preset is chosen.
+        let custom = defaults.with_angle_snap_custom_degrees(7.5);
+        for (preset, step) in [
+            (AngleSnapPreset::Degrees90, 90.),
+            (AngleSnapPreset::Degrees45, 45.),
+            (AngleSnapPreset::Degrees30, 30.),
+            (AngleSnapPreset::Degrees15, 15.),
+            (AngleSnapPreset::Custom, 7.5),
+        ] {
+            let settings = custom.with_angle_snap_preset(preset);
+            assert_eq!(settings.angle_snap_increment_degrees(), step);
+            assert_eq!(settings.angle_snap_step_degrees(false), Some(step));
+        }
+    }
+
+    #[test]
+    fn custom_angle_snap_clamps_and_validates() {
+        let settings = SemanticSnapSettings::default();
+        assert_eq!(
+            settings
+                .with_angle_snap_custom_degrees(0.)
+                .angle_snap_custom_degrees(),
+            MIN_ANGLE_SNAP_DEGREES
+        );
+        assert_eq!(
+            settings
+                .with_angle_snap_custom_degrees(400.)
+                .angle_snap_custom_degrees(),
+            MAX_ANGLE_SNAP_DEGREES
+        );
+        assert_eq!(
+            settings
+                .with_angle_snap_custom_degrees(f64::NAN)
+                .angle_snap_custom_degrees(),
+            5.
+        );
+        let invalid = SemanticSnapSettings {
+            angle_snap_custom_degrees: 0.,
+            ..settings
+        };
+        assert_eq!(
+            invalid.validate(),
+            Err(SemanticSnapError::InvalidAngleSnapIncrement)
+        );
+    }
+
+    #[test]
+    fn angles_snap_to_whole_multiples_of_the_step() {
+        assert_eq!(snap_angle_degrees(44., Some(90.)), 0.);
+        assert_eq!(snap_angle_degrees(46., Some(90.)), 90.);
+        assert_eq!(snap_angle_degrees(-50., Some(90.)), -90.);
+        assert_eq!(snap_angle_degrees(37., Some(15.)), 30.);
+        assert_eq!(snap_angle_degrees(38., Some(15.)), 45.);
+        assert_eq!(snap_angle_degrees(37., None), 37.);
+        assert_eq!(snap_angle_degrees(37., Some(0.)), 37.);
+        assert_eq!(snap_angle_degrees(37., Some(f64::NAN)), 37.);
+    }
+
+    #[test]
+    fn a_direction_is_held_to_the_nearest_multiple_of_the_step() {
+        let anchor = PdfPoint { x: 10., y: 20. };
+        let close = |left: PdfPoint, right: PdfPoint| {
+            (left.x - right.x).abs() < 1e-9 && (left.y - right.y).abs() < 1e-9
+        };
+        // Free without a step.
+        let pointer = PdfPoint { x: 80., y: 45. };
+        assert_eq!(constrain_direction(anchor, pointer, None), pointer);
+        // 90 degrees: level or plumb, keeping the pointer's own coordinate.
+        assert_eq!(
+            constrain_direction(anchor, pointer, Some(90.)),
+            PdfPoint { x: 80., y: 20. }
+        );
+        assert_eq!(
+            constrain_direction(anchor, PdfPoint { x: 20., y: 100. }, Some(90.)),
+            PdfPoint { x: 10., y: 100. }
+        );
+        // A tie goes level, as Shift's rule always did.
+        assert_eq!(
+            constrain_direction(anchor, PdfPoint { x: 40., y: 50. }, Some(90.)),
+            PdfPoint { x: 40., y: 20. }
+        );
+        // 45 degrees: the diagonal, at the pointer's distance along it.
+        let diagonal = constrain_direction(anchor, PdfPoint { x: 60., y: 64. }, Some(45.));
+        let along = (50. + 44.) / 2f64.sqrt();
+        assert!(close(
+            diagonal,
+            PdfPoint {
+                x: 10. + along / 2f64.sqrt(),
+                y: 20. + along / 2f64.sqrt(),
+            }
+        ));
+        // 30 degrees, below and to the left.
+        let held = constrain_direction(anchor, PdfPoint { x: -77., y: -30. }, Some(30.));
+        let angle = (held.y - anchor.y).atan2(held.x - anchor.x).to_degrees();
+        assert!((angle - -150.).abs() < 1e-9, "{angle}");
+        // The anchor itself stays put.
+        assert_eq!(constrain_direction(anchor, anchor, Some(15.)), anchor);
+    }
+
+    #[test]
+    fn a_point_target_in_range_wins_over_the_held_direction() {
+        let owner = MarkupId::new("path").unwrap();
+        // The first side is a target along it; the last point is none.
+        let index = SemanticSnapIndex::from_draft_path(
+            &[
+                PdfPoint { x: 100., y: 0. },
+                PdfPoint { x: 100., y: 300. },
+                PdfPoint { x: 400., y: 300. },
+            ],
+            &owner,
+        );
+        let settings =
+            SemanticSnapSettings::default().with_target(SemanticSnapTarget::Nearest, true);
+        let anchor = PdfPoint { x: 0., y: 0. };
+        // Held at 45 degrees, the pointer near the side snaps where the
+        // side crosses the ray, not to the nearest point of the side.
+        let decision = index
+            .resolve_point_with_angle_constraint(
+                PdfPoint { x: 97., y: 99. },
+                &settings,
+                1.,
+                Some((anchor, 45.)),
+            )
+            .unwrap();
+        assert_eq!(decision.role, SemanticSnapRole::Nearest);
+        assert!((decision.point.x - 100.).abs() < 1e-9);
+        assert!((decision.point.y - 100.).abs() < 1e-9);
+        // A point target in range of the pointer wins over the held
+        // direction, off the step: the side's start, near the pointer held
+        // level from an anchor level with neither.
+        let level = index
+            .resolve_point_with_angle_constraint(
+                PdfPoint { x: 104., y: 3. },
+                &settings.with_target(SemanticSnapTarget::Nearest, false),
+                1.,
+                Some((PdfPoint { x: 0., y: 3. }, 90.)),
+            )
+            .unwrap();
+        assert_eq!(level.point, PdfPoint { x: 100., y: 0. });
+        assert_eq!(level.role, SemanticSnapRole::Endpoint);
+        // A point target only near the held point, out of range of the
+        // pointer itself, does not pull the line off its step.
+        let away = index.resolve_point_with_angle_constraint(
+            PdfPoint { x: 100., y: 40. },
+            &settings.with_target(SemanticSnapTarget::Nearest, false),
+            1.,
+            Some((PdfPoint { x: 0., y: 10. }, 90.)),
+        );
+        assert!(away.is_none(), "{away:?}");
+        // A side does not win over the direction: near the first side but
+        // off the held ray, the pointer snaps where the side crosses the
+        // ray, not to the side's nearest point.
+        let side = index
+            .resolve_point_with_angle_constraint(
+                PdfPoint { x: 98., y: 110. },
+                &settings,
+                1.,
+                Some((PdfPoint { x: 0., y: 100. }, 90.)),
+            )
+            .unwrap();
+        assert_eq!(side.role, SemanticSnapRole::Nearest);
+        assert_eq!(side.point, PdfPoint { x: 100., y: 100. });
+        // A target on the ray counts: the side's start, level with the anchor.
+        let start = index
+            .resolve_point_with_angle_constraint(
+                PdfPoint { x: 103., y: 4. },
+                &settings.with_target(SemanticSnapTarget::Nearest, false),
+                1.,
+                Some((anchor, 90.)),
+            )
+            .unwrap();
+        assert_eq!(start.point, PdfPoint { x: 100., y: 0. });
+        // Free, the pointer takes the nearest point of the side.
+        let free = index
+            .resolve_point_with_angle_constraint(PdfPoint { x: 97., y: 99. }, &settings, 1., None)
+            .unwrap();
+        assert_eq!(free.point, PdfPoint { x: 100., y: 99. });
+    }
+
+    #[test]
+    fn grids_act_only_along_a_held_direction() {
+        // A page grid point near the pointer but off the held ray does not
+        // turn the direction; one on the ray counts.
+        let settings = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::Annotation, false)
+            .with_source(SemanticSnapSource::PageGrid, true);
+        let grid = PageGridDefinition::new(
+            PageGridKind::Rectangular,
+            PdfPoint { x: 0., y: 0. },
+            50.,
+            200.,
+            200.,
+            0.,
+            PageGridSource::Generated,
+        )
+        .unwrap();
+        let index = SemanticSnapIndex::default().with_page_grid(&grid).unwrap();
+        let pointer = PdfPoint { x: 102., y: 3. };
+        let free = index.resolve_point(pointer, &settings, 1.).unwrap();
+        assert_eq!(free.point, PdfPoint { x: 100., y: 0. });
+        let off_ray = index.resolve_point_with_angle_constraint(
+            pointer,
+            &settings,
+            1.,
+            Some((PdfPoint { x: 0., y: 5. }, 90.)),
+        );
+        assert!(off_ray.is_none(), "{off_ray:?}");
+        let on_ray = index
+            .resolve_point_with_angle_constraint(
+                pointer,
+                &settings,
+                1.,
+                Some((PdfPoint { x: 0., y: 0. }, 90.)),
+            )
+            .unwrap();
+        assert_eq!(on_ray.point, PdfPoint { x: 100., y: 0. });
+
+        // The construction grid snaps where its lines cross the held ray,
+        // not to its nearest point.
+        let settings = SemanticSnapSettings::default()
+            .with_source(SemanticSnapSource::ConstructionGrid, true)
+            .with_construction_grid_spacing_mm(10.);
+        let spacing = 10. * POINTS_PER_INCH / MILLIMETRES_PER_INCH;
+        let pointer = PdfPoint {
+            x: spacing + 2.,
+            y: 3.,
+        };
+        let free = resolve_construction_grid_point(pointer, 600., 800., &settings, 1.).unwrap();
+        assert_eq!(free.point, PdfPoint { x: spacing, y: 0. });
+        let held = resolve_construction_grid_point_on_ray(
+            pointer,
+            600.,
+            800.,
+            &settings,
+            1.,
+            PdfPoint { x: 0., y: 5. },
+            90.,
+        )
+        .unwrap();
+        assert_eq!(held.point, PdfPoint { x: spacing, y: 5. });
     }
 
     #[test]

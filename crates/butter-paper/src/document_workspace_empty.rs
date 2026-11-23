@@ -165,9 +165,11 @@ impl DocumentWorkspace {
         );
         Some(
             Tab::new()
-                .min_w(px(DOCUMENT_SESSION_TAB_MIN_WIDTH))
+                .min_w(crate::layout_metrics::scaled(
+                    DOCUMENT_SESSION_TAB_MIN_WIDTH,
+                ))
                 // The New Tab is the selected tab while it shows.
-                .child(session_tab_frame(true, cx))
+                .child(session_tab_frame(DOCUMENT_NEW_TAB_ID, true, false, cx))
                 .on_hover(cx.listener(|workspace, hovered: &bool, _, cx| {
                     if workspace.new_tab_hovered != *hovered {
                         workspace.new_tab_hovered = *hovered;
@@ -245,8 +247,11 @@ impl DocumentWorkspace {
                     title.clone()
                 };
                 let visual_title = format_document_tab_label(title).to_owned();
-                let reveal_close = self.session_tab_hovered == Some(document_id)
-                    || tab_focus.contains_focused(window, cx);
+                // Keyboard focus, not the focus a click gives for the arrow
+                // keys, reveals the close button and the ring.
+                let keyboard_focus =
+                    tab_focus.contains_focused(window, cx) && window.last_input_was_keyboard();
+                let reveal_close = self.session_tab_hovered == Some(document_id) || keyboard_focus;
                 let close = accessible_icon_button(
                     Button::new(close_id)
                         .opacity(if reveal_close { 1. } else { 0. })
@@ -277,7 +282,12 @@ impl DocumentWorkspace {
                         .inset_0();
                 Tab::new()
                     // Not selected while the New Tab page shows.
-                    .child(session_tab_frame(false, cx))
+                    .child(session_tab_frame(
+                        tab_selector.clone(),
+                        false,
+                        keyboard_focus,
+                        cx,
+                    ))
                     .child(bounds_trace)
                     .on_hover(cx.listener(move |workspace, hovered, _, cx| {
                         let next = if *hovered {
@@ -309,7 +319,6 @@ impl DocumentWorkspace {
                     .child(session_tab_close_lane().child(close))
             })
             .collect::<Vec<_>>();
-        let new_tab_index = session_tabs.len();
         let new_tab = self.render_new_tab(cx);
         let has_tabs = !inactive_session_tabs.is_empty() || new_tab.is_some();
         let inactive_tab_click_control = cx.entity().downgrade();
@@ -328,7 +337,7 @@ impl DocumentWorkspace {
                 .debug_selector(|| DOCUMENT_SESSION_TABS_ID.into())
                 .w_full()
                 // A bar: 8 + 32 + 8, its line drawn inside.
-                .h(px(crate::layout_metrics::BAR))
+                .h(crate::layout_metrics::scaled(crate::layout_metrics::BAR))
                 .flex_shrink_0()
                 .items_stretch()
                 .relative()
@@ -365,9 +374,6 @@ impl DocumentWorkspace {
                                     .menu(false)
                                     .children(inactive_session_tabs)
                                     .children(new_tab)
-                                    .when(self.new_tab_open, |tabs| {
-                                        tabs.selected_index(new_tab_index)
-                                    })
                                     .on_click(move |tab_ix, window, cx| {
                                         let focus = inactive_tab_click_control
                                             .update(cx, |workspace, cx| {
@@ -387,6 +393,7 @@ impl DocumentWorkspace {
                                     })
                             }),
                             self.render_session_tab_actions(None, has_tabs, cx),
+                            false,
                             cx,
                         )),
                 )
@@ -405,6 +412,7 @@ impl DocumentWorkspace {
                 .child(self.render_left_rail(false, true, cx))
                 .child(
                     v_flex()
+                        .relative()
                         .flex_1()
                         .min_w_0()
                         .h_full()
@@ -429,7 +437,7 @@ impl DocumentWorkspace {
                                             .a11y_synthetic_children(|builder| {
                                                 builder.parent_node().set_live(Live::Polite)
                                             })
-                                            .w(px(240.))
+                                            .w(crate::layout_metrics::scaled(240.))
                                             .items_center()
                                             .gap_2()
                                             .child(status)
@@ -512,7 +520,8 @@ impl DocumentWorkspace {
                                             )),
                                     )
                                 }),
-                        ),
+                        )
+                        .children(toast_layer(window, cx)),
                 ),
         )
     }

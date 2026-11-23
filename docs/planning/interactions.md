@@ -59,8 +59,37 @@ the corners and edge midpoints of those positions. Those count a few pixels
 further away than the exact edge, so the exact edge wins until the two are
 visibly apart on screen.
 
-Shift constrains while drawing (lines and points horizontal or vertical from
-the last point, ellipse to a circle) and applies mid-drag. On a page without
+Angle snap (Snap settings, Angles; on at 90° by default) keeps the direction
+of a line or path segment being drawn from its last point at a multiple of
+the increment: 90°, 45°, 30°, 15° or a custom angle (0.1° to 90°). This
+applies to Line, Arrow, Dimension, Length, a Callout's leader, Arc's chord,
+each segment of Polyline, Polygon, Polylength and Area, and the Page Scale
+calibration line. Shift inverts
+the setting while it is held: with it on, Shift frees the direction; with
+it off, Shift snaps it to the increment. Shift also keeps an ellipse round
+and snaps an Arc's bulge to a quarter, half or three-quarter circle; these
+do not follow the setting. Shift applies mid-drag, at the next pointer
+move. A point snap wins over a held direction, as an object snap wins over
+Ortho in CAD: with the pointer within the snap range of an end, midpoint,
+centre or intersection (of markups or page content, as Snap settings
+enables them, or one of the path's own placed points), the point ends
+exactly on that target, off the increment if it must. So a path closes on
+its start whatever the angle. With no point target in range, the direction
+holds, and only targets on the held ray count: a point target on it, a side
+or edge (Nearest) where it crosses the ray, and the page grid and the
+construction grid only where they lie on or cross the ray. Grids, Nearest
+and snap guides never turn the held direction. A point snap also comes
+before the Snap dimensions increment. The Page Scale calibration line
+follows the same rules. A typed angle is exact and is not snapped.
+
+Snap dimensions (Snap settings, Dimension increments; on at 1 mm by
+default) rounds the length of a plain Dimension being drawn to a whole
+multiple of the increment, in millimetres on the paper, whether or not the
+page has a scale. It does not apply to a measured Length, lines or paths. It
+keeps the direction, so a held angle stays held. A point snap comes before
+it, and a typed length is exact.
+
+On a page without
 a scale, the first click of a Polyline or Polygon with Measure on, or of a
 Dimension chosen measuring (`Shift+Alt+L`, or its switch turned on), opens
 Page Scale for that page instead, saying why; once applied, the next click
@@ -76,9 +105,9 @@ length), a Polygon an Area. The rail button and the properties title keep
 the tool's own name. Every drawing tool a page scale enhances (Rectangle,
 Ellipse, Line, Arrow, Polyline, Polygon, Dimension) has a tooltip with the
 tool's name and shortcut on the first line. The muted second line says what
-the tool measures on a page with a scale, after a bold `Scale on:` (the
-toolbar's Scale switch): for example `Scale on: Area measurement` for
-Polygon. The tooltip does not name the measuring shortcuts (`Shift+Alt+L`,
+the tool measures on a page with a scale, after a bold `Page Scale on:`
+(the toolbar's Page Scale switch): for example `Page Scale on: Area
+measurement` for Polygon. The tooltip does not name the measuring shortcuts (`Shift+Alt+L`,
 `Shift+Alt+Q`, `Shift+Alt+A`), which stay for Revu users.
 
 - Dimension's starts on: from the rail, each press draws a Length where its
@@ -218,14 +247,34 @@ tooltip expands the instructions when the window truncates them.
 - A markup is hit on its strokes, its fill and its text or image. The empty
   inside of an unfilled shape is not part of it: a press there reaches what
   is underneath, selected or not.
+- Dragging a markup's rotation knob (Rectangle, Ellipse, Text Box, Image,
+  Snapshot) turns it to whole multiples of the angle snap increment while
+  angle snap is on; Shift frees the turn. With angle snap off, the turn is
+  free and Shift snaps it to the increment.
 - Double-clicking a rotation knob only turns the markup back to 0°; it never
   opens properties, including when the rotation is already 0°.
+- A click-out only dismisses (decided 2026-11-23). A press that dismisses
+  something does nothing else: no selection box or lasso, no new markup,
+  no tool action and no text caret, for its drag and release too. It
+  dismisses an open popup, menu, panel or dialog; a text being typed (a
+  Text Box, a markup's caption, Edit PDF text, which it commits);
+  highlighted page text; and a markup or Edit PDF selection. A double or
+  triple click that begins with such a press counts from the click after
+  it. While a click would only dismiss, the pointer over empty page is
+  the arrow, not the crosshair, nothing under it offers another action,
+  and the status bar says "Click away to deselect". A press that changes
+  a selection (another markup, other page text, Shift or Alt with a press,
+  Ctrl or Cmd for a box) is not a click-out. A press while drawing a path
+  places its next point; it dismisses nothing.
 - Click selects; Shift-click toggles. Away from page text, a drag draws a
   freehand selection lasso and a click starts a selection box that a
   second click finishes (Escape cancels it). Either one begun rightwards
   selects what is fully inside (blue), leftwards what it touches (green,
-  dashed). Shift adds, Alt removes. With something selected, a press on
-  empty page only ends the selection, as in Revu. Holding Ctrl (Cmd on
+  dashed). Shift adds, Alt removes. With something selected, a press away
+  from markups only ends the selection, as in Revu: on empty page, page
+  text, a form field or a link it starts no box, lasso, text selection or
+  fill, and its drag and release do nothing; the next press does. A press
+  on another markup selects it instead, and Shift-click toggles. Holding Ctrl (Cmd on
   macOS) makes a press draw a selection box wherever it lands, over a
   markup, handle, text, drawing or image as well as empty page, and in
   Edit PDF it selects page content too: dragged it is the box, clicked it
@@ -267,8 +316,11 @@ copy it, as Acrobat's does; nothing about the PDF changes.
 - Markups, fillable fields and links take a press first. Elsewhere a press in
   text places the start of a selection and dragging extends it, in reading
   order, to the nearest place in the page's text, including across lines
-  and paragraphs. A press away from text clears it and draws a selection
-  box as before.
+  and paragraphs. With text highlighted, a press away from it (on empty
+  page, a markup, a form field or a link) only clears it: it starts no
+  selection box or lasso, selects nothing, and its drag and release do
+  nothing. The next press acts as usual. A press in other page text starts
+  a new selection; Shift-click extends this one.
 - Double-click selects a word, triple-click its paragraph (Edit PDF's
   paragraphs); Shift-click extends the selection.
 - Copy puts the selected text on the clipboard, a line break between lines.
@@ -388,8 +440,9 @@ Every page converts to one page of the same size.
   text, set in the properties.
 - A single selected drawing, image, form or label of lettering (with no
   text in a clip) also shows a markup's rotation knob above its frame:
-  dragging it turns the content about its centre, following the pointer, and
-  Shift turns it to whole 15-degree steps. Its frame and handles stay
+  dragging it turns the content about its centre, following the pointer, to
+  whole multiples of the angle snap increment while angle snap is on (Shift
+  frees it; with angle snap off, Shift snaps it). Its frame and handles stay
   upright round what it covers; resizing turned content scales it in its
   own axes, so it never skews: a quarter-turned piece stretches along the
   page's axes, and one at another angle keeps its proportions. A turned
@@ -703,8 +756,8 @@ Acrobat and Preview do.
 - Markups and form fields sit above links. Elsewhere a link shows the
   pointing hand, and a click on it (released within a few pixels of the
   press) follows it; a press that drags off does nothing and does not
-  start a text selection. Pressing a link clears markup and text
-  selections.
+  start a text selection. With markups or page text selected, a press on
+  a link only clears them; the next click follows it.
 - Web (`http`, `https`) and `mailto` addresses open with the system.
   Other addresses (files, programs, JavaScript) are not opened; a status
   message says so.
@@ -716,8 +769,8 @@ Acrobat and Preview do.
 
 ## Page scale
 
-The view toolbar's Scale, beside Edit, is the current page's scale: a
-switch, and a menu showing the scale (`1:100`, cut short with an ellipsis
+The view toolbar's Page Scale, beside Edit, is the current page's scale: a
+switch labelled Page Scale, and a menu showing the scale (`1:100`, cut short with an ellipsis
 when long; the tooltip names it in full). Measurements measure through it;
 a page without one measures paper size (1 in = 1 in).
 
@@ -727,8 +780,8 @@ a page without one measures paper size (1 in = 1 in).
 - Off removes the page's scale, as one undoable change, and the menu keeps
   showing it, dimmed: on brings it back without asking, while the document
   is open. Measurements already made keep their values. The status bar says
-  what changed (`Removed the scale from page 3. Switch Scale on to bring
-  back 1:100.`).
+  what changed (`Removed the scale from page 3. Switch Page Scale on to
+  bring back 1:100.`).
 - On, for a page never scaled (`Not set`), drops down the Page Scale panel,
   the switch showing on until it closes; closed without Apply, it is off
   again.
@@ -737,8 +790,14 @@ a page without one measures paper size (1 in = 1 in).
   button and a Measure switch drop down the same panel, under the toolbar's
   Scale. The menu closes it again; so do its X, Cancel, Escape (after a
   list open in it) and a press outside it, which only closes it.
-- Narrow, the switch shows a ruler for its label and the menu only its
-  arrow.
+- Narrower than the full toolbar (1,018 px of toolbar for a document of
+  fewer than 10 pages, a window about 1,154 px wide with both rails;
+  1,066 px for up to 9,999 pages), the menu shows only its arrow and the
+  status bar shows the scale. The label Page Scale stays until the zoom,
+  fit and page-view buttons have stepped into menus; narrower still, the
+  switch shows a ruler for its label, and in the tightest form the switch
+  is small. The switch, its ruler or label, and the menu always show. At a
+  960 px window with Page Thumbnails collapsed the label shows.
 - More than one page in view, the current page has a 2-point outline just
   outside its edge, in the theme's text colour (35% in light, 60% in dark),
   not the paper's. Over the toolbar's Scale, or with its panel open, the
@@ -747,12 +806,18 @@ a page without one measures paper size (1 in = 1 in).
 
 - The panel names the page, its paper (`Page 2 of 16 · ARCH D, 36 × 24 in`)
   and its current scale.
-- Scale is a searchable list of standard scales: metric (1:1 to 1:5000),
-  architectural (12" = 1'-0" to 1/32" = 1'-0") and engineering (1" = 10' to
-  1" = 200'), imperial first on Letter, ARCH and ANSI sheets. Then Custom
-  ratio (`1 in on paper = 4 ft`), No scale, and once calibrated, Calibrated
-  from your line. A line under it says what the scale means (`1 cm on paper
-  is 1 m`).
+- Scale is two lists. The first chooses the group: Metric, Architectural,
+  Engineering, Custom, No scale, and once calibrated, Calibrated. A standard
+  group's scales are a searchable list under it: metric (1:1 to 1:5000),
+  architectural (12" = 1'-0" to 1/32" = 1'-0") or engineering (1" = 10' to
+  1" = 200'). A page with a scale opens on that scale's group; one without
+  opens on Metric, or Architectural on Letter, ARCH and ANSI sheets. A group
+  chosen without a scale of it chooses nothing until one is chosen (a scale
+  the page states in that group, if any). Custom shows the ratio in place of
+  the list (`1 mm on paper = 0.1 m`), in millimetres on paper (inches when
+  measuring in feet or inches); a custom scale keeps the paper unit it is
+  stored with. A line under it says what the scale means (`1 cm on paper is
+  1 m`, or in the custom ratio's own paper unit).
 - The scales the page's own text states come first, and as buttons:
   `1/4" = 1'-0"`, `1" = 20'`, and metric `1:100` only beside `SCALE` or a
   sheet size (`1:100 @ A1`), since a bare `1:8` is usually a gradient. One
@@ -760,10 +825,17 @@ a page without one measures paper size (1 in = 1 in).
   A page without a scale starts at the one it states most; nothing applies
   until Apply.
 - Calibrate hides the panel to click both ends of a length you know. Ends
-  snap as a Length's do, Shift keeps the line straight, and the line follows
+  snap as a Length's do, the line's direction follows angle snap as a Line's
+  does (Shift inverts the setting while it is held, and the hint on the page
+  says what Shift does now), and the line follows
   the pointer with its paper length (its length at the page's scale, when it
   has one). The first click may be on any page: the scale is then for that
-  page. Esc or Back returns to the panel as it was. The panel asks for the
+  page. A banner over the page is the one place that says what to click
+  next; a click for the second end on another page changes it to say where
+  that end goes ("Click the other end on page 1, where the line starts."),
+  and raises no toast. The status bar names the mode and its key alone
+  (`Calibrate · Esc to go back to Page Scale`). Esc or Back returns to the
+  panel as it was. The panel asks for the
   line's real length, focused (prefilled with what it measures now, when the
   page has a scale); a length may be typed as drawings write it (`36'-6"`) or
   with its own unit (`3600 mm`). Within 3% of a standard scale, it offers
@@ -930,7 +1002,11 @@ with it.
   show shorter guidance; full help remains in tooltips. A status message
   (why text cannot be edited, a save or conversion's progress or result)
   replaces the tool's guidance, in the stronger text colour, for six
-  seconds.
+  seconds, and shows as a toast. Toasts sit at the bottom right of the
+  canvas, 16px inside its edges: above the status bar, and left of the right
+  rail and any panel open beside the canvas, never over them. Toasts are for
+  results and errors that have no visible place of their own; guidance a
+  mode's banner already gives (Calibrate) never shows as a toast too.
 - *Native:* a pan (Pan tool, Space or middle button) goes past the pages into
   blank space until 48px of a page stays in view; zooming over blank space
   keeps the page where it is. Scrolling stops at the pages' edges, as a

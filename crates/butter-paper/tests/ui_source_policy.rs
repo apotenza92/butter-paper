@@ -221,16 +221,24 @@ fn both_workspace_tab_paths_use_stock_segmented_tabs_without_visual_overrides() 
         2,
         "cover loaded and empty/loading workspace paths"
     );
-    // shadcn's default Tabs: the stock segmented track, the active tab
-    // raised on it.
+    // The stock segmented tabs, without the stock selection: its indicator
+    // is a raised white tab with a shadow. The selected tab shows through
+    // `session_tab_frame` instead.
     for style in bars {
+        assert!(
+            !style.contains(".selected_index("),
+            "the selected tab has no stock indicator"
+        );
         assert!(style.contains(".segmented()"));
         assert!(
             style.contains(".menu(false)"),
             "keep the measured external overflow control"
         );
         assert!(
-            style.contains(".max_width(px(190.))"),
+            matches(
+                r"\.max_width\((px\(190\.\)|crate::layout_metrics::scaled_px\(190\.,)",
+                &style
+            ),
             "retain document label truncation"
         );
         assert!(!matches(r"\.(pill|outline|underline|bg|p_0)\(", &style));
@@ -239,6 +247,62 @@ fn both_workspace_tab_paths_use_stock_segmented_tabs_without_visual_overrides() 
             "tabs keep the stock segmented states"
         );
     }
+}
+
+/// A tab is drawn by the same stock outline button as the row's documents
+/// menu and New Tab buttons and the toolbar's Fit Width and Fit Page
+/// toggles, so it resolves their colours in every state and theme: at rest,
+/// hovered, pressed and selected (as a selected toggle). Nothing overrides
+/// the button's fill or border, and nothing adds a shadow. Its label takes
+/// the buttons' text colour.
+#[test]
+fn a_tab_is_drawn_by_the_row_buttons_stock_outline_button() {
+    let source = workspace_source();
+    let frame = between(
+        &source,
+        "pub(super) fn session_tab_frame(",
+        "/// Where a tab's keyboard focus ring",
+    );
+    let button = between(frame, "Button::new(", ".when(focus_ring");
+    assert!(button.contains(".outline()"));
+    assert!(button.contains(".selected(selected)"));
+    assert!(button.contains(".tab_stop(false)"));
+    assert!(button.contains("RoleOverride::Presentational"));
+    for override_ in [
+        ".bg(",
+        ".border_color(",
+        ".ghost()",
+        ".primary()",
+        "shadow",
+        ".text_color(",
+    ] {
+        assert!(
+            !button.contains(override_),
+            "the tab's button overrides {override_}"
+        );
+    }
+    assert!(!frame.contains("tab_bar_segmented") && !frame.contains("secondary_active"));
+    // The references: plain outline buttons on the row, an outline group in
+    // the toolbar.
+    for id in ["DOCUMENT_TABS_MENU_ID", "DOCUMENT_TAB_OPEN_ID"] {
+        let reference = between(&source, &format!("Button::new({id})"), ";");
+        assert!(reference.contains(".outline()"), "{id}");
+        assert!(!reference.contains(".bg("), "{id}");
+    }
+    let toolbar = crate::source("viewer_toolbar_strip.rs");
+    let fit = between(
+        &toolbar,
+        "ButtonGroup::new(FIT_BUTTON_GROUP_ID)",
+        "let signed",
+    );
+    assert!(fit.contains(".outline()"));
+    assert!(!fit.contains(".bg("));
+    let label = between(
+        &source,
+        "fn session_tab_overlay_label",
+        "const SESSION_TAB_CLOSE_SIZE",
+    );
+    assert!(label.contains(".text_color(cx.theme().button_foreground)"));
 }
 
 #[test]
@@ -250,12 +314,15 @@ fn close_controls_overlay_naturally_sized_labels_without_a_reserved_suffix() {
     let label = between(
         &source,
         "fn session_tab_overlay_label",
-        "impl Render for DocumentWorkspace",
+        "const SESSION_TAB_CLOSE_SIZE",
     );
     assert!(matches(r"\.opacity\(0\.\)", label));
     // Revealing the close button keeps the label's leading anchor and
     // truncates against the close lane instead of re-centring.
-    assert!(label.contains(".when(revealed, |this| this.pr(px(SESSION_TAB_CLOSE_LANE)))"));
+    assert!(matches(
+        r"\.when\(revealed,\s*\|this\|\s*\{?\s*this\.pr\(crate::layout_metrics::scaled\(SESSION_TAB_CLOSE_LANE\)\)",
+        label
+    ));
     assert!(!label.contains(".text_center()"));
     assert!(label.contains("IconName::Asterisk"));
     assert!(label.contains(".rounded_full()"));

@@ -32,7 +32,7 @@ pub fn template_control_row(
         .child(
             div()
                 .flex_none()
-                .w(px(TEMPLATE_CONTROL_LABEL_WIDTH))
+                .w(crate::layout_metrics::scaled(TEMPLATE_CONTROL_LABEL_WIDTH))
                 .text_sm()
                 .child(label),
         )
@@ -206,6 +206,12 @@ impl TemplatePreview {
             },
             Self::ImportedPdf { .. } => "Page grid not defined".into(),
         }
+    }
+
+    /// A template row's second line, and the line below the template's name
+    /// in the New from template tooltip: "A3 · Landscape · No page grid".
+    pub fn detail(&self) -> String {
+        format!("{} · {}", self.summary(), self.grid_summary())
     }
 }
 
@@ -568,6 +574,8 @@ mod tests {
         assert_eq!(dots.grid_summary(), "Page grid · 10 mm");
         let blank = TemplatePreview::for_built_in("built-in-blank");
         assert_eq!(blank.grid_summary(), "No page grid");
+        assert_eq!(blank.detail(), "A3 · Landscape · No page grid");
+        assert_eq!(dots.detail(), "A3 · Landscape · Page grid · 10 mm");
         let imported = TemplatePreview::ImportedPdf {
             page_count: 1,
             first_page_key: None,

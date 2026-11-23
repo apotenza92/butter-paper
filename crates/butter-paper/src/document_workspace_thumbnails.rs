@@ -58,6 +58,8 @@ pub(super) struct ThumbnailSidebarInputs {
     pub current_page: u32,
     pub thumbnails: Vec<ThumbnailRow>,
     pub thumbnails_visible: bool,
+    /// The greatest width the page column leaves them, when they show.
+    pub thumbnails_max_width: Option<Pixels>,
     pub thumbnail_scroll: UniformListScrollHandle,
     pub hovered_annotation: Option<(DocumentId, u32, MarkupId)>,
     pub focused_annotation_id: Option<MarkupId>,
@@ -78,6 +80,7 @@ impl DocumentWorkspace {
             current_page,
             thumbnails,
             thumbnails_visible,
+            thumbnails_max_width,
             thumbnail_scroll,
             hovered_annotation,
             focused_annotation_id,
@@ -103,8 +106,17 @@ impl DocumentWorkspace {
         resizable_panel()
                         .visible(thumbnails_visible)
                         .size(window.rem_size() * 18.75)
-                        // Preserve full stock controls when the interface scale grows.
-                        .size_range(window.rem_size() * 16. ..window.rem_size() * 24.)
+                        // Preserve full stock controls when the interface scale
+                        // grows; narrower than preferred when the page column
+                        // would otherwise squeeze the viewer toolbar.
+                        .size_range({
+                            let rem = window.rem_size();
+                            let range = super::THUMBNAILS_WIDTH_REMS;
+                            rem * range.start
+                                ..thumbnails_max_width
+                                    .unwrap_or(rem * range.end)
+                                    .min(rem * range.end)
+                        })
                         .flex_none()
                         .child({
                             let thumbnail_rows = Arc::new(thumbnails);

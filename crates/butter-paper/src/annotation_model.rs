@@ -7219,6 +7219,8 @@ enum ActiveGesture {
         annotation: RectangleAnnotation,
         original_rotation_degrees: f64,
         start_angle_radians: f64,
+        /// The step the turn snaps to, or `None` while it is free.
+        step_degrees: Option<f64>,
     },
 }
 
@@ -10784,6 +10786,7 @@ impl AnnotationDocument {
             pointer_id,
             original_rotation_degrees: annotation.rotation_degrees,
             start_angle_radians,
+            step_degrees: None,
             annotation,
         });
         Ok(Some(id))
@@ -10807,6 +10810,14 @@ impl AnnotationDocument {
             return Ok(None);
         }
         self.begin_resize(pointer_id, page_index, start, tolerance_pt)
+    }
+
+    /// The step a rotation gesture's turn snaps to from its next update, or
+    /// `None` to turn it freely. Other gestures ignore it.
+    pub fn set_rotation_snap_step(&mut self, step: Option<f64>) {
+        if let Some(ActiveGesture::Rotate { step_degrees, .. }) = self.active_gesture.as_mut() {
+            *step_degrees = step;
+        }
     }
 
     pub fn update_gesture(
@@ -10847,14 +10858,17 @@ impl AnnotationDocument {
                 annotation,
                 original_rotation_degrees,
                 start_angle_radians,
+                step_degrees,
                 ..
             } => {
                 let center = annotation.rect.center();
                 let current_angle_radians = (point.y - center.y).atan2(point.x - center.x);
-                annotation.rotation_degrees = normalize_degrees(
-                    *original_rotation_degrees
-                        + (*start_angle_radians - current_angle_radians).to_degrees(),
-                );
+                annotation.rotation_degrees =
+                    normalize_degrees(crate::semantic_snapping::snap_angle_degrees(
+                        *original_rotation_degrees
+                            + (*start_angle_radians - current_angle_radians).to_degrees(),
+                        *step_degrees,
+                    ));
             }
         }
         Ok(gesture
@@ -17967,6 +17981,43 @@ mod tests {
             preview.annotation.rect,
             PdfRect::new(108.0, 20.0, 2.0, 60.0).unwrap()
         );
+    }
+
+    #[test]
+    fn a_rectangle_turn_snaps_to_the_step_it_is_given_mid_drag() {
+        let mut document = AnnotationDocument::default();
+        document
+            .begin_create(
+                42,
+                id("stepped"),
+                0,
+                point(10.0, 10.0),
+                RectangleAppearance::default(),
+            )
+            .unwrap();
+        document.update_gesture(42, point(110.0, 60.0)).unwrap();
+        document.commit_gesture(42).unwrap();
+        document
+            .begin_rotation(43, 0, point(60.0, 80.0), 3.0)
+            .unwrap()
+            .unwrap();
+        // The knob dragged 40 degrees clockwise about the centre (60, 35).
+        let angle = (90.0_f64 - 40.0).to_radians();
+        let target = point(60.0 + 45.0 * angle.cos(), 35.0 + 45.0 * angle.sin());
+        let free = document.update_gesture(43, target).unwrap();
+        assert!((free.annotation.rotation_degrees - 40.0).abs() < 1e-9);
+        document.set_rotation_snap_step(Some(15.0));
+        let fifteen = document.update_gesture(43, target).unwrap();
+        assert_eq!(fifteen.annotation.rotation_degrees, 45.0);
+        document.set_rotation_snap_step(Some(90.0));
+        let quarter = document.update_gesture(43, target).unwrap();
+        assert_eq!(quarter.annotation.rotation_degrees, 0.0);
+        document.set_rotation_snap_step(None);
+        document.update_gesture(43, target).unwrap();
+        assert!(matches!(
+            document.commit_gesture(43).unwrap(),
+            CommitOutcome::Updated(_)
+        ));
     }
 
     #[test]

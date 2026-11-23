@@ -320,7 +320,7 @@ impl Render for MergeDialog {
                 v_flex()
                     .id("document-merge-list")
                     .w_full()
-                    .max_h(px(320.))
+                    .max_h(crate::layout_metrics::scaled(320.))
                     .overflow_y_scroll()
                     .rounded(cx.theme().radius)
                     .border_1()
@@ -421,7 +421,7 @@ impl DocumentWorkspace {
         let workspace = cx.entity().downgrade();
         let dialog = cx.new(|_| MergeDialog { items, next_key });
         self.merge_dialog = Some(dialog.downgrade());
-        window.open_dialog(cx, move |surface, _, cx| {
+        window.open_dialog(cx, move |surface, window, cx| {
             let state = dialog.read(cx);
             let count = state.chosen().len();
             let label = if state.chosen_unsaved() {
@@ -433,7 +433,7 @@ impl DocumentWorkspace {
             let merge_workspace = workspace.clone();
             surface
                 .title("Merge documents")
-                .w(px(560.))
+                .w(crate::layout_metrics::scaled_px(560., window.rem_size()))
                 .max_w_full()
                 .close_button(false)
                 .child(dialog.clone())

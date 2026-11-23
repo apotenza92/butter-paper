@@ -107,6 +107,17 @@ impl DocumentWorkspace {
         Some((epoch, lines, position))
     }
 
+    /// Whether a press at `point` would select page text: the hit test that
+    /// hover and press share.
+    pub(super) fn text_selection_hit_at(
+        &mut self,
+        interaction: &PageInteraction,
+        point: PdfPoint,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.text_selection_hit(interaction, point, cx).is_some()
+    }
+
     /// Hover feedback over page text with the Select tool, where no markup
     /// or form field is. Hover and press share one hit test.
     pub(super) fn update_text_selection_hover(

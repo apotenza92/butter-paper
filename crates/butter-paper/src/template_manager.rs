@@ -181,7 +181,8 @@ impl gpui_component::Selectable for TemplateRow {
 
 impl gpui::RenderOnce for TemplateRow {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.item
+        // The stock row draws the selected state and keeps hover off it.
+        self.item.selected(self.selected)
     }
 }
 
@@ -239,14 +240,13 @@ impl ListDelegate for TemplateListDelegate {
         let remove_owner = self.owner.clone();
         let storage_busy = self.storage_busy;
         let group_id = format!("template-manager-row-{}", record.id());
-        // Rows look as New from template's do: the selected one filled and
-        // ticked, with no outline.
+        // Rows look as Select default template's do: the stock list states,
+        // the selected one with the list's selected fill and edge, and ticked.
         let item = ListItem::new(stable_id.clone())
             .debug_selector(move || stable_id.clone())
             .rounded(cx.theme().radius)
             .mb_1()
             .py_1p5()
-            .when(selected, |row| row.bg(cx.theme().tokens.secondary_active))
             .group(group_id.clone())
             .child(
                 gpui_component::h_flex()
@@ -275,11 +275,7 @@ impl ListDelegate for TemplateListDelegate {
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
                                     .text_xs()
-                                    .child(format!(
-                                        "{} · {}",
-                                        preview.summary(),
-                                        preview.grid_summary()
-                                    )),
+                                    .child(preview.detail()),
                             ),
                     )
                     .when(selected, |row| {
@@ -500,6 +496,9 @@ pub struct TemplateManagerModel {
     records: Vec<TemplateManagerRecord>,
     selected_id: String,
     last_used_id: String,
+    /// The way the default template is turned, when it is not its own way,
+    /// with the template it applies to.
+    last_used_turned: Option<(String, PaperOrientation)>,
     mode: TemplateManagerMode,
     draft_request: GeneratedDocumentRequest,
     draft_paper_preset: &'static str,
@@ -543,6 +542,7 @@ impl TemplateManagerModel {
             records,
             selected_id: last_used_id.clone(),
             last_used_id,
+            last_used_turned: None,
             mode: TemplateManagerMode::Browse,
             draft_request: built_in_request("built-in-blank").unwrap(),
             draft_paper_preset: "a3",
@@ -585,6 +585,46 @@ impl TemplateManagerModel {
 
     pub fn last_used_id(&self) -> &str {
         &self.last_used_id
+    }
+
+    /// The way the default template is turned, when it is not its own way.
+    pub fn last_used_orientation(&self) -> Option<PaperOrientation> {
+        self.last_used_turned
+            .as_ref()
+            .filter(|(id, _)| *id == self.last_used_id)
+            .map(|(_, orientation)| *orientation)
+    }
+
+    /// The model with the default template turned to `orientation`.
+    pub fn with_last_used_orientation(mut self, orientation: Option<PaperOrientation>) -> Self {
+        self.last_used_turned = self.turned(&self.last_used_id, orientation);
+        self
+    }
+
+    /// Makes `template_id` the default template, turned to `orientation`:
+    /// what New from template makes.
+    pub fn set_default(
+        &mut self,
+        template_id: &str,
+        orientation: Option<PaperOrientation>,
+    ) -> Result<(), TemplateManagerError> {
+        self.require_record(template_id)?;
+        self.last_used_turned = self.turned(template_id, orientation);
+        self.last_used_id = template_id.into();
+        self.error = None;
+        Ok(())
+    }
+
+    /// `orientation` for `template_id`, kept only when it turns generated
+    /// paper from its own way.
+    fn turned(
+        &self,
+        template_id: &str,
+        orientation: Option<PaperOrientation>,
+    ) -> Option<(String, PaperOrientation)> {
+        let natural = self.record(template_id)?.preview().orientation()?;
+        let orientation = orientation.filter(|orientation| *orientation != natural)?;
+        Some((template_id.to_owned(), orientation))
     }
 
     pub const fn mode(&self) -> TemplateManagerMode {
@@ -1091,7 +1131,10 @@ impl PersistentTemplateManager {
                 .filter(|record| matches!(record, TemplateRecord::ImportedPdf { .. }))
                 .map(manager_record_from_library),
         );
-        TemplateManagerModel::new(records, self.library.last_template_id())
+        Ok(
+            TemplateManagerModel::new(records, self.library.last_template_id())?
+                .with_last_used_orientation(self.library.last_template_orientation()),
+        )
     }
 
     pub fn migrate_legacy_blank_request(
@@ -1192,8 +1235,22 @@ impl PersistentTemplateManager {
         &mut self,
         template_id: &str,
     ) -> Result<TemplateManagerModel, TemplateManagerError> {
+        self.select_oriented(template_id, None)
+    }
+
+    /// Makes `template_id` the default template, turned to `orientation`
+    /// when that turns its paper.
+    pub fn select_oriented(
+        &mut self,
+        template_id: &str,
+        orientation: Option<PaperOrientation>,
+    ) -> Result<TemplateManagerModel, TemplateManagerError> {
+        let model = self.snapshot()?;
+        let orientation = model
+            .turned(template_id, orientation)
+            .map(|(_, orientation)| orientation);
         self.library
-            .select(template_id)
+            .select_oriented(template_id, orientation)
             .map_err(|error| TemplateManagerError(error.to_string()))?;
         self.snapshot()
     }
@@ -1275,6 +1332,9 @@ pub struct TemplateManagerView {
     /// Which way the listed paper is turned; each paper size starts the way
     /// its templates are.
     orientation: PaperOrientation,
+    /// The newest default template not yet written to the library: each
+    /// write takes it under the library lock, so the latest choice is stored.
+    pending_default: Arc<Mutex<Option<(String, Option<PaperOrientation>)>>>,
 }
 
 impl TemplateManagerView {
@@ -1371,6 +1431,7 @@ impl TemplateManagerView {
             paper_size_select_synced: None,
             _paper_size_subscription: None,
             orientation,
+            pending_default: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1430,6 +1491,7 @@ impl TemplateManagerView {
         };
         if model.records() == self.model.records()
             && model.last_used_id() == self.model.last_used_id()
+            && model.last_used_orientation() == self.model.last_used_orientation()
         {
             return false;
         }
@@ -1554,6 +1616,56 @@ impl TemplateManagerView {
         self.create_selected_document_oriented(orientation, window, cx);
     }
 
+    /// Makes `template_id` the default template, turned to `orientation`, as
+    /// Select default template chooses it: at once here, and in the library
+    /// in the background.
+    pub fn select_default_template(
+        &mut self,
+        template_id: &str,
+        orientation: Option<PaperOrientation>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.model.set_default(template_id, orientation) {
+            self.model.record_failure(error.to_string());
+            cx.notify();
+            return;
+        }
+        cx.notify();
+        let Some(persistent) = self.persistent.clone() else {
+            return;
+        };
+        let wanted = (template_id.to_owned(), self.model.last_used_orientation());
+        if let Ok(mut pending) = self.pending_default.lock() {
+            *pending = Some(wanted);
+        }
+        let pending = self.pending_default.clone();
+        let task = cx.background_executor().spawn(async move {
+            let mut persistent = persistent
+                .lock()
+                .map_err(|_| "template storage lock was poisoned".to_owned())?;
+            let Some((template_id, orientation)) =
+                pending.lock().ok().and_then(|mut pending| pending.take())
+            else {
+                return Ok(());
+            };
+            persistent
+                .select_oriented(&template_id, orientation)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |entity, cx| {
+            if let Err(error) = task.await {
+                let _ = entity.update(cx, |manager, cx| {
+                    manager.model.record_failure(format!(
+                        "The default template could not be saved: {error}"
+                    ));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     pub fn save_authorized_document_as_template(
         &mut self,
         document_name: String,
@@ -1580,7 +1692,12 @@ impl TemplateManagerView {
         owner.update(cx, |manager, cx| {
             manager.reload_from_shared(cx);
             manager.model.reset_for_open();
-            if let Some(orientation) = manager.selected_record().preview().orientation() {
+            // The default template, turned as New from template makes it.
+            if let Some(orientation) = manager
+                .model
+                .last_used_orientation()
+                .or_else(|| manager.selected_record().preview().orientation())
+            {
                 manager.orientation = orientation;
             }
             manager.sync_template_list(window, cx);
@@ -1820,8 +1937,13 @@ impl TemplateManagerView {
                                 workspace.create_owned_template_document(store, source, cx)
                             }) {
                                 Ok(_) => {
+                                    // The default becomes the template as made.
                                     let selected = manager.persistent.as_ref().and_then(|persistent| {
-                                        persistent.lock().ok()?.select(&template_id).ok()
+                                        persistent
+                                            .lock()
+                                            .ok()?
+                                            .select_oriented(&template_id, orientation)
+                                            .ok()
                                     });
                                     if let Some(model) = selected {
                                         manager.model = model;
@@ -2260,6 +2382,14 @@ pub fn route_workspace_template_command(
                     window,
                     cx,
                 );
+            });
+        }
+        DocumentWorkspaceTemplateCommand::SelectDefault {
+            template_id,
+            orientation,
+        } => {
+            manager.update(cx, |manager, cx| {
+                manager.select_default_template(template_id, *orientation, cx);
             });
         }
         DocumentWorkspaceTemplateCommand::Manage => {
@@ -2848,7 +2978,9 @@ impl Render for TemplateManagerView {
             .debug_selector(|| TEMPLATE_MANAGER_ID.into())
             .relative()
             .w_full()
-            .when(!constrained, |content| content.max_h(px(720.)))
+            .when(!constrained, |content| {
+                content.max_h(crate::layout_metrics::scaled(720.))
+            })
             .min_h_0()
             .gap_4()
             .child(header)

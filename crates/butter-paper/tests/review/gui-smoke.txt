@@ -118,4 +118,68 @@ move 0 600 400
 wait 1200
 expect-hidden 0 tooltip-popup
 
+# Select default template: a chosen row becomes the default and the panel
+# stays open, making no document; its X closes it.
+os-click-id 0 document-tab-template-picker
+wait 1000
+expect-shown 0 template-picker
+os-click-id 0 template-picker-item-built-in-dots
+wait 600
+expect-shown 0 template-picker
+shot template-panel
+os-click-id 0 template-picker-close
+wait 600
+expect-hidden 0 template-picker
+
+# Snap settings: opens beside the tool rail; Escape closes it.
+os-click-id 0 viewer-snap-target-menu
+wait 800
+expect-shown 0 viewer-snap-popover
+shot snap-settings
+key 0 escape
+wait 600
+expect-hidden 0 viewer-snap-popover
+
+# Page scale: the toolbar's Page Scale menu opens the panel. Calibrate
+# shows its banner over the page; Escape returns to the panel, and Cancel
+# closes it.
+os-click-id 0 viewer-scale-menu
+wait 1000
+expect-shown 0 page-scale-dialog
+os-click-id 0 page-scale-calibrate
+wait 800
+expect-shown 0 page-scale-pick-hint
+expect-hidden 0 page-scale-dialog
+key 0 escape
+wait 800
+expect-shown 0 page-scale-dialog
+shot page-scale
+os-click-id 0 page-scale-cancel
+wait 600
+expect-hidden 0 page-scale-dialog
+
+# A click-out only dismisses: with page text highlighted, a click on empty
+# page clears the highlight and starts no selection box; the next click on
+# empty page starts one, and Escape ends it.
+key 0 v
+wait 400
+expect-tool 0 Select
+move 0 125 322
+wait 600
+drag 0 125 322 560 322 highlight
+wait 600
+expect-text-selected 0 yes
+shot text-highlighted
+click 0 600 630
+wait 600
+expect-text-selected 0 no
+expect-box 0 none
+shot text-click-out
+click 0 600 630
+wait 600
+expect-box 0 armed
+key 0 escape
+wait 600
+expect-box 0 none
+
 quit

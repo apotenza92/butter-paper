@@ -27,14 +27,39 @@ alone do not establish these behaviours.
 - Stock popup menus initially select a heading or disabled item on the first
   Down press, so titled mouse-wheel menus need a second Down to reach Zoom,
   and the page menu's first Down lands on a disabled Cut. Fix initial and
-  wraparound selection to skip non-actionable rows in gpui-kit.
+  wraparound selection to skip non-actionable rows in gpui-kit. The narrow
+  toolbar's page-view menu has the same titled mouse-wheel sections.
 - Stock checkboxes, switches, toggles, buttons and inputs do not expose a
   disabled state to accessibility (the snapping "Show grid" switch and spacing
   fields report enabled while greyed out). Deferred: the fix belongs in
   gpui-kit's base controls, not in Butter Paper.
+- The stock Switch draws no focus ring. The toolbar's Edit and Page Scale
+  switches and the Snap settings switches show the stock ring through an
+  app-side wrapper (`focus_ring_switch`); the switches in the properties
+  panels, tool defaults and Settings still show none. Give them the wrapper
+  once their panels leave room for the ring, or give the stock Switch the ring
+  in gpui-kit.
 - The template library offers both a top-right X and a Done button that do
   the same thing; decide whether to drop Done (the X is the convention for
   transient panels).
+- Bring back the interface size control (removed for now, see decisions.md,
+  "Interface size"). The rem-based sizing and the level plumbing remain
+  (`application_ui_zoom_font_size`, `layout_metrics::scaled`); restore the
+  View menu items, their shortcuts and the stored level. Fix first the
+  faults that the owner saw at 1.44x and 1.73x (a 915 × 660 window, a
+  three-page document):
+  - Button outlines collapse and stray vertical border lines show: fixed
+    pixel bars (48 px) clip controls that grow in rem.
+  - Rows collide: tab, status bar and rail rows keep fixed heights while
+    their text grows.
+  - The Fit Width, Fit Page and page view icons stay at 16 px beside larger
+    controls.
+  - Padding squeezes: fixed pixel padding and thresholds do not keep the
+    8pt-grid proportions; the layout must step to a compact form first.
+  - The rail "•••" overflow and the status bar hints overlap at small
+    window sizes.
+  Verify every bar, panel, menu and dialog at each size, with tests at the
+  larger sizes.
 
 ## Editing
 
@@ -56,7 +81,7 @@ alone do not establish these behaviours.
   a three-point Polyline: angle); Count needs a tool of its own.
 - Measure follow-ups: the Measure switches and a page's removed scale last
   only while the app or document is open; Enter does not apply the Scale
-  panel; keyboard focus on the toolbar's Scale does not darken the page
+  panel; keyboard focus on the toolbar's Page Scale does not darken the page
   outline as hovering does; a Dimension turned into a Length takes Length's
   fixed 10-point leader. Revu has not yet opened a markup whose Measure was
   switched here.

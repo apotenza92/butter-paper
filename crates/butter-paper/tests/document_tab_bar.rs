@@ -15,10 +15,10 @@ use butter_paper::{
         DOCUMENT_TAB_REORDER_STATUS_ID, DirtyCloseConfirmationEvent, DirtyCloseConfirmationIntent,
         DocumentTabActivationOrigin, DocumentTabBarTemplateSeam, DocumentTabEvent,
         DocumentTabReorderEvent, DocumentTabReorderOrigin, TEMPLATE_CONTROL_GROUP_ID,
-        TEMPLATE_CREATE_ID, TEMPLATE_ITEM_IDS, TEMPLATE_MANAGE_ID, TEMPLATE_PICKER_CLOSE_ID,
-        TEMPLATE_PICKER_ID, TEMPLATE_PICKER_PAPER_SIZE_ID, TEMPLATE_PICKER_POPOVER_ID,
-        TEMPLATE_PRIMARY_ID, TEMPLATE_SAVE_DOCUMENT_ID, TemplateCatalogItem,
-        TemplateCreationOrigin, TemplateSplitControl, TemplateSplitEvent, dirty_close_title,
+        TEMPLATE_ITEM_IDS, TEMPLATE_MANAGE_ID, TEMPLATE_PICKER_CLOSE_ID, TEMPLATE_PICKER_ID,
+        TEMPLATE_PICKER_PAPER_SIZE_ID, TEMPLATE_PICKER_POPOVER_ID, TEMPLATE_PRIMARY_ID,
+        TEMPLATE_SAVE_DOCUMENT_ID, TemplateCatalogItem, TemplateCreationOrigin,
+        TemplateSplitControl, TemplateSplitEvent, dirty_close_title,
         document_tab_close_accessible_label, document_tab_close_id, document_tab_hover_mask_id,
         document_tab_id, document_tab_label_id, format_document_tab_label,
     },
@@ -335,7 +335,6 @@ fn template_split_starts_at_the_frozen_contract_and_rendered_ids(cx: &mut TestAp
     assert_eq!(TEMPLATE_PICKER_ID, "document-tab-template-picker");
     assert_eq!(TEMPLATE_PICKER_POPOVER_ID, "template-picker");
     assert_eq!(TEMPLATE_MANAGE_ID, "template-picker-manage");
-    assert_eq!(TEMPLATE_CREATE_ID, "template-picker-create");
     assert_eq!(TEMPLATE_SAVE_DOCUMENT_ID, "template-picker-save-document");
     assert_eq!(BUILT_IN_TEMPLATES.len(), 12);
     assert_eq!(
@@ -407,14 +406,19 @@ fn the_start_page_creates_from_the_last_template_as_the_primary_button_does(
         control.read_with(cx, |control, _| control.last_template_label()),
         "New Blank Paper document"
     );
-    // The primary button says what a click makes; the menu, what it holds.
+    // The primary button says what a click makes, with the paper below the
+    // name, worded as the picker's row is; the menu, what it chooses.
     assert_eq!(
         control.read_with(cx, |control, _| control.last_template_tooltip()),
         "New from template: Blank Paper"
     );
     assert_eq!(
+        control.read_with(cx, |control, _| control.last_template_description()),
+        "A3 · Landscape · No page grid"
+    );
+    assert_eq!(
         butter_paper::document_tab_bar::TEMPLATE_PICKER_LABEL,
-        "Select and customise templates"
+        "Select default template"
     );
     control.update(cx, |control, cx| control.create_from_last_template(cx));
     draw(cx);
@@ -580,13 +584,14 @@ fn template_picker_filters_by_paper_size_and_carries_the_pattern_across_sizes(
     draw(cx);
 
     // Choosing A4 from the stock Select by keyboard keeps the picker open and
-    // moves Dot Grid A3 to Dot Grid A4.
+    // makes Dot Grid A4, not Dot Grid A3, the default at once.
     click_target(cx, TEMPLATE_PICKER_PAPER_SIZE_ID);
     draw(cx);
     cx.simulate_keystrokes("escape");
     draw(cx);
     entities.document_tabs.read_with(cx, |tabs, _| {
         assert!(tabs.is_picker_open(), "Escape closes only the size menu");
+        assert_eq!(tabs.last_template_id(), "built-in-dots");
     });
     click_target(cx, TEMPLATE_PICKER_PAPER_SIZE_ID);
     draw(cx);
@@ -595,9 +600,17 @@ fn template_picker_filters_by_paper_size_and_carries_the_pattern_across_sizes(
     entities.document_tabs.read_with(cx, |tabs, _| {
         assert!(tabs.is_picker_open(), "the size menu is part of the picker");
         assert_eq!(tabs.selected_template_id(), "built-in-dots-a4");
-        assert_eq!(tabs.last_template_id(), "built-in-blank");
+        assert_eq!(tabs.last_template_id(), "built-in-dots-a4");
+        assert!(tabs.creation_events().is_empty(), "choosing makes nothing");
     });
-    control.read_with(cx, |control, _| assert_eq!(control.paper_size(), "A4"));
+    control.read_with(cx, |control, _| {
+        assert_eq!(control.paper_size(), "A4");
+        assert_eq!(control.default_orientation(), None);
+        assert_eq!(
+            control.last_template_description(),
+            "A4 · Portrait · Page grid · 10 mm"
+        );
+    });
     for stable_id in &TEMPLATE_ITEM_IDS[..6] {
         assert!(cx.debug_bounds(stable_id).is_none(), "{stable_id} is A3");
     }
@@ -605,17 +618,9 @@ fn template_picker_filters_by_paper_size_and_carries_the_pattern_across_sizes(
         bounds(cx, stable_id);
     }
 
-    click_target(cx, TEMPLATE_CREATE_ID);
+    // Reopening shows the default's size.
+    click_target(cx, TEMPLATE_PICKER_CLOSE_ID);
     draw(cx);
-    entities.document_tabs.read_with(cx, |tabs, _| {
-        assert_eq!(
-            tabs.creation_events().last().unwrap().template_id,
-            "built-in-dots-a4"
-        );
-        assert_eq!(tabs.last_template_id(), "built-in-dots-a4");
-    });
-
-    // Reopening defaults to the last template's size.
     click_target(cx, TEMPLATE_PICKER_ID);
     draw(cx);
     control.read_with(cx, |control, _| assert_eq!(control.paper_size(), "A4"));
@@ -624,30 +629,53 @@ fn template_picker_filters_by_paper_size_and_carries_the_pattern_across_sizes(
     draw(cx);
     entities.document_tabs.read_with(cx, |tabs, _| {
         assert_eq!(tabs.selected_template_id(), "built-in-dots");
+        assert_eq!(tabs.last_template_id(), "built-in-dots");
     });
 
-    // A3 starts landscape, as its templates are; turned portrait, the
-    // picker's Create makes it so.
+    // A3 starts landscape, as its templates are. Turned portrait, the
+    // default is turned with it: the tooltip says so, another row keeps it,
+    // and the primary button makes it so.
     control.read_with(cx, |control, _| {
         assert_eq!(control.orientation(), PaperOrientation::Landscape)
     });
     click_target(cx, "template-picker-orientation-portrait");
     draw(cx);
     control.read_with(cx, |control, _| {
+        assert_eq!(control.orientation(), PaperOrientation::Portrait);
+        assert_eq!(
+            control.default_orientation(),
+            Some(PaperOrientation::Portrait)
+        );
+        assert_eq!(
+            control.last_template_description(),
+            "A3 · Portrait · Page grid · 10 mm"
+        );
+    });
+    click_target(cx, "template-picker-item-built-in-grid");
+    draw(cx);
+    control.read_with(cx, |control, _| {
+        assert_eq!(control.last_template_id(), "built-in-grid");
+        assert_eq!(
+            control.default_orientation(),
+            Some(PaperOrientation::Portrait)
+        );
+    });
+    // Closed and opened again, the panel shows the default turned.
+    click_target(cx, TEMPLATE_PICKER_CLOSE_ID);
+    draw(cx);
+    click_target(cx, TEMPLATE_PICKER_ID);
+    draw(cx);
+    control.read_with(cx, |control, _| {
         assert_eq!(control.orientation(), PaperOrientation::Portrait)
     });
-    click_target(cx, TEMPLATE_CREATE_ID);
+    click_target(cx, TEMPLATE_PICKER_CLOSE_ID);
     draw(cx);
-    entities.document_tabs.read_with(cx, |tabs, _| {
-        let created = tabs.creation_events().last().unwrap();
-        assert_eq!(created.template_id, "built-in-dots");
-        assert_eq!(created.orientation, Some(PaperOrientation::Portrait));
-    });
-    // The primary button makes the template as it is.
     click_target(cx, TEMPLATE_PRIMARY_ID);
     draw(cx);
     entities.document_tabs.read_with(cx, |tabs, _| {
-        assert_eq!(tabs.creation_events().last().unwrap().orientation, None);
+        let created = tabs.creation_events().last().unwrap();
+        assert_eq!(created.template_id, "built-in-grid");
+        assert_eq!(created.orientation, Some(PaperOrientation::Portrait));
     });
 }
 
@@ -724,6 +752,70 @@ fn template_picker_offers_custom_and_imported_sizes_after_standard_sheets(cx: &m
         assert_eq!(
             control.selected_template_id(),
             "imported-00000000-0000-4000-8000-000000000001"
+        );
+    });
+}
+
+#[gpui::test]
+fn the_primary_tooltip_describes_the_stored_default_as_the_picker_row_does(
+    cx: &mut TestAppContext,
+) {
+    let (cx, entities) = open_harness(cx);
+    let control = entities
+        .document_tabs
+        .read_with(cx, |tabs, _| tabs.template_control());
+    let catalog = || {
+        vec![
+            TemplateCatalogItem::new("built-in-blank", "Blank Paper"),
+            TemplateCatalogItem::new("built-in-dots", "Dot Grid"),
+            TemplateCatalogItem::new("imported-00000000-0000-4000-8000-000000000001", "Form")
+                .with_preview(TemplatePreview::ImportedPdf {
+                    page_count: 2,
+                    first_page_key: None,
+                }),
+        ]
+    };
+    control.update(cx, |control, cx| {
+        // The library's default, turned portrait.
+        control.apply_template_catalog(
+            catalog(),
+            "built-in-dots",
+            Some(PaperOrientation::Portrait),
+            cx,
+        );
+        assert_eq!(
+            control.last_template_tooltip(),
+            "New from template: Dot Grid"
+        );
+        assert_eq!(
+            control.last_template_description(),
+            "A3 · Portrait · Page grid · 10 mm"
+        );
+        assert_eq!(control.orientation(), PaperOrientation::Portrait);
+        // Its own way is no turn.
+        control.apply_template_catalog(
+            catalog(),
+            "built-in-blank",
+            Some(PaperOrientation::Landscape),
+            cx,
+        );
+        assert_eq!(control.default_orientation(), None);
+        assert_eq!(
+            control.last_template_description(),
+            "A3 · Landscape · No page grid"
+        );
+        // Imported pages are never turned.
+        control.apply_template_catalog(
+            catalog(),
+            "imported-00000000-0000-4000-8000-000000000001",
+            Some(PaperOrientation::Portrait),
+            cx,
+        );
+        assert_eq!(control.default_orientation(), None);
+        assert_eq!(control.last_template_tooltip(), "New from template: Form");
+        assert_eq!(
+            control.last_template_description(),
+            "2 pages · Imported PDF · Page grid not defined"
         );
     });
 }
@@ -2464,8 +2556,20 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
             "template rows and preview split the picker 50/50"
         );
     }
+    // The list scrolls, so it clips at its edge: every row keeps room inside
+    // that edge for its 3px focus ring, and all six show without scrolling.
+    let list = bounds(cx, butter_paper::document_tab_bar::TEMPLATE_PICKER_LIST_ID);
+    for stable_id in &TEMPLATE_ITEM_IDS[..6] {
+        let row = bounds(cx, stable_id);
+        assert!(
+            row.left() - list.left() >= px(3.)
+                && list.right() - row.right() >= px(3.)
+                && row.top() - list.top() >= px(3.)
+                && list.bottom() - row.bottom() >= px(3.),
+            "{stable_id} at {row:?} leaves room for its focus ring in {list:?}"
+        );
+    }
     bounds(cx, TEMPLATE_MANAGE_ID);
-    bounds(cx, TEMPLATE_CREATE_ID);
 
     // The standard top-right X dismisses the picker; it reopens as before.
     click_target(cx, TEMPLATE_PICKER_CLOSE_ID);
@@ -2483,6 +2587,8 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
             .read_with(cx, |tabs, _| tabs.is_picker_open())
     );
 
+    // Select default template: a click on a row makes that template the
+    // default at once. The panel stays open and makes no document.
     for (template, stable_id) in BUILT_IN_TEMPLATES
         .into_iter()
         .zip(TEMPLATE_ITEM_IDS)
@@ -2492,25 +2598,28 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         draw(cx);
         entities.document_tabs.read_with(cx, |tabs, _| {
             assert_eq!(tabs.selected_template_id(), template.id);
+            assert_eq!(tabs.last_template_id(), template.id);
             assert_eq!(tabs.creation_events().len(), 2);
-            assert_eq!(tabs.last_template_id(), "built-in-blank");
             assert!(tabs.is_picker_open());
         });
     }
+    assert!(
+        cx.debug_bounds("template-picker-create").is_none(),
+        "the panel chooses the default; it has no Create"
+    );
 
-    click_target(cx, TEMPLATE_CREATE_ID);
+    // A double-click is a click: it chooses and makes nothing.
+    double_click_target(cx, TEMPLATE_ITEM_IDS[2]);
     draw(cx);
     entities.document_tabs.read_with(cx, |tabs, _| {
-        assert_eq!(tabs.creation_events().len(), 3);
-        assert_eq!(tabs.creation_events()[2].template_id, "built-in-triangle");
-        assert_eq!(
-            tabs.creation_events()[2].origin,
-            TemplateCreationOrigin::Create
-        );
-        assert_eq!(tabs.last_template_id(), "built-in-triangle");
-        assert!(!tabs.is_picker_open());
+        assert_eq!(tabs.creation_events().len(), 2);
+        assert_eq!(tabs.last_template_id(), "built-in-grid");
+        assert!(tabs.is_picker_open());
     });
 
+    // Closed and opened again, the panel shows the default.
+    click_target(cx, TEMPLATE_PICKER_CLOSE_ID);
+    draw(cx);
     cx.update(|window, cx| owner_focus.focus(window, cx));
     click_target(cx, TEMPLATE_PICKER_ID);
     draw(cx);
@@ -2518,47 +2627,45 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         entities
             .document_tabs
             .read_with(cx, |tabs, _| tabs.selected_template_id()),
-        "built-in-triangle",
-        "transient selection resets from the persisted last template on every open"
+        "built-in-grid",
+        "the panel opens on the default template"
     );
-    double_click_target(cx, TEMPLATE_ITEM_IDS[2]);
-    draw(cx);
-    entities.document_tabs.read_with(cx, |tabs, _| {
-        assert_eq!(tabs.creation_events().len(), 4);
-        assert_eq!(tabs.creation_events()[3].template_id, "built-in-grid");
-        assert_eq!(
-            tabs.creation_events()[3].origin,
-            TemplateCreationOrigin::RowDoubleClick
-        );
-        assert_eq!(tabs.last_template_id(), "built-in-grid");
-        assert!(!tabs.is_picker_open());
-    });
-
-    click_target(cx, TEMPLATE_PICKER_ID);
-    draw(cx);
     click_target(cx, TEMPLATE_MANAGE_ID);
     draw(cx);
     entities.document_tabs.read_with(cx, |tabs, _| {
         assert_eq!(tabs.manage_requests(), 1);
-        assert_eq!(tabs.creation_events().len(), 4);
+        assert_eq!(tabs.creation_events().len(), 2);
         assert!(!tabs.is_picker_open());
+    });
+
+    // The primary button makes the default the panel chose.
+    click_target(cx, TEMPLATE_PRIMARY_ID);
+    draw(cx);
+    entities.document_tabs.read_with(cx, |tabs, _| {
+        assert_eq!(tabs.creation_events().len(), 3);
+        assert_eq!(tabs.creation_events()[2].template_id, "built-in-grid");
+        assert_eq!(
+            tabs.creation_events()[2].origin,
+            TemplateCreationOrigin::Primary
+        );
     });
 
     entities.document_tabs.update(cx, |tabs, cx| {
         tabs.set_creating(true, cx);
     });
     draw(cx);
-    cx.update(|window, cx| owner_focus.focus(window, cx));
-    click_target(cx, TEMPLATE_PICKER_ID);
+    click_target(cx, TEMPLATE_PRIMARY_ID);
     draw(cx);
-    click_target(cx, TEMPLATE_CREATE_ID);
     assert_eq!(
         entities
             .document_tabs
             .read_with(cx, |tabs, _| tabs.creation_events().len()),
-        4,
-        "the only Electron disabled state suppresses Create while creation is pending"
+        3,
+        "the primary button makes nothing while creation is pending"
     );
+    cx.update(|window, cx| owner_focus.focus(window, cx));
+    click_target(cx, TEMPLATE_PICKER_ID);
+    draw(cx);
     entities.document_tabs.update(cx, |tabs, cx| {
         tabs.set_creating(false, cx);
     });
@@ -2613,6 +2720,37 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         "the standard template row also preserves Space activation"
     );
 
+    // Up and Down move among the rows, and stop at the first and last;
+    // Enter makes the focused row the default and keeps the panel open.
+    let enter_selects = |cx: &mut gpui::VisualTestContext, expected: &str| {
+        press_button_key(cx, "enter");
+        draw(cx);
+        entities.document_tabs.read_with(cx, |tabs, _| {
+            assert_eq!(tabs.last_template_id(), expected);
+            assert!(tabs.is_picker_open(), "Enter keeps the panel open");
+        });
+    };
+    press_button_key(cx, "up");
+    draw(cx);
+    assert_eq!(
+        entities
+            .document_tabs
+            .read_with(cx, |tabs, _| tabs.last_template_id()),
+        "built-in-grid",
+        "an arrow key moves focus, not the default"
+    );
+    enter_selects(cx, "built-in-dots");
+    for _ in 0..3 {
+        press_button_key(cx, "up");
+        draw(cx);
+    }
+    enter_selects(cx, "built-in-blank");
+    for _ in 0..8 {
+        press_button_key(cx, "down");
+        draw(cx);
+    }
+    enter_selects(cx, "built-in-triangle");
+
     cx.simulate_keystrokes("escape");
     draw(cx);
     let document_focus = entities
@@ -2631,7 +2769,7 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         entities
             .document_tabs
             .read_with(cx, |tabs, _| tabs.creation_events().len()),
-        5,
+        4,
         "the primary action remains Enter-activatable"
     );
     press_button_key(cx, "space");
@@ -2640,7 +2778,7 @@ fn template_split_traces_pointer_keyboard_dismissal_disabled_and_independence(
         entities
             .document_tabs
             .read_with(cx, |tabs, _| tabs.creation_events().len()),
-        6,
+        5,
         "the primary action remains Space-activatable"
     );
 

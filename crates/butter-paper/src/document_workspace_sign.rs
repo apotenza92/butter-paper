@@ -522,12 +522,12 @@ impl DocumentWorkspace {
             let _ = lookup.update(cx, |dialog, cx| dialog.identities_found(identities, cx));
         })
         .detach();
-        window.open_dialog(cx, move |surface, _, cx| {
+        window.open_dialog(cx, move |surface, window, cx| {
             let confirm = dialog.clone();
             let ready = dialog.read(cx).ready();
             surface
                 .title("Sign with a certificate")
-                .w(px(460.))
+                .w(crate::layout_metrics::scaled_px(460., window.rem_size()))
                 .max_w_full()
                 .close_button(false)
                 .child(dialog.clone())

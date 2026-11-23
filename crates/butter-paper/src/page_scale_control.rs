@@ -27,7 +27,7 @@ use gpui_component::{
     form::Field,
     h_flex,
     input::{Input, InputState},
-    select::{SearchableVec, Select, SelectEvent, SelectGroup, SelectItem, SelectState},
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     v_flex,
 };
 
@@ -40,6 +40,9 @@ gpui::actions!(page_scale, [ClosePageScale]);
 
 pub const PAGE_SCALE_DIALOG_ID: &str = "page-scale-dialog";
 pub const PAGE_SCALE_CLOSE_ID: &str = "page-scale-close";
+/// The panel's scrolling body, between its header and its buttons.
+pub const PAGE_SCALE_BODY_ID: &str = "page-scale-dialog-body";
+pub const PAGE_SCALE_GROUP_ID: &str = "page-scale-group";
 pub const PAGE_SCALE_SELECT_ID: &str = "page-scale-select";
 pub const PAGE_SCALE_CALIBRATE_ID: &str = "page-scale-calibrate";
 pub const PAGE_SCALE_STATED_ID: &str = "page-scale-stated";
@@ -64,6 +67,11 @@ pub const PAGE_SCALE_PICK_CANCEL_ID: &str = "page-scale-pick-cancel";
 const KEY_CUSTOM: &str = "custom";
 const KEY_MEASURED: &str = "measured";
 const KEY_NONE: &str = "none";
+const SYSTEMS: [ScaleSystem; 3] = [
+    ScaleSystem::Metric,
+    ScaleSystem::Architectural,
+    ScaleSystem::Engineering,
+];
 const UNITS: [ScaleUnit; 5] = [
     ScaleUnit::Mm,
     ScaleUnit::Cm,
@@ -94,6 +102,61 @@ pub enum ScaleChoice {
     Custom,
     /// From the calibration line and its known length.
     Measured,
+}
+
+/// The kind of scale the Scale group list chooses: a family of standard
+/// scales, whose own list then chooses one, or a scale that is not a
+/// standard one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScaleGroup {
+    Standard(ScaleSystem),
+    Custom,
+    /// From the calibration line: listed once a line is measured.
+    Measured,
+    None,
+}
+
+impl ScaleGroup {
+    fn key(self) -> SharedString {
+        match self {
+            Self::Standard(system) => system_key(system),
+            Self::Custom => KEY_CUSTOM.into(),
+            Self::Measured => KEY_MEASURED.into(),
+            Self::None => KEY_NONE.into(),
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Standard(system) => system.title(),
+            Self::Custom => "Custom",
+            Self::Measured => "Calibrated",
+            Self::None => "No scale",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            KEY_CUSTOM => Some(Self::Custom),
+            KEY_MEASURED => Some(Self::Measured),
+            KEY_NONE => Some(Self::None),
+            key => SYSTEMS
+                .into_iter()
+                .find(|system| system_key(*system) == key)
+                .map(Self::Standard),
+        }
+    }
+
+    /// The group a chosen scale is in; `None` while nothing is chosen.
+    fn of(choice: ScaleChoice) -> Option<Self> {
+        match choice {
+            ScaleChoice::Unset => None,
+            ScaleChoice::None => Some(Self::None),
+            ScaleChoice::Standard(index) => Some(Self::Standard(STANDARD_SCALES[index].system)),
+            ScaleChoice::Custom => Some(Self::Custom),
+            ScaleChoice::Measured => Some(Self::Measured),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -163,10 +226,24 @@ impl SelectItem for ScaleItem {
     }
 }
 
-type ScaleList = SearchableVec<SelectGroup<ScaleItem>>;
+type ScaleList = SearchableVec<ScaleItem>;
 
 fn standard_key(index: usize) -> SharedString {
     format!("standard-{index}").into()
+}
+
+fn system_key(system: ScaleSystem) -> SharedString {
+    system.title().to_lowercase().into()
+}
+
+/// The paper unit a custom ratio starts in: millimetres, or inches when
+/// measuring in feet or inches.
+fn default_paper_unit(display_unit: ScaleUnit) -> ScaleUnit {
+    if imperial_unit(display_unit) {
+        ScaleUnit::In
+    } else {
+        ScaleUnit::Mm
+    }
 }
 
 fn unit_title(unit: ScaleUnit) -> &'static str {
@@ -224,18 +301,13 @@ fn distance(start: PdfPoint, end: PdfPoint) -> f64 {
     (end.x - start.x).hypot(end.y - start.y)
 }
 
-/// The end of a line from `start` held horizontal or vertical (Shift).
-pub fn constrain_point(start: PdfPoint, end: PdfPoint) -> PdfPoint {
-    if (end.x - start.x).abs() >= (end.y - start.y).abs() {
-        PdfPoint {
-            x: end.x,
-            y: start.y,
-        }
+/// What the page says for a calibration line's second end, with angle
+/// snapping on or off: Shift inverts the setting while it is held.
+pub fn calibration_end_instruction(angle_snap_enabled: bool) -> &'static str {
+    if angle_snap_enabled {
+        "Click the other end. Hold Shift to draw freely."
     } else {
-        PdfPoint {
-            x: start.x,
-            y: end.y,
-        }
+        "Click the other end. Hold Shift to snap the angle."
     }
 }
 
@@ -254,6 +326,9 @@ pub struct PageScaleControl {
     focus_when_drawn: bool,
     request: Option<PageScaleRequest>,
     choice: ScaleChoice,
+    /// The group whose scales the Scale list shows; it follows the choice,
+    /// and keeps its place while nothing in it is chosen yet.
+    group: ScaleGroup,
     /// The page's text has been searched for the scales it states.
     stated_read: bool,
     stated: Vec<usize>,
@@ -265,6 +340,9 @@ pub struct PageScaleControl {
     start: Option<PdfPoint>,
     end: Option<PdfPoint>,
     hover: Option<PdfPoint>,
+    /// The last click for the line's second end was on another page: the
+    /// banner says where to click, in place of a toast.
+    wrong_page: bool,
     /// The choice before Calibrate, restored when the pick is abandoned.
     choice_before_pick: ScaleChoice,
     error: Option<(ErrorPlace, String)>,
@@ -273,6 +351,7 @@ pub struct PageScaleControl {
     /// different vertical scale, an unlisted precision).
     opened: Option<OpenedInputs>,
     applied_count: usize,
+    group_select: Entity<SelectState<Vec<ScaleItem>>>,
     scale_select: Entity<SelectState<ScaleList>>,
     unit_select: Entity<SelectState<Vec<SharedString>>>,
     precision_select: Entity<SelectState<Vec<SharedString>>>,
@@ -289,8 +368,9 @@ impl PageScaleControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let group_select = cx.new(|cx| SelectState::new(group_list(false), None, window, cx));
         let scale_select = cx.new(|cx| {
-            SelectState::new(scale_list(&[], false, false), None, window, cx).searchable(true)
+            SelectState::new(scale_list(ScaleSystem::Metric), None, window, cx).searchable(true)
         });
         let unit_select = cx.new(|cx| {
             SelectState::new(
@@ -321,25 +401,31 @@ impl PageScaleControl {
         let range = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 1-3, 5"));
 
         cx.subscribe_in(
+            &group_select,
+            window,
+            |control, _, event: &SelectEvent<Vec<ScaleItem>>, window, cx| {
+                let SelectEvent::Confirm(Some(key)) = event else {
+                    return;
+                };
+                if let Some(group) = ScaleGroup::from_key(key) {
+                    control.choose_group(group, window, cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe_in(
             &scale_select,
             window,
             |control, _, event: &SelectEvent<ScaleList>, window, cx| {
                 let SelectEvent::Confirm(Some(key)) = event else {
                     return;
                 };
-                let choice = match key.as_ref() {
-                    KEY_CUSTOM => ScaleChoice::Custom,
-                    KEY_MEASURED => ScaleChoice::Measured,
-                    KEY_NONE => ScaleChoice::None,
-                    key => match key
-                        .strip_prefix("standard-")
-                        .and_then(|index| index.parse().ok())
-                    {
-                        Some(index) => ScaleChoice::Standard(index),
-                        None => return,
-                    },
-                };
-                control.choose(choice, window, cx);
+                if let Some(index) = key
+                    .strip_prefix("standard-")
+                    .and_then(|index| index.parse().ok())
+                {
+                    control.choose(ScaleChoice::Standard(index), window, cx);
+                }
             },
         )
         .detach();
@@ -408,20 +494,23 @@ impl PageScaleControl {
             focus_handle: cx.focus_handle(),
             request: None,
             choice: ScaleChoice::Unset,
+            group: ScaleGroup::Standard(ScaleSystem::Metric),
             stated_read: false,
             stated: Vec::new(),
             display_unit: ScaleUnit::Mm,
             precision: unit_default_precision(ScaleUnit::Mm),
-            custom_paper_unit: ScaleUnit::Cm,
+            custom_paper_unit: ScaleUnit::Mm,
             pages: PageScalePages::This,
             picking: false,
             start: None,
             end: None,
             hover: None,
+            wrong_page: false,
             choice_before_pick: ScaleChoice::Unset,
             error: None,
             opened: None,
             applied_count: 0,
+            group_select,
             scale_select,
             unit_select,
             precision_select,
@@ -445,6 +534,15 @@ impl PageScaleControl {
 
     pub fn choice(&self) -> ScaleChoice {
         self.choice
+    }
+
+    pub fn group(&self) -> ScaleGroup {
+        self.group
+    }
+
+    /// The paper unit of the custom ratio.
+    pub fn custom_paper_unit(&self) -> ScaleUnit {
+        self.custom_paper_unit
     }
 
     pub fn pages(&self) -> PageScalePages {
@@ -536,12 +634,22 @@ impl PageScaleControl {
         !self.stated_read && self.target() == Some((document_id, page_index))
     }
 
-    /// What the page says while a line is picked.
-    pub fn pick_instruction(&self) -> Option<&'static str> {
-        self.picking.then_some(if self.start.is_some() {
-            "Click the other end. Hold Shift to keep the line straight."
-        } else {
-            "Click one end of a length you know, like a dimensioned wall."
+    /// What the banner says while a line is picked: the one place that
+    /// says what to do next. Its direction follows the angle snap setting,
+    /// which Shift inverts while it is held. After a click for the second
+    /// end on another page, it says where that end goes.
+    pub fn pick_instruction(&self, angle_snap_enabled: bool) -> Option<SharedString> {
+        if !self.picking {
+            return None;
+        }
+        Some(match (self.start, self.target()) {
+            (Some(_), Some((_, page_index))) if self.wrong_page => format!(
+                "Click the other end on page {}, where the line starts.",
+                page_index + 1
+            )
+            .into(),
+            (Some(_), _) => calibration_end_instruction(angle_snap_enabled).into(),
+            (None, _) => "Click one end of a length you know, like a dimensioned wall.".into(),
         })
     }
 
@@ -601,7 +709,13 @@ impl PageScaleControl {
                 {
                     Some(standard) => ScaleChoice::Standard(standard_index(standard)),
                     None => {
-                        self.fill_custom_from_ratio(ratio, window, cx);
+                        // A custom ratio keeps the paper unit it was set in.
+                        let paper_unit = if PAPER_UNITS.contains(&current.pdf_units) {
+                            current.pdf_units
+                        } else {
+                            default_paper_unit(current.real_units)
+                        };
+                        self.fill_custom_from_ratio(ratio, paper_unit, window, cx);
                         ScaleChoice::Custom
                     }
                 };
@@ -622,17 +736,22 @@ impl PageScaleControl {
                 if let ScaleChoice::Standard(index) = self.choice {
                     (self.display_unit, self.precision) = STANDARD_SCALES[index].default_display();
                 }
-                self.custom_paper_unit = if imperial {
-                    ScaleUnit::In
-                } else {
-                    ScaleUnit::Cm
-                };
+                self.custom_paper_unit = default_paper_unit(self.display_unit);
                 self.custom_paper
                     .update(cx, |input, cx| input.set_value("1", window, cx));
                 self.custom_real
                     .update(cx, |input, cx| input.set_value("", window, cx));
             }
         }
+        // The list shows the group of the scale chosen, else metric scales,
+        // or architectural ones on a sheet drawn in inches.
+        self.group = ScaleGroup::of(self.choice).unwrap_or_else(|| {
+            ScaleGroup::Standard(if paper_is_imperial(request.page_size) {
+                ScaleSystem::Architectural
+            } else {
+                ScaleSystem::Metric
+            })
+        });
         let has_scale = request.current.is_some();
         self.request = Some(request);
         self.opened = has_scale.then(|| self.opened_inputs(cx));
@@ -689,9 +808,17 @@ impl PageScaleControl {
 
     fn choose(&mut self, choice: ScaleChoice, window: &mut Window, cx: &mut Context<Self>) {
         if choice == ScaleChoice::Custom && self.choice != ScaleChoice::Custom {
-            // Custom starts from the scale chosen so far.
-            if let Some(ratio) = self.ratio(cx) {
-                self.fill_custom_from_ratio(ratio, window, cx);
+            // Custom starts from the scale chosen so far, in the paper unit
+            // chosen before when it suits the unit measured in.
+            let paper_unit =
+                if imperial_unit(self.custom_paper_unit) == imperial_unit(self.display_unit) {
+                    self.custom_paper_unit
+                } else {
+                    default_paper_unit(self.display_unit)
+                };
+            match self.ratio(cx) {
+                Some(ratio) => self.fill_custom_from_ratio(ratio, paper_unit, window, cx),
+                None => self.custom_paper_unit = paper_unit,
             }
         }
         if let ScaleChoice::Standard(index) = choice {
@@ -706,6 +833,38 @@ impl PageScaleControl {
         self.error = None;
         self.sync_selects(window, cx);
         cx.notify();
+    }
+
+    /// A group chosen in the Scale group list. A family of standard scales
+    /// lists its scales to choose from, starting at one the page states;
+    /// the others are the scale themselves.
+    fn choose_group(&mut self, group: ScaleGroup, window: &mut Window, cx: &mut Context<Self>) {
+        let choice = match group {
+            ScaleGroup::Standard(system) => {
+                if ScaleGroup::of(self.choice) == Some(group) {
+                    return;
+                }
+                self.stated
+                    .iter()
+                    .copied()
+                    .find(|index| STANDARD_SCALES[*index].system == system)
+                    .map_or(ScaleChoice::Unset, ScaleChoice::Standard)
+            }
+            ScaleGroup::Custom => ScaleChoice::Custom,
+            ScaleGroup::Measured => ScaleChoice::Measured,
+            ScaleGroup::None => ScaleChoice::None,
+        };
+        self.group = group;
+        self.choose(choice, window, cx);
+    }
+
+    pub fn choose_group_for_test(
+        &mut self,
+        group: ScaleGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.choose_group(group, window, cx);
     }
 
     /// Measures in `unit`, keeping the scale: typed real lengths are
@@ -773,12 +932,13 @@ impl PageScaleControl {
         cx.notify();
     }
 
-    fn fill_custom_from_ratio(&mut self, ratio: f64, window: &mut Window, cx: &mut Context<Self>) {
-        let paper_unit = if imperial_unit(self.display_unit) {
-            ScaleUnit::In
-        } else {
-            ScaleUnit::Cm
-        };
+    fn fill_custom_from_ratio(
+        &mut self,
+        ratio: f64,
+        paper_unit: ScaleUnit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.custom_paper_unit = paper_unit;
         let real = ratio * paper_unit.points() / self.display_unit.points();
         self.custom_paper
@@ -850,7 +1010,7 @@ impl PageScaleControl {
             ),
             _ => (ScaleSource::Custom, ratio_label(ratio, self.display_unit)),
         };
-        let scale = scale_from_ratio(
+        let mut scale = scale_from_ratio(
             request.page_index,
             source,
             &name,
@@ -858,6 +1018,10 @@ impl PageScaleControl {
             self.display_unit,
             self.precision,
         );
+        if self.choice == ScaleChoice::Custom {
+            // Stored as typed: `1 mm = 0.1 m`.
+            scale.pdf_units = self.custom_paper_unit;
+        }
         // The same scale chosen again is kept exactly as the page has it,
         // so applying it changes nothing.
         if let Some(current) = request.current.as_ref()
@@ -935,6 +1099,7 @@ impl PageScaleControl {
         self.start = None;
         self.end = None;
         self.hover = None;
+        self.wrong_page = false;
         self.error = None;
         self.open = false;
         cx.notify();
@@ -949,6 +1114,7 @@ impl PageScaleControl {
         self.start = None;
         self.end = None;
         self.hover = None;
+        self.wrong_page = false;
         if self.choice == ScaleChoice::Measured {
             self.choice = self.choice_before_pick;
         }
@@ -981,22 +1147,18 @@ impl PageScaleControl {
         cx.notify();
     }
 
-    /// Where the pointer is on the page while a line is picked.
+    /// Where the pointer is on the page while a line is picked, already
+    /// snapped and held to its angle by the workspace.
     pub fn hover_point(
         &mut self,
         document_id: DocumentId,
         page_index: u32,
         point: PdfPoint,
-        constrain: bool,
         cx: &mut Context<Self>,
     ) {
         if !self.picking || self.target() != Some((document_id, page_index)) {
             return;
         }
-        let point = match (self.start, constrain) {
-            (Some(start), true) => constrain_point(start, point),
-            _ => point,
-        };
         if self.hover != Some(point) {
             self.hover = Some(point);
             cx.notify();
@@ -1004,30 +1166,35 @@ impl PageScaleControl {
     }
 
     /// One end of the line: the first starts it, the second finishes it and
-    /// asks for its length. Both must be on the dialog's page.
+    /// asks for its length. Both must be on the dialog's page. The point is
+    /// already snapped and held to its angle by the workspace.
     pub fn record_point(
         &mut self,
         document_id: DocumentId,
         page_index: u32,
         point: PdfPoint,
-        constrain: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> CalibrationPointDisposition {
-        if !self.picking || self.target() != Some((document_id, page_index)) {
+        if !self.picking {
             return CalibrationPointDisposition::Ignored;
         }
+        if self.target() != Some((document_id, page_index)) {
+            // The banner says where the second end goes.
+            if self.start.is_some() && !self.wrong_page {
+                self.wrong_page = true;
+                cx.notify();
+            }
+            return CalibrationPointDisposition::Ignored;
+        }
+        self.wrong_page = false;
         let Some(start) = self.start else {
             self.start = Some(point);
             self.hover = Some(point);
             cx.notify();
             return CalibrationPointDisposition::FirstPoint;
         };
-        let end = if constrain {
-            constrain_point(start, point)
-        } else {
-            point
-        };
+        let end = point;
         if distance(start, end) < 1. {
             return CalibrationPointDisposition::Ignored;
         }
@@ -1076,26 +1243,28 @@ impl PageScaleControl {
     }
 
     fn sync_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(group) = ScaleGroup::of(self.choice) {
+            self.group = group;
+        }
         let measured = self.start.is_some() && self.end.is_some();
-        let imperial_first = self
-            .request
-            .as_ref()
-            .is_some_and(|request| paper_is_imperial(request.page_size));
-        let list = scale_list(&self.stated, measured, imperial_first);
-        let key: Option<SharedString> = match self.choice {
-            ScaleChoice::Unset => None,
-            ScaleChoice::None => Some(KEY_NONE.into()),
-            ScaleChoice::Standard(index) => Some(standard_key(index)),
-            ScaleChoice::Custom => Some(KEY_CUSTOM.into()),
-            ScaleChoice::Measured => Some(KEY_MEASURED.into()),
-        };
-        self.scale_select.update(cx, |select, cx| {
-            select.set_items(list, window, cx);
-            match &key {
-                Some(key) => select.set_selected_value(key, window, cx),
-                None => select.set_selected_index(None, window, cx),
-            }
+        let group_key = self.group.key();
+        self.group_select.update(cx, |select, cx| {
+            select.set_items(group_list(measured), window, cx);
+            select.set_selected_value(&group_key, window, cx);
         });
+        if let ScaleGroup::Standard(system) = self.group {
+            let key = match self.choice {
+                ScaleChoice::Standard(index) => Some(standard_key(index)),
+                _ => None,
+            };
+            self.scale_select.update(cx, |select, cx| {
+                select.set_items(scale_list(system), window, cx);
+                match &key {
+                    Some(key) => select.set_selected_value(key, window, cx),
+                    None => select.set_selected_index(None, window, cx),
+                }
+            });
+        }
         let unit = SharedString::from(unit_title(self.display_unit));
         self.unit_select.update(cx, |select, cx| {
             select.set_selected_value(&unit, window, cx)
@@ -1258,7 +1427,9 @@ fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyE
                     .relative()
                     .gap_1()
                     .pr_10()
-                    .pb(px(crate::layout_metrics::GROUP_SPACE))
+                    .pb(crate::layout_metrics::scaled(
+                        crate::layout_metrics::GROUP_SPACE,
+                    ))
                     .child(div().text_base().font_semibold().child("Page scale"))
                     .child(div().text_sm().text_color(muted).child(description))
                     .when(request.for_measuring, |header| {
@@ -1277,10 +1448,17 @@ fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyE
             )
             .child(
                 v_flex()
-                    .id("page-scale-dialog-body")
+                    .id(PAGE_SCALE_BODY_ID)
+                    .debug_selector(|| PAGE_SCALE_BODY_ID.into())
                     .flex_1()
                     .min_h_0()
-                    .gap(px(crate::layout_metrics::GROUP_SPACE))
+                    .gap(crate::layout_metrics::scaled(
+                        crate::layout_metrics::GROUP_SPACE,
+                    ))
+                    // The body scrolls, so it clips: room inside its edge
+                    // keeps a focused control's ring whole.
+                    .m(px(-crate::layout_metrics::FOCUS_RING_ROOM))
+                    .p(px(crate::layout_metrics::FOCUS_RING_ROOM))
                     .overflow_y_scroll()
                     .child(scale_section(entity, &request, cx))
                     .when(entity.read(cx).choice != ScaleChoice::None, |body| {
@@ -1293,8 +1471,10 @@ fn panel_content(entity: &Entity<PageScaleControl>, cx: &mut App) -> Option<AnyE
             .child(
                 h_flex()
                     .justify_end()
-                    .gap(px(crate::layout_metrics::SPACE))
-                    .pt(px(crate::layout_metrics::GROUP_SPACE))
+                    .gap(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
+                    .pt(crate::layout_metrics::scaled(
+                        crate::layout_metrics::GROUP_SPACE,
+                    ))
                     .child(
                         Button::new(PAGE_SCALE_CANCEL_ID)
                             .debug_selector(|| PAGE_SCALE_CANCEL_ID.into())
@@ -1339,57 +1519,35 @@ fn same_scale(left: &PageScale, right: &PageScale) -> bool {
         && same_precision(left.precision, right.precision)
 }
 
-fn scale_list(stated: &[usize], measured: bool, imperial_first: bool) -> ScaleList {
-    let item = |key: SharedString, title: String| ScaleItem {
-        key,
-        title: title.into(),
-    };
-    let group = |system: ScaleSystem| {
-        SelectGroup::new(system.title()).items(
-            STANDARD_SCALES
-                .iter()
-                .enumerate()
-                .filter(|(_, scale)| scale.system == system)
-                .map(|(index, scale)| item(standard_key(index), scale.label.to_owned())),
-        )
-    };
-    let mut groups = Vec::new();
-    if !stated.is_empty() {
-        groups.push(
-            SelectGroup::new("Stated on this page").items(stated.iter().map(|index| {
-                item(
-                    standard_key(*index),
-                    STANDARD_SCALES[*index].label.to_owned(),
-                )
-            })),
-        );
-    }
-    let systems = if imperial_first {
-        [
-            ScaleSystem::Architectural,
-            ScaleSystem::Engineering,
-            ScaleSystem::Metric,
-        ]
-    } else {
-        [
-            ScaleSystem::Metric,
-            ScaleSystem::Architectural,
-            ScaleSystem::Engineering,
-        ]
-    };
-    groups.extend(systems.into_iter().map(group));
-    let mut other = SelectGroup::new("Other");
-    if measured {
-        other = other.item(item(
-            KEY_MEASURED.into(),
-            "Calibrated from your line".into(),
-        ));
-    }
-    other = other
-        .item(item(KEY_CUSTOM.into(), "Custom ratio".into()))
-        .item(item(KEY_NONE.into(), "No scale".into()));
-    groups.push(other);
-    SearchableVec::new(groups)
+/// The standard scales of one measuring system, in the catalogue's order.
+fn scale_list(system: ScaleSystem) -> ScaleList {
+    SearchableVec::new(
+        STANDARD_SCALES
+            .iter()
+            .enumerate()
+            .filter(|(_, scale)| scale.system == system)
+            .map(|(index, scale)| ScaleItem {
+                key: standard_key(index),
+                title: scale.label.into(),
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The Scale group list: the standard families, then the scales that are
+/// not standard; Calibrated once a line is measured.
+fn group_list(measured: bool) -> Vec<ScaleItem> {
+    SYSTEMS
+        .into_iter()
+        .map(ScaleGroup::Standard)
+        .chain([ScaleGroup::Custom])
+        .chain(measured.then_some(ScaleGroup::Measured))
+        .chain([ScaleGroup::None])
+        .map(|group| ScaleItem {
+            key: group.key(),
+            title: group.title().into(),
+        })
+        .collect()
 }
 
 fn error_text(
@@ -1416,22 +1574,27 @@ fn scale_section(
 ) -> impl IntoElement {
     let state = entity.read(cx);
     let choice = state.choice;
+    let group = state.group;
     let calibrate = entity.downgrade();
     let stated = state.stated.clone();
     let measured_line = state.start.zip(state.end).map(|(start, end)| {
         paper_length_label(distance(start, end), imperial_unit(state.display_unit))
     });
     let result = state.ratio(cx).map(|ratio| {
-        let (paper_unit, paper_name) = if imperial_unit(state.display_unit) {
-            (ScaleUnit::In, "1 in")
+        // A custom ratio reads in its own paper unit.
+        let paper_unit = if choice == ScaleChoice::Custom {
+            state.custom_paper_unit
+        } else if imperial_unit(state.display_unit) {
+            ScaleUnit::In
         } else {
-            (ScaleUnit::Cm, "1 cm")
+            ScaleUnit::Cm
         };
         let real = ratio * paper_unit.points() / state.display_unit.points();
         (
             ratio,
             format!(
-                "{paper_name} on paper is {} {}",
+                "1 {} on paper is {} {}",
+                paper_unit.as_str(),
                 trimmed(real, 4),
                 state.display_unit.as_str()
             ),
@@ -1451,15 +1614,11 @@ fn scale_section(
                     .gap_2()
                     .child(
                         div()
-                            .id(PAGE_SCALE_SELECT_ID)
-                            .debug_selector(|| PAGE_SCALE_SELECT_ID.into())
+                            .id(PAGE_SCALE_GROUP_ID)
+                            .debug_selector(|| PAGE_SCALE_GROUP_ID.into())
                             .flex_1()
                             .min_w_0()
-                            .child(
-                                Select::new(&state.scale_select)
-                                    .placeholder("Choose a scale")
-                                    .search_placeholder("Search scales"),
-                            ),
+                            .child(Select::new(&state.group_select)),
                     )
                     .child(
                         Button::new(PAGE_SCALE_CALIBRATE_ID)
@@ -1477,6 +1636,19 @@ fn scale_section(
                             }),
                     ),
             )
+            .when(matches!(group, ScaleGroup::Standard(_)), |section| {
+                section.child(
+                    div()
+                        .id(PAGE_SCALE_SELECT_ID)
+                        .debug_selector(|| PAGE_SCALE_SELECT_ID.into())
+                        .w_full()
+                        .child(
+                            Select::new(&state.scale_select)
+                                .placeholder("Choose a scale")
+                                .search_placeholder("Search scales"),
+                        ),
+                )
+            })
             .when(!stated.is_empty(), |section| {
                 section.child(
                     h_flex()
@@ -1525,14 +1697,14 @@ fn scale_section(
                             div()
                                 .id(PAGE_SCALE_CUSTOM_PAPER_ID)
                                 .debug_selector(|| PAGE_SCALE_CUSTOM_PAPER_ID.into())
-                                .w(px(72.))
+                                .w(crate::layout_metrics::scaled(72.))
                                 .child(Input::new(&state.custom_paper)),
                         )
                         .child(
                             div()
                                 .id(PAGE_SCALE_CUSTOM_PAPER_UNIT_ID)
                                 .debug_selector(|| PAGE_SCALE_CUSTOM_PAPER_UNIT_ID.into())
-                                .w(px(80.))
+                                .w(crate::layout_metrics::scaled(80.))
                                 .child(Select::new(&state.paper_unit_select)),
                         )
                         .child(div().text_sm().child("on paper ="))
@@ -1737,34 +1909,86 @@ mod tests {
     use gpui_component::IndexPath;
 
     #[test]
-    fn shift_holds_a_calibration_line_to_its_longer_axis() {
-        let start = PdfPoint { x: 10., y: 20. };
-        assert_eq!(
-            constrain_point(start, PdfPoint { x: 80., y: 40. }),
-            PdfPoint { x: 80., y: 20. }
-        );
-        assert_eq!(
-            constrain_point(start, PdfPoint { x: 20., y: 100. }),
-            PdfPoint { x: 10., y: 100. }
-        );
+    fn the_calibration_hint_names_what_shift_does_in_either_setting() {
+        // Shift inverts the angle snap setting while it is held.
+        assert!(calibration_end_instruction(true).ends_with("Hold Shift to draw freely."));
+        assert!(calibration_end_instruction(false).ends_with("Hold Shift to snap the angle."));
     }
 
     #[test]
-    fn imperial_sheets_list_imperial_scales_first() {
+    fn imperial_sheets_are_told_apart() {
         assert!(paper_is_imperial((2592., 1728.)));
         assert!(paper_is_imperial((612., 792.)));
         assert!(!paper_is_imperial((2384., 1684.)));
         assert!(!paper_is_imperial((1000., 700.)));
-        let list = scale_list(&[], false, true);
-        let titles = (0..4)
-            .filter_map(|section| {
-                use gpui_component::select::SelectDelegate as _;
-                list.item(IndexPath::default().section(section).row(0))
-                    .map(|item| item.title.to_string())
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(titles[0], "12\" = 1'-0\"");
-        assert_eq!(titles[3], "Custom ratio");
+    }
+
+    #[test]
+    fn the_group_list_names_each_family_then_the_scales_that_are_not_standard() {
+        let titles = |measured| {
+            group_list(measured)
+                .into_iter()
+                .map(|item| item.title.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            titles(false),
+            [
+                "Metric",
+                "Architectural",
+                "Engineering",
+                "Custom",
+                "No scale"
+            ]
+        );
+        assert_eq!(
+            titles(true),
+            [
+                "Metric",
+                "Architectural",
+                "Engineering",
+                "Custom",
+                "Calibrated",
+                "No scale"
+            ]
+        );
+        for item in group_list(true) {
+            let group = ScaleGroup::from_key(&item.key).unwrap();
+            assert_eq!(group.key(), item.key);
+        }
+    }
+
+    #[test]
+    fn a_family_lists_only_its_own_scales() {
+        use gpui_component::select::SelectDelegate as _;
+        for system in SYSTEMS {
+            let list = scale_list(system);
+            let count = STANDARD_SCALES
+                .iter()
+                .filter(|scale| scale.system == system)
+                .count();
+            assert_eq!(list.items_count(0), count);
+            let first = list.item(IndexPath::default().row(0)).unwrap();
+            let index = first.key.strip_prefix("standard-").unwrap();
+            assert_eq!(
+                STANDARD_SCALES[index.parse::<usize>().unwrap()].system,
+                system
+            );
+        }
+        assert_eq!(
+            scale_list(ScaleSystem::Metric)
+                .item(IndexPath::default().row(0))
+                .unwrap()
+                .title,
+            "1:1"
+        );
+    }
+
+    #[test]
+    fn a_custom_ratio_starts_in_millimetres_or_inches() {
+        assert_eq!(default_paper_unit(ScaleUnit::M), ScaleUnit::Mm);
+        assert_eq!(default_paper_unit(ScaleUnit::Mm), ScaleUnit::Mm);
+        assert_eq!(default_paper_unit(ScaleUnit::Ft), ScaleUnit::In);
     }
 
     #[test]

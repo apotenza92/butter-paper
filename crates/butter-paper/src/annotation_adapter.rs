@@ -50,11 +50,11 @@ use crate::semantic_snapping::{
     AcquiredTrackingPoint, ObjectSnapTrackingResult, OrthogonalAxis, PageGridDefinition,
     RelationshipSnapGuide, SemanticSnapDecision, SemanticSnapError, SemanticSnapIndex,
     SemanticSnapSettings, SnapGuideRect, annotation_guide_rects, combined_guide_bounds,
-    find_equal_size_snap, find_equal_spacing_snap, find_object_snap_tracking_point,
-    moving_annotation_snap_anchor_points,
+    constrain_direction, find_equal_size_snap, find_equal_spacing_snap,
+    find_object_snap_tracking_point, moving_annotation_snap_anchor_points,
     moving_annotation_snap_anchor_points_with_selection_supplement,
     quantize_pdf_distance_to_mm_increment, resolve_construction_grid_point,
-    toggle_acquired_tracking_point,
+    resolve_construction_grid_point_on_ray, snap_angle_degrees, toggle_acquired_tracking_point,
 };
 
 pub const FROZEN_TEXT_CREATE: &str = "Beam B-12 / revision 3";
@@ -1239,6 +1239,12 @@ pub struct AnnotationAdapter {
     /// Where the last creation point resolved to, for a box whose gesture
     /// keeps no current corner of its own.
     typed_size_pointer: Option<PdfPoint>,
+    /// Whether Shift was held at the last pointer event, so a turn's
+    /// preview snaps as its commit will.
+    pointer_shift: bool,
+    /// The last creation point snapped to a point target off the held
+    /// direction: the point snap won, so the direction is free.
+    point_snap_frees_direction: bool,
 }
 
 /// Sizes typed while drawing, in the page's PDF frame: lengths in points,
@@ -3024,16 +3030,22 @@ impl AnnotationAdapter {
     }
 
     /// A calibration line's end, snapped to the page's drawing and markups
-    /// as a Length end is, whatever tool is armed. The snap shows on the
-    /// page until [`Self::clear_semantic_snap_decision`].
+    /// as a Length end is, whatever tool is armed. From the line's `start`,
+    /// its direction follows the angle snap setting, inverted while `shift`
+    /// is held, as a Line's does. The snap shows on the page until
+    /// [`Self::clear_semantic_snap_decision`].
     pub fn resolve_calibration_point(
         &mut self,
         document_id: u64,
         page_index: u32,
         point: PdfPoint,
+        start: Option<PdfPoint>,
+        shift: bool,
     ) -> PdfPoint {
         self.relationship_snap_guides.clear();
         self.object_snap_tracking_result = None;
+        let angle_constraint =
+            start.zip(self.semantic_snap_settings.angle_snap_step_degrees(shift));
         let decision = self
             .semantic_snap_index(
                 document_id,
@@ -3041,12 +3053,20 @@ impl AnnotationAdapter {
                 &[],
                 &AnnotationSelectionSupplement::new(),
             )
-            .resolve_point(
+            .resolve_point_with_angle_constraint(
                 point,
                 &self.semantic_snap_settings,
                 self.observed_pixels_per_point.0,
+                angle_constraint,
             );
-        let resolved = decision.as_ref().map_or(point, |decision| decision.point);
+        let resolved = decision.as_ref().map_or_else(
+            || {
+                angle_constraint.map_or(point, |(anchor, step)| {
+                    constrain_direction(anchor, point, Some(step))
+                })
+            },
+            |decision| decision.point,
+        );
         self.semantic_snap_decision = decision;
         resolved
     }
@@ -3058,22 +3078,41 @@ impl AnnotationAdapter {
         document_id: u64,
         page_index: u32,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> PdfPoint {
-        let snapped = self.resolve_snapped_creation_point(
-            document_id,
-            page_index,
-            point,
-            constrain_orthogonal,
-        );
+        self.point_snap_frees_direction = false;
+        let angle_step = self.creation_angle_step(shift);
+        let snapped =
+            self.resolve_snapped_creation_point(document_id, page_index, point, angle_step);
         let resolved = self.apply_typed_size(document_id, page_index, snapped);
         if resolved != snapped {
             // A typed size overrides the snap that pulled the pointer.
+            self.point_snap_frees_direction = false;
             self.semantic_snap_decision = None;
             self.object_snap_tracking_result = None;
             self.relationship_snap_guides.clear();
         }
         resolved
+    }
+
+    /// The step a direction drawn from the last point snaps to, or `None`
+    /// when it is free: the angle snap setting, inverted while Shift is
+    /// held. A typed angle is exact, so it frees the direction, as does a
+    /// point target the pointer snapped to off the held direction.
+    fn creation_angle_step(&self, shift: bool) -> Option<f64> {
+        if self.point_snap_frees_direction
+            || self
+                .typed_size
+                .is_some_and(|(size, _)| size.angle.is_some())
+        {
+            return None;
+        }
+        self.semantic_snap_settings.angle_snap_step_degrees(shift)
+    }
+
+    /// The step a pointer turn snaps to, or `None` when it is free.
+    fn rotation_angle_step(&self, shift: bool) -> Option<f64> {
+        self.semantic_snap_settings.angle_snap_step_degrees(shift)
     }
 
     /// Sizes typed for the markup being drawn; `None` clears them.
@@ -3197,7 +3236,7 @@ impl AnnotationAdapter {
         document_id: u64,
         page_index: u32,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        angle_step: Option<f64>,
     ) -> PdfPoint {
         self.relationship_snap_guides.clear();
         let moving = match self.active.as_ref() {
@@ -3732,27 +3771,51 @@ impl AnnotationAdapter {
         if let Some(draft_path) = draft_path {
             snap_index = snap_index.with_shared_index(draft_path);
         }
-        let annotation_decision = snap_index.resolve_point_with_orthogonal_anchor(
+        // A point target in range wins over the held direction (so a path
+        // closes on its start whatever the angle); grids act along it.
+        let angle_constraint = creation_anchor.zip(angle_step);
+        let annotation_decision = snap_index.resolve_point_with_angle_constraint(
             point,
             &self.semantic_snap_settings,
             self.observed_pixels_per_point.0,
-            constrain_orthogonal.then_some(creation_anchor).flatten(),
+            angle_constraint,
         );
         let construction_grid_decision = self
             .semantic_snap_page_sizes
             .get(&(document_id, page_index))
-            .and_then(|(width, height)| {
-                resolve_construction_grid_point(
+            .and_then(|(width, height)| match angle_constraint {
+                Some((anchor, step)) => resolve_construction_grid_point_on_ray(
                     point,
                     *width,
                     *height,
                     &self.semantic_snap_settings,
                     self.observed_pixels_per_point.0,
-                )
+                    anchor,
+                    step,
+                ),
+                None => resolve_construction_grid_point(
+                    point,
+                    *width,
+                    *height,
+                    &self.semantic_snap_settings,
+                    self.observed_pixels_per_point.0,
+                ),
             });
+        // A point target off the held ray won over the direction, so it wins
+        // over the grid, which acts only along the ray.
+        let off_ray = |decision: &SemanticSnapDecision| {
+            angle_constraint.is_some_and(|(anchor, step)| {
+                point_distance_css_px(
+                    constrain_direction(anchor, decision.point, Some(step)),
+                    decision.point,
+                    1.,
+                ) > 1e-6
+            })
+        };
         let decision = match (annotation_decision, construction_grid_decision) {
             (Some(annotation), Some(grid)) => Some(
-                if annotation.distance_window_px <= grid.distance_window_px {
+                if off_ray(&annotation) || annotation.distance_window_px <= grid.distance_window_px
+                {
                     annotation
                 } else {
                     grid
@@ -3763,6 +3826,7 @@ impl AnnotationAdapter {
         };
         if let Some(decision) = decision {
             let resolved = decision.point;
+            self.point_snap_frees_direction = off_ray(&decision);
             self.update_tracking_acquisition(Some(&decision));
             self.object_snap_tracking_result = None;
             self.semantic_snap_decision = Some(decision);
@@ -3770,25 +3834,9 @@ impl AnnotationAdapter {
         }
         self.update_tracking_acquisition(None);
         self.semantic_snap_decision = None;
-        let constrained = if constrain_orthogonal {
-            creation_anchor.map_or(point, |anchor| {
-                let dx = point.x - anchor.x;
-                let dy = point.y - anchor.y;
-                if dx.abs() >= dy.abs() {
-                    PdfPoint {
-                        x: point.x,
-                        y: anchor.y,
-                    }
-                } else {
-                    PdfPoint {
-                        x: anchor.x,
-                        y: point.y,
-                    }
-                }
-            })
-        } else {
-            point
-        };
+        let constrained = angle_constraint.map_or(point, |(anchor, step)| {
+            constrain_direction(anchor, point, Some(step))
+        });
         let mut resolved = constrained;
         let mut increment_applied = false;
         if self.tool == AnnotationTool::Dimension
@@ -3813,19 +3861,24 @@ impl AnnotationAdapter {
             }
         }
         if !increment_applied {
-            let allowed_axes = if constrain_orthogonal {
-                creation_anchor.map_or_else(
-                    || vec![OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
-                    |anchor| {
-                        if (point.x - anchor.x).abs() >= (point.y - anchor.y).abs() {
-                            vec![OrthogonalAxis::Vertical]
-                        } else {
-                            vec![OrthogonalAxis::Horizontal]
-                        }
-                    },
-                )
-            } else {
-                vec![OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical]
+            // Tracking lines cross a level ray plumb and a plumb ray level;
+            // a ray at another angle takes no tracking, which would leave it.
+            let allowed_axes = match angle_constraint {
+                None => vec![OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
+                Some((anchor, _)) if constrained.y == anchor.y && constrained.x != anchor.x => {
+                    vec![OrthogonalAxis::Vertical]
+                }
+                Some((anchor, _)) if constrained.x == anchor.x && constrained.y != anchor.y => {
+                    vec![OrthogonalAxis::Horizontal]
+                }
+                Some((anchor, _)) if constrained == anchor => {
+                    if (point.x - anchor.x).abs() >= (point.y - anchor.y).abs() {
+                        vec![OrthogonalAxis::Vertical]
+                    } else {
+                        vec![OrthogonalAxis::Horizontal]
+                    }
+                }
+                Some(_) => Vec::new(),
             };
             let tracking = find_object_snap_tracking_point(
                 constrained,
@@ -4081,11 +4134,7 @@ impl AnnotationAdapter {
         resolved
     }
 
-    fn resolve_equal_size_placement_point(
-        &mut self,
-        point: PdfPoint,
-        constrain_orthogonal: bool,
-    ) -> PdfPoint {
+    fn resolve_equal_size_placement_point(&mut self, point: PdfPoint, shift: bool) -> PdfPoint {
         if self.typed_size.is_some() {
             // A typed size is exact; matching another markup's would undo it.
             return point;
@@ -4118,7 +4167,7 @@ impl AnnotationAdapter {
         let Some((document_id, page_index, start, is_ellipse)) = placement else {
             return point;
         };
-        let candidate = if is_ellipse && constrain_orthogonal {
+        let candidate = if is_ellipse && shift {
             EllipseAnnotation::constrained_end(start, point)
         } else {
             point
@@ -4134,7 +4183,7 @@ impl AnnotationAdapter {
             return point;
         };
         let (mut width, mut height) = (size.width, size.height);
-        if is_ellipse && constrain_orthogonal && (width.is_some() || height.is_some()) {
+        if is_ellipse && shift && (width.is_some() || height.is_some()) {
             let diameter = match (width, height) {
                 (Some(width), Some(height)) => {
                     if (width - moving_bounds.width).abs() <= (height - moving_bounds.height).abs()
@@ -5297,7 +5346,7 @@ impl AnnotationAdapter {
     pub fn update_length_placement(
         &mut self,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let (document_id, page_index) = match self.active.as_ref() {
             Some(ActivePointer::LengthCreate {
@@ -5307,23 +5356,19 @@ impl AnnotationAdapter {
             }) => (*document_id, *page_index),
             _ => return Err(AnnotationError::NoActiveGesture),
         };
-        let point = self.resolve_semantic_creation_point(
-            document_id,
-            page_index,
-            point,
-            constrain_orthogonal,
-        );
+        let point = self.resolve_semantic_creation_point(document_id, page_index, point, shift);
+        let angle_step = self.creation_angle_step(shift);
         let Some(ActivePointer::LengthCreate { start, current, .. }) = self.active.as_mut() else {
             return Err(AnnotationError::NoActiveGesture);
         };
-        *current = constrained_length_point(*start, point, constrain_orthogonal);
+        *current = constrain_direction(*start, point, angle_step);
         Ok(PointerPhaseOutcome::PlacementPending)
     }
 
     pub fn update_dimension_placement(
         &mut self,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let (document_id, page_index) = match self.active.as_ref() {
             Some(ActivePointer::DimensionCreate {
@@ -5333,17 +5378,13 @@ impl AnnotationAdapter {
             }) => (*document_id, *page_index),
             _ => return Err(AnnotationError::NoActiveGesture),
         };
-        let point = self.resolve_semantic_creation_point(
-            document_id,
-            page_index,
-            point,
-            constrain_orthogonal,
-        );
+        let point = self.resolve_semantic_creation_point(document_id, page_index, point, shift);
+        let angle_step = self.creation_angle_step(shift);
         let Some(ActivePointer::DimensionCreate { start, current, .. }) = self.active.as_mut()
         else {
             return Err(AnnotationError::NoActiveGesture);
         };
-        *current = constrained_line_point(*start, point, constrain_orthogonal);
+        *current = constrain_direction(*start, point, angle_step);
         Ok(PointerPhaseOutcome::PlacementPending)
     }
 
@@ -5352,14 +5393,9 @@ impl AnnotationAdapter {
         document_id: u64,
         page_index: u32,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let point = self.resolve_semantic_creation_point(
-            document_id,
-            page_index,
-            point,
-            constrain_orthogonal,
-        );
+        let point = self.resolve_semantic_creation_point(document_id, page_index, point, shift);
         let active = self.active.take().ok_or(AnnotationError::NoActiveGesture)?;
         let ActivePointer::DimensionCreate {
             document_id: active_document_id,
@@ -5375,7 +5411,7 @@ impl AnnotationAdapter {
         if (active_document_id, active_page_index) != (document_id, page_index) {
             return Err(AnnotationError::NoActiveGesture);
         }
-        let end = constrained_line_point(start, point, constrain_orthogonal);
+        let end = constrain_direction(start, point, self.creation_angle_step(shift));
         if (end.x - start.x).hypot(end.y - start.y) <= LENGTH_MINIMUM_PDF_DISTANCE + 0.001 {
             return Ok(PointerPhaseOutcome::Ignored);
         }
@@ -5518,14 +5554,9 @@ impl AnnotationAdapter {
         document_id: u64,
         page_index: u32,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let point = self.resolve_semantic_creation_point(
-            document_id,
-            page_index,
-            point,
-            constrain_orthogonal,
-        );
+        let point = self.resolve_semantic_creation_point(document_id, page_index, point, shift);
         let active = self.active.take().ok_or(AnnotationError::NoActiveGesture)?;
         let ActivePointer::LengthCreate {
             document_id: active_document_id,
@@ -5541,7 +5572,7 @@ impl AnnotationAdapter {
         if (active_document_id, active_page_index) != (document_id, page_index) {
             return Err(AnnotationError::NoActiveGesture);
         }
-        let end = constrained_length_point(start, point, constrain_orthogonal);
+        let end = constrain_direction(start, point, self.creation_angle_step(shift));
         // GPUI converts through f32 pixel bounds before returning PDF points.
         // Keep the exact two-point product threshold stable across layout sizes.
         if ((end.x - start.x).powi(2) + (end.y - start.y).powi(2)).sqrt()
@@ -7329,7 +7360,7 @@ impl AnnotationAdapter {
         button: u8,
         point: PdfPoint,
         tolerance_pt: f64,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let viewport_point = SelectionPoint::new(
             point.x * self.observed_pixels_per_point.0,
@@ -7344,7 +7375,7 @@ impl AnnotationAdapter {
             viewport_point,
             tolerance_pt,
             PointerInputModifiers {
-                shift: constrain_orthogonal,
+                shift,
                 alt: false,
                 force_box: false,
             },
@@ -7387,16 +7418,12 @@ impl AnnotationAdapter {
         modifiers: PointerInputModifiers,
         supplement: &AnnotationSelectionSupplement,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let constrain_orthogonal = modifiers.shift;
+        let shift = modifiers.shift;
+        self.pointer_shift = shift;
         if button != 0 {
             return Ok(PointerPhaseOutcome::Ignored);
         }
-        let point = self.resolve_semantic_creation_point(
-            document_id,
-            page_index,
-            point,
-            constrain_orthogonal,
-        );
+        let point = self.resolve_semantic_creation_point(document_id, page_index, point, shift);
         if self.tool == AnnotationTool::Snapshot {
             if let Some(mut draft) = self.snapshot_draft.take() {
                 if (draft.document_id, draft.page_index) != (document_id, page_index) {
@@ -7542,7 +7569,7 @@ impl AnnotationAdapter {
                 self.cancel(PointerCancelReason::AdapterError)?;
                 return Err(AnnotationError::NoActiveGesture);
             }
-            self.pointer_move_with_constraint(pointer_id, point, constrain_orthogonal)?;
+            self.pointer_move_with_constraint(pointer_id, point, shift)?;
             if let Some(ActivePointer::CloudPlusCreate {
                 id, start, current, ..
             }) = &self.active
@@ -7564,7 +7591,7 @@ impl AnnotationAdapter {
                     supplement,
                 );
             }
-            return self.commit_pending_click(pointer_id, point, constrain_orthogonal);
+            return self.commit_pending_click(pointer_id, point, shift);
         }
         if matches!(self.tool, AnnotationTool::Polylength | AnnotationTool::Area) {
             let kind = match self.tool {
@@ -7727,7 +7754,7 @@ impl AnnotationAdapter {
                         end,
                         point,
                         ARC_MINIMUM_BULGE_CSS_PX / self.observed_pixels_per_point.0,
-                        constrain_orthogonal,
+                        shift,
                     )?;
                     let annotation = ArcAnnotation::new(
                         draft.id.clone(),
@@ -7873,11 +7900,11 @@ impl AnnotationAdapter {
                         start: point,
                         current: point,
                         original: annotation.clone(),
-                        snap_quarter_turn: constrain_orthogonal,
+                        snap_quarter_turn: shift,
                     });
                     return Ok(PointerPhaseOutcome::GestureStarted);
                 }
-                if constrain_orthogonal && let Some(id) = selectable_hit_id.clone() {
+                if shift && let Some(id) = selectable_hit_id.clone() {
                     document.toggle_selection(&id);
                     return Ok(PointerPhaseOutcome::SelectionChanged(
                         document.selected_id().cloned(),
@@ -9352,7 +9379,7 @@ impl AnnotationAdapter {
     fn update_pending_path_preview(
         &mut self,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         if let Some(draft) = self.vertex_path_draft.as_mut() {
             draft.hover = point;
@@ -9362,7 +9389,7 @@ impl AnnotationAdapter {
             draft.hover = point;
         } else if let Some(draft) = self.arc_draft.as_ref() {
             let (document_id, page_index) = (draft.document_id, draft.page_index);
-            self.update_arc_hover(document_id, page_index, point, constrain_orthogonal)?;
+            self.update_arc_hover(document_id, page_index, point, shift)?;
         } else {
             return Ok(PointerPhaseOutcome::Ignored);
         }
@@ -9381,7 +9408,7 @@ impl AnnotationAdapter {
         &mut self,
         pointer_id: u64,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let viewport_point = SelectionPoint::new(
             point.x * self.observed_pixels_per_point.0,
@@ -9392,7 +9419,7 @@ impl AnnotationAdapter {
             point,
             viewport_point,
             PointerInputModifiers {
-                shift: constrain_orthogonal,
+                shift,
                 alt: false,
                 force_box: false,
             },
@@ -9406,21 +9433,19 @@ impl AnnotationAdapter {
         viewport_point: SelectionPoint,
         modifiers: PointerInputModifiers,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let constrain_orthogonal = modifiers.shift;
+        let shift = modifiers.shift;
+        self.pointer_shift = shift;
         let point = self.offset_by_grab(point);
         let raw_point = point;
         let point = self
             .active_surface()
             .map_or(point, |(document_id, page_index)| {
-                self.resolve_semantic_creation_point(
-                    document_id,
-                    page_index,
-                    point,
-                    constrain_orthogonal,
-                )
+                self.resolve_semantic_creation_point(document_id, page_index, point, shift)
             });
         let point = self.resolve_equal_size_resize_point(point);
-        let point = self.resolve_equal_size_placement_point(point, constrain_orthogonal);
+        let point = self.resolve_equal_size_placement_point(point, shift);
+        let angle_step = self.creation_angle_step(shift);
+        let rotation_step = self.rotation_angle_step(shift);
         if let Some(draft) = self.snapshot_draft.as_mut() {
             require_pointer(draft.pointer_id, pointer_id)?;
             draft.current = point;
@@ -9430,7 +9455,7 @@ impl AnnotationAdapter {
             if let Some(active_pointer) = self.cloud_drag_pointer {
                 require_pointer(active_pointer, pointer_id)?;
             }
-            return self.update_pending_path_preview(point, constrain_orthogonal);
+            return self.update_pending_path_preview(point, shift);
         };
         match active {
             ActivePointer::CaptionMove {
@@ -9487,6 +9512,7 @@ impl AnnotationAdapter {
                         self.rectangle_snap_settings,
                         self.observed_pixels_per_point.0,
                     );
+                    document.set_rotation_snap_step(rotation_step);
                     document.apply_command(AnnotationCommand::PointerMove { pointer_id, point })?;
                 }
                 Ok(PointerPhaseOutcome::GestureStarted)
@@ -9498,7 +9524,7 @@ impl AnnotationAdapter {
                 ..
             } => {
                 require_pointer(*active_pointer, pointer_id)?;
-                *current = if constrain_orthogonal {
+                *current = if shift {
                     EllipseAnnotation::constrained_end(*start, point)
                 } else {
                     point
@@ -9560,7 +9586,7 @@ impl AnnotationAdapter {
             } => {
                 require_pointer(*active_pointer, pointer_id)?;
                 *current = point;
-                *snap_quarter_turn = constrain_orthogonal;
+                *snap_quarter_turn = shift;
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
             ActivePointer::LengthCreate {
@@ -9618,7 +9644,7 @@ impl AnnotationAdapter {
                 ..
             } => {
                 require_pointer(*active_pointer, pointer_id)?;
-                *current = constrained_line_point(*start, point, constrain_orthogonal);
+                *current = constrain_direction(*start, point, angle_step);
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
             ActivePointer::CalloutCreate {
@@ -9628,7 +9654,7 @@ impl AnnotationAdapter {
                 ..
             } => {
                 require_pointer(*active_pointer, pointer_id)?;
-                *current = constrained_line_point(*start, point, constrain_orthogonal);
+                *current = constrain_direction(*start, point, angle_step);
                 Ok(PointerPhaseOutcome::GestureStarted)
             }
             ActivePointer::CloudPlusCreate {
@@ -9769,7 +9795,7 @@ impl AnnotationAdapter {
         &mut self,
         pointer_id: u64,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let viewport_point = SelectionPoint::new(
             point.x * self.observed_pixels_per_point.0,
@@ -9780,7 +9806,7 @@ impl AnnotationAdapter {
             point,
             viewport_point,
             PointerInputModifiers {
-                shift: constrain_orthogonal,
+                shift,
                 alt: false,
                 force_box: false,
             },
@@ -9811,21 +9837,18 @@ impl AnnotationAdapter {
         modifiers: PointerInputModifiers,
         supplement: &AnnotationSelectionSupplement,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
-        let constrain_orthogonal = modifiers.shift;
+        let shift = modifiers.shift;
+        self.pointer_shift = shift;
+        let rotation_step = self.rotation_angle_step(shift);
         let point = self.offset_by_grab(point);
         let raw_point = point;
         let point = self
             .active_surface()
             .map_or(point, |(document_id, page_index)| {
-                self.resolve_semantic_creation_point(
-                    document_id,
-                    page_index,
-                    point,
-                    constrain_orthogonal,
-                )
+                self.resolve_semantic_creation_point(document_id, page_index, point, shift)
             });
         let point = self.resolve_equal_size_resize_point(point);
-        let point = self.resolve_equal_size_placement_point(point, constrain_orthogonal);
+        let point = self.resolve_equal_size_placement_point(point, shift);
         if let Some(draft) = self.snapshot_draft.as_mut() {
             require_pointer(draft.pointer_id, pointer_id)?;
             draft.current = point;
@@ -9848,7 +9871,7 @@ impl AnnotationAdapter {
             return self.finish_cloud(document_id);
         }
         if self.active.is_none() {
-            return self.update_pending_path_preview(point, constrain_orthogonal);
+            return self.update_pending_path_preview(point, shift);
         }
         let active = self.active.take().ok_or(AnnotationError::NoActiveGesture)?;
         let outcome = match active {
@@ -10023,6 +10046,7 @@ impl AnnotationAdapter {
                         self.rectangle_snap_settings,
                         self.observed_pixels_per_point.0,
                     );
+                    document.set_rotation_snap_step(rotation_step);
                     document.apply_command(AnnotationCommand::PointerUp { pointer_id, point })?
                 };
                 Ok(pointer_phase_outcome(outcome))
@@ -10051,7 +10075,7 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::PlacementPending);
                 }
-                let end = if constrain_orthogonal {
+                let end = if shift {
                     EllipseAnnotation::constrained_end(start, point)
                 } else {
                     point
@@ -10254,6 +10278,7 @@ impl AnnotationAdapter {
                             original_rotation_degrees,
                             start,
                             point,
+                            rotation_step,
                         )),
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
@@ -10322,7 +10347,7 @@ impl AnnotationAdapter {
                     expected_revision,
                     &original,
                 )?;
-                let snap_quarter_turn = constrain_orthogonal;
+                let snap_quarter_turn = shift;
                 let resolved = resolve_arc_control_point(
                     &original,
                     control,
@@ -10366,7 +10391,7 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::PlacementPending);
                 }
-                let end = constrained_line_point(start, point, constrain_orthogonal);
+                let end = constrain_direction(start, point, self.creation_angle_step(shift));
                 if point_distance_css_px(start, end, self.observed_pixels_per_point.0)
                     < POINTER_DRAG_THRESHOLD_CSS_PX
                 {
@@ -10407,7 +10432,7 @@ impl AnnotationAdapter {
                     });
                     return Ok(PointerPhaseOutcome::PlacementPending);
                 }
-                let end = constrained_line_point(start, point, constrain_orthogonal);
+                let end = constrain_direction(start, point, self.creation_angle_step(shift));
                 if point_distance_css_px(start, end, self.observed_pixels_per_point.0)
                     < POINTER_DRAG_THRESHOLD_CSS_PX
                 {
@@ -11036,6 +11061,7 @@ impl AnnotationAdapter {
                     original_rotation_degrees,
                     start,
                     raw_point,
+                    rotation_step,
                 );
                 let outcome = self
                     .documents
@@ -11135,6 +11161,7 @@ impl AnnotationAdapter {
                     original_rotation_degrees,
                     start,
                     raw_point,
+                    rotation_step,
                 );
                 let outcome = self
                     .documents
@@ -11239,6 +11266,7 @@ impl AnnotationAdapter {
                             original_rotation_degrees,
                             start,
                             point,
+                            rotation_step,
                         )),
                     })?;
                 Ok(PointerPhaseOutcome::AnnotationEdited(id))
@@ -11289,7 +11317,7 @@ impl AnnotationAdapter {
         &mut self,
         pointer_id: u64,
         point: PdfPoint,
-        constrain_orthogonal: bool,
+        shift: bool,
     ) -> Result<PointerPhaseOutcome, AnnotationError> {
         let active = self.active.take().ok_or(AnnotationError::NoActiveGesture)?;
         match active {
@@ -11318,7 +11346,7 @@ impl AnnotationAdapter {
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
-                let end = if constrain_orthogonal {
+                let end = if shift {
                     EllipseAnnotation::constrained_end(start, point)
                 } else {
                     point
@@ -11349,7 +11377,7 @@ impl AnnotationAdapter {
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
-                let end = constrained_line_point(start, point, constrain_orthogonal);
+                let end = constrain_direction(start, point, self.creation_angle_step(shift));
                 self.commit_straight_line(document_id, page_index, id, kind, appearance, start, end)
             }
             ActivePointer::CalloutCreate {
@@ -11362,7 +11390,7 @@ impl AnnotationAdapter {
                 ..
             } => {
                 require_pointer(active_pointer, pointer_id)?;
-                let end = constrained_line_point(start, point, constrain_orthogonal);
+                let end = constrain_direction(start, point, self.creation_angle_step(shift));
                 self.commit_callout(document_id, page_index, id, start, end)
             }
             ActivePointer::ImageCreate {
@@ -13396,6 +13424,7 @@ impl AnnotationAdapter {
                 *original_rotation_degrees,
                 *start,
                 *current,
+                self.rotation_angle_step(self.pointer_shift),
             );
             annotation.preview = true;
             annotation.feedback = SceneInteractionFeedback::Transform {
@@ -13980,6 +14009,7 @@ impl AnnotationAdapter {
                 *original_rotation_degrees,
                 *start,
                 *current,
+                self.rotation_angle_step(self.pointer_shift),
             );
             annotation.feedback = SceneInteractionFeedback::Transform {
                 chrome_visible,
@@ -14061,6 +14091,7 @@ impl AnnotationAdapter {
                 *original_rotation_degrees,
                 *start,
                 *current,
+                self.rotation_angle_step(self.pointer_shift),
             );
             annotation.feedback = SceneInteractionFeedback::Transform {
                 chrome_visible,
@@ -14148,6 +14179,7 @@ impl AnnotationAdapter {
                 *original_rotation_degrees,
                 *start,
                 *current,
+                self.rotation_angle_step(self.pointer_shift),
             );
             annotation.draft = true;
             annotation.feedback = SceneInteractionFeedback::Transform {
@@ -17219,17 +17251,25 @@ fn ellipse_resized_rect(
     )
 }
 
+/// The rotation a knob drag from `start` to `current` gives a box turned
+/// `original_rotation_degrees`, snapped to whole multiples of `step` when
+/// one is given.
 fn ellipse_rotation_from_drag(
     original_rect: PdfRect,
     original_rotation_degrees: f64,
     start: PdfPoint,
     current: PdfPoint,
+    step: Option<f64>,
 ) -> f64 {
     let center_x = original_rect.x + original_rect.width * 0.5;
     let center_y = original_rect.y + original_rect.height * 0.5;
     let start_angle = (start.y - center_y).atan2(start.x - center_x);
     let current_angle = (current.y - center_y).atan2(current.x - center_x);
-    (original_rotation_degrees + (start_angle - current_angle).to_degrees()).rem_euclid(360.)
+    snap_angle_degrees(
+        original_rotation_degrees + (start_angle - current_angle).to_degrees(),
+        step,
+    )
+    .rem_euclid(360.)
 }
 
 fn rotate_point_around_rect_center(
@@ -17348,35 +17388,6 @@ fn selection_point_from_pdf(point: PdfPoint) -> SelectionPoint {
     SelectionPoint::new(point.x, point.y)
 }
 
-fn constrained_length_point(
-    start: PdfPoint,
-    point: PdfPoint,
-    constrain_orthogonal: bool,
-) -> PdfPoint {
-    if !constrain_orthogonal {
-        return point;
-    }
-    if (point.x - start.x).abs() >= (point.y - start.y).abs() {
-        PdfPoint {
-            x: point.x,
-            y: start.y,
-        }
-    } else {
-        PdfPoint {
-            x: start.x,
-            y: point.y,
-        }
-    }
-}
-
-fn constrained_line_point(
-    start: PdfPoint,
-    point: PdfPoint,
-    constrain_orthogonal: bool,
-) -> PdfPoint {
-    constrained_length_point(start, point, constrain_orthogonal)
-}
-
 fn point_segment_distance(point: PdfPoint, start: PdfPoint, end: PdfPoint) -> f64 {
     let dx = end.x - start.x;
     let dy = end.y - start.y;
@@ -17422,6 +17433,7 @@ fn empty_scene(page_index: u32) -> AnnotationScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::semantic_snapping::AngleSnapPreset;
     use crate::semantic_snapping::SemanticSnapRole;
     use crate::semantic_snapping::SemanticSnapSource;
 
@@ -18618,6 +18630,11 @@ mod tests {
     fn a_callout_box_sits_beyond_its_drag_end_away_from_the_tip_and_fits_its_text() {
         for (end, leftwards) in [(point(260., 300.), false), (point(140., 300.), true)] {
             let mut adapter = AnnotationAdapter::default();
+            adapter
+                .set_semantic_snap_settings(
+                    SemanticSnapSettings::default().with_angle_snap_enabled(false),
+                )
+                .unwrap();
             adapter.set_tool(AnnotationTool::Callout).unwrap();
             let start = point(200., 200.);
             adapter.pointer_down(7, 0, 1, start, 4.).unwrap();
@@ -19902,8 +19919,222 @@ mod tests {
     }
 
     #[test]
+    fn angle_snap_holds_a_drawn_line_and_shift_inverts_it() {
+        let draw = |settings: SemanticSnapSettings, shift: bool, to: PdfPoint| {
+            let mut adapter = AnnotationAdapter::default();
+            adapter.set_semantic_snap_settings(settings).unwrap();
+            adapter.set_tool(AnnotationTool::Line).unwrap();
+            adapter.pointer_down(7, 0, 1, point(10., 10.), 2.).unwrap();
+            adapter.pointer_move_with_constraint(1, to, shift).unwrap();
+            let preview = adapter.document_scene(7, 0).straight_lines.remove(0).end;
+            adapter.pointer_up_with_constraint(1, to, shift).unwrap();
+            let line = adapter.snapshot(7).unwrap().straight_lines[0].clone();
+            assert_eq!(line.end, preview, "the preview matches the commit");
+            line.end
+        };
+        let defaults = SemanticSnapSettings::default();
+        let to = point(100., 40.);
+        // On at 90 degrees by default: level; Shift frees it.
+        assert_eq!(draw(defaults, false, to), point(100., 10.));
+        assert_eq!(draw(defaults, true, to), to);
+        // Off: free; Shift snaps it to the increment.
+        let disabled = defaults.with_angle_snap_enabled(false);
+        assert_eq!(draw(disabled, false, to), to);
+        assert_eq!(draw(disabled, true, to), point(100., 10.));
+        // Another increment: 45 degrees takes the diagonal.
+        let diagonal = draw(
+            defaults.with_angle_snap_preset(AngleSnapPreset::Degrees45),
+            false,
+            point(100., 80.),
+        );
+        assert!(
+            (diagonal.y - 10. - (diagonal.x - 10.)).abs() < 1e-9,
+            "{diagonal:?}"
+        );
+        // A custom increment.
+        let custom = draw(
+            defaults
+                .with_angle_snap_preset(AngleSnapPreset::Custom)
+                .with_angle_snap_custom_degrees(20.),
+            false,
+            point(100., 40.),
+        );
+        let angle = (custom.y - 10.).atan2(custom.x - 10.).to_degrees();
+        assert!((angle - 20.).abs() < 1e-9, "{angle}");
+    }
+
+    #[test]
+    fn a_point_target_in_range_wins_over_angle_snap_and_grids_do_not() {
+        // A box whose corners are off every level and plumb line from the
+        // line's start, then a line from (10, 10) to `to`.
+        let draw = |settings: SemanticSnapSettings, shift: bool, to: PdfPoint| {
+            let mut adapter = AnnotationAdapter::default();
+            adapter.set_observed_pixels_per_point(1.).unwrap();
+            adapter.set_semantic_snap_settings(settings).unwrap();
+            adapter.set_semantic_snap_page_size(7, 0, 600., 800.);
+            adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+            adapter
+                .pointer_down(7, 0, 1, point(200., 150.), 1.)
+                .unwrap();
+            adapter.pointer_move(1, point(300., 250.)).unwrap();
+            adapter.pointer_up(1, point(300., 250.)).unwrap();
+            let rect = adapter.snapshot(7).unwrap().rectangles[0].rect;
+            adapter.set_tool(AnnotationTool::Line).unwrap();
+            adapter.pointer_down(7, 0, 2, point(10., 10.), 1.).unwrap();
+            adapter.pointer_move_with_constraint(2, to, shift).unwrap();
+            let decision = adapter.semantic_snap_decision().cloned();
+            adapter.pointer_up_with_constraint(2, to, shift).unwrap();
+            let end = adapter.snapshot(7).unwrap().straight_lines[0].end;
+            (point(rect.x, rect.y), end, decision)
+        };
+        let defaults = SemanticSnapSettings::default();
+        let near_corner = point(204., 153.);
+        // At the default (on, 90 degrees), the corner in range wins: the
+        // line ends on it, off the increment, and its marker shows.
+        let (corner, end, decision) = draw(defaults, false, near_corner);
+        assert_eq!(end, corner);
+        assert!(decision.is_some_and(|decision| decision.role == SemanticSnapRole::Endpoint));
+        // Away from every target, the direction holds level.
+        let away = point(150., 120.);
+        assert_eq!(draw(defaults, false, away).1, point(150., 10.));
+        // Shift frees the direction; the corner still wins near it.
+        assert_eq!(draw(defaults, true, away).1, away);
+        assert_eq!(draw(defaults, true, near_corner).1, corner);
+        // Off, the direction is free; Shift holds it, and the corner still
+        // wins near it.
+        let disabled = defaults.with_angle_snap_enabled(false);
+        assert_eq!(draw(disabled, false, away).1, away);
+        assert_eq!(draw(disabled, true, away).1, point(150., 10.));
+        assert_eq!(draw(disabled, true, near_corner).1, corner);
+        // A construction grid point near the pointer does not turn the held
+        // direction: the grid snaps where its column crosses the level ray.
+        let spacing = 10. * 72. / 25.4;
+        let grid = defaults
+            .with_source(SemanticSnapSource::ConstructionGrid, true)
+            .with_construction_grid_spacing_mm(10.);
+        let near_grid_point = point(5. * spacing + 1., 4. * spacing + 1.);
+        let (_, end, _) = draw(grid, false, near_grid_point);
+        assert!((end.x - 5. * spacing).abs() < 1e-9, "{end:?}");
+        assert_eq!(end.y, 10., "{end:?}");
+        // Free, the grid takes its nearest point.
+        let (_, end, _) = draw(grid, true, near_grid_point);
+        assert!(
+            (end.x - 5. * spacing).abs() < 1e-9 && (end.y - 4. * spacing).abs() < 1e-9,
+            "{end:?}"
+        );
+    }
+
+    #[test]
+    fn a_calibration_line_follows_the_same_precedence_as_a_line() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        adapter
+            .pointer_down(7, 0, 1, point(200., 150.), 1.)
+            .unwrap();
+        adapter.pointer_move(1, point(300., 250.)).unwrap();
+        adapter.pointer_up(1, point(300., 250.)).unwrap();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        let start = Some(point(10., 10.));
+        // At the default, a corner in range wins over the held direction.
+        assert_eq!(
+            adapter.resolve_calibration_point(7, 0, point(204., 153.), start, false),
+            point(200., 150.)
+        );
+        assert!(adapter.semantic_snap_decision().is_some());
+        // Away from it, the line holds level; Shift frees it.
+        assert_eq!(
+            adapter.resolve_calibration_point(7, 0, point(150., 120.), start, false),
+            point(150., 10.)
+        );
+        assert_eq!(
+            adapter.resolve_calibration_point(7, 0, point(150., 120.), start, true),
+            point(150., 120.)
+        );
+    }
+
+    #[test]
+    fn a_typed_angle_is_exact_under_angle_snap() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_tool(AnnotationTool::Line).unwrap();
+        adapter.pointer_down(7, 0, 1, point(10., 10.), 2.).unwrap();
+        adapter.pointer_move(1, point(100., 40.)).unwrap();
+        adapter.set_typed_size(
+            7,
+            Some(TypedSize {
+                angle: Some(30_f64.to_radians()),
+                ..TypedSize::default()
+            }),
+        );
+        adapter.pointer_move(1, point(100., 40.)).unwrap();
+        let end = adapter.document_scene(7, 0).straight_lines.remove(0).end;
+        let angle = (end.y - 10.).atan2(end.x - 10.).to_degrees();
+        assert!((angle - 30.).abs() < 1e-9, "{angle}");
+    }
+
+    #[test]
+    fn a_knob_turn_snaps_to_the_angle_increment_and_shift_inverts_it() {
+        let turn = |settings: SemanticSnapSettings, shift: bool| {
+            let mut adapter = AnnotationAdapter::default();
+            adapter.set_semantic_snap_settings(settings).unwrap();
+            adapter.set_tool(AnnotationTool::Select).unwrap();
+            let id = MarkupId::new("text-box:turn").unwrap();
+            let text = TextBoxAnnotation::new(
+                id.clone(),
+                0,
+                PdfRect::new(20., 20., 100., 50.).unwrap(),
+                "Text",
+                TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+            )
+            .unwrap()
+            .with_rotation_degrees(30.)
+            .unwrap();
+            let document = adapter.documents.entry(7).or_default();
+            document
+                .load_imported_annotations(vec![Annotation::TextBox(text.clone())], Vec::new())
+                .unwrap();
+            document.select(&id);
+            let handle = text_box_rotation_handle_point(&text, 1.).unwrap();
+            let center = point(70., 45.);
+            let start_angle = (handle.y - center.y).atan2(handle.x - center.x);
+            let radius = distance(center, handle);
+            // A drag that turns it 50 degrees: to 80 degrees.
+            let target_angle = start_angle - 50_f64.to_radians();
+            let target = point(
+                center.x + radius * target_angle.cos(),
+                center.y + radius * target_angle.sin(),
+            );
+            adapter.pointer_down(7, 0, 10, handle, 1.).unwrap();
+            adapter
+                .pointer_move_with_constraint(10, target, shift)
+                .unwrap();
+            let preview = adapter.document_scene(7, 0).text_boxes[0].rotation_degrees;
+            adapter
+                .pointer_up_with_constraint(10, target, shift)
+                .unwrap();
+            let committed = adapter.snapshot(7).unwrap().text_boxes[0].rotation_degrees();
+            assert!((preview - committed).abs() < 1e-9, "{preview} {committed}");
+            committed
+        };
+        let defaults = SemanticSnapSettings::default();
+        assert_eq!(turn(defaults, false), 90.);
+        assert!((turn(defaults, true) - 80.).abs() < 1e-9);
+        let disabled = defaults
+            .with_angle_snap_enabled(false)
+            .with_angle_snap_preset(AngleSnapPreset::Degrees15);
+        assert!((turn(disabled, false) - 80.).abs() < 1e-9);
+        assert_eq!(turn(disabled, true), 75.);
+    }
+
+    #[test]
     fn text_box_and_image_rotation_handles_use_raw_geometry_and_single_commit_history() {
         let mut adapter = AnnotationAdapter::default();
+        // Free turns: angle snap is checked on its own.
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default().with_angle_snap_enabled(false),
+            )
+            .unwrap();
         adapter.set_tool(AnnotationTool::Select).unwrap();
         let text_id = MarkupId::new("text-box:rotate").unwrap();
         let image_id = MarkupId::new("image:rotate").unwrap();
@@ -20757,17 +20988,21 @@ mod tests {
             polyline.pointer_down(7, 0, pointer_id, vertex, 4.).unwrap();
         }
         let draft_id = polyline.vertex_path_draft.as_ref().unwrap().id.clone();
-        // Near its start, the next point snaps to the start.
+        // Near its start, the next point snaps to the start, although the
+        // start is off the level and plumb lines the default angle snap
+        // holds the side to.
         polyline.pointer_move(4, point(22., 23.)).unwrap();
         let hover = polyline.vertex_path_draft.as_ref().unwrap().hover;
         assert_eq!((hover.x, hover.y), (20., 20.));
         let decision = polyline.semantic_snap_decision().unwrap();
         assert_eq!(decision.owner_id.as_ref(), Some(&draft_id));
         assert_eq!(decision.role, SemanticSnapRole::Endpoint);
-        // Its last point is where the next side starts, not a target.
+        // Its last point is where the next side starts, not a target: the
+        // pointer beside it is held level by the default angle snap, not
+        // pulled onto it.
         polyline.pointer_move(4, point(101., 81.)).unwrap();
         let hover = polyline.vertex_path_draft.as_ref().unwrap().hover;
-        assert_eq!((hover.x, hover.y), (101., 81.));
+        assert_eq!((hover.x, hover.y), (101., 80.));
         // A click near the start places the closing point on it exactly.
         polyline.pointer_down(7, 0, 4, point(22., 23.), 4.).unwrap();
         polyline.finish_vertex_path(7).unwrap();
@@ -20776,6 +21011,31 @@ mod tests {
             .to_vec();
         assert_eq!(points.len(), 4);
         assert_eq!((points[3].x, points[3].y), (20., 20.));
+
+        // A Polygon closes on its start after a diagonal side at the default
+        // angle snap: the start, a point target in range, wins over the
+        // held direction.
+        let mut polygon = AnnotationAdapter::default();
+        polygon.set_observed_pixels_per_point(1.).unwrap();
+        polygon.set_tool(AnnotationTool::Polygon).unwrap();
+        for (pointer_id, vertex) in [
+            (1, point(20., 20.)),
+            (2, point(100., 20.)),
+            (3, point(100., 80.)),
+        ] {
+            polygon.pointer_down(7, 0, pointer_id, vertex, 4.).unwrap();
+        }
+        polygon.pointer_move(4, point(24., 25.)).unwrap();
+        let hover = polygon.vertex_path_draft.as_ref().unwrap().hover;
+        assert_eq!((hover.x, hover.y), (20., 20.));
+        assert!(matches!(
+            polygon.pointer_down(7, 0, 4, point(24., 25.), 4.).unwrap(),
+            PointerPhaseOutcome::AnnotationCreated(_)
+        ));
+        let polygon_points = polygon.snapshot(7).unwrap().vertex_paths[0]
+            .points()
+            .to_vec();
+        assert_eq!(polygon_points.len(), 3, "{polygon_points:?}");
 
         // An Area closes on a click at its start, as a Polygon does,
         // without a point added back on the start.
@@ -20911,6 +21171,7 @@ mod tests {
 
         let points_per_mm = 72. / 25.4;
         let base_settings = SemanticSnapSettings::default()
+            .with_angle_snap_enabled(false)
             .with_source(SemanticSnapSource::Annotation, false)
             .with_source(SemanticSnapSource::Content, false)
             .with_source(SemanticSnapSource::PageGrid, false);
@@ -20974,6 +21235,7 @@ mod tests {
         adapter
             .set_semantic_snap_settings(
                 SemanticSnapSettings::default()
+                    .with_angle_snap_enabled(false)
                     .with_source(SemanticSnapSource::Annotation, false)
                     .with_source(SemanticSnapSource::Content, false)
                     .with_source(SemanticSnapSource::PageGrid, true)
@@ -21041,6 +21303,7 @@ mod tests {
         adapter
             .set_semantic_snap_settings(
                 SemanticSnapSettings::default()
+                    .with_angle_snap_enabled(false)
                     .with_source(SemanticSnapSource::Annotation, false)
                     .with_source(SemanticSnapSource::Content, true)
                     .with_source(SemanticSnapSource::PageGrid, false)
@@ -21094,6 +21357,7 @@ mod tests {
         adapter
             .set_semantic_snap_settings(
                 SemanticSnapSettings::default()
+                    .with_angle_snap_enabled(false)
                     .with_source(SemanticSnapSource::Annotation, false)
                     .with_source(SemanticSnapSource::Content, true)
                     .with_source(SemanticSnapSource::PageGrid, false)
@@ -22533,7 +22797,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_click_path_creation_snaps_and_uses_last_vertex_for_shift_constraint() {
+    fn multi_click_path_creation_snaps_and_uses_last_vertex_for_angle_snap() {
         use crate::semantic_snapping::SemanticSnapSource;
 
         fn target_line(id: MarkupId) -> Annotation {
@@ -22579,7 +22843,7 @@ mod tests {
                 SelectionPoint::new(49.4, 20.),
                 2.,
                 PointerInputModifiers {
-                    shift: true,
+                    shift: false,
                     alt: false,
                     force_box: false,
                 },
@@ -22624,7 +22888,7 @@ mod tests {
                 SelectionPoint::new(49.4, 20.),
                 2.,
                 PointerInputModifiers {
-                    shift: true,
+                    shift: false,
                     alt: false,
                     force_box: false,
                 },
@@ -22777,7 +23041,7 @@ mod tests {
                 SelectionPoint::new(49.4, 20.),
                 2.,
                 PointerInputModifiers {
-                    shift: true,
+                    shift: false,
                     alt: false,
                     force_box: false,
                 },

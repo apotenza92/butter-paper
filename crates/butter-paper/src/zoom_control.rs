@@ -1,9 +1,9 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
     Anchor, ClickEvent, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Window,
+    Window, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _,
@@ -37,6 +37,43 @@ pub enum ZoomControlEvent {
     Changed(f64),
 }
 
+/// What a narrow viewer toolbar moves into the zoom menu: Zoom In and Zoom
+/// Out, and the fit presets, as Acrobat's and Revu's zoom menus hold them.
+#[derive(Clone, Default)]
+pub struct ZoomMenuExtras {
+    /// Zoom In and Zoom Out show in the menu, not as buttons.
+    pub steps: bool,
+    /// Fit Width and Fit Page show in the menu, with the one in use ticked.
+    pub fit: Option<ZoomMenuFit>,
+    /// The menu button shows a magnifier for the zoom; its tooltip, its
+    /// accessible name and the menu's tick still give the zoom. Only the
+    /// narrowest toolbar form needs it.
+    pub icon_only: bool,
+}
+
+#[derive(Clone)]
+pub struct ZoomMenuFit {
+    pub selected: Option<crate::viewer_toolbar_strip::FitPreset>,
+    pub on_fit: Rc<dyn Fn(crate::viewer_toolbar_strip::FitPreset, &mut gpui::App)>,
+}
+
+impl ZoomMenuExtras {
+    /// What decides how the control and its menu look.
+    fn shape(
+        &self,
+    ) -> (
+        bool,
+        Option<Option<crate::viewer_toolbar_strip::FitPreset>>,
+        bool,
+    ) {
+        (
+            self.steps,
+            self.fit.as_ref().map(|fit| fit.selected),
+            self.icon_only,
+        )
+    }
+}
+
 #[derive(Default)]
 struct ZoomMenuCache {
     menu: RefCell<Option<Entity<PopupMenu>>>,
@@ -50,6 +87,7 @@ pub struct ZoomControl {
     menu_open: bool,
     reset_activations: usize,
     focus_handle: Option<FocusHandle>,
+    menu_extras: ZoomMenuExtras,
 }
 
 impl ZoomControl {
@@ -60,7 +98,23 @@ impl ZoomControl {
             menu_open: false,
             reset_activations: 0,
             focus_handle: None,
+            menu_extras: ZoomMenuExtras::default(),
         }
+    }
+
+    /// Moves Zoom In and Zoom Out, and the fit presets, into the menu or
+    /// back out of it, as the toolbar's width allows.
+    pub fn set_menu_extras(&mut self, extras: ZoomMenuExtras, cx: &mut Context<Self>) {
+        let changed = self.menu_extras.shape() != extras.shape();
+        self.menu_extras = extras;
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Whether Zoom In and Zoom Out show in the menu.
+    pub fn steps_in_menu(&self) -> bool {
+        self.menu_extras.steps
     }
 
     pub fn zoom(&self) -> f64 {
@@ -211,6 +265,9 @@ impl Render for ZoomControl {
         let menu_cache = window.use_keyed_state("viewer-zoom-menu-cache", cx, |_, _| {
             ZoomMenuCache::default()
         });
+        let menu_extras = self.menu_extras.clone();
+        let steps_in_menu = menu_extras.steps;
+        let icon_only = menu_extras.icon_only;
 
         let zoom_out = accessible_icon_button(
             Button::new(ZOOM_OUT_ID)
@@ -238,16 +295,36 @@ impl Render for ZoomControl {
 
         let percentage = Button::new(ZOOM_MENU_ID)
             .ghost()
-            // One width for every zoom, the widest ("6400%") included, so
-            // zooming never resizes the group or shifts the toolbar.
-            .w(gpui::rems(ZOOM_PERCENTAGE_REMS))
             .debug_selector(|| ZOOM_MENU_ID.into())
             .accessibility_id(ZOOM_MENU_ID)
-            .label(displayed_percentage.clone())
+            .map(|button| {
+                if icon_only {
+                    // A child, not the icon slot: an icon-only button is
+                    // square, which would cut off the caret.
+                    accessible_icon_button(
+                        button
+                            .compact()
+                            .child(gpui_component::Icon::new(gpui_component::IconName::Search)),
+                        format!("Zoom {displayed_percentage}"),
+                    )
+                } else {
+                    button
+                        // One width for every zoom, the widest ("6400%")
+                        // included, so zooming never resizes the group or
+                        // shifts the toolbar.
+                        .w(gpui::rems(ZOOM_PERCENTAGE_REMS))
+                        .label(displayed_percentage.clone())
+                }
+            })
             .dropdown_caret(true)
-            .tooltip(format!(
-                "Zoom {displayed_percentage}. Double-click to reset to 100%."
-            ))
+            .tooltip(if steps_in_menu {
+                format!(
+                    "Zoom {displayed_percentage}: Zoom In, Zoom Out and fit. Double-click to \
+                     reset to 100%."
+                )
+            } else {
+                format!("Zoom {displayed_percentage}. Double-click to reset to 100%.")
+            })
             .disabled(disabled)
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                 if event.click_count() == 2 {
@@ -283,8 +360,22 @@ impl Render for ZoomControl {
                     }
 
                     let control_for_rows = control_for_menu.clone();
+                    let extras = menu_extras.clone();
                     let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-                        ZOOM_PRESETS.iter().copied().fold(menu, |menu, preset| {
+                        let menu = if extras.steps {
+                            let zoom_in = control_for_rows.clone();
+                            let zoom_out = control_for_rows.clone();
+                            menu.item(PopupMenuItem::new("Zoom In").on_click(move |_, _, cx| {
+                                let _ = zoom_in.update(cx, |control, cx| control.zoom_in(cx));
+                            }))
+                            .item(PopupMenuItem::new("Zoom Out").on_click(move |_, _, cx| {
+                                let _ = zoom_out.update(cx, |control, cx| control.zoom_out(cx));
+                            }))
+                            .separator()
+                        } else {
+                            menu
+                        };
+                        let menu = ZOOM_PRESETS.iter().copied().fold(menu, |menu, preset| {
                             let control = control_for_rows.clone();
                             menu.item(
                                 PopupMenuItem::new(format_zoom_percent(preset))
@@ -295,7 +386,29 @@ impl Render for ZoomControl {
                                         });
                                     }),
                             )
-                        })
+                        });
+                        match extras.fit.clone() {
+                            Some(fit) => {
+                                use crate::viewer_toolbar_strip::FitPreset;
+                                [
+                                    (FitPreset::Width, "Fit Width"),
+                                    (FitPreset::Page, "Fit Page"),
+                                ]
+                                .into_iter()
+                                .fold(
+                                    menu.separator(),
+                                    |menu, (preset, label)| {
+                                        let on_fit = fit.on_fit.clone();
+                                        menu.item(
+                                            PopupMenuItem::new(label)
+                                                .checked(fit.selected == Some(preset))
+                                                .on_click(move |_, _, cx| on_fit(preset, cx)),
+                                        )
+                                    },
+                                )
+                            }
+                            None => menu,
+                        }
                     });
                     menu_cache.read(cx).menu.replace(Some(menu.clone()));
                     menu.focus_handle(cx).focus(window, cx);
@@ -323,8 +436,8 @@ impl Render for ZoomControl {
             .tab_group()
             .flex_shrink_0()
             // Keep the exact Electron source order: Out, In, percentage menu.
-            .child(zoom_out)
-            .child(zoom_in)
+            // Narrow, Out and In are in the menu.
+            .when(!steps_in_menu, |group| group.child(zoom_out).child(zoom_in))
             .child(percentage)
     }
 }

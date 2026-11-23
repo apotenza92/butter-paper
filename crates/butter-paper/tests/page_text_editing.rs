@@ -1834,6 +1834,241 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     }));
 }
 
+/// A click-out only dismisses (interactions.md, "Click-out"): a press that
+/// clears highlighted page text or selected markups does nothing else. It
+/// starts no selection box, lasso or text selection, its drag moves nothing,
+/// and a double click that begins with it is a single click. The next click
+/// on empty page starts a box as usual. The cursor and the status bar say so.
+#[gpui::test]
+fn a_click_out_of_highlighted_text_or_selected_markups_only_dismisses(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{CLICK_OUT_MARKUP_STATUS, CLICK_OUT_TEXT_STATUS};
+    use gpui::{CursorStyle, MouseButton};
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+        init_document_workspace_actions(cx);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    cx.update(|window, _| window.activate_window());
+    let resource = Arc::new(PageTextResource {
+        layer: page_text_layer(),
+        shown: Arc::new(Mutex::new(Vec::new())),
+        thumbnail_renders: Arc::new(AtomicUsize::new(0)),
+        signed: false,
+        released: AtomicBool::new(false),
+    });
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("text.pdf"), cx)
+    });
+    let document_id = request.document_id;
+    workspace.update(cx, |workspace, cx| {
+        let opened = OpenedNativeDocument::new(
+            "text.pdf",
+            vec![(612., 792.)],
+            raster(32, 40),
+            vec![ThumbnailSurface::new(0, raster(8, 10))],
+            resource,
+        )
+        .unwrap();
+        workspace.apply_open_result(&request, Ok(opened), cx);
+        workspace.set_view_configuration(document_id, PageViewMode::SinglePage, 100., cx);
+        workspace
+            .refresh_viewport_async(document_id, 800., 600., 1., cx)
+            .unwrap();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    fit_page_to_window(cx, &workspace, document_id);
+
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let layer = cx.debug_bounds(layer_id).unwrap();
+    let scale = (f32::from(layer.size.width) / 612.).min(f32::from(layer.size.height) / 792.);
+    let origin = point(
+        layer.origin.x + (layer.size.width - px(612. * scale)) / 2.,
+        layer.origin.y + (layer.size.height - px(792. * scale)) / 2.,
+    );
+    // Page points to window points.
+    let page = |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px((792. - y) * scale));
+    // "Hello world" in 40pt Helvetica from x = 50, on the line at y = 410.
+    let at = |x: f32| page(x, 410.);
+    let empty = page(300., 410.);
+    let selected = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.selected_page_text(document_id, cx)
+        })
+    };
+    let status = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.click_out_status(document_id, cx)
+        })
+    };
+    let box_armed = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .active_selection_marquee(document_id, cx)
+                .is_some()
+        })
+    };
+    let markups = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .annotation_snapshot(document_id, cx)
+                .unwrap()
+                .rectangles
+                .len()
+        })
+    };
+    let press = |cx: &mut gpui::VisualTestContext, at: gpui::Point<gpui::Pixels>, count: usize| {
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: count,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: count,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    let highlight = |cx: &mut gpui::VisualTestContext| {
+        cx.simulate_mouse_move(at(51.), None, Modifiers::default());
+        cx.run_until_parked();
+        cx.simulate_mouse_down(at(51.), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(at(300.), Some(MouseButton::Left), Modifiers::default());
+        cx.simulate_mouse_up(at(300.), MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(selected(cx).as_deref(), Some("Hello world"));
+    };
+
+    // Highlighted text: the bar and the cursor say a click only deselects.
+    highlight(cx);
+    assert_eq!(status(cx), Some(CLICK_OUT_TEXT_STATUS));
+    cx.simulate_mouse_move(empty, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.viewport_cursor()),
+        CursorStyle::Arrow,
+        "no crosshair promises a box"
+    );
+    // The click-out clears the highlight and starts no box.
+    press(cx, empty, 1);
+    assert_eq!(selected(cx), None);
+    assert!(!box_armed(cx), "the click-out starts no box");
+    assert_eq!(status(cx), None);
+    // The next click on empty page starts a box as usual.
+    press(cx, empty, 1);
+    assert!(box_armed(cx), "the next click starts a box");
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(!box_armed(cx));
+
+    // A drag that starts by clicking out draws no lasso and moves nothing.
+    highlight(cx);
+    cx.simulate_mouse_down(empty, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(
+        page(500., 300.),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    assert!(!box_armed(cx), "no lasso while held");
+    cx.simulate_mouse_up(page(500., 300.), MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(selected(cx), None);
+    assert!(!box_armed(cx));
+
+    // A double click that begins with the click-out is a single click: on
+    // text, it places the caret without selecting a word.
+    let world = at(50. + 40. * 2.556 + 30.);
+    highlight(cx);
+    press(cx, empty, 1);
+    press(cx, world, 2);
+    assert_eq!(selected(cx), None, "the second click is a first click");
+    // A real double click selects the word.
+    press(cx, world, 1);
+    press(cx, world, 2);
+    assert_eq!(selected(cx).as_deref(), Some("world"));
+    // A press in other page text is a new text selection, not a click-out.
+    press(cx, at(51.), 1);
+    assert_eq!(selected(cx), None);
+    assert_eq!(markups(cx), 0);
+
+    // Two rectangles; the second is selected when drawn.
+    for (left, right) in [(100., 200.), (300., 400.)] {
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .set_annotation_tool(document_id, AnnotationTool::Rectangle, cx)
+                .unwrap();
+        });
+        cx.simulate_mouse_move(page(left, 200.), None, Modifiers::default());
+        cx.simulate_mouse_down(page(left, 200.), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_move(
+            page(right, 100.),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(page(right, 100.), MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert_eq!(markups(cx), 2);
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::Select, cx)
+            .unwrap();
+    });
+    let selected_markups = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            usize::from(
+                workspace
+                    .annotation_snapshot(document_id, cx)
+                    .unwrap()
+                    .selected_id
+                    .is_some(),
+            )
+        })
+    };
+    // A click on another markup changes the selection.
+    press(cx, page(150., 100.), 1);
+    assert_eq!(selected_markups(cx), 1);
+    assert_eq!(status(cx), Some(CLICK_OUT_MARKUP_STATUS));
+    // Over page text the pointer offers no text selection while markups are
+    // selected: a press there only deselects them.
+    cx.simulate_mouse_move(at(51.), None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.viewport_cursor()),
+        CursorStyle::Arrow
+    );
+    cx.simulate_mouse_down(at(51.), MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(at(300.), Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(at(300.), MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(selected_markups(cx), 0);
+    assert_eq!(selected(cx), None, "the click-out selects no text");
+    // A click on empty page deselects and starts no box; the next one does.
+    press(cx, page(150., 100.), 1);
+    assert_eq!(selected_markups(cx), 1);
+    press(cx, empty, 1);
+    assert_eq!(selected_markups(cx), 0);
+    assert!(!box_armed(cx));
+    press(cx, empty, 1);
+    assert!(box_armed(cx));
+    cx.simulate_keystrokes("escape");
+    assert_eq!(markups(cx), 2, "no click-out made or removed a markup");
+}
+
 #[gpui::test]
 fn select_tool_selects_page_text_by_dragging_and_double_click_and_copies_it(
     cx: &mut TestAppContext,

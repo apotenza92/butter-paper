@@ -104,7 +104,9 @@ fn viewer_icon(id: &'static str, kind: ViewerIconKind, color: Hsla) -> impl Into
         .id(id)
         .debug_selector(move || id.into())
         .relative()
-        .size(px(16.))
+        // 16 points at the default interface size, growing with it as the
+        // controls around it do.
+        .size(crate::layout_metrics::scaled(16.))
         .flex_none()
         .child(
             canvas(

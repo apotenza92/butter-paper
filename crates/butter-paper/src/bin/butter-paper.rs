@@ -7,13 +7,11 @@ use butter_paper::application_close_workspace::{
 #[cfg(feature = "development-pdfium-override")]
 use butter_paper::application_shell::application_data_directory;
 use butter_paper::application_shell::{
-    ApplicationShellPreferences, ApplicationShellPreferencesStore, ApplicationUiZoomAction,
-    LockImageProportions, MakeInterfaceBigger, MakeInterfaceSmaller, MinimiseWindow,
-    MoveDocumentToNewWindow, NewWindow, OpenReleasePage, ResetInterfaceSize, ReverseScrollZoom,
+    ApplicationShellPreferences, ApplicationShellPreferencesStore, LockImageProportions,
+    MinimiseWindow, MoveDocumentToNewWindow, NewWindow, OpenReleasePage, ReverseScrollZoom,
     SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
-    ToggleLockImageProportions, ToggleReverseScrollZoom, ZoomWindow, apply_application_ui_zoom,
-    focus_initial_command_context, init_application_shell_actions,
-    resolve_application_ui_zoom_level,
+    ToggleLockImageProportions, ToggleReverseScrollZoom, ZoomWindow, focus_initial_command_context,
+    init_application_shell_actions,
 };
 use butter_paper::document_recovery_store::{DocumentRecoveryStore, RecoverySourceKind};
 use butter_paper::document_tab_bar::TemplateCatalogItem;
@@ -235,8 +233,6 @@ struct ComponentStory {
     window_handle: AnyWindowHandle,
     menu_bar_visible: bool,
     menu_bar_visibility_supported: bool,
-    ui_zoom_level: Rc<Cell<i8>>,
-    ui_zoom_base_font_size: Rc<Cell<gpui::Pixels>>,
     template_manager: Option<Entity<TemplateManagerView>>,
     session_store: Option<Arc<SessionManifestStore>>,
     last_observed_recovery_snapshot:
@@ -262,8 +258,6 @@ impl ComponentStory {
         document_workspace: Entity<DocumentWorkspace>,
         app_menu_bar: Entity<AppMenuBar>,
         menu_bar_visibility_supported: bool,
-        ui_zoom_level: Rc<Cell<i8>>,
-        ui_zoom_base_font_size: Rc<Cell<gpui::Pixels>>,
         template_manager: Option<Entity<TemplateManagerView>>,
         session_store: Option<Arc<SessionManifestStore>>,
         perf: Option<PerfStoryRuntime>,
@@ -372,8 +366,6 @@ impl ComponentStory {
             window_handle: window.window_handle(),
             menu_bar_visible,
             menu_bar_visibility_supported,
-            ui_zoom_level,
-            ui_zoom_base_font_size,
             template_manager,
             session_store,
             last_observed_recovery_snapshot: None,
@@ -482,7 +474,7 @@ impl ComponentStory {
         let Some(manager) = self.template_manager.as_ref() else {
             return;
         };
-        let (templates, last_used_id, storage_busy) = {
+        let (templates, last_used_id, default_orientation, storage_busy) = {
             let manager = manager.read(cx);
             let model = manager.model();
             (
@@ -495,11 +487,12 @@ impl ComponentStory {
                     })
                     .collect(),
                 model.last_used_id().to_owned(),
+                model.last_used_orientation(),
                 manager.is_storage_busy(),
             )
         };
         self.document_workspace.update(cx, |workspace, cx| {
-            workspace.apply_template_catalog(templates, last_used_id, cx);
+            workspace.apply_template_catalog(templates, last_used_id, default_orientation, cx);
             workspace.set_template_operation_state(storage_busy, cx);
         });
     }
@@ -572,32 +565,6 @@ impl ComponentStory {
         let story = cx.entity().downgrade();
         cx.defer(move |cx| {
             let _ = story.update(cx, |story, cx| story.sync_native_application_menu(cx));
-        });
-        cx.notify();
-    }
-
-    fn change_interface_size(
-        &mut self,
-        action: ApplicationUiZoomAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let level = resolve_application_ui_zoom_level(self.ui_zoom_level.get(), action);
-        self.ui_zoom_level.set(level);
-        self.update_application_preferences(cx, |preferences| preferences.set_ui_zoom_level(level));
-        apply_application_ui_zoom(level, self.ui_zoom_base_font_size.get(), window, cx);
-        // The interface size is application-wide.
-        let this_window = self.window_handle;
-        cx.defer(move |cx| {
-            for entry in document_window_entries(cx) {
-                // Tool geometry follows rem units: redraw each workspace.
-                if let Some(workspace) = entry.workspace.upgrade() {
-                    workspace.update(cx, |_, cx| cx.notify());
-                }
-                if entry.handle != this_window {
-                    let _ = entry.handle.update(cx, |_, window, _| window.refresh());
-                }
-            }
         });
         cx.notify();
     }
@@ -1519,21 +1486,6 @@ fn register_application_shell_actions(cx: &mut App) {
     });
     cx.on_action(|_: &ToggleReverseScrollZoom, cx| {
         defer_to_active_story(cx, |story, _, cx| story.toggle_reverse_scroll_zoom(cx));
-    });
-    cx.on_action(|_: &MakeInterfaceBigger, cx| {
-        defer_to_active_story(cx, |story, window, cx| {
-            story.change_interface_size(ApplicationUiZoomAction::In, window, cx)
-        });
-    });
-    cx.on_action(|_: &MakeInterfaceSmaller, cx| {
-        defer_to_active_story(cx, |story, window, cx| {
-            story.change_interface_size(ApplicationUiZoomAction::Out, window, cx)
-        });
-    });
-    cx.on_action(|_: &ResetInterfaceSize, cx| {
-        defer_to_active_story(cx, |story, window, cx| {
-            story.change_interface_size(ApplicationUiZoomAction::Reset, window, cx)
-        });
     });
     cx.on_action(|_: &ToggleApplicationFullScreen, cx| {
         defer_to_active_story(cx, |story, window, cx| {
@@ -2859,8 +2811,6 @@ fn build_document_window(
             document_workspace.clone(),
             app_menu_bar,
             cfg!(target_os = "macos"),
-            shared.ui_zoom_level.clone(),
-            shared.ui_zoom_base_font_size.clone(),
             template_manager,
             shared.session_store.clone(),
             perf,
@@ -4611,6 +4561,31 @@ mod review_driver {
                         } else {
                             failures += 1;
                             writeln!(log, "FAIL: expected tool {}, found {found}", words[2]).unwrap();
+                        }
+                    }
+                    "expect-text-selected" | "expect-box" => {
+                        // expect-text-selected W yes|no: page text is highlighted
+                        // in the active document. expect-box W armed|none: a
+                        // selection box is armed or being drawn.
+                        let window = number(1) as usize;
+                        let found = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let document_id = workspace.active_document_id()?;
+                            Some(if words[0] == "expect-box" {
+                                workspace.active_selection_marquee(document_id, cx).is_some()
+                            } else {
+                                workspace.text_highlighted(document_id, cx)
+                            })
+                        });
+                        let expected = matches!(words[2], "yes" | "armed");
+                        if found == Some(expected) {
+                            writeln!(log, "ok: {} {}", words[0], words[2]).unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: {} expected {}, found {found:?}", words[0], words[2])
+                                .unwrap();
                         }
                     }
                     "click" | "alt-click" => {

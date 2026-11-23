@@ -1,7 +1,7 @@
 //! Native Butter Paper migration application built on the reviewed GPUI
 //! Component stack.
 
-mod accessible_button;
+pub mod accessible_button;
 pub mod adaptive_performance;
 pub mod annotation_adapter;
 mod annotation_caption;
