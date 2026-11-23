@@ -160,22 +160,25 @@ expect-hidden 0 page-scale-dialog
 
 # A click-out only dismisses: with page text highlighted, a click on empty
 # page clears the highlight and starts no selection box; the next click on
-# empty page starts one, and Escape ends it.
+# empty page starts one, and Escape ends it. Points are in PDF points on
+# page 1, so they hold at every window size: the drag runs along the line
+# "Thank you for referring Sam…", and the clicks fall on blank page below
+# the last line.
 key 0 v
 wait 400
 expect-tool 0 Select
-move 0 125 322
+page-move 0 1 60 690.5
 wait 600
-drag 0 125 322 560 322 highlight
+page-drag 0 1 60 690.5 400 690.5
 wait 600
 expect-text-selected 0 yes
 shot text-highlighted
-click 0 600 630
+page-click 0 1 300 462
 wait 600
 expect-text-selected 0 no
 expect-box 0 none
 shot text-click-out
-click 0 600 630
+page-click 0 1 300 462
 wait 600
 expect-box 0 armed
 key 0 escape
