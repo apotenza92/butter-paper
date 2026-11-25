@@ -123,6 +123,9 @@ pub struct TileRequest {
     pub device_scale_millis: u32,
     pub rotation_quarter_turns: u8,
     pub crop: PixelRect,
+    /// Real colours or Dark pages. Part of the tile's identity: a Dark tile
+    /// never stands in for a Real one.
+    pub paper: crate::paper_appearance::PaperAppearance,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +157,7 @@ struct TileIdentity {
     zoom_tenths: u32,
     device_scale_millis: u32,
     crop: PixelRect,
+    paper: crate::paper_appearance::PaperAppearance,
 }
 
 impl From<TileRequest> for TileIdentity {
@@ -164,6 +168,7 @@ impl From<TileRequest> for TileIdentity {
             zoom_tenths: request.zoom_tenths,
             device_scale_millis: request.device_scale_millis,
             crop: request.crop,
+            paper: request.paper,
         }
     }
 }
@@ -381,6 +386,7 @@ impl Iterator for TileCursor {
                 width: self.edge.min(self.layout.device_width - x),
                 height: self.edge.min(self.layout.device_height - y),
             },
+            paper: Default::default(),
         })
     }
 }
@@ -735,6 +741,7 @@ mod tests {
                 width: 16,
                 height: 16,
             },
+            paper: Default::default(),
         }
     }
 

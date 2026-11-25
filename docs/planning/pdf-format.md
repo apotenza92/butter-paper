@@ -22,6 +22,9 @@ live in `crates/butter-paper/tests/fixtures/bluebeam/`.
 `tests/bluebeam_format.rs` writes the same markups natively and checks every
 family's dictionary keys against these files.
 
+Dark pages change no stored colour or appearance. They are a view setting
+(see [decisions.md](decisions.md#interface)).
+
 ## Common keys (every markup Revu writes)
 
 | Key | Revu convention |
@@ -88,6 +91,11 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
   incrementally, reopen typed with Revu's changes (`revu-edited-native.pdf`).
 - [x] lopdf upgraded to 0.45.0: 0.44's PNG "Average" predictor bug misread
   Revu's incremental cross-reference streams.
+- [x] `pdf_load` repairs two faults that lopdf drops but PDFium and Revu read.
+  A name with a `#` that two hex digits do not follow (Bluebeam stamps write
+  `/Name /#YURy...`) reads as a literal `#`; the save writes it as `#23`. A
+  reference to an absent object reads as null (ISO 32000-1, 7.3.10): the
+  open and the save drop it, and null `/Annots` items go.
 - [x] Fill opacity is independent of opacity (Revu `ca` = `FillOpacity`).
 - [x] Measurements use Revu captions (`2,697.37 mm`, `5.46 sq m`), Revu's
   base-unit `/Measure`, and keep the exact page-scale factor (previously

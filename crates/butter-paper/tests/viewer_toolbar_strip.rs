@@ -36,9 +36,11 @@ use gpui_component::Root;
 // fills ordinary widths without distributing the groups across the strip and
 // scrolls only once that intrinsic content no longer fits.
 const NORMAL_WIDTH: f32 = 720.;
-/// The centre controls' strip, with the page field's room for four-digit
-/// page counts.
+/// The centre controls' strip, with Undo and Redo at the leading edge (72
+/// px with the edge inset and gap) and the page field's room for
+/// four-digit page counts.
 const MINIMUM_CENTER_STRIP_WIDTH: f32 = 480.
+    + 72.
     + 16.
         * butter_paper::page_navigator::indicator_room_rems(
             butter_paper::page_navigator::PAGE_NAVIGATOR_MAX_DIGITS,
@@ -1408,11 +1410,9 @@ fn toolbar_traces_pointer_menu_escape_disabled_and_double_click(cx: &mut TestApp
 
 /// The form a laid-out toolbar shows, read from the controls it shows.
 fn form_shown(cx: &mut gpui::VisualTestContext) -> ViewerToolbarFit {
-    use butter_paper::viewer_toolbar_strip::{
-        EDIT_PDF_ICON_ID, VIEWER_PAGE_VIEW_MENU_ID, VIEWER_SCALE_VALUE_ID,
-    };
+    use butter_paper::viewer_toolbar_strip::{VIEWER_PAGE_VIEW_MENU_ID, VIEWER_SCALE_VALUE_ID};
     let shown = |cx: &mut gpui::VisualTestContext, id: &'static str| cx.debug_bounds(id).is_some();
-    if shown(cx, VIEWER_SCALE_VALUE_ID) {
+    if shown(cx, butter_paper::page_navigator::PAGE_FIRST_ID) {
         ViewerToolbarFit::Full
     } else if shown(cx, ZOOM_OUT_ID) {
         ViewerToolbarFit::Middle
@@ -1420,12 +1420,10 @@ fn form_shown(cx: &mut gpui::VisualTestContext) -> ViewerToolbarFit {
         ViewerToolbarFit::StepsInMenu
     } else if !shown(cx, VIEWER_PAGE_VIEW_MENU_ID) {
         ViewerToolbarFit::FitInMenu
-    } else if !shown(cx, EDIT_PDF_ICON_ID) {
+    } else if shown(cx, VIEWER_SCALE_VALUE_ID) {
         ViewerToolbarFit::ViewMenu
-    } else if bounds(cx, EDIT_PDF_ID).size.width >= px(78.) {
-        ViewerToolbarFit::Compact
     } else if bounds(cx, ZOOM_MENU_ID).size.width >= px(80.) {
-        ViewerToolbarFit::Tightest
+        ViewerToolbarFit::Compact
     } else {
         ViewerToolbarFit::Narrowest
     }
@@ -1448,6 +1446,7 @@ fn worst_case_toolbar(
                 page_number: 9_999,
                 on: true,
                 label: Some("1/32\" = 1'-0\"".into()),
+                menu_open: false,
             }),
             cx,
         );
@@ -1471,6 +1470,10 @@ fn lay_out_at(cx: &mut gpui::VisualTestContext, entities: &HarnessEntities, widt
 
 #[gpui::test]
 fn every_toolbar_group_shows_whole_at_every_width_from_the_narrowest(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{
+        VIEWER_HISTORY_GROUP_ID, VIEWER_PAGE_LAYOUT_ID, VIEWER_PAGES_GROUP_ID,
+        VIEWER_SCALE_MENU_ID, VIEWER_SCALE_TOGGLE_ID, VIEWER_SIGNATURES_ID,
+    };
     for signed in [false, true] {
         let mut app = cx.clone();
         let (cx, entities) = worst_case_toolbar(&mut app, signed);
@@ -1486,23 +1489,15 @@ fn every_toolbar_group_shows_whole_at_every_width_from_the_narrowest(cx: &mut Te
             );
             // Every group, whole, in order, inside the toolbar.
             let mut groups = vec![
-                bounds(
-                    cx,
-                    butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID,
-                ),
+                bounds(cx, VIEWER_HISTORY_GROUP_ID),
+                bounds(cx, VIEWER_PAGES_GROUP_ID),
                 bounds(cx, ZOOM_MENU_ID),
-                bounds(
-                    cx,
-                    butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
-                ),
+                bounds(cx, VIEWER_PAGE_LAYOUT_ID),
                 bounds(cx, EDIT_PDF_ID),
                 bounds(cx, VIEWER_SCALE_ID),
             ];
             if signed {
-                groups.push(bounds(
-                    cx,
-                    butter_paper::viewer_toolbar_strip::VIEWER_SIGNATURES_ID,
-                ));
+                groups.push(bounds(cx, VIEWER_SIGNATURES_ID));
             }
             for pair in groups.windows(2) {
                 assert!(
@@ -1516,12 +1511,8 @@ fn every_toolbar_group_shows_whole_at_every_width_from_the_narrowest(cx: &mut Te
                     "{group:?} outside {toolbar:?} at {width}"
                 );
             }
-            // The Page Scale control always shows its switch, its ruler or
-            // label, and its menu; Edit its switch and icon or label.
-            for id in [
-                butter_paper::viewer_toolbar_strip::VIEWER_SCALE_MENU_ID,
-                "viewer-scale-switch",
-            ] {
+            // The Scale always shows its ruler and its caret.
+            for id in [VIEWER_SCALE_TOGGLE_ID, VIEWER_SCALE_MENU_ID] {
                 assert!(cx.debug_bounds(id).is_some(), "{id} at {width}");
             }
             width += 8.;
@@ -1556,26 +1547,23 @@ fn each_toolbar_form_starts_at_its_planned_width(cx: &mut TestAppContext) {
 fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
     cx: &mut TestAppContext,
 ) {
+    use butter_paper::viewer_toolbar_strip::{
+        VIEWER_HISTORY_GROUP_ID, VIEWER_PAGE_LAYOUT_ID, VIEWER_PAGES_GROUP_ID,
+    };
     let (cx, entities) = worst_case_toolbar(cx, false);
-    let tightest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Tightest, false, 4);
+    let narrowest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Narrowest, false, 4);
     let at = |fit| 16. * viewer_toolbar_rems(fit, false, 4);
     let widths =
         ViewerToolbarFit::ALL
             .into_iter()
             .map(at)
-            .chain([1400., 1100., 900., tightest + 40.]);
+            .chain([1400., 1100., 900., narrowest + 40.]);
     for width in widths {
         lay_out_at(cx, &entities, width);
         let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
-        let pages_group = bounds(
-            cx,
-            butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID,
-        );
-        let zoom = bounds(cx, ZOOM_MENU_ID);
-        let layout = bounds(
-            cx,
-            butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID,
-        );
+        let history = bounds(cx, VIEWER_HISTORY_GROUP_ID);
+        let pages_group = bounds(cx, VIEWER_PAGES_GROUP_ID);
+        let layout = bounds(cx, VIEWER_PAGE_LAYOUT_ID);
         let edit_pdf = bounds(cx, EDIT_PDF_ID);
         let scale = bounds(cx, VIEWER_SCALE_ID);
         // The group gap and edge inset: 8px, halved in the narrowest form.
@@ -1584,40 +1572,40 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
         } else {
             px(8.)
         };
-        // Every form pins the pages left and the switches right, and keeps
-        // zoom with the layout centred in the toolbar unless a wider side
-        // would reach them there; then they meet that side.
-        assert!(
-            pages_group.left() - toolbar.left() >= unit
-                && pages_group.left() - toolbar.left() <= unit * 2.,
-            "pages at the left edge at {width}: {pages_group:?}"
+        // Every form pins Undo and Redo left and Edit PDF with the Scale
+        // right, and keeps the pages, zoom and layout centred in the
+        // toolbar unless a wider side would reach them there; then they
+        // meet that side.
+        assert_eq!(
+            history.left(),
+            toolbar.left() + unit,
+            "Undo and Redo at the left edge at {width}"
         );
         assert_eq!(
             scale.right(),
             toolbar.right() - unit,
-            "switches pinned right at {width}"
+            "Edit PDF and the Scale pinned right at {width}"
         );
         let controls = bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID);
         let centre = toolbar.center().x;
         let half = controls.size.width / 2.;
-        if centre - half >= pages_group.right() && centre + half <= edit_pdf.left() {
+        if centre - half >= history.right() && centre + half <= edit_pdf.left() {
             assert!(
                 (controls.center().x - centre).abs() <= px(1.),
-                "zoom and layout not centred at {width}: {controls:?} in {toolbar:?}"
+                "the centre controls not centred at {width}: {controls:?} in {toolbar:?}"
             );
         } else {
             assert!(
-                (controls.left() - pages_group.right()).abs() <= px(1.)
+                (controls.left() - history.right()).abs() <= px(1.)
                     || (edit_pdf.left() - controls.right()).abs() <= px(1.),
-                "zoom and layout not against the wider side at {width}: {controls:?}"
+                "the centre controls not against the wider side at {width}: {controls:?}"
             );
         }
-        // The groups never come nearer than the 8px group gap; at each
-        // form's least width they meet at it, give or take the few pixels
-        // the planned widths keep in hand.
-        let zoom_group = bounds(cx, butter_paper::viewer_toolbar_strip::VIEWER_ZOOM_GROUP_ID);
+        // The groups never come nearer than the group gap; at each form's
+        // least width they meet at it, give or take the few pixels the
+        // planned widths keep in hand.
         let gaps = [
-            zoom_group.left() - pages_group.right(),
+            pages_group.left() - history.right(),
             edit_pdf.left() - layout.right(),
         ];
         assert!(gaps.iter().all(|gap| *gap >= unit), "{gaps:?} at {width}");
@@ -1631,7 +1619,6 @@ fn toolbar_centres_controls_when_it_can_and_never_scrolls_down_to_its_minimum(
                 "the groups do not meet at {width}: {gaps:?}"
             );
         }
-        let _ = zoom;
     }
 }
 
@@ -1657,49 +1644,309 @@ fn the_zoom_percentage_keeps_one_width_at_every_zoom(cx: &mut TestAppContext) {
     }
 }
 
+/// The stock buttons draw their focus ring 3px outside their border; the
+/// toolbar leaves that room round each of Undo, Redo, Edit PDF and the
+/// Scale's halves in the widest and narrowest forms, inside the toolbar,
+/// which clips.
 #[gpui::test]
-fn toolbar_switches_show_a_whole_focus_ring_from_the_keyboard(cx: &mut TestAppContext) {
-    use butter_paper::accessible_button::SWITCH_FOCUS_RING_ID;
+fn toolbar_icon_buttons_keep_room_for_their_focus_ring(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{
+        VIEWER_REDO_ID, VIEWER_SCALE_MENU_ID, VIEWER_SCALE_TOGGLE_ID, VIEWER_UNDO_ID,
+    };
     for fit in [ViewerToolbarFit::Full, ViewerToolbarFit::Narrowest] {
         let mut app = cx.clone();
-        let (cx, entities) = worst_case_toolbar(&mut app, false);
-        lay_out_at(cx, &entities, 16. * viewer_toolbar_rems(fit, false, 4));
-        let focus = entities
-            .toolbar
-            .read_with(cx, |toolbar, _| toolbar.focus_handle());
-        cx.update(|window, cx| focus.focus(window, cx));
-        let mut groups = Vec::new();
-        for _ in 0..30 {
-            let tab = gpui::Keystroke::parse("tab").unwrap();
-            cx.simulate_event(gpui::KeyDownEvent {
-                keystroke: tab.clone(),
-                is_held: false,
-                prefer_character_input: false,
-            });
-            cx.simulate_event(gpui::KeyUpEvent { keystroke: tab });
-            cx.update(|window, cx| window.draw(cx).clear(cx));
-            let Some(ring) = cx.debug_bounds(SWITCH_FOCUS_RING_ID) else {
-                continue;
-            };
-            // The ring, 3px outside the switch, stays inside its framed
-            // group, which clips at its edge.
-            let ring = ring.dilate(px(3.));
-            let group = [EDIT_PDF_ID, VIEWER_SCALE_ID]
-                .into_iter()
-                .find(|id| bounds(cx, id).contains(&ring.center()))
-                .expect("a ring in the Edit or Scale group");
-            let frame = bounds(cx, group);
+        let (cx, entities) = worst_case_toolbar(&mut app, true);
+        lay_out_at(cx, &entities, 16. * viewer_toolbar_rems(fit, true, 4));
+        let toolbar = bounds(cx, VIEWER_TOOLBAR_SCROLL_ID);
+        for id in [
+            VIEWER_UNDO_ID,
+            VIEWER_REDO_ID,
+            EDIT_PDF_ID,
+            VIEWER_SCALE_TOGGLE_ID,
+            VIEWER_SCALE_MENU_ID,
+        ] {
+            let ring = bounds(cx, id).dilate(px(3.));
             assert!(
-                ring.left() >= frame.left()
-                    && ring.right() <= frame.right()
-                    && ring.top() >= frame.top()
-                    && ring.bottom() <= frame.bottom(),
-                "{fit:?}: the ring {ring:?} is cut by {group} {frame:?}"
+                ring.left() >= toolbar.left()
+                    && ring.right() <= toolbar.right()
+                    && ring.top() >= toolbar.top()
+                    && ring.bottom() <= toolbar.bottom(),
+                "{fit:?}: the ring round {id} {ring:?} is cut by {toolbar:?}"
             );
-            if !groups.contains(&group) {
-                groups.push(group);
-            }
         }
-        assert_eq!(groups.len(), 2, "{fit:?}: both switches show a ring");
+    }
+}
+
+/// Undo and Redo send the document's own actions when enabled; disabled,
+/// they send nothing. The action goes from the toolbar, so the document
+/// behind it takes it, never a focused text field.
+#[gpui::test]
+fn undo_and_redo_send_the_document_actions_when_enabled(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{
+        HistoryState, RedoDocument, UndoDocument, VIEWER_REDO_ID, VIEWER_UNDO_ID,
+    };
+    let (cx, entities) = open_harness(cx);
+    let sent = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+    cx.update(|_, cx| {
+        let undo = sent.clone();
+        cx.on_action(move |_: &UndoDocument, _| undo.borrow_mut().push("undo"));
+        let redo = sent.clone();
+        cx.on_action(move |_: &RedoDocument, _| redo.borrow_mut().push("redo"));
+    });
+    let history = |cx: &mut gpui::VisualTestContext| {
+        entities
+            .toolbar
+            .read_with(cx, |toolbar, _| toolbar.history())
+    };
+    assert_eq!(history(cx), HistoryState::default(), "both start disabled");
+    // Disabled, a press sends nothing.
+    click_target(cx, VIEWER_UNDO_ID);
+    click_target(cx, VIEWER_REDO_ID);
+    cx.run_until_parked();
+    assert!(sent.borrow().is_empty(), "{:?}", sent.borrow());
+    // Icon buttons, side by side at the leading edge.
+    let undo = bounds(cx, VIEWER_UNDO_ID);
+    let redo = bounds(cx, VIEWER_REDO_ID);
+    assert_eq!(undo.size, gpui::size(px(32.), px(32.)));
+    assert_eq!(redo.size, undo.size);
+    assert!(undo.right() <= redo.left());
+    assert_eq!(undo.left(), bounds(cx, VIEWER_TOOLBAR_ID).left() + px(8.));
+
+    entities.toolbar.update(cx, |toolbar, cx| {
+        toolbar.set_history(
+            HistoryState {
+                can_undo: true,
+                can_redo: false,
+            },
+            cx,
+        );
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    click_target(cx, VIEWER_UNDO_ID);
+    click_target(cx, VIEWER_REDO_ID);
+    cx.run_until_parked();
+    assert_eq!(*sent.borrow(), ["undo"]);
+    entities.toolbar.update(cx, |toolbar, cx| {
+        toolbar.set_history(
+            HistoryState {
+                can_undo: true,
+                can_redo: true,
+            },
+            cx,
+        );
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    click_target(cx, VIEWER_REDO_ID);
+    cx.run_until_parked();
+    assert_eq!(*sent.borrow(), ["undo", "redo"]);
+    if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+        assert!(tree.contains("Undo") && tree.contains("Redo"));
+    }
+}
+
+/// Edit PDF is an icon toggle as Fit Width is: one square icon button that
+/// asks for Edit PDF on or off, named with its state.
+#[gpui::test]
+fn edit_pdf_is_an_icon_toggle_named_with_its_state(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::ViewerToolbarStripEvent;
+    let (cx, entities) = worst_case_toolbar(cx, false);
+    lay_out_at(cx, &entities, 1400.);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(
+            &entities.toolbar,
+            move |_, event: &ViewerToolbarStripEvent, _| {
+                events.borrow_mut().push(*event);
+            },
+        )
+        .detach();
+    });
+    for on in [false, true] {
+        entities
+            .toolbar
+            .update(cx, |toolbar, cx| toolbar.set_edit_pdf(Some(on), cx));
+        lay_out_at(cx, &entities, 1400.);
+        let edit = bounds(cx, EDIT_PDF_ID);
+        assert_eq!(edit.size, gpui::size(px(32.), px(32.)), "icon-only, {on}");
+        if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+            let name = if on { "Edit PDF, on" } else { "Edit PDF, off" };
+            assert!(tree.contains(name), "{name}");
+        }
+        click_target(cx, EDIT_PDF_ID);
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        *events.borrow(),
+        [
+            ViewerToolbarStripEvent::EditPdfToggled,
+            ViewerToolbarStripEvent::EditPdfToggled
+        ]
+    );
+    // Hidden without a document.
+    entities
+        .toolbar
+        .update(cx, |toolbar, cx| toolbar.set_edit_pdf(None, cx));
+    lay_out_at(cx, &entities, 1400.);
+    assert!(cx.debug_bounds(EDIT_PDF_ID).is_none());
+}
+
+/// The Scale is one split button: the ruler half turns the page's scale on
+/// and off, the caret asks for the Page Scale panel. The scale shows beside
+/// the ruler while the page has one, cut short when long, and not in the
+/// two narrowest forms.
+#[gpui::test]
+fn the_scale_is_one_icon_split_button_with_the_scale_beside_it(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{
+        ScaleRequest, VIEWER_SCALE_MENU_ID, VIEWER_SCALE_TOGGLE_ID, VIEWER_SCALE_VALUE_ID,
+    };
+    let (cx, entities) = worst_case_toolbar(cx, false);
+    let requests = Rc::new(RefCell::new(Vec::new()));
+    entities.toolbar.update(cx, |toolbar, _| {
+        let requests = requests.clone();
+        toolbar.set_scale_handler(Rc::new(move |request, _, _| {
+            requests.borrow_mut().push(request);
+        }));
+    });
+    let set = |cx: &mut gpui::VisualTestContext, on: bool, label: Option<&str>| {
+        entities.toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_scale(
+                Some(ScaleToolbarState {
+                    page_number: 3,
+                    on,
+                    label: label.map(Into::into),
+                    menu_open: false,
+                }),
+                cx,
+            );
+        });
+        lay_out_at(cx, &entities, 1400.);
+    };
+    // Off: the ruler and the caret alone, even with a scale to bring back.
+    for label in [None, Some("1:100")] {
+        set(cx, false, label);
+        assert!(
+            cx.debug_bounds(VIEWER_SCALE_VALUE_ID).is_none(),
+            "{label:?}"
+        );
+        assert_eq!(
+            bounds(cx, VIEWER_SCALE_TOGGLE_ID).size,
+            gpui::size(px(32.), px(32.))
+        );
+    }
+    // On: the scale beside the ruler; a short one takes its own width.
+    set(cx, true, Some("1:100"));
+    let short = bounds(cx, VIEWER_SCALE_VALUE_ID);
+    let toggle = bounds(cx, VIEWER_SCALE_TOGGLE_ID);
+    assert!(short.left() > toggle.left() + px(16.) && short.right() <= toggle.right());
+    assert!(short.size.width < px(60.), "{short:?}");
+    if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+        assert!(tree.contains("Page Scale, on, 1:100"));
+    }
+    // A long one is cut short at 92px.
+    set(cx, true, Some("1/32\" = 1'-0\""));
+    assert_eq!(bounds(cx, VIEWER_SCALE_VALUE_ID).size.width, px(92.));
+    // The halves are joined, the caret last; both ask for their own.
+    let toggle = bounds(cx, VIEWER_SCALE_TOGGLE_ID);
+    let caret = bounds(cx, VIEWER_SCALE_MENU_ID);
+    assert_eq!(toggle.right(), caret.left());
+    assert_eq!(caret.size, gpui::size(px(32.), px(32.)));
+    click_target(cx, VIEWER_SCALE_TOGGLE_ID);
+    click_target(cx, VIEWER_SCALE_MENU_ID);
+    cx.run_until_parked();
+    assert_eq!(
+        *requests.borrow(),
+        [ScaleRequest::Toggle, ScaleRequest::Menu]
+    );
+    // The two narrowest forms show the ruler alone; the tooltip and status
+    // bar name the scale.
+    for fit in [ViewerToolbarFit::Compact, ViewerToolbarFit::Narrowest] {
+        lay_out_at(cx, &entities, 16. * viewer_toolbar_rems(fit, false, 4));
+        assert!(cx.debug_bounds(VIEWER_SCALE_VALUE_ID).is_none(), "{fit:?}");
+        assert_eq!(
+            bounds(cx, VIEWER_SCALE_TOGGLE_ID).size,
+            gpui::size(px(32.), px(32.))
+        );
+    }
+    lay_out_at(
+        cx,
+        &entities,
+        16. * viewer_toolbar_rems(ViewerToolbarFit::ViewMenu, false, 4),
+    );
+    assert!(cx.debug_bounds(VIEWER_SCALE_VALUE_ID).is_some());
+}
+
+/// The page field fits the page count's digits (two at least) inside its
+/// padding, with room for its focus ring inside the pages group, which
+/// clips: a page typed or selected is never cut. Opening it for typing
+/// leaves the toolbar where it was.
+#[gpui::test]
+fn the_page_field_fits_its_digits_and_focus_ring_for_one_to_four_digits(cx: &mut TestAppContext) {
+    use butter_paper::page_navigator::{PAGE_INDICATOR_ID, PAGE_INPUT_FIELD_ID, PAGE_INPUT_ID};
+    use butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID;
+    for (page_count, fit) in [
+        (2, ViewerToolbarFit::Middle),
+        (9, ViewerToolbarFit::Full),
+        (99, ViewerToolbarFit::Middle),
+        (999, ViewerToolbarFit::Middle),
+        (999, ViewerToolbarFit::Narrowest),
+        (9_999, ViewerToolbarFit::Full),
+        (9_999, ViewerToolbarFit::Narrowest),
+    ] {
+        let mut app = cx.clone();
+        let (cx, entities) = worst_case_toolbar(&mut app, false);
+        let navigator = cx.new(|_| butter_paper::page_navigator::PageNavigator::new());
+        entities.toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_page_navigator(navigator.clone(), cx);
+            toolbar.sync_pages(page_count - 1, page_count, cx);
+        });
+        let digits = butter_paper::page_navigator::page_count_digits(page_count);
+        lay_out_at(cx, &entities, 16. * viewer_toolbar_rems(fit, false, digits));
+        let case = format!("{page_count} pages, {fit:?}");
+        let indicator = bounds(cx, PAGE_INDICATOR_ID);
+        let controls = bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID);
+        click_target(cx, PAGE_INDICATOR_ID);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            navigator.read_with(cx, |navigator, _| navigator.is_editing()),
+            "{case}"
+        );
+        let entry = bounds(cx, PAGE_INPUT_ID);
+        let field = bounds(cx, PAGE_INPUT_FIELD_ID);
+        let group = bounds(cx, VIEWER_PAGES_GROUP_ID);
+        // The same room as the indicator, so nothing moves.
+        assert_eq!(entry.size.width, indicator.size.width, "{case}");
+        assert_eq!(bounds(cx, VIEWER_TOOLBAR_CONTROLS_ID), controls, "{case}");
+        // The focus ring, 3px outside the field, inside the group's frame.
+        let ring = field.dilate(px(3.));
+        assert!(
+            ring.left() > group.left()
+                && ring.right() < group.right()
+                && ring.top() > group.top()
+                && ring.bottom() < group.bottom(),
+            "{case}: ring {ring:?} cut by {group:?}"
+        );
+        // The widest number of that many digits fits inside the field's 8px
+        // padding and 1px border, with room for the caret.
+        let widest = "8".repeat(digits.max(2) as usize);
+        let text = cx.update(|window, _| {
+            let font_size = window.rem_size() * 0.875;
+            let run = gpui::TextRun {
+                len: widest.len(),
+                font: window.text_style().font(),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(widest.clone().into(), font_size, &[run], None)
+                .width
+        });
+        assert!(
+            text + px(2.) <= field.size.width - px(18.),
+            "{case}: {widest} is {text:?} wide in a {field:?} field"
+        );
     }
 }

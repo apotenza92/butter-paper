@@ -16,7 +16,7 @@
 - Canvas renderers, annotation layers, resize handles, virtualized thumbnails and the two-axis scroll area are domain UI. Preserve their behaviour and regression coverage unless the task explicitly redesigns them.
 - Popups, menus, selects and dialogs must remain keyboard accessible, contained at constrained window sizes and compatible with application shortcuts. An overlay press must never also start a canvas selection or edit (`overlay_state::press_owned_by_overlay`).
 - Dismiss transient panels and expanded subflows with a top-right icon-only X. Reserve `Cancel` for a decision prompt beside a commit or destructive action. Hide destructive item controls until hover or keyboard focus, keeping them keyboard accessible and separate from the primary click target.
-- Keep PDF paper-relative colours independent of the shell theme; annotation colours are document data.
+- Keep PDF paper-relative colours independent of the shell theme: they follow the dark pages setting (`PaperChrome`), not the app theme. Annotation colours are document data.
 - Before changing native UI or accepting its appearance, read [the UI policy](docs/agents/ui-policy.md) and [the UX review checklist](docs/planning/ux-review.md). Use the gpui-component and gpui-migration-ux-review skills. Build success is not visual acceptance.
 
 ## Sources of truth

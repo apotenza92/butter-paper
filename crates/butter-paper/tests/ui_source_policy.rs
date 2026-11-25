@@ -113,21 +113,46 @@ fn inspectors_panels_viewer_toolbar_and_system_theme_use_tokens_or_domain_colour
 
 #[test]
 fn shared_interaction_chrome_is_the_single_authored_canvas_colour_source() {
-    // Item controls are unpainted, so the shared painter has no handle colours.
-    let allowed = [
-        "rgb(0x2563eb",
-        "rgb(0xffffff",
-        "rgb(0x94a3b8",
-        "rgb(0x93c5fd",
-        "rgb(0x1d4ed8",
-        "rgb(0x0f766e",
-        "rgb(0x22c55e",
-    ];
-    // Each interaction colour owns one semantic role, so each appears once.
+    // The canvas chrome colours follow the paper (Dark pages): one
+    // light-paper and one dark-paper set in paper_chrome.rs. The painter
+    // authors no colour of its own.
     assert_eq!(
         literal_colour_calls(&source("interaction_chrome.rs")),
-        allowed
+        Vec::<String>::new()
     );
+    let paper = source("paper_chrome.rs");
+    assert_eq!(literal_colour_calls(&paper), Vec::<String>::new());
+    // Each interaction colour owns one semantic role in each set; the light
+    // set keeps the colours from before Dark pages.
+    let light =
+        &paper[paper.find("pub const LIGHT").unwrap()..paper.find("pub const DARK").unwrap()];
+    for role in [
+        "selection: 0x2563eb",
+        "halo: 0xffffff",
+        "locked: 0x94a3b8",
+        "hover: 0x93c5fd",
+        "focus: 0x1d4ed8",
+        "draft: 0x0f766e",
+        "crossing: 0x22c55e",
+    ] {
+        let field = format!("\n        {role},");
+        assert_eq!(light.matches(&field).count(), 1, "{role}");
+    }
+    for role in [
+        "selection:",
+        "halo:",
+        "locked:",
+        "hover:",
+        "focus:",
+        "draft:",
+        "crossing:",
+    ] {
+        assert_eq!(
+            paper.matches(&format!("\n        {role} 0x")).count(),
+            2,
+            "{role} has a light and a dark value"
+        );
+    }
 }
 
 #[test]

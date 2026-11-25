@@ -19,7 +19,9 @@ gpui::actions!(
         CutPages,
         PastePages,
         RotatePagesLeft,
-        RotatePagesRight
+        RotatePagesRight,
+        SelectAllPages,
+        ClearPageSelection
     ]
 );
 
@@ -44,6 +46,11 @@ pub(super) fn init_page_actions(cx: &mut App) {
         KeyBinding::new("cmd-v", PastePages, Some(PAGE_THUMBNAILS_CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-v", PastePages, Some(PAGE_THUMBNAILS_CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-a", SelectAllPages, Some(PAGE_THUMBNAILS_CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-a", SelectAllPages, Some(PAGE_THUMBNAILS_CONTEXT)),
+        KeyBinding::new("escape", ClearPageSelection, Some(PAGE_THUMBNAILS_CONTEXT)),
         KeyBinding::new("backspace", DeletePages, Some(PAGE_THUMBNAILS_CONTEXT)),
         KeyBinding::new("delete", DeletePages, Some(PAGE_THUMBNAILS_CONTEXT)),
     ]);
@@ -237,6 +244,42 @@ impl DocumentWorkspace {
         self.page_selection = Some(selection);
         self.activate_thumbnail_page(document_id, page_index, cx);
         cx.notify();
+    }
+
+    /// Selects every page of the document in Page Thumbnails, leaving the
+    /// page in view where it is.
+    pub fn select_all_pages(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let count = self.page_count(document_id, cx).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let anchor = self
+            .session(document_id, cx)
+            .map_or(0, |session| session.read(cx).current_page());
+        self.page_selection = Some(PageSelection {
+            document_id,
+            pages: (0..count).collect(),
+            anchor,
+        });
+        cx.notify();
+    }
+
+    /// Clears the thumbnails selected in the document, so page actions act
+    /// on the current page again. Whether there was a selection to clear.
+    pub fn clear_page_selection(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let selected = self
+            .page_selection
+            .as_ref()
+            .is_some_and(|selection| selection.document_id == document_id);
+        if selected {
+            self.page_selection = None;
+            cx.notify();
+        }
+        selected
     }
 
     /// Selects `page_index` for a menu opened on its thumbnail, unless it
@@ -659,6 +702,34 @@ impl DocumentWorkspace {
         });
     }
 
+    /// Cmd+A (Ctrl+A on Windows and Linux) in Page Thumbnails.
+    pub(super) fn select_all_pages_from_action(
+        &mut self,
+        _: &SelectAllPages,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(document_id) = self.active_ready_document_id(cx) {
+            self.select_all_pages(document_id, cx);
+        }
+    }
+
+    /// Escape in Page Thumbnails clears the selected pages; with none
+    /// selected, Escape does what it does elsewhere in the document.
+    pub(super) fn clear_page_selection_from_action(
+        &mut self,
+        _: &ClearPageSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cleared = self
+            .active_document_id
+            .is_some_and(|document_id| self.clear_page_selection(document_id, cx));
+        if !cleared {
+            window.dispatch_action(Box::new(Escape), cx);
+        }
+    }
+
     pub(super) fn rotate_pages_left_from_action(
         &mut self,
         _: &RotatePagesLeft,
@@ -681,6 +752,85 @@ impl DocumentWorkspace {
             workspace.rotate_pages(document_id, pages, PageRotationDirection::Right, cx);
             Ok(())
         });
+    }
+
+    /// Turns every page of the document a quarter turn, as one undoable
+    /// change: the page in view and every thumbnail turn at once, and the
+    /// view stays on the page it shows. Refused while the document saves or
+    /// a page is still turning.
+    pub fn rotate_all_pages(
+        &mut self,
+        document_id: DocumentId,
+        direction: PageRotationDirection,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return Err("document session is closed".into());
+        };
+        {
+            let session = session.read(cx);
+            if !matches!(session.status, NativeDocumentStatus::Ready) {
+                return Err("the document is still opening".into());
+            }
+            if session.save_status == NativeDocumentSaveStatus::Saving {
+                return Err("document save is in progress".into());
+            }
+            if session.pending_rotation_generation.is_some() {
+                return Err("a page is still turning".into());
+            }
+        }
+        // Turns still queued for selected pages would follow this one.
+        self.queued_page_rotations
+            .retain(|(queued, _, _)| *queued != document_id);
+        let size_before = self.current_page_size(document_id, cx);
+        // The pages above the view change height: the view keeps the page
+        // point at its centre.
+        let anchor = session.read(cx).viewport_centre_anchor();
+        let generation = self.next_generation();
+        let recovery_store = self.document_recovery_store.clone();
+        session.update(cx, |session, cx| {
+            commit_recovery_guarded_annotation_change(
+                session,
+                recovery_store.as_ref(),
+                document_id,
+                true,
+                cx,
+                |session| {
+                    session
+                        .annotations
+                        .rotate_all_document_pages(document_id.value(), direction)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                },
+            )?;
+            session.generation = generation;
+            session.pending_rotation_generation = None;
+            if session.pending_zoom_anchor.is_none() {
+                session.pending_zoom_anchor = anchor;
+            }
+            cx.notify();
+            Ok::<(), String>(())
+        })?;
+        self.ensure_visible_page_content_snap_geometry(document_id, true, cx);
+        self.refit_turned_page(document_id, size_before, cx);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Rotate All Pages Left or Right, from the Document menu or Page
+    /// Thumbnails' header, for the active document.
+    pub(super) fn rotate_all_pages_from_action(
+        &mut self,
+        direction: PageRotationDirection,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(document_id) = self.active_ready_document_id(cx) else {
+            return;
+        };
+        if let Err(error) = self.rotate_all_pages(document_id, direction, cx) {
+            self.annotation_statuses.insert(document_id, error);
+            cx.notify();
+        }
     }
 
     /// Rotates `pages` one after another: a page turns once the one before

@@ -49,7 +49,12 @@ impl NativeDocumentResource for PagesResource {
         Ok(raster(width, page_index + 2))
     }
 
-    fn render_thumbnail(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
+    fn render_thumbnail(
+        &self,
+        page_index: u32,
+        width: u32,
+        _paper: butter_paper::paper_appearance::PaperAppearance,
+    ) -> Result<RasterSurface, String> {
         Ok(raster(width, page_index + 2))
     }
 
@@ -1139,4 +1144,209 @@ fn the_page_scale_panel_drops_from_the_scale_and_closes_like_a_popup(cx: &mut Te
     settle(cx);
     assert!(!open(cx), "a press outside it closes it");
     std::fs::remove_dir_all(root).unwrap();
+}
+
+impl Opened<'_> {
+    /// Each page's rotation, in order.
+    fn rotations(&mut self) -> Vec<butter_paper::annotation_model::PageRotation> {
+        let document_id = self.document_id;
+        self.workspace.read_with(self.cx, |workspace, cx| {
+            let session = workspace.session(document_id, cx).unwrap().read(cx);
+            (0..3)
+                .map(|page| session.page_rotation(page).unwrap())
+                .collect()
+        })
+    }
+
+    fn undo_depth(&mut self) -> usize {
+        self.workspace
+            .read_with(self.cx, |workspace, cx| {
+                workspace.annotation_snapshot(self.document_id, cx)
+            })
+            .unwrap()
+            .undo_depth
+    }
+
+    fn dispatch(&mut self, action: Box<dyn gpui::Action>) {
+        let focus = self
+            .workspace
+            .read_with(self.cx, |workspace, _| workspace.focus_handle());
+        self.cx.update(|window, cx| {
+            focus.focus(window, cx);
+            window.dispatch_action(action, cx);
+        });
+        self.cx.run_until_parked();
+        self.cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// Shows Page Thumbnails.
+    fn show_thumbnails(&mut self) {
+        self.cx.update(|window, cx| window.draw(cx).clear(cx));
+        let toggle = self.cx.debug_bounds("document-left-rail-pages").unwrap();
+        self.cx
+            .simulate_click(toggle.center(), gpui::Modifiers::default());
+        self.cx.run_until_parked();
+        self.cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    fn click(&mut self, id: &str, modifiers: gpui::Modifiers) {
+        let id: &'static str = Box::leak(id.to_owned().into_boxed_str());
+        let target = self
+            .cx
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} is shown"));
+        self.cx.simulate_click(target.center(), modifiers);
+        self.cx.run_until_parked();
+        self.cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+/// Rotate All Pages turns every page, whatever is selected, as one undo
+/// step, from the Document menu's actions and from Page Thumbnails' header;
+/// the page in view stays in view.
+#[gpui::test]
+fn rotate_all_pages_turns_every_page_as_one_undo_step(cx: &mut TestAppContext) {
+    use butter_paper::annotation_model::PageRotation;
+    use butter_paper::document_workspace::{
+        DOCUMENT_THUMBNAIL_ROTATE_ALL_LEFT_ID, DOCUMENT_THUMBNAIL_ROTATE_ALL_RIGHT_ID,
+        RotateAllPagesLeft, RotateAllPagesRight,
+    };
+    let mut opened = three_pages(cx);
+    opened
+        .update(|workspace, document_id, cx| workspace.activate_thumbnail_page(document_id, 1, cx));
+    let depth = opened.undo_depth();
+    assert_eq!(opened.rotations(), [PageRotation::Degrees0; 3]);
+    let widths = opened.thumbnail_widths();
+    opened.dispatch(Box::new(RotateAllPagesRight));
+    assert_eq!(opened.rotations(), [PageRotation::Degrees90; 3]);
+    assert_eq!(opened.undo_depth(), depth + 1, "one undo step");
+    assert_eq!(opened.current_page(), 1, "the page in view stays");
+    // Every thumbnail turns: its pixels are 10 high, so now 10 wide.
+    assert_eq!(opened.thumbnail_widths(), [Some(10); 3]);
+    // One undo turns them all back, and redo turns them again.
+    opened
+        .update(|workspace, document_id, cx| workspace.undo_annotations(document_id, cx))
+        .unwrap();
+    assert_eq!(opened.rotations(), [PageRotation::Degrees0; 3]);
+    assert_eq!(opened.thumbnail_widths(), widths);
+    opened
+        .update(|workspace, document_id, cx| workspace.redo_annotations(document_id, cx))
+        .unwrap();
+    assert_eq!(opened.rotations(), [PageRotation::Degrees90; 3]);
+    opened.dispatch(Box::new(RotateAllPagesLeft));
+    assert_eq!(opened.rotations(), [PageRotation::Degrees0; 3]);
+
+    // Page Thumbnails' header buttons turn every page too, with one page
+    // selected.
+    opened.show_thumbnails();
+    let document_id = opened.document_id;
+    opened.click(
+        &butter_paper::document_workspace::document_thumbnail_id(document_id, 2),
+        gpui::Modifiers::default(),
+    );
+    let depth = opened.undo_depth();
+    opened.click(
+        DOCUMENT_THUMBNAIL_ROTATE_ALL_LEFT_ID,
+        gpui::Modifiers::default(),
+    );
+    assert_eq!(opened.rotations(), [PageRotation::Degrees270; 3]);
+    // The header keeps all three buttons inside Page Thumbnails.
+    let header = opened
+        .cx
+        .debug_bounds("document-left-sidebar-header")
+        .unwrap();
+    for id in [
+        DOCUMENT_THUMBNAIL_ROTATE_ALL_LEFT_ID,
+        DOCUMENT_THUMBNAIL_ROTATE_ALL_RIGHT_ID,
+        butter_paper::document_workspace::DOCUMENT_THUMBNAIL_ADD_PAGE_ID,
+    ] {
+        let button = opened.cx.debug_bounds(id).unwrap();
+        assert!(
+            button.left() >= header.left() && button.right() <= header.right(),
+            "{id} {button:?} outside {header:?}"
+        );
+    }
+    opened.click(
+        DOCUMENT_THUMBNAIL_ROTATE_ALL_RIGHT_ID,
+        gpui::Modifiers::default(),
+    );
+    assert_eq!(opened.rotations(), [PageRotation::Degrees0; 3]);
+    opened.click(
+        DOCUMENT_THUMBNAIL_ROTATE_ALL_RIGHT_ID,
+        gpui::Modifiers::default(),
+    );
+    assert_eq!(opened.rotations(), [PageRotation::Degrees90; 3]);
+    assert_eq!(opened.undo_depth(), depth + 3);
+}
+
+/// Cmd+A (Ctrl+A on Windows and Linux) in Page Thumbnails selects every
+/// page, and Escape clears the selection; elsewhere Select All still
+/// selects the page's markups.
+#[gpui::test]
+fn select_all_in_page_thumbnails_selects_every_page_and_escape_clears(cx: &mut TestAppContext) {
+    let select_all = if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    };
+    let mut opened = three_pages(cx);
+    opened.show_thumbnails();
+    let document_id = opened.document_id;
+    let selected = |opened: &mut Opened<'_>| {
+        opened.workspace.read_with(opened.cx, |workspace, cx| {
+            workspace.selected_pages(document_id, cx)
+        })
+    };
+    let selected_markup = |opened: &mut Opened<'_>| {
+        opened
+            .workspace
+            .read_with(opened.cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap()
+            .selected_id
+            .map(|id| id.as_str().to_owned())
+    };
+    opened.click(
+        &butter_paper::document_workspace::document_thumbnail_id(document_id, 1),
+        gpui::Modifiers::default(),
+    );
+    assert_eq!(selected(&mut opened), [1]);
+    let markup_before = selected_markup(&mut opened);
+    assert_ne!(markup_before.as_deref(), Some("a"));
+    opened.cx.simulate_keystrokes(select_all);
+    opened.cx.run_until_parked();
+    assert_eq!(selected(&mut opened), [0, 1, 2]);
+    assert_eq!(
+        selected_markup(&mut opened),
+        markup_before,
+        "the markups are left as they were"
+    );
+    assert_eq!(opened.current_page(), 1, "the page in view stays");
+    // Escape clears it: page actions act on the page in view again.
+    opened.click(
+        &butter_paper::document_workspace::document_thumbnail_id(document_id, 2),
+        gpui::Modifiers::secondary_key(),
+    );
+    assert_eq!(selected(&mut opened), [0, 1]);
+    opened.cx.simulate_keystrokes("escape");
+    opened.cx.run_until_parked();
+    assert_eq!(selected(&mut opened), [opened.current_page()]);
+    opened.cx.simulate_keystrokes(select_all);
+    opened.cx.run_until_parked();
+    assert_eq!(selected(&mut opened), [0, 1, 2]);
+    // On the page, Select All selects the page's markups, as before.
+    opened
+        .update(|workspace, document_id, cx| workspace.activate_thumbnail_page(document_id, 0, cx));
+    let focus = opened
+        .workspace
+        .read_with(opened.cx, |workspace, _| workspace.focus_handle());
+    opened.cx.update(|window, cx| focus.focus(window, cx));
+    opened.cx.simulate_keystrokes(select_all);
+    opened.cx.run_until_parked();
+    assert_eq!(
+        selected_markup(&mut opened).as_deref(),
+        Some("a"),
+        "the page's rectangle"
+    );
 }

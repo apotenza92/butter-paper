@@ -40,7 +40,12 @@ impl NativeDocumentResource for Resource {
         Ok(raster(width, page_index + 2))
     }
 
-    fn render_thumbnail(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
+    fn render_thumbnail(
+        &self,
+        page_index: u32,
+        width: u32,
+        _paper: butter_paper::paper_appearance::PaperAppearance,
+    ) -> Result<RasterSurface, String> {
         Ok(raster(width, page_index + 2))
     }
 

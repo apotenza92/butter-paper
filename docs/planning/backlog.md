@@ -10,6 +10,9 @@ alone do not establish these behaviours.
 - Physical trackpad pinch/scroll delivery on Windows and Linux. The X11
   GPUI backend reports both trackpads and mouse wheels as line deltas, so
   separating their preferences there needs device-source support in the fork.
+- Dark pages on Windows and on macOS: the shortcut, View ▸ Page Appearance
+  (the macOS menu bar), highlights (the CPU path on both) and the page edge
+  ring. Verified on Linux only.
 - Installed update download/restart on macOS, Windows and Linux: preserve
   open documents, view positions and unsaved work, and check relaunch focus.
 - Phone signing with a physical phone (the relay is verified with synthetic
@@ -33,9 +36,8 @@ alone do not establish these behaviours.
   disabled state to accessibility (the snapping "Show grid" switch and spacing
   fields report enabled while greyed out). Deferred: the fix belongs in
   gpui-kit's base controls, not in Butter Paper.
-- The stock Switch draws no focus ring. The toolbar's Edit and Page Scale
-  switches and the Snap settings switches show the stock ring through an
-  app-side wrapper (`focus_ring_switch`); the switches in the properties
+- The stock Switch draws no focus ring. The Snap settings switches show the
+  stock ring through an app-side wrapper (`focus_ring_switch`); the switches in the properties
   panels, tool defaults and Settings still show none. Give them the wrapper
   once their panels leave room for the ring, or give the stock Switch the ring
   in gpui-kit.
@@ -63,6 +65,12 @@ alone do not establish these behaviours.
 
 ## Editing
 
+- Dark pages: a vector Snapshot markup still draws in the real colours of
+  its copied content. It needs its own design.
+- Escape did not clear a markup selection after a switch of the page
+  appearance in review. Check whether older versions do the same.
+- The Rectangle X property field accepts values that move the shape off the
+  page (for example 3205 pt). Decide the limit and apply it.
 - Elliptical Arcs import and render but are not editable as ellipses.
 - Properties the reference had but native lacks: separate fill opacity,
   hatch fill, text vertical alignment and auto-size, image borders, editing
@@ -90,9 +98,6 @@ alone do not establish these behaviours.
   page-wide, and a PDF's partial viewports are read as page-wide.
 - Imperial measurements show decimal feet or inches; drawings write feet
   and inches (`36'-6"`), which Revu stores as a two-unit `/D`.
-- A PDF whose `/Annots` names a missing object (a damaged file, some page
-  extractions) does not open; a missing object should read as null, as in
-  PDFium and Revu.
 - Pdf-format follow-ups are listed in [pdf-format.md](pdf-format.md#known-differences-follow-ups).
 
 ## Edit PDF
@@ -203,10 +208,6 @@ tables and images. Not handled yet, so their text flows as plain paragraphs
 - Windows: qualify the native save and file pickers by hand.
 - Windows: the real-PDFium (`--ignored`) tests are not maintained there; many
   build fixture paths without canonicalising them.
-- macOS native window tabs have no visible tab bar (GPUI leaves drawing it to
-  the app, and Butter Paper does not), so Window ▸ Merge All Windows hides
-  every window but one. New Window and torn-off tabs open as separate windows
-  to avoid this; either draw a window tab bar or drop the tabbing identifier.
 - Linux: qualify production graphics. On GNOME 50 Wayland (Ubuntu 26.04,
   Intel UHD 630 with a GTX 1660 Ti on NVIDIA 595-open), development builds
   draw on the compositor's Intel GPU through Vulkan, and on NVIDIA Vulkan
@@ -243,10 +244,18 @@ tables and images. Not handled yet, so their text flows as plain paragraphs
 
 ## Product requests
 
-- PDF text search with result navigation, later scanned-image search (#36).
 - Scriptable CLI sharing the app's document, annotation and export
   capabilities, possibly with an MCP interface (#37).
 - In-app agent chat with cloud and local models (#38).
+- SharePoint markup sessions: when two people open the same SharePoint or
+  OneDrive PDF, they share markups live. Find the file's Microsoft Graph
+  `driveItem` from a sync-folder path or a link, and use it as the session
+  key. Send markup changes keyed by `/NM` through a relay room (a Durable
+  Object, as the signature relay uses), and check access through Graph.
+  Saves stay one at a time with an ETag `If-Match` upload, so the file stays
+  a normal PDF. Edit PDF changes stay single-user, with a lock. Risks: an
+  Entra app registration and tenant admin consent, markup privacy on the
+  relay (encrypt end to end), and no OneDrive client on Linux.
 - Popup notes: currently preserved and rendered statically, not editable.
 - Form filling follow-ups: form JavaScript (calculations, formatting,
   validation), creating fields, signing signature fields, XFA forms, FDF and

@@ -18,7 +18,8 @@ The colour rule catches direct numeric `rgb`/`rgba`/`hsla` constructors. This is
 a bounded source check, not a Rust parser or complete style analysis. It does
 not inspect document raster colours, infer semantic roles or certify rendered
 geometry and gestures. PDF canvas roles keep paper-relative colours independent
-of the shell theme; dynamic annotation colours are document data.
+of the shell theme: they follow the dark pages setting (`PaperChrome`), not the
+app theme. Dynamic annotation colours are document data.
 
 Extend the gate with regressions for concrete failures. When the user approves
 a changed UI contract, update its precise assertion and verify the new behaviour.

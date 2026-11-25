@@ -13,6 +13,9 @@ use std::{
 /// Lowest first.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RenderPriority {
+    /// Reading the pages' text for a search: it goes after everything
+    /// else, so that no search makes the viewer wait.
+    Search,
     /// A page beside the one in view, drawn ahead in case the user turns to
     /// it: anything asked for meanwhile goes first.
     Prefetch,
@@ -130,6 +133,28 @@ mod tests {
                 ("page", RenderPriority::Interactive),
             ]),
             ["page", "tile", "thumbnail 1", "thumbnail 2"]
+        );
+    }
+
+    #[test]
+    fn a_search_waits_behind_every_other_request() {
+        assert_eq!(
+            order(&[
+                ("search 1", RenderPriority::Search),
+                ("prefetch", RenderPriority::Prefetch),
+                ("search 2", RenderPriority::Search),
+                ("thumbnail", RenderPriority::Thumbnail),
+                ("tile", RenderPriority::Viewer),
+                ("page", RenderPriority::Interactive),
+            ]),
+            [
+                "page",
+                "tile",
+                "thumbnail",
+                "prefetch",
+                "search 1",
+                "search 2"
+            ]
         );
     }
 

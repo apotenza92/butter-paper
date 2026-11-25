@@ -8,22 +8,28 @@ use butter_paper::application_close_workspace::{
 use butter_paper::application_shell::application_data_directory;
 use butter_paper::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, LockImageProportions,
-    MinimiseWindow, MoveDocumentToNewWindow, NewWindow, OpenReleasePage, ReverseScrollZoom,
-    SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
-    ToggleLockImageProportions, ToggleReverseScrollZoom, ZoomWindow, focus_initial_command_context,
-    init_application_shell_actions,
+    MergeAllWindows, MinimiseWindow, MoveDocumentToNewWindow, NewWindow, OpenDocumentsIn,
+    OpenDocumentsInNewTab, OpenDocumentsInNewWindow, OpenDocumentsInPreference, OpenReleasePage,
+    PageAppearancePreference, PageTurningPreference, ReverseScrollZoom, SetAsDefaultPdfApp,
+    SetPageAppearanceDark, SetPageAppearanceLight, SetPageAppearanceMatchSystem,
+    SetPageTurningBalanced, SetPageTurningDeliberate, SetPageTurningResponsive, SetZoomSpeedCoarse,
+    SetZoomSpeedFine, SetZoomSpeedStandard, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+    ToggleLockImageProportions, TogglePageAppearance, ToggleReverseScrollZoom, ZoomSpeedPreference,
+    ZoomWindow, focus_initial_command_context, init_application_shell_actions,
 };
 use butter_paper::document_recovery_store::{DocumentRecoveryStore, RecoverySourceKind};
 use butter_paper::document_tab_bar::TemplateCatalogItem;
 use butter_paper::document_windows::{WindowCheckpointPublisher, WindowSessionCoordinator};
 use butter_paper::document_workspace::{
-    DeferredStartupOpen, DocumentId, DocumentTabTransferEvent, DocumentWorkspace,
-    DocumentWorkspaceEvidenceSnapshot, DocumentWorkspaceTemplateCommand, PaintedPageEvidence,
-    PdfDocumentSaver, PdfiumWorkerBackend, StartupRecoveryAvailability, StartupRecoveryItem,
-    init_document_workspace_actions, register_document_workspace_actions_for,
+    DeferredStartupOpen, DocumentId, DocumentOpenBatchRequest, DocumentOpenOrigin,
+    DocumentTabTransferEvent, DocumentWorkspace, DocumentWorkspaceEvidenceSnapshot,
+    DocumentWorkspaceTemplateCommand, PaintedPageEvidence, PdfDocumentSaver, PdfiumWorkerBackend,
+    StartupRecoveryAvailability, StartupRecoveryItem, init_document_workspace_actions,
+    register_document_workspace_actions_for,
 };
 use butter_paper::generated_document::GeneratedDocumentStore;
 use butter_paper::macos_process_lifecycle::AppRootLifecycleReceipt;
+use butter_paper::mouse_wheel::{PageTurning, ZoomSpeed};
 use butter_paper::native_application::{
     ApplicationMenuShellState, NativeApplicationMenuState, NativeDocumentIngress,
     install_native_application_menus_with_shell, install_native_platform_menus,
@@ -1339,6 +1345,8 @@ impl ComponentStory {
                     && active_document.is_some_and(|document_id| {
                         workspace.can_transfer_document(document_id, cx)
                     }),
+                can_merge_all_windows: shared_application(cx).multi_window
+                    && document_window_entries(cx).len() > 1,
             }
         }
     }
@@ -1351,6 +1359,7 @@ impl ComponentStory {
                 .preferences
                 .get()
                 .reverse_scroll_zoom(),
+            page_appearance: shared_application(cx).preferences.get().page_appearance(),
             updates: updates::menu_state(cx),
         }
     }
@@ -1484,8 +1493,91 @@ fn register_application_shell_actions(cx: &mut App) {
         cx.set_global(LockImageProportions(locked));
         cx.refresh_windows();
     });
+    // From Settings: where PDFs opened from outside the app go.
+    let set_open_documents_in = |setting: OpenDocumentsIn, cx: &mut App| {
+        let shared = shared_application(cx);
+        let mut preferences = shared.preferences.get();
+        preferences.set_open_documents_in(setting);
+        shared.preferences.set(preferences);
+        if let Err(error) = shared.preferences_store.save(preferences) {
+            eprintln!("unable to save Butter Paper application preferences: {error}");
+        }
+        cx.set_global(OpenDocumentsInPreference(setting));
+        cx.refresh_windows();
+    };
+    cx.on_action(move |_: &OpenDocumentsInNewTab, cx| {
+        set_open_documents_in(OpenDocumentsIn::NewTab, cx)
+    });
+    cx.on_action(move |_: &OpenDocumentsInNewWindow, cx| {
+        set_open_documents_in(OpenDocumentsIn::NewWindow, cx)
+    });
     cx.on_action(|_: &ToggleReverseScrollZoom, cx| {
-        defer_to_active_story(cx, |story, _, cx| story.toggle_reverse_scroll_zoom(cx));
+        if active_document_window(cx).is_some() {
+            defer_to_active_story(cx, |story, _, cx| story.toggle_reverse_scroll_zoom(cx));
+            return;
+        }
+        // From Settings with no document window open.
+        let shared = shared_application(cx);
+        let mut preferences = shared.preferences.get();
+        let reverse = !preferences.reverse_scroll_zoom();
+        preferences.set_reverse_scroll_zoom(reverse);
+        shared.preferences.set(preferences);
+        if let Err(error) = shared.preferences_store.save(preferences) {
+            eprintln!("unable to save Butter Paper application preferences: {error}");
+        }
+        cx.set_global(ReverseScrollZoom(reverse));
+        cx.refresh_windows();
+    });
+    // From Settings ▸ Mouse wheel: how far a notch zooms, and how the wheel
+    // turns pages in Single Page view, in every window.
+    let update_wheel_preferences =
+        |cx: &mut App, change: &dyn Fn(&mut ApplicationShellPreferences)| {
+            let shared = shared_application(cx);
+            let mut preferences = shared.preferences.get();
+            change(&mut preferences);
+            shared.preferences.set(preferences);
+            if let Err(error) = shared.preferences_store.save(preferences) {
+                eprintln!("unable to save Butter Paper application preferences: {error}");
+            }
+            cx.set_global(ZoomSpeedPreference(preferences.zoom_speed()));
+            cx.set_global(PageTurningPreference(preferences.page_turning()));
+            cx.refresh_windows();
+        };
+    let set_zoom_speed = move |speed: ZoomSpeed, cx: &mut App| {
+        update_wheel_preferences(cx, &|preferences| preferences.set_zoom_speed(speed));
+    };
+    let set_page_turning = move |turning: PageTurning, cx: &mut App| {
+        update_wheel_preferences(cx, &|preferences| preferences.set_page_turning(turning));
+    };
+    cx.on_action(move |_: &SetZoomSpeedFine, cx| set_zoom_speed(ZoomSpeed::Fine, cx));
+    cx.on_action(move |_: &SetZoomSpeedStandard, cx| set_zoom_speed(ZoomSpeed::Standard, cx));
+    cx.on_action(move |_: &SetZoomSpeedCoarse, cx| set_zoom_speed(ZoomSpeed::Coarse, cx));
+    cx.on_action(move |_: &SetPageTurningDeliberate, cx| {
+        set_page_turning(PageTurning::Deliberate, cx)
+    });
+    cx.on_action(move |_: &SetPageTurningBalanced, cx| set_page_turning(PageTurning::Balanced, cx));
+    cx.on_action(move |_: &SetPageTurningResponsive, cx| {
+        set_page_turning(PageTurning::Responsive, cx)
+    });
+    // View ▸ Page Appearance and Settings ▸ View: Dark pages, in every
+    // window.
+    cx.on_action(|_: &SetPageAppearanceLight, cx| {
+        set_page_appearance(butter_paper::paper_appearance::PageAppearance::Light, cx)
+    });
+    cx.on_action(|_: &SetPageAppearanceDark, cx| {
+        set_page_appearance(butter_paper::paper_appearance::PageAppearance::Dark, cx)
+    });
+    cx.on_action(|_: &SetPageAppearanceMatchSystem, cx| {
+        set_page_appearance(
+            butter_paper::paper_appearance::PageAppearance::MatchSystem,
+            cx,
+        )
+    });
+    // The shortcut: Light or Dark, the opposite of the pages that show now.
+    cx.on_action(|_: &TogglePageAppearance, cx| {
+        let system_is_dark = butter_paper::system_theme::is_dark_appearance(cx.window_appearance());
+        let next = PageAppearancePreference::current(cx).toggled(system_is_dark);
+        set_page_appearance(next, cx);
     });
     cx.on_action(|_: &ToggleApplicationFullScreen, cx| {
         defer_to_active_story(cx, |story, window, cx| {
@@ -1536,13 +1628,14 @@ fn register_application_shell_actions(cx: &mut App) {
             move_document_between_windows(entry.handle, document_id, None, screen, cx)
         });
     });
+    on_window_action::<MergeAllWindows>(cx, |cx| {
+        #[cfg(feature = "review-driver")]
+        review_driver::trace("MergeAllWindows handler");
+        merge_all_windows(cx);
+    });
     on_window_action::<NewWindow>(cx, |cx| {
         if shared_application(cx).multi_window {
-            // Placed explicitly so it stays a separate window when macOS
-            // prefers tabs: Butter Paper draws no native window tab bar, so
-            // a window added as a tab would be hidden behind the first.
-            let bounds = next_window_bounds(cx);
-            open_document_window_with_bounds(cx, None, Some(bounds));
+            open_document_window(cx, None);
         }
     });
     // Quit closes every window through its own unsaved-changes transaction.
@@ -1568,6 +1661,58 @@ fn register_application_shell_actions(cx: &mut App) {
     on_window_action::<RequestApplicationClose>(cx, |cx| {
         if let Some(entry) = active_document_window(cx) {
             request_window_close(&entry, cx);
+        }
+    });
+}
+
+/// Merge All Windows: the active document window takes every other window's
+/// documents, in window order and tab order, after its own tabs. A window
+/// left without tabs closes; it has nothing to save, so it asks nothing.
+fn merge_all_windows(cx: &mut App) {
+    let Some(target) = active_document_window(cx) else {
+        return;
+    };
+    let Some(target_workspace) = target.workspace.upgrade() else {
+        return;
+    };
+    let sources = document_window_entries(cx)
+        .into_iter()
+        .filter(|entry| entry.handle != target.handle)
+        .filter_map(|entry| {
+            let workspace = entry.workspace.upgrade()?;
+            Some((entry, workspace))
+        })
+        .collect::<Vec<_>>();
+    if sources.is_empty() {
+        return;
+    }
+    let workspaces = sources
+        .iter()
+        .map(|(_, workspace)| workspace.clone())
+        .collect::<Vec<_>>();
+    let emptied = butter_paper::document_workspace::merge_document_workspaces(
+        &target_workspace,
+        &workspaces,
+        cx,
+    );
+    for ((entry, _), emptied) in sources.iter().zip(emptied) {
+        if emptied {
+            request_window_close(entry, cx);
+        }
+    }
+    let _ = target
+        .handle
+        .update(cx, |_, window, _| window.activate_window());
+    refresh_application_menus(cx);
+}
+
+/// Rebuilds the application menus from the window that owns them, after a
+/// change they show that belongs to no one window, such as the window count.
+/// Deferred, so that no window is mid-update when its story updates.
+fn refresh_application_menus(cx: &mut App) {
+    cx.defer(|cx| {
+        for story in document_window_stories(cx) {
+            story.update(cx, |story, cx| story.sync_native_application_menu(cx));
         }
     });
 }
@@ -1868,9 +2013,8 @@ fn restore_session_windows(
     let first = cx.entity().downgrade();
     cx.defer(move |cx| {
         for plan in others {
-            // Saved windows come back as separate windows where they were
-            // (or cascaded when that display is gone), even when macOS prefers
-            // tabs for new ones.
+            // Saved windows come back where they were (or cascaded when that
+            // display is gone).
             let (bounds, display_id) = plan
                 .window_bounds()
                 .and_then(|bounds| restored_window_placement(bounds, cx))
@@ -2104,6 +2248,20 @@ fn main() {
     let update_settings_root = storage_layout.preferences_root().to_path_buf();
     let release_channel = storage_context.release_channel;
     let session_source = NativeLaunchSessionSource::new(perf.is_some(), &native_launch);
+    // A launch with PDFs first offers them to a Butter Paper of the same
+    // profile that is already running (Windows and Linux start a process
+    // for each file the file manager opens), and exits once it takes them.
+    let instance_listener = if perf.is_none() {
+        match butter_paper::single_instance::claim(
+            &storage_layout.session_state_root(),
+            native_launch.open_paths(),
+        ) {
+            butter_paper::single_instance::InstanceRole::Forwarded => std::process::exit(0),
+            butter_paper::single_instance::InstanceRole::Primary(listener) => listener,
+        }
+    } else {
+        None
+    };
     let native_ingress = NativeDocumentIngress::default();
     let application = gpui_platform::application()
         .with_assets(butter_paper::application_assets::ApplicationAssets);
@@ -2131,6 +2289,10 @@ fn main() {
         let preferences = startup_preferences;
         cx.set_global(ReverseScrollZoom(preferences.reverse_scroll_zoom()));
         cx.set_global(LockImageProportions(preferences.lock_image_proportions()));
+        cx.set_global(OpenDocumentsInPreference(preferences.open_documents_in()));
+        cx.set_global(ZoomSpeedPreference(preferences.zoom_speed()));
+        cx.set_global(PageTurningPreference(preferences.page_turning()));
+        cx.set_global(PageAppearancePreference(preferences.page_appearance()));
         let worker_executable = perf.as_ref().map_or_else(
             || {
                 native_runtime_layout
@@ -2249,6 +2411,18 @@ fn main() {
             })
         });
         recent_documents.update(cx, |history, cx| history.refresh(cx));
+        let page_memory = cx.new(|_| {
+            if perf.is_some() {
+                return Default::default();
+            }
+            butter_paper::page_memory::PageMemory::open(
+                storage_layout.preferences_root().join("page-memory"),
+            )
+            .unwrap_or_else(|error| {
+                eprintln!("Page memory could not be loaded: {error}");
+                Default::default()
+            })
+        });
         let multi_window = perf.is_none();
         cx.set_global(DocumentWindows {
             shared: Rc::new(SharedApplication {
@@ -2272,6 +2446,7 @@ fn main() {
                     ))
                 }),
                 recent_documents,
+                page_memory,
                 template_manager_root: storage_layout.template_library_root(),
                 template_authority: std::cell::RefCell::new(None),
                 coordinator: Arc::new(WindowSessionCoordinator::default()),
@@ -2283,10 +2458,25 @@ fn main() {
         });
 
         cx.on_app_quit(|cx| {
+            // Every open tab keeps its pages before the memory's last write.
+            let workspaces = cx
+                .global::<DocumentWindows>()
+                .windows
+                .iter()
+                .filter_map(|entry| entry.workspace.upgrade())
+                .collect::<Vec<_>>();
+            for workspace in workspaces {
+                workspace.update(cx, |workspace, cx| workspace.keep_all_page_memory(cx));
+            }
             let history = shared_application(cx).recent_documents.clone();
             let pending = history.update(cx, |history, _| history.take_pending_publication());
+            let memory = shared_application(cx).page_memory.clone();
+            let pending_memory = memory.update(cx, |memory, _| memory.take_pending_publication());
             async move {
                 if let Some(pending) = pending {
+                    pending.await;
+                }
+                if let Some(pending) = pending_memory {
                     pending.await;
                 }
             }
@@ -2306,6 +2496,8 @@ fn main() {
                     story.schedule_recovery_marker_checkpoint(cx);
                 });
             }
+            // Merge All Windows needs two windows.
+            refresh_application_menus(cx);
             // macOS apps keep running without windows; elsewhere, and on Quit,
             // the last window ends the process.
             if !remaining
@@ -2332,11 +2524,36 @@ fn main() {
             },
             cx,
         );
+        // The search panel searches the documents of every window.
+        butter_paper::search_scope::set_workspace_directory(
+            |cx| {
+                document_window_entries(cx)
+                    .into_iter()
+                    .map(|entry| (entry.handle, entry.workspace))
+                    .collect()
+            },
+            cx,
+        );
         register_application_shell_actions(cx);
         updates::init(cx, update_settings_root.clone(), release_channel);
         #[cfg(feature = "review-driver")]
         review_driver::start(cx);
 
+        // Later launches' PDFs join the files opened from outside.
+        if let Some(listener) = instance_listener {
+            let ingress = native_ingress.clone();
+            let mut cleanup = listener.serve(move |paths| {
+                ingress.enqueue_request(DocumentOpenBatchRequest::new(
+                    DocumentOpenOrigin::System,
+                    paths,
+                ));
+            });
+            cx.on_app_quit(move |_| {
+                cleanup.remove();
+                async {}
+            })
+            .detach();
+        }
         let native_ingress = native_ingress.clone();
         cx.spawn(async move |cx| {
             cx.update(|cx| {
@@ -2356,27 +2573,48 @@ fn main() {
             if !multi_window {
                 return;
             }
-            // Files opened from Finder, the shell or a second launch go to the
-            // active window, or a new one when none is open.
+            // Files opened from Finder or Explorer, the Dock or taskbar, the
+            // shell or a second launch go where Open Documents In says: a new
+            // tab in the most recently active window, or a window of their
+            // own. That window comes to the front.
             while let Some(request) = native_ingress.next_request().await {
-                cx.update(|cx| {
-                    let workspace = match active_document_window(cx) {
-                        Some(entry) => entry.workspace.upgrade(),
-                        None => open_document_window(cx, None)
-                            .and_then(|handle| window_entry(handle, cx))
-                            .and_then(|entry| entry.workspace.upgrade()),
-                    };
-                    if let Some(workspace) = workspace {
-                        workspace.update(cx, |workspace, cx| {
-                            workspace.open_documents(request, cx);
-                        });
-                    }
-                    cx.activate(true);
-                });
+                cx.update(|cx| route_outside_open(request, cx));
             }
         })
         .detach();
     });
+}
+
+/// Opens PDFs that came from outside the app as the Open Documents In
+/// setting says, and brings their window to the front.
+fn route_outside_open(request: DocumentOpenBatchRequest, cx: &mut App) {
+    use butter_paper::application_shell::{OutsideOpenTarget, outside_open_target};
+    let recent = active_document_window(cx);
+    let recent_is_empty = recent
+        .as_ref()
+        .and_then(|entry| entry.workspace.upgrade())
+        .is_some_and(|workspace| workspace.read(cx).session_count() == 0);
+    let entry = match outside_open_target(
+        OpenDocumentsInPreference::current(cx),
+        recent,
+        recent_is_empty,
+    ) {
+        OutsideOpenTarget::Window(entry) => Some(entry),
+        OutsideOpenTarget::NewWindow => {
+            open_document_window(cx, None).and_then(|handle| window_entry(handle, cx))
+        }
+    };
+    if let Some(entry) = entry {
+        if let Some(workspace) = entry.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.open_documents(request, cx);
+            });
+        }
+        let _ = entry
+            .handle
+            .update(cx, |_, window, _| window.activate_window());
+    }
+    cx.activate(true);
 }
 
 /// State shared by every document window.
@@ -2396,6 +2634,7 @@ struct SharedApplication {
     /// Adobe's trust lists kept for checking digital signatures.
     signature_trust_store: Option<Arc<butter_paper::signature_trust::TrustStore>>,
     recent_documents: Entity<butter_paper::recent_documents::RecentDocuments>,
+    page_memory: Entity<butter_paper::page_memory::PageMemory>,
     template_manager_root: std::path::PathBuf,
     /// One template library authority for every window, created with the first.
     template_authority:
@@ -2437,6 +2676,42 @@ struct StartupWindow {
 
 fn shared_application(cx: &App) -> Rc<SharedApplication> {
     cx.global::<DocumentWindows>().shared.clone()
+}
+
+/// Chooses how pages draw: keeps the choice across launches, shows it in
+/// every window and in the menus.
+fn set_page_appearance(appearance: butter_paper::paper_appearance::PageAppearance, cx: &mut App) {
+    let shared = shared_application(cx);
+    let mut preferences = shared.preferences.get();
+    preferences.set_page_appearance(appearance);
+    shared.preferences.set(preferences);
+    if let Err(error) = shared.preferences_store.save(preferences) {
+        eprintln!("unable to save Butter Paper application preferences: {error}");
+    }
+    cx.set_global(PageAppearancePreference(appearance));
+    apply_page_appearance(cx);
+    // Let a menu finish its own dismissal before its projection changes.
+    cx.defer(|cx| {
+        for story in document_window_stories(cx) {
+            story.update(cx, |story, cx| story.sync_native_application_menu(cx));
+        }
+    });
+    cx.refresh_windows();
+}
+
+/// Gives every document window the paper its setting resolves to now (for
+/// Match System, from the system's appearance).
+fn apply_page_appearance(cx: &mut App) {
+    let paper = PageAppearancePreference::current(cx).resolve(
+        butter_paper::system_theme::is_dark_appearance(cx.window_appearance()),
+    );
+    for entry in document_window_entries(cx) {
+        if let Some(workspace) = entry.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_paper_appearance(paper, cx)
+            });
+        }
+    }
 }
 
 fn document_window_entries(cx: &App) -> Vec<DocumentWindowEntry> {
@@ -2657,20 +2932,12 @@ fn open_document_window_placed(
             store.resume_live_writes();
         }
     }
-    // A window placed explicitly (a torn-off tab) must stay a separate window
-    // even when macOS prefers tabs; it joins the tab group identity only
-    // after opening, so Merge All Windows still includes it.
-    let separate = bounds.is_some();
-    let tabbing_identifier = shared
-        .multi_window
-        .then(|| DOCUMENT_WINDOW_TABBING_IDENTIFIER.to_owned());
+    // No tabbing identifier: Butter Paper draws no macOS window tab bar, so
+    // native window tabs would hide every window but one. Documents share a
+    // window through its own tab strip (Merge All Windows, tab drags).
     let window_options = WindowOptions {
         window_bounds: Some(bounds.unwrap_or_else(|| next_window_bounds(cx))),
-        tabbing_identifier: if separate {
-            None
-        } else {
-            tabbing_identifier.clone()
-        },
+        tabbing_identifier: None,
         display_id,
         window_min_size: Some(butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE),
         ..title_bar_window_options()
@@ -2681,11 +2948,8 @@ fn open_document_window_placed(
         })
         .map_err(|error| eprintln!("Butter Paper could not open a window: {error}"))
         .ok()?;
-    if separate && tabbing_identifier.is_some() {
-        let _ = handle.update(cx, |_, window, _| {
-            window.set_tabbing_identifier(tabbing_identifier)
-        });
-    }
+    // Merge All Windows needs two windows.
+    refresh_application_menus(cx);
     Some(handle.into())
 }
 
@@ -2726,6 +2990,7 @@ fn build_document_window(
             }
         }
         workspace.bind_recent_documents(shared.recent_documents.clone(), cx);
+        workspace.bind_page_memory(shared.page_memory.clone(), cx);
         workspace
             .set_thumbnail_scroll_settle(butter_paper::document_workspace::THUMBNAIL_SCROLL_SETTLE);
         if let Some(store) = &shared.recent_signature_store {
@@ -2806,6 +3071,27 @@ fn build_document_window(
             manager
         })
     });
+    // Dark pages: this window's pages follow the setting, and Match System
+    // follows the system's appearance as it changes.
+    {
+        let paper = PageAppearancePreference::current(cx).resolve(
+            butter_paper::system_theme::is_dark_appearance(window.appearance()),
+        );
+        document_workspace.update(cx, |workspace, cx| {
+            workspace.set_paper_appearance(paper, cx)
+        });
+        let workspace = document_workspace.downgrade();
+        window
+            .observe_window_appearance(move |window, cx| {
+                let paper = PageAppearancePreference::current(cx).resolve(
+                    butter_paper::system_theme::is_dark_appearance(window.appearance()),
+                );
+                let _ = workspace.update(cx, |workspace, cx| {
+                    workspace.set_paper_appearance(paper, cx)
+                });
+            })
+            .detach();
+    }
     let story = cx.new(|cx| {
         ComponentStory::new(
             document_workspace.clone(),
@@ -2886,30 +3172,6 @@ fn build_document_window(
         focus_initial_command_context(&document_workspace.read(cx).focus_handle(), window);
     }
     root
-}
-
-const DOCUMENT_WINDOW_TABBING_IDENTIFIER: &str = "butter-paper-documents";
-
-/// Whether `handle` is on screen: not a background member of a macOS native
-/// tab group, where every member shares one frame.
-fn shown_in_tab_group(handle: AnyWindowHandle, cx: &App) -> bool {
-    let Some(controller) = cx.try_global::<gpui::SystemWindowTabController>() else {
-        return true;
-    };
-    let Some(tabs) = controller.tabs(handle.window_id()) else {
-        return true;
-    };
-    tabs.len() <= 1
-        || tabs
-            .iter()
-            .max_by_key(|tab| tab.last_active_at)
-            .is_none_or(|tab| tab.id == handle.window_id())
-}
-
-fn in_same_tab_group(first: AnyWindowHandle, second: AnyWindowHandle, cx: &App) -> bool {
-    cx.try_global::<gpui::SystemWindowTabController>()
-        .and_then(|controller| controller.tabs(first.window_id()))
-        .is_some_and(|tabs| tabs.iter().any(|tab| tab.id == second.window_id()))
 }
 
 /// A window-local point in screen space. Every document window has the same
@@ -3034,11 +3296,6 @@ fn show_tab_drag_chip(
             }
         },
     );
-    // A window without a tabbing identifier turns off automatic tabbing for
-    // the whole app; restore it so Merge All Windows keeps working.
-    let _ = source.update(cx, |_, window, _| {
-        window.set_tabbing_identifier(Some(DOCUMENT_WINDOW_TABBING_IDENTIFIER.to_owned()))
-    });
     if let (Ok(handle), Some(chip)) = (opened, slot.borrow_mut().take()) {
         cx.set_global(TabDragPreview { handle, chip });
         set_external_tab_drag_preview(true, cx);
@@ -3082,11 +3339,7 @@ fn tab_drop_target(
     let order = cx.window_stack().unwrap_or_default();
     let mut candidates = entries
         .into_iter()
-        .filter(|entry| {
-            entry.handle != source
-                && !in_same_tab_group(source, entry.handle, cx)
-                && shown_in_tab_group(entry.handle, cx)
-        })
+        .filter(|entry| entry.handle != source)
         .collect::<Vec<_>>();
     candidates.sort_by_key(|entry| {
         order
@@ -4010,9 +4263,65 @@ mod review_driver {
                                         appearance, window, cx,
                                     );
                                 });
+                                // Match System follows it, as the window's
+                                // appearance observer does for the system.
+                                let paper = PageAppearancePreference::current(cx).resolve(
+                                    butter_paper::system_theme::is_dark_appearance(appearance),
+                                );
+                                if let Some(workspace) = entry.workspace.upgrade() {
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.set_paper_appearance(paper, cx)
+                                    });
+                                }
+                            }
+                        });
+                        // The Settings window follows the system too.
+                        cx.update(|cx| {
+                            if let Some(handle) =
+                                butter_paper::application_settings::review_window(cx)
+                            {
+                                let _ = handle.update(cx, |_, window, cx| {
+                                    butter_paper::system_theme::apply_window_appearance(
+                                        appearance, window, cx,
+                                    );
+                                });
                             }
                         });
                         pause(cx, 500).await;
+                    }
+                    "page-appearance" => {
+                        // page-appearance light|dark|match: View ▸ Page
+                        // Appearance, as the menu item sends it.
+                        match words[1] {
+                            "dark" => cx.update(|cx| cx.dispatch_action(&SetPageAppearanceDark)),
+                            "match" => {
+                                cx.update(|cx| cx.dispatch_action(&SetPageAppearanceMatchSystem))
+                            }
+                            _ => cx.update(|cx| cx.dispatch_action(&SetPageAppearanceLight)),
+                        }
+                        pause(cx, 800).await;
+                    }
+                    "expect-paper" => {
+                        // expect-paper W dark|real: the paper window W's
+                        // pages draw with.
+                        let window = number(1) as usize;
+                        let found = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            Some(workspace.read(cx).paper_appearance())
+                        });
+                        let expected = if words[2] == "dark" {
+                            butter_paper::paper_appearance::PaperAppearance::Dark
+                        } else {
+                            butter_paper::paper_appearance::PaperAppearance::Real
+                        };
+                        if found == Some(expected) {
+                            writeln!(log, "ok: paper {}", words[2]).unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: expected paper {}, found {found:?}", words[2])
+                                .unwrap();
+                        }
                     }
                     "settings" => {
                         cx.update(|cx| cx.dispatch_action(&butter_paper::application_shell::OpenSettings));
@@ -4031,6 +4340,19 @@ mod review_driver {
                             writeln!(log, "unlock-keychain: {} identities", found.len()).unwrap();
                         }
                         pause(cx, 300).await;
+                    }
+                    "view-settings" => {
+                        // Settings ▸ View.
+                        cx.update(|cx| {
+                            if let Some(window) = cx.windows().first().copied() {
+                                let _ = window.update(cx, |_, window, cx| {
+                                    butter_paper::application_settings::open_view_settings(
+                                        window, cx,
+                                    )
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
                     }
                     "signature-settings" => {
                         // Settings ▸ Signatures, as the signing dialog opens it.
@@ -4544,6 +4866,20 @@ mod review_driver {
                             writeln!(log, "FAIL: {} {selector}: shown={shown:?}", words[0]).unwrap();
                         }
                     }
+                    "expect-tabs" => {
+                        // expect-tabs W N: window W holds N documents.
+                        let window = number(1) as usize;
+                        let found = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            Some(entry.workspace.upgrade()?.read(cx).session_count())
+                        });
+                        if found == Some(number(2) as usize) {
+                            writeln!(log, "ok: {} tabs", words[2]).unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: expected {} tabs, found {found:?}", words[2]).unwrap();
+                        }
+                    }
                     "expect-tool" => {
                         // expect-tool W TOOL: the active document's tool, as the
                         // shot log names it (Select, Snapshot…).
@@ -4586,6 +4922,106 @@ mod review_driver {
                             failures += 1;
                             writeln!(log, "FAIL: {} expected {}, found {found:?}", words[0], words[2])
                                 .unwrap();
+                        }
+                    }
+                    "expect-find" | "log-find" => {
+                        // expect-find W COUNT: the find bar of the active
+                        // document is open and its count reads COUNT ("3 of
+                        // 17", "No results"), once its search is done.
+                        // log-find W writes what the bar shows.
+                        let window = number(1) as usize;
+                        let found = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let document_id = workspace.active_document_id()?;
+                            workspace.find_bar_summary(document_id, cx)
+                        });
+                        if words[0] == "log-find" {
+                            writeln!(log, "find: {found:?}").unwrap();
+                        } else {
+                            let expected = text_argument.trim();
+                            match found {
+                                Some(summary)
+                                    if summary.open
+                                        && summary.count == expected
+                                        && (summary.finished || summary.hits == 0 && expected.is_empty()) =>
+                                {
+                                    writeln!(log, "ok: expect-find {expected}").unwrap();
+                                }
+                                other => {
+                                    failures += 1;
+                                    writeln!(log, "FAIL: expect-find expected {expected:?}, found {other:?}")
+                                        .unwrap();
+                                }
+                            }
+                        }
+                    }
+                    "log-visual" => {
+                        // log-visual W: what the Visual mode of window W's
+                        // search panel shows.
+                        let window = number(1) as usize;
+                        let found = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            workspace.read(cx).visual_panel_summary(cx)
+                        });
+                        let timing = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            Some(workspace.read(cx).visual_search_timing())
+                        });
+                        writeln!(log, "visual: {found:?}").unwrap();
+                        writeln!(log, "visual timing (first hit, end): {timing:?}").unwrap();
+                    }
+                    "visual-similarity" => {
+                        // visual-similarity W PERCENT: the Visual mode's
+                        // similarity slider, as a drag on it sets it.
+                        let window = number(1) as usize;
+                        let percent = number(2);
+                        cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            entry
+                                .handle
+                                .update(cx, |_, window, cx| {
+                                    workspace.update(cx, |workspace, cx| {
+                                        workspace.set_visual_similarity_percent(percent, window, cx)
+                                    })
+                                })
+                                .ok()
+                        });
+                        pause(cx, 300).await;
+                    }
+                    "expect-search" | "log-search" => {
+                        // expect-search W TEXT: the search panel of window W
+                        // shows and its finished search reads TEXT over the
+                        // list ("3 results in 1 document", "No results").
+                        // log-search W writes what the panel shows.
+                        let window = number(1) as usize;
+                        let found = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            workspace.read(cx).search_panel_summary(cx)
+                        });
+                        if words[0] == "log-search" {
+                            writeln!(log, "search: {found:?}").unwrap();
+                        } else {
+                            let expected = text_argument.trim();
+                            match found {
+                                Some(summary)
+                                    if summary.open
+                                        && summary.finished
+                                        && summary.summary == expected =>
+                                {
+                                    writeln!(log, "ok: expect-search {expected}").unwrap();
+                                }
+                                other => {
+                                    failures += 1;
+                                    writeln!(log, "FAIL: expect-search expected {expected:?}, found {other:?}")
+                                        .unwrap();
+                                }
+                            }
                         }
                     }
                     "click" | "alt-click" => {
@@ -4686,8 +5122,8 @@ mod review_driver {
                         pause(cx, 16).await;
                     }
                     "page-click" | "page-move" | "page-down" | "page-hold" | "page-up" => {
-                        // page-click W PAGE X Y [shift], page-move W PAGE X Y
-                        // [shift]: a left click at, or a move to, a point of
+                        // page-click W PAGE X Y [shift|COUNT], page-move W PAGE
+                        // X Y [shift]: a left click at, or a move to, a point of
                         // the active document's page PAGE (1-based), in PDF
                         // points. page-down, page-hold and page-up press the
                         // left button there, move there holding it, and let
@@ -4773,38 +5209,61 @@ mod review_driver {
                         );
                         pause(cx, 100).await;
                         if words[0] == "page-click" {
-                            dispatch(
-                                cx,
-                                window,
-                                PlatformInput::MouseDown(MouseDownEvent {
-                                    button: MouseButton::Left,
-                                    position,
-                                    modifiers,
-                                    click_count: 1,
-                                    first_mouse: false,
-                                }),
-                            );
-                            pause(cx, 50).await;
-                            dispatch(
-                                cx,
-                                window,
-                                PlatformInput::MouseUp(MouseUpEvent {
-                                    button: MouseButton::Left,
-                                    position,
-                                    modifiers,
-                                    click_count: 1,
-                                }),
-                            );
+                            // page-click W PAGE X Y 2: a double click, as
+                            // one press and release with that click count.
+                            let clicks = words
+                                .get(5)
+                                .and_then(|word| word.parse::<usize>().ok())
+                                .unwrap_or(1);
+                            for click_count in 1..=clicks {
+                                dispatch(
+                                    cx,
+                                    window,
+                                    PlatformInput::MouseDown(MouseDownEvent {
+                                        button: MouseButton::Left,
+                                        position,
+                                        modifiers,
+                                        click_count,
+                                        first_mouse: false,
+                                    }),
+                                );
+                                pause(cx, 50).await;
+                                dispatch(
+                                    cx,
+                                    window,
+                                    PlatformInput::MouseUp(MouseUpEvent {
+                                        button: MouseButton::Left,
+                                        position,
+                                        modifiers,
+                                        click_count,
+                                    }),
+                                );
+                                pause(cx, 50).await;
+                            }
                         }
                         pause(cx, 400).await;
                     }
                     "drop-files" => {
                         // drop-files W X Y PATH...: files dragged in from the
                         // system and dropped at window point (X, Y), through
-                        // the same events a real drop sends.
+                        // the same events a real drop sends. `@document`
+                        // names the window's active document's file.
                         let window = number(1) as usize;
                         let position = point(px(number(2)), px(number(3)));
-                        let paths = words[4..].iter().map(PathBuf::from).collect::<Vec<_>>();
+                        let active_path = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let document_id = workspace.active_document_id()?;
+                            Some(workspace.session(document_id, cx)?.read(cx).path().to_owned())
+                        });
+                        let paths = words[4..]
+                            .iter()
+                            .filter_map(|word| match *word {
+                                "@document" => active_path.clone(),
+                                path => Some(PathBuf::from(path)),
+                            })
+                            .collect::<Vec<_>>();
                         let events = [
                             gpui::FileDropEvent::Entered {
                                 position,
@@ -4872,15 +5331,19 @@ mod review_driver {
                         pause(cx, 600).await;
                     }
                     "dispatch" => {
-                        // dispatch W ACTION: a save, table row or page
-                        // rotation action, as its menu item sends it.
+                        // dispatch W ACTION: a save, table row, page
+                        // rotation or Rotate All Pages action, as its menu
+                        // item sends it.
                         use butter_paper::document_workspace::{
                             DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow,
-                            RotatePageLeft, RotatePageRight, Save,
+                            RotateAllPagesLeft, RotateAllPagesRight, RotatePageLeft,
+                            RotatePageRight, Save,
                         };
                         let action: Box<dyn gpui::Action> = match words[2] {
                             "rotate-left" => Box::new(RotatePageLeft),
                             "rotate-right" => Box::new(RotatePageRight),
+                            "rotate-all-left" => Box::new(RotateAllPagesLeft),
+                            "rotate-all-right" => Box::new(RotateAllPagesRight),
                             "insert-row-above" => Box::new(InsertTableRowAbove),
                             "insert-row-below" => Box::new(InsertTableRowBelow),
                             "delete-row" => Box::new(DeleteTableRow),
@@ -5296,6 +5759,33 @@ mod review_driver {
                     "caption" => {
                         // caption TEXT: labels the frames that follow.
                         writeln!(log, "caption at={} {text_argument_all}", script_started.elapsed().as_millis()).unwrap();
+                    }
+                    "page-view" => {
+                        // page-view W single|continuous: the active
+                        // document's page view, as the toolbar's pair of
+                        // buttons sets it.
+                        let single = words.get(2) == Some(&"single");
+                        cx.update(|cx| {
+                            if let Some(workspace) = document_window_entries(cx)
+                                .get(number(1) as usize)
+                                .and_then(|entry| entry.workspace.upgrade())
+                            {
+                                workspace.update(cx, |workspace, cx| {
+                                    if let Some(id) = workspace.active_document_id() {
+                                        workspace.set_page_view_mode(
+                                            id,
+                                            if single {
+                                                butter_paper::page_view_control::PageViewMode::SinglePage
+                                            } else {
+                                                butter_paper::page_view_control::PageViewMode::Continuous
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }
+                        });
+                        pause(cx, 800).await;
                     }
                     "set-zoom" => {
                         // set-zoom W PERCENT: the active document's zoom.
@@ -5801,6 +6291,10 @@ mod review_driver {
                     }
                     "move-to-new-window" => {
                         cx.update(|cx| cx.dispatch_action(&MoveDocumentToNewWindow));
+                        pause(cx, 1200).await;
+                    }
+                    "merge-all-windows" => {
+                        cx.update(|cx| cx.dispatch_action(&MergeAllWindows));
                         pause(cx, 1200).await;
                     }
                     "close" => {

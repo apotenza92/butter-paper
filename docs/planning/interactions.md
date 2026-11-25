@@ -59,7 +59,7 @@ the corners and edge midpoints of those positions. Those count a few pixels
 further away than the exact edge, so the exact edge wins until the two are
 visibly apart on screen.
 
-Angle snap (Snap settings, Angles; on at 90° by default) keeps the direction
+Angle snap (Snap settings, Angles; on at 15° by default) keeps the direction
 of a line or path segment being drawn from its last point at a multiple of
 the increment: 90°, 45°, 30°, 15° or a custom angle (0.1° to 90°). This
 applies to Line, Arrow, Dimension, Length, a Callout's leader, Arc's chord,
@@ -82,6 +82,30 @@ and snap guides never turn the held direction. A point snap also comes
 before the Snap dimensions increment. The Page Scale calibration line
 follows the same rules. A typed angle is exact and is not snapped.
 
+Dragging a placed end or point follows the same rules, with its direction
+held from a neighbour that stays where it is. The neighbour of a Line,
+Arrow, Dimension, Length or Arc end is the other end. For a point of a
+Polyline, Polygon, Polylength or Area, or of a Callout's leader, it is the
+previous point in path order. The first point of an open path has no previous
+point, so it takes the next point; the first point of a closed path (Polygon,
+Area) takes the last point. The Arc's bulge handle and Cloud+ are not held.
+Shift, the setting, a typed angle, point snaps and the guide behave as for a
+markup being drawn. The guide shows once the drag is past the 3px threshold.
+
+While a direction is held at the increment, a thin dashed guide runs along
+it from the anchor (the last point, or the centre of a turn) through and
+past the pointer. It has the colour and fade of the other snap guides, and
+shows at once with reduce motion on. A small label beside the anchor gives
+the held angle in degrees anticlockwise from the right (`45°`); for a turn
+about a centre it gives the new rotation. It shows for Line, Arrow,
+Dimension, Length, a Callout's leader, Arc's chord, each segment of
+Polyline, Polygon, Polylength and Area, the Page Scale calibration line, and
+every rotation knob turn (markups and Edit PDF content), and for a dragged end
+or point as above. It hides while
+Shift frees the direction, while angle snap is off and Shift is not held,
+while a typed angle sets the direction, and while a point snap wins (its
+indicator shows instead).
+
 Snap dimensions (Snap settings, Dimension increments; on at 1 mm by
 default) rounds the length of a plain Dimension being drawn to a whole
 multiple of the increment, in millimetres on the paper, whether or not the
@@ -103,10 +127,10 @@ tool's properties and in a selected one's. On, they draw Revu's
 measurements: a Dimension a Length, a Polyline a Polylength (its total
 length), a Polygon an Area. The rail button and the properties title keep
 the tool's own name. Every drawing tool a page scale enhances (Rectangle,
-Ellipse, Line, Arrow, Polyline, Polygon, Dimension) has a tooltip with the
+Ellipse, Line, Polyline, Polygon, Dimension) has a tooltip with the
 tool's name and shortcut on the first line. The muted second line says what
 the tool measures on a page with a scale, after a bold `Page Scale on:`
-(the toolbar's Page Scale switch): for example `Page Scale on: Area
+(the toolbar's Page Scale toggle): for example `Page Scale on: Area
 measurement` for Polygon. The tooltip does not name the measuring shortcuts (`Shift+Alt+L`,
 `Shift+Alt+Q`, `Shift+Alt+A`), which stay for Revu users.
 
@@ -118,8 +142,8 @@ measurement` for Polygon. The tooltip does not name the measuring shortcuts (`Sh
   a rail button chooses its tool as its switch was last set, and a
   shortcut sets it.
 - Turning Measure on in a tool's properties for a page without a scale drops
-  down the Scale panel to choose one, the toolbar's switch showing on until
-  it closes.
+  down the Scale panel to choose one, the toolbar's Page Scale showing on
+  until it closes.
 - A selected markup's switch turns it into the other kind, as one undoable
   change for every such markup selected; locked ones are left. Each keeps
   its id, place in the stacking order, points and appearance. Measured, it
@@ -132,7 +156,7 @@ measurement` for Polygon. The tooltip does not name the measuring shortcuts (`Sh
 
 On a page with a scale, once a markup's first point is placed a box beside
 the pointer shows its size in the page's real unit and the page's scale:
-Length and Angle for Line, Arrow, Dimension (measured or not) and each segment of
+Length and Angle for Line, Dimension (measured or not) and each segment of
 Polyline, Polygon, Polylength and Area; Width and Height for Rectangle and
 Ellipse (across and up the screen, on a turned page too). Typing a number
 fixes the size in the highlighted field, AutoCAD-style; what is not typed
@@ -144,7 +168,9 @@ click there would (Enter with nothing typed still finishes a path),
 Backspace edits, and Escape clears what was typed before it cancels. Once a
 number is typed, letters type units rather than switch tools. A typed size
 overrides snapping. A page without a scale shows no box and takes no typed
-size.
+size. An Arrow points at something rather than measuring it: it shows no
+box and takes no typed size on any page, while angle snap and object snap
+still apply to it.
 
 Creation previews follow every pointer move during drags and between clicks,
 without committing history. Cloud drags preview the rectangular scalloped
@@ -253,19 +279,31 @@ tooltip expands the instructions when the window truncates them.
   free and Shift snaps it to the increment.
 - Double-clicking a rotation knob only turns the markup back to 0°; it never
   opens properties, including when the rotation is already 0°.
-- A click-out only dismisses (decided 2026-11-23). A press that dismisses
-  something does nothing else: no selection box or lasso, no new markup,
-  no tool action and no text caret, for its drag and release too. It
-  dismisses an open popup, menu, panel or dialog; a text being typed (a
-  Text Box, a markup's caption, Edit PDF text, which it commits);
-  highlighted page text; and a markup or Edit PDF selection. A double or
-  triple click that begins with such a press counts from the click after
-  it. While a click would only dismiss, the pointer over empty page is
-  the arrow, not the crosshair, nothing under it offers another action,
-  and the status bar says "Click away to deselect". A press that changes
-  a selection (another markup, other page text, Shift or Alt with a press,
-  Ctrl or Cmd for a box) is not a click-out. A press while drawing a path
-  places its next point; it dismisses nothing.
+- A click-out only dismisses (decided 2026-11-23, extended 2026-11-25). A
+  press that dismisses something does nothing else: no selection box or
+  lasso, no new markup, no tool action and no text caret, for its drag and
+  release too. A press acts on the page only when nothing is open over it,
+  no text is being typed anywhere in the window, the window was already
+  active (macOS), and, with Select, nothing is selected that the press
+  dismisses. Otherwise it dismisses an open popup, menu, panel or dialog;
+  finishes text being typed (a Text Box, a markup's caption, Edit PDF text,
+  a form field, or a field outside the page such as the page number or a
+  property, each as a click elsewhere finishes it); clears highlighted page
+  text; or clears a markup or Edit PDF selection. This applies to every
+  tool, Pan included. A click away from a property field keeps the markup
+  selected; the next press deselects it. Focus on a button, tab or
+  thumbnail holds no typed text: the next press on the page acts. A double
+  or triple click that begins with such a press counts from the click after
+  it. While a click would only dismiss, the pointer over empty page is the
+  arrow, not the crosshair, nothing under it offers another action, and the
+  status bar says "Click away to deselect" (or "Click away to finish
+  typing" while a field is typed in). A press that changes a selection
+  (another markup, other page text, Shift or Alt with a press, Ctrl or Cmd
+  for a box) is not a click-out. A press while drawing a path places its
+  next point and dismisses nothing, unless text is being typed outside the
+  page: then it only finishes the typing, and the next press places the
+  point. The middle button, the wheel and Space pan stay navigation: they
+  finish nothing.
 - Click selects; Shift-click toggles. Away from page text, a drag draws a
   freehand selection lasso and a click starts a selection box that a
   second click finishes (Escape cancels it). Either one begun rightwards
@@ -329,11 +367,170 @@ copy it, as Acrobat's does; nothing about the PDF changes.
 - The text is what Edit PDF reads, as the page shows it after edits;
   a selection stays on the page it began on.
 
+## Searching
+
+The find bar finds text in the open document. The search panel searches
+every open document, in every window, with a query language.
+
+- Cmd+F (Ctrl+F on Windows and Linux) opens the find bar of the active
+  document and puts the focus in its field with the text selected. The same
+  keys work with the focus in any other text field of the window. If page
+  text is selected, its first line (256 characters at most) becomes the
+  query. Each tab has its own bar, query, options and current match.
+- The bar floats at the top right of the canvas, 8 px from the top and the
+  right edge, over the page. Nothing on the page moves. From left to right:
+  the field (search icon, placeholder "Find in document"), the count, Match
+  case, Match whole word, Previous match, Next match and a top-right X
+  ("Close find bar"). The bar is at most as wide as the canvas less 16 px:
+  the count shortens first, then the field.
+- The query is literal text. Runs of white space match any run of white
+  space, and a line break between two lines. The search covers page text,
+  as Copy reads it with edits included, and the text of markups (Text Box,
+  Callout, Cloud+, measurement labels and captions, and comments of other
+  apps). Match case and Match whole word (Alt+C and Alt+W, Cmd+Option+C and
+  Cmd+Option+W on macOS) change the search.
+- Two lines of page text join for a phrase when they are of one paragraph,
+  or when they are adjacent (the gap between them is at most 0.6 of the
+  taller line), share some width, and no table rule lies between them.
+  Other lines do not join: a phrase never runs across a table's cells.
+- The search starts when the query rests for 150 ms. It starts at the page in
+  view, goes to the last page, then goes on from the first. A new query,
+  option or edit ends the old search. After an edit the search runs again
+  400 ms after the edits pause. At most 10,000 matches are kept.
+- The count reads "3 of 17" when the search is done, "17+" while it reads
+  on, "Searching…" before the first match, and "No results" when nothing
+  matches. An empty field shows no count. Matches count in page order. On
+  each page, text matches come first, then markups.
+- The first match is the first one on the page in view or after it. Enter
+  and Next go to the next match, Shift+Enter and Previous to the one
+  before, and both go round at the ends. F3 and Shift+F3 (Cmd+G and
+  Shift+Cmd+G on macOS) do the same when the focus is in the document.
+- The current match scrolls into view with a 24 px margin and keeps the
+  zoom. In Single Page view the view turns to its page first. A match in a
+  markup is outlined (no fill). Finding a markup does not select it, so
+  typing never edits it.
+- Every match on the pages in view is yellow, not the blue of the text
+  selection. The current match is stronger and has an outline. The yellows
+  follow the dark pages setting, not the app theme, and the text under
+  them stays readable (4.5:1) on both papers.
+- Escape with the focus in the bar, and the X, close the bar, clear every
+  highlight and give the focus back to the document. With the focus on the
+  page, Escape first clears what else it clears there (a text or markup
+  selection, a drawing in progress, a placement, a tool other than Select),
+  and closes the bar only when nothing else is left. The view stays where
+  it is. The field keeps its text, so Cmd+F again searches it.
+- A press on the bar never starts a selection, a drawing or an edit on the
+  page under it. Letters typed in the field never switch tools.
+- Edit ▸ Find (Cmd+F, Ctrl+F) opens the find bar; Edit ▸ Find in Documents
+  (Cmd+Shift+F, Ctrl+Shift+F) opens the search panel.
+
+### Search panel
+
+- The left rail has a Search button under Page Thumbnails (tooltip with
+  the shortcut). The left sidebar shows Page Thumbnails or Search, one at a
+  time, at one width, and both follow the same yield rule. A click on the
+  open panel's button closes the sidebar; a click on the other button
+  switches the panel. In the empty window the button is disabled.
+- Cmd+Shift+F (Ctrl+Shift+F on Windows and Linux) opens the panel, also with
+  the focus in another text field, puts the focus in the query field and
+  selects its text. Selected page text becomes the query.
+- From the top: the header "Search", the Text and Visual switch, the query
+  field (search icon, clear button), the toggles Match case, Explain
+  search, Collapse results, More context and the Sort menu, then the scope:
+  All open documents (every tab in every window) or This document (the tab
+  in view). The two modes share the scope.
+- The query language: words (all must match, in any order), "a phrase",
+  `OR`, `-` to exclude, `( )` to group, `/regex/`, `match-case:` and
+  `ignore-case:`, and the filters `text:` (or `content:`), `markup:`,
+  `author:`, `subject:`, `page:3`, `page:3-10`, `page:12-` and `file:`. All
+  terms match in one unit: one page's text, or one markup with its replies.
+  A query never fails to read: an unclosed quote or bracket closes at the
+  end, an unknown filter is literal text, and an invalid regular expression
+  matches nothing and says so in the explanation.
+- The search starts 250 ms after the query rests, or at once on Enter, and
+  runs again on a new option or scope. Results arrive page by page. Over
+  the list: "42 results in 3 documents", "Searching…" or "No results".
+  Explain search shows the query in plain words under the toggles.
+- Results group by document (this window's tabs first, then the other
+  windows'), then page, each with its count. A name that documents in two
+  windows share gets "· window N"; long names shorten in the middle, and the
+  tooltip gives the full path. Matches in one paragraph that fit in one
+  snippet (at most 40 characters apart, 80 from the first to the last) are
+  one row, with each match bold and yellow; the find bar still counts each
+  match. A row shows one line; More context shows up to three lines. A markup shows
+  "Subject · Author", its text and its replies ("↳ Author: text").
+- The chevron on a document or page row (or a click on the row) collapses
+  it. Collapse results shows only document and page rows. The Sort menu
+  orders documents: Document order, Name A to Z, Name Z to A, Most results
+  first, Markups newest first and Markups oldest first.
+- A click on a result, or Enter or Space on it, brings its window and tab
+  to the front, goes to the match and marks the document's matches on the
+  page as the find bar does, the opened one stronger. A markup in the model
+  is selected, as a click on it does; another app's comment is outlined
+  only. The find bar does not open, and the panel keeps the focus.
+- Down in the field moves the focus to the results. Up and Down move
+  between rows, Left collapses a group (on a match, it goes to its page),
+  and Right expands it. Escape in the field clears the query, then gives
+  the focus back to the page; in the list it gives the focus back to the
+  page. The panel stays open. Escape on the page clears the marks of an
+  opened result once nothing else is left to clear.
+- The list builds only the rows in view. A search keeps 10,000 results at
+  most, and then the list ends with "First 10,000 results. Narrow the
+  search to see more." Under the list, "3 pages have no searchable text."
+  counts scans and pages whose text is drawn as lines, with the link "Try
+  Visual search", which switches the panel to Visual.
+- An edit to a searched document, in this window or another, or a tab
+  opened or closed in a window in scope, runs the search again 400 ms after
+  the edits pause.
+
+### Visual search
+
+- The Visual mode of the search panel finds more of a symbol by its look.
+  From the top, under the Text and Visual switch and the scope: the picture
+  card (the picture, where it came from and its size in points, Draw box
+  and Paste picture, and a top-right X that clears it), Similarity (a
+  slider from 70 % to 99 %, 80 % at first), the options "Turned 90°, 180°,
+  270°", "Sizes 85 % to 118 %" (50 % to 200 % for a pasted picture) and
+  "Include mirrored", all on at first, then the progress line, the summary
+  ("23 matches on 9 pages in 2 documents") and the results.
+- Draw box arms the Snapshot tool for the page in view and gives it the
+  keys. The prompt over the page and the status bar say "Drag a box around
+  what to find". The box leaves no markup and copies nothing; the tool goes
+  back to Select. Escape, the prompt's X or another tool stops it. The
+  picture is the box's content trimmed to its ink, cut from the page drawn
+  at the scale that makes it about 32 px on its short side.
+- Paste picture, or Cmd+V (Ctrl+V) with the focus in the panel, takes a
+  picture from the clipboard, such as a screenshot. Its pixels count as
+  screen pixels of the page in view at its zoom. With no picture, the panel
+  says "Copy a picture first, such as a screenshot." A picture that is too
+  small or has no ink says "Draw a larger box." or "That box has nothing in
+  it to find."
+- The search starts at once and runs again on a new picture, option or
+  scope, or when a searched document's pages change. It draws each page
+  with its content only (no markups), in its real colours whatever the
+  dark pages setting, after everything the viewer asks for, and matches
+  the pages on background threads. It searches the picture's own page
+  first. "Searching page 3 of 20…" with a progress bar and Stop shows while
+  it runs; Stop keeps what was found ("Stopped after 3 of 20 pages"). A
+  document that closes leaves the search and its hits go.
+- Results group by document, then page, with counts; each hit shows a small
+  picture of the page there and its score, three to a row. With dark pages
+  on, these pictures and the picture card show the page's dark colours
+  (the search still matches the real colours). The box the
+  picture came from is a hit marked "Source". The tooltip says how a hit
+  lies ("91 % similar, turned 90°, mirrored, 106 % size"). The slider only
+  hides or shows hits already found: no new search.
+- A click on a hit, or Enter or Space on it, brings its window and tab to
+  the front, scrolls it into view and outlines the document's shown hits,
+  the opened one stronger, in the colours of the dark pages setting. Up and
+  Down move through the documents, pages and hits; Left goes from a hit to
+  its page and collapses a group; Right expands it.
+
 ## Editing page content
 
 Edit PDF edits and moves the PDF's own content (its text, drawings and
 images), as Acrobat's Edit Text & Images does. It is a mode, not a tool: a
-switch at the left of the viewer toolbar (or `Shift+T`) turns it on for the
+toggle at the right of the viewer toolbar (or `Shift+T`) turns it on for the
 document, off when a document opens. While it is on, the Select tool works
 on the page's content wherever no markup or fillable field takes a press;
 the other tools draw markups as usual, and turning it on arms Select.
@@ -736,7 +933,9 @@ A PDF's form fields are filled with the Select tool, as in Acrobat and Revu.
 - Tab and Shift+Tab commit the field and move through the fillable fields
   in the page's tab order (rows, columns or annotation order), page by page,
   scrolling the next into view. Escape, a click elsewhere, changing tool or
-  document and saving commit and finish.
+  document and saving commit and finish. A click elsewhere on the page commits
+  and finishes, and does nothing else; a click on another field moves to
+  it.
 - Each committed value is one undo step and marks the document unsaved.
   The page shows the field as it will be saved: PDFium re-renders it with
   its new appearance. Characters no available font can draw are refused
@@ -769,35 +968,35 @@ Acrobat and Preview do.
 
 ## Page scale
 
-The view toolbar's Page Scale, beside Edit, is the current page's scale: a
-switch labelled Page Scale, and a menu showing the scale (`1:100`, cut short with an ellipsis
-when long; the tooltip names it in full). Measurements measure through it;
-a page without one measures paper size (1 in = 1 in).
+The view toolbar's Page Scale, beside Edit PDF, is the current page's
+scale: one split button, as the page-view controls are. Its half with the
+ruler turns the page's scale on and off and is selected while on; its caret
+drops down the Page Scale panel. While the page has a scale, the scale shows
+beside the ruler (`1:100`, cut short with an ellipsis when long; the tooltip
+names it in full). Its accessible name says whether it is on, and the
+scale. Measurements measure through it; a page without one measures paper
+size (1 in = 1 in).
 
-- The current page is the one the page navigator shows. The switch and its
-  menu act on it alone; its tooltip names it (`Page 3 · 1:100. Switch off to
-  remove page 3's scale.`).
-- Off removes the page's scale, as one undoable change, and the menu keeps
-  showing it, dimmed: on brings it back without asking, while the document
-  is open. Measurements already made keep their values. The status bar says
-  what changed (`Removed the scale from page 3. Switch Page Scale on to
-  bring back 1:100.`).
-- On, for a page never scaled (`Not set`), drops down the Page Scale panel,
-  the switch showing on until it closes; closed without Apply, it is off
-  again.
-- The menu, the page's context menu (Set page scale…, and Remove page scale
+- The current page is the one the page navigator shows. The ruler and the
+  caret act on it alone; the ruler's tooltip names it (`Page Scale on: page
+  3 at 1:100. Click to remove page 3's scale.`).
+- Off removes the page's scale, as one undoable change, and the ruler
+  remembers it: on brings it back without asking, while the document is
+  open. Measurements already made keep their values. The status bar says
+  what changed (`Removed the scale from page 3. Turn Page Scale on to bring
+  back 1:100.`).
+- On, for a page never scaled, drops down the Page Scale panel, the ruler
+  showing on until it closes; closed without Apply, it is off again.
+- The caret, the page's context menu (Set page scale…, and Remove page scale
   when it has one), the status bar's scale, a selected measurement's Change
   button and a Measure switch drop down the same panel, under the toolbar's
-  Scale. The menu closes it again; so do its X, Cancel, Escape (after a
-  list open in it) and a press outside it, which only closes it.
-- Narrower than the full toolbar (1,018 px of toolbar for a document of
-  fewer than 10 pages, a window about 1,154 px wide with both rails;
-  1,066 px for up to 9,999 pages), the menu shows only its arrow and the
-  status bar shows the scale. The label Page Scale stays until the zoom,
-  fit and page-view buttons have stepped into menus; narrower still, the
-  switch shows a ruler for its label, and in the tightest form the switch
-  is small. The switch, its ruler or label, and the menu always show. At a
-  960 px window with Page Thumbnails collapsed the label shows.
+  Scale; the caret shows pressed while it is open. The caret closes it
+  again; so do its X, Cancel, Escape (after a list open in it) and a press
+  outside it, which only closes it.
+- The ruler and the caret always show, as icons. The scale beside the ruler
+  goes in the two narrowest toolbar forms, after the zoom, fit and
+  page-view buttons have stepped into menus; the tooltip and the status bar
+  still name it.
 - More than one page in view, the current page has a 2-point outline just
   outside its edge, in the theme's text colour (35% in light, 60% in dark),
   not the paper's. Over the toolbar's Scale, or with its panel open, the
@@ -902,14 +1101,28 @@ with it.
 
 - Click a thumbnail to select its page and show it; Cmd-click (Ctrl on
   Windows and Linux) adds or removes a page, and Shift-click selects the
-  pages from the last one clicked. Page actions act on the selected pages,
-  or the current page when none are.
+  pages from the last one clicked. With the thumbnails focused, Cmd+A
+  (Ctrl+A) selects every page, leaving the page in view, and Escape clears
+  the selection (with none, Escape acts as it does on the page). Select
+  All elsewhere selects the page's markups, as before. Page actions act on
+  the selected pages, or the current page when none are.
+- The header's Rotate All Pages Left and Right, beside its +, turn every
+  page of the document whatever is selected, as one undoable change; so do
+  Shift+click on the rail's Rotate Left and Rotate Right (a plain click
+  turns the current page) and the Document menu's items of the same names.
+  The page in view and every thumbnail turn at once, and the view stays on
+  the page it shows, in Continuous view at a free zoom too; so does its
+  Undo or Redo.
 - Right-click a thumbnail for Insert Blank Page Before or After, Duplicate,
   Cut, Copy, Paste After, Rotate Left or Right, and Delete; thumbnails have
   no buttons of their own. A right-click on an unselected page selects it
   first. Rotate turns the selected pages one after another. A page turns in
   the first frame, from its own tiles turned, and the other pages keep
-  theirs; rotating the page in view does not move the view. Delete is
+  theirs; rotating the page in view does not move the view at a free zoom.
+  With Fit Width or Fit Page in force, a rotation that turns the page in
+  view (one page, selected pages, every page, or Undo or Redo of a
+  rotation) fits the turned page again; a turned thumbnail's page is shown
+  and fitted. Delete is
   unavailable when every page is selected: a document keeps one page.
 - Drag thumbnails to move them: a line shows where they will land, before
   the page under the pointer in its top half and after it in its bottom
@@ -945,6 +1158,39 @@ with it.
   saves them first. The merge opens as a new untitled tab, saved with Save
   As; the originals do not change.
 
+## Tabs and windows
+
+- Each document window holds its documents as tabs in its own tab strip.
+  macOS native window tabs are off: Butter Paper draws no window tab bar,
+  so AppKit adds no tab commands to the Window menu.
+- Merge All Windows (Window menu on macOS, View menu on Windows and Linux)
+  moves the documents of every other window to the end of the active
+  window's tabs, window by window in the order the windows opened, each
+  window's tabs in order. Each document keeps its unsaved edits, view and
+  undo history, and the active window keeps the tab it shows. A window left
+  without tabs closes without a prompt. A document that cannot move yet
+  (opening, saving, or waiting for a prompt) stays in its window, which
+  stays open. The command is unavailable with one window.
+- A PDF opened from outside the app (Finder or File Explorer, the Dock or
+  taskbar, the app icon, the command line) goes where Settings ▸ Documents
+  ▸ Open documents in says. New tab, the default: a new tab in the most
+  recently active document window, which comes to the front; with no
+  window, one opens. New window: a window of its own for each outside open
+  (several PDFs opened at once share it). Under either choice a window
+  with no documents takes the open, so a cold launch from a PDF opens one
+  window, not two.
+- On Windows and Linux the file manager starts a new process for each
+  file. That launch hands its PDFs to the running Butter Paper of the same
+  profile and exits; with none running, it becomes the app. A launch with
+  no PDFs starts an app of its own, as before. macOS hands outside opens to
+  the running app itself.
+- A PDF dropped anywhere on a window (its tab strip, a page, the New Tab
+  page, a window with no documents) opens as a new tab in that window,
+  several in the order they were dropped, whatever the setting. A drop on
+  Merge Documents adds the PDFs to its list instead, and an image dropped
+  on a page is placed on it. File ▸ Open… and the New Tab page's Open open
+  in their own window; New Window and dragging a tab out are unchanged.
+
 ## Viewing
 
 - Trackpads and other precise scroll devices always scroll with two fingers,
@@ -958,10 +1204,9 @@ with it.
   discrete mouse wheel. Scrolling up zooms in; Reverse Scroll Zoom flips it.
 - In Single Page, the mouse wheel (set to Scroll), the arrow keys and Page
   Up/Page Down scroll a page larger than the view until its edge is in
-  view, then turn the page: down to the next page, shown from its top edge,
-  up to the previous one, shown from its bottom edge, at the same zoom and
-  horizontal position. A page that fits turns with each notch or key, and
-  stays centred. Left and Right do the same across. Once the page shown is
+  view, then turn the page: down to the next page, up to the previous one.
+  A page that fits turns with each notch or key, and stays centred. Left
+  and Right do the same across. Once the page shown is
   sharp, the pages either side of it are drawn ahead (and the page just
   left is kept), so a turn to one shows it at once as sharp as its own
   render, never its thumbnail scaled up. Turning the wheel quickly flicks
@@ -973,18 +1218,93 @@ with it.
   are drawn at the size the page shown has on screen (up to 2,400 pixels
   wide), so a turn does not sharpen a moment later. Keys never scroll a
   page out of view.
-- The page navigator in the view toolbar shows the page in view of the
-  total ("3 / 12") between First and Previous page, and Next and Last
-  page, which are disabled at either end. Clicking the page number makes
-  it a field with the number selected: a page typed and Enter goes there
-  (a number past the end goes to the last page; anything else stays put),
-  Escape or clicking elsewhere keeps the page shown, and focus returns to
-  where it was. Letters typed there never switch tools. Previous and Next
-  count from the page last asked for, so quick presses keep going while
-  pages render.
+- Single Page view remembers each page's zoom and scroll, however the page
+  is left (wheel, keys, page navigator, thumbnails, a switch to Continuous
+  view). A page returned to shows as it was left, panned past its edges
+  too (with part of it in view). A page not seen before shows from its
+  top edge going down and its bottom edge going back up, at the same zoom
+  and horizontal position; with Fit Width or Fit Page in force it opens
+  fitted to its own size. Choosing Fit Width or Fit Page forgets the page's
+  view. Rotating a page, by any command or by its Undo or Redo, forgets
+  that page's view; moved pages keep theirs. Continuous view keeps one zoom
+  and scroll for the document, and switching views keeps the memory. The
+  memory is saved with the session, for the last 100 pages seen. Closing a
+  file's tab keeps its memory (the page left too), for the last 50 files in
+  the app's data; the file's next tab opens on the page left, in Single Page
+  view, with that page's view, unless a restored session view brings its
+  own. A file left in Continuous view opens as usual, with its pages
+  remembered. Quitting keeps the memory of every open tab the same way.
+- Settings ▸ Mouse wheel ▸ Page turning sets how the discrete mouse wheel
+  turns pages in Single Page view. A notch is three lines on Linux, one on
+  macOS, and the system's lines per notch on Windows (three by default), so
+  one notch zooms one step and turns one page on each platform; smaller movements (a high-resolution or
+  free-spinning wheel) turn nothing until they add up to a notch, and part
+  of a notch is forgotten after 300 ms. A spin is a run of notches with no
+  gap longer than the choice's spin gap. No choice queues a turn: once the
+  wheel stops, the pages stop.
+  - Responsive (default): "Every click turns a page." Each notch turns a
+    page, except notches less than 40 ms after a turn. Zoomed in, the
+    wheel scrolls the page and one notch past its edge turns it.
+  - Balanced: "One page for each spin of the wheel. The wheel stops at each
+    page edge." The first notch of a spin (180 ms gap) turns the page; the
+    rest of the spin is ignored. Zoomed in, a spin that scrolls the page to
+    its edge stops there, and a new spin turns it.
+  - Deliberate: "Pages turn only after a clear pause. The wheel stops at
+    each page edge." As Balanced, with a 450 ms gap between spins.
+- Settings ▸ Mouse wheel ▸ Zoom speed sets how far one notch zooms: Fine
+  ×1.10, Standard (default) ×1.20, Coarse ×1.35, part of a notch by part
+  of the ratio, two notches an event at most. It applies to every
+  discrete-wheel zoom (Ctrl+wheel, and the plain wheel where it zooms: CAD
+  View, or a wheel set to Zoom), about the pointer. The zoom moves over
+  200 ms, a notch during the motion going on from where the motion heads;
+  with reduce motion set it is there at once. Trackpad pinch and Ctrl+swipe
+  follow the fingers and ignore Zoom speed. The page groups Reverse scroll
+  zoom and Zoom speed under the heading Zoom. Reverse scroll zoom is also in
+  the View menu.
+- Dark pages draw the pages dark. The View menu has Page Appearance with
+  Light (default), Dark and Match System, and Settings ▸ View has the same
+  three choices. The setting is for all documents and windows, and the app
+  keeps it across launches. Match System follows the system appearance while
+  the app runs. There is no toolbar button.
+  - Ctrl+Shift+D (Cmd+Shift+D on macOS) sets Light or Dark, the opposite of
+    the pages on screen. From Match System it also sets the opposite of the
+    current look. It does not act while a text field has focus.
+  - The setting changes the view only. Saves, exports, copies, previews and
+    recovery files keep the real colours of the document.
+  - Ink and paper go dark and keep their hue. Dark colours become lighter
+    colours of the same hue. Light colours such as yellow stay. Pictures
+    (photos, logos, scans placed as images, shadings and stamps) keep their
+    real colours.
+  - A page that is half pictures or more (a full-page scan) stays in real
+    colours. The status bar then starts with "Pictures keep their real
+    colours in Dark pages". The text does not block anything.
+  - Markups draw through the same colour map. Their stored colours, colour
+    pickers and the Properties panel show the real colours. A highlight
+    draws as a dark highlight colour over the page, so text stays readable.
+  - The canvas chrome follows the paper: selection, handles, guides, the
+    marquee, the Edit PDF caret and the form field editor use lighter
+    colours on dark paper.
+  - A dark page has a one-pixel grey ring outside its edge, so it stands
+    apart from the viewport. The ring never insets the page image.
+  - Thumbnails follow the setting.
+- The page navigator in the centre of the view toolbar shows the page in
+  view of the total ("3 / 12") between First and Previous page, and Next
+  and Last page, which are disabled at either end. Clicking the page number
+  makes it a field with the number selected: a page typed and Enter goes
+  there (a number past the end goes to the last page; anything else stays
+  put), Escape or clicking elsewhere keeps the page shown, and focus
+  returns to where it was. A click on the page only closes the field: it
+  selects and draws nothing. The field is as wide as the page count's digits
+  (two at least) with its padding, its number centred, and its focus ring
+  inside the navigator's frame, so a number typed or selected is never
+  cut; opening it moves nothing beside it. Letters typed there never
+  switch tools. Previous and Next count from the page last asked for, so
+  quick presses keep going while pages render.
+- Undo and Redo, at the toolbar's left, do what the Edit menu's Undo and
+  Redo do, and are enabled as they are.
 - A press on anything drawn over the page (a menu of the in-window menu
-  bar, a popup, a notification, a dialog) acts only there or dismisses it;
-  it never also selects, draws or edits on the page beneath.
+  bar, a popup, a notification, a dialog, the find bar) acts only there or
+  dismisses it; it never also selects, draws or edits on the page beneath.
 - Going to a page (a thumbnail, the page buttons, the wheel) moves there at
   once: the page shows its thumbnail drawn up to size, if the sidebar has
   drawn it, until its own render replaces it. What is on screen renders
@@ -1029,7 +1349,12 @@ with it.
   refits and reframes, staying on the pages. A fit is resolved when it
   is chosen or the window resizes, not refitted to each page scrolled past
   (as in Revu, where a wider page runs past the view's sides).
-- The current page is the one level with the view centre.
+- The current page is the one level with the view centre. In Continuous
+  view a click on a page makes it the current page (the page navigator,
+  its thumbnail, Rotate and the Scale follow it) and moves nothing, even
+  when the click only dismisses; the next scroll makes the page level with
+  the view centre current again. Single Page view shows only the current
+  page.
 - Each tab keeps its own page, zoom, fit and scroll.
 - The Signature panel's Image tab takes a signature from wherever it is:
   From the page (the panel steps aside and the Snapshot tool draws a box
@@ -1040,7 +1365,7 @@ with it.
   signature), and the camera or phone where available, two to a row. Each
   is cleaned up alike: the paper made transparent and cropped to the ink.
 - A digitally signed PDF shows a signatures button at the view toolbar's
-  trailing edge, opposite Edit PDF: the shield alone, so the toolbar keeps
+  trailing edge, after Edit PDF and the Scale: the shield alone, so the toolbar keeps
   its room, with the verdict in its tooltip and accessible name: grey
   "Checking signatures…" while its signatures are
   checked in the background, then "Signed" (green shield), "Signer not
@@ -1084,7 +1409,8 @@ with it.
 - Settings ▸ Signatures ▸ Timestamp server: empty (none) at first; an
   `http` or `https` address is kept when the field is left or Enter is
   pressed, and anything else is called out below it.
-- Dropping PDFs opens each in a new tab. Dropping PNG or JPEG images on a
+- Dropping PDFs opens each in a new tab in that window (see Tabs and
+  windows). Dropping PNG or JPEG images on a
   document places each at once as an Image, centred where it is dropped on
   the page under the pointer (or the nearest shown page, kept on it), at
   its natural size up to the Image tool's limit; several step 24 points

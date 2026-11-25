@@ -6194,6 +6194,19 @@ pub struct FixtureReplayOutcome {
     pub canonical_sha256: String,
 }
 
+/// A rotation gesture's turn so far (see [`AnnotationDocument::rotation_turn`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RotationTurn {
+    pub centre: PdfPoint,
+    /// Half the length of the markup's diagonal, in PDF points.
+    pub half_diagonal: f64,
+    /// The pointer's angle about the centre when pressed, in degrees
+    /// anticlockwise from +x.
+    pub start_angle_degrees: f64,
+    pub original_rotation_degrees: f64,
+    pub rotation_degrees: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GesturePreview {
     pub kind: GestureKind,
@@ -8677,6 +8690,27 @@ impl AnnotationDocument {
         Ok(next)
     }
 
+    /// Turns every page of the document a quarter turn, as one undoable
+    /// change. Returns how many pages turned.
+    pub fn rotate_all_pages(
+        &mut self,
+        direction: PageRotationDirection,
+    ) -> Result<usize, AnnotationError> {
+        self.require_no_gesture()?;
+        let count = self.state.page_rotations.len();
+        if count == 0 {
+            return Err(AnnotationError::InvalidGeometry(
+                "the document has no pages to rotate".to_owned(),
+            ));
+        }
+        self.commit_state_change(|state| {
+            for rotation in state.page_rotations.values_mut() {
+                *rotation = rotation.rotate(direction);
+            }
+        });
+        Ok(count)
+    }
+
     /// The pages as arranged; empty when they are the file's, in order.
     pub fn page_slots(&self) -> &[PageSlot] {
         &self.state.page_slots
@@ -10103,6 +10137,15 @@ impl AnnotationDocument {
             .collect()
     }
 
+    /// Every markup of the document, bottom first.
+    pub fn all_annotations(&self) -> Vec<Annotation> {
+        self.state
+            .annotation_order
+            .iter()
+            .filter_map(|id| self.annotation_owned(id))
+            .collect()
+    }
+
     /// The markups on page `page_index`, bottom first.
     pub fn annotations_on_page(&self, page_index: u32) -> Vec<Annotation> {
         self.state
@@ -10818,6 +10861,27 @@ impl AnnotationDocument {
         if let Some(ActiveGesture::Rotate { step_degrees, .. }) = self.active_gesture.as_mut() {
             *step_degrees = step;
         }
+    }
+
+    /// The turn a rotation gesture has made so far: about the markup's
+    /// centre, from the pointer's angle when it was pressed.
+    pub fn rotation_turn(&self) -> Option<RotationTurn> {
+        let Some(ActiveGesture::Rotate {
+            annotation,
+            original_rotation_degrees,
+            start_angle_radians,
+            ..
+        }) = self.active_gesture.as_ref()
+        else {
+            return None;
+        };
+        Some(RotationTurn {
+            centre: annotation.rect.center(),
+            half_diagonal: annotation.rect.width.hypot(annotation.rect.height) * 0.5,
+            start_angle_degrees: start_angle_radians.to_degrees(),
+            original_rotation_degrees: *original_rotation_degrees,
+            rotation_degrees: annotation.rotation_degrees,
+        })
     }
 
     pub fn update_gesture(

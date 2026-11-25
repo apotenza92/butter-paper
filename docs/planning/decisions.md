@@ -94,9 +94,61 @@ changes it; history is in git.
 
 ## Interface
 
+- Dark pages (decided 2026-11-25 by the owner): a view setting draws pages
+  dark and never changes the document. View ▸ Page Appearance and Settings ▸
+  View choose Light (default), Dark or Match System. The setting is global
+  and kept across launches. There is no toolbar button. Ctrl+Shift+D
+  (Cmd+Shift+D on macOS) sets Light or Dark. The worker maps ink and paper
+  after it renders (paper unblend, then a lift of the ink in OKLab that
+  keeps hue). Pictures stay in their real colours: images that are not
+  stencil masks, shadings and Stamp annotations. A full-page scan stays real
+  and the status bar says so. Markup colours map only where they paint.
+  Stored colours, the Properties panel, saves, exports, copies and previews
+  keep the real colours. Paper-relative colours follow the dark pages
+  setting, never the app theme, and annotation colours stay document data
+  (AGENTS.md). Dark pages have a one-pixel grey ring outside the page edge.
+- Find in document (decided 2026-11-25 by the owner): Cmd+F (Ctrl+F on
+  Windows and Linux) opens a find bar that floats at the top right of the
+  canvas, 8 px from the top and right edges, so nothing on the page moves.
+  It searches the page text and the markups of the active document for
+  literal text, with Match case and Match whole word, and shows "3 of 17"
+  with Previous, Next and a close X. Matches are yellow on the page (the
+  warning look, apart from the blue text selection), the current one
+  stronger. The yellows are part of the dark pages sets. Two lines join for
+  a phrase when they are of one paragraph, or adjacent, overlapping in
+  width, with no table rule between them. With the focus on the page,
+  Escape first clears a selection, a drawing or a tool, and closes the bar
+  only when nothing else is left; with the focus in the bar it closes it.
+- Search panel (decided 2026-11-25 by the owner): the left rail has a
+  Search button, and the left sidebar shows Page Thumbnails or Search, one
+  at a time, at one shared width and with the same yield rule.
+  Cmd+Shift+F (Ctrl+Shift+F) opens it with the focus in the query; Edit ▸
+  Find and Find in Documents are in the native and in-window menus. Its
+  scope is All open documents (every tab in every window; document ids
+  are unique across windows) or This document. A query uses a subset of
+  a common notes app's search language (words, phrases, OR, exclusion,
+  groups, regular expressions, case, and the filters text:, markup:,
+  author:, subject:, page: and file:), and all terms match in one unit: a
+  page's text, or a markup with its replies. Results group by document and
+  page with counts, with Match case, Explain search, Collapse results,
+  More context and a Sort menu, and at most 10,000 results. Matches in one
+  paragraph that share a snippet are one result row with each match marked.
+- Visual search (decided 2026-11-25 by the owner) is the panel's second
+  mode, beside Text, with the same scope. The picture to find is a box drawn
+  with the Snapshot tool (no markup, no copy) or a picture pasted from the
+  clipboard (screen pixels at the zoom in view). Matching uses page content
+  only, never markups, drawn in real colours even with dark pages on, at
+  the lowest worker priority, with zero-mean normalised cross-correlation
+  on grey pictures and no learned model. Turns, sizes from 85 % to 118 %
+  (50 % to 200 % for a paste) and mirrored copies are on by default; a
+  symmetric picture is searched once for each different orientation. The
+  similarity slider (70 % to 99 %, 80 % at first; owner decision) filters without a new
+  search, the source box is listed as "Source", and hits are outlined in
+  the dark pages colours. Colour is ignored, and marking every hit (as a
+  markup) is a later item.
 - A page has one scale, stored as Revu stores it (a page-wide `/VP`
   viewport). The view toolbar's Scale turns the current page's scale on and
-  off, and its menu drops down the one Page Scale panel that chooses it
+  off, and its caret drops down the one Page Scale panel that chooses it
   (decided 2026-11-11, replacing a Page Scale button among the measuring
   tools, which read as one of them): standard scales, chosen by group
   (Metric, Architectural, Engineering) and then by scale, the ones the
@@ -115,8 +167,8 @@ changes it; history is in git.
   saved is the same ordinary markup, as Sketch to Scale's is. A page without
   a scale shows no size and takes no typed size. Properties show and edit a
   shape's size in the page's real units.
-- Angle snap is a snap setting, on at 90° by default (decided 2026-11-23 at
-  the owner's request; it replaces Shift's fixed horizontal-or-vertical rule
+- Angle snap is a snap setting, on at 15° by default (decided 2026-11-23 at
+  the owner's request, 90° then; 15° from 2026-11-25; it replaces Shift's fixed horizontal-or-vertical rule
   for lines and its 15-degree rule for turning Edit PDF content). Lines and
   path segments being drawn keep their direction at a multiple of the
   increment (90°, 45°, 30°, 15° or custom), and every rotation knob turns to
@@ -125,7 +177,11 @@ changes it; history is in git.
   does. A point snap (an end, midpoint, centre or intersection in range of
   the pointer) wins over the held direction, as AutoCAD's object snaps win
   over Ortho; grids, Nearest and snap guides act only along the held
-  direction (decided 2026-11-23 by the owner). Snap dimensions is on at
+  direction (decided 2026-11-23 by the owner). Dragging a placed line end or
+  path point follows the same rules: the dragged point keeps its direction,
+  from its neighbour, at a multiple of the increment (decided 2026-11-25 by
+  the owner; the neighbour is the other end of a line, or the previous point
+  in path order). Snap dimensions is on at
   1 mm by default (same date and request). Like the other snap settings, both apply to every open document
   and last while the app is open.
 - Measuring is a switch on the drawing tools, not separate tools (decided
@@ -147,54 +203,58 @@ changes it; history is in git.
   tools. No licensing code until that is decided.
 
 - A window filling half a 1920-pixel screen shows the whole interface with
-  its sidebars collapsed: Edit PDF, the page's Scale, every view control, the
-  page navigator's page field and a signed document's signatures button, for
-  documents of up to 9,999 pages. (Its First, Previous, Next and Last buttons
-  showed there too until the Scale joined the toolbar, 2026-11-11; the page
-  keys and menu still turn pages.) Changes to the view toolbar keep to that.
-  Every toolbar control shows at every window size and with every side
-  panel open or closed, in one row (decided 2026-11-23); it never
-  scrolls. The toolbar has eight forms, and the whole toolbar changes form at once, not control by
-  control. Each step gives up the least-used control it can, and the Edit
-  and Page Scale labels stay to the last; every function stays reachable by
-  pointer and keyboard:
-  - Full: the labels Edit and Page Scale beside their switches, the scale
-    shown beside the Page Scale switch, and the whole page navigator.
-  - Middle: the scale shown and the First, Previous, Next and Last buttons
-    go (the status bar shows the scale; the page field and page keys turn
-    pages). A 960-pixel window (half a 1080p screen on macOS) with Page
-    Thumbnails collapsed shows it for an unsigned document of up to 99
-    pages; a longer page count or a signed document's shield takes the
-    next form there.
+  its sidebars collapsed: Undo and Redo, the page navigator's page field,
+  every view control, Edit PDF, the page's Scale and a signed document's
+  signatures button, for documents of up to 9,999 pages. (Its First,
+  Previous, Next and Last buttons showed there too until the Scale joined
+  the toolbar, 2026-11-11; the page keys and menu still turn pages.)
+  Changes to the view toolbar keep to that. Every toolbar control shows at
+  every window size and with every side panel open or closed, in one row
+  (decided 2026-11-23); it never scrolls. The toolbar has seven forms, and
+  the whole toolbar changes form at once, not control by control. Each
+  step gives up the least-used control it can, and the scale shown beside
+  the Scale's ruler stays until the view controls are in menus; every
+  function stays reachable by pointer and keyboard:
+  - Full: the whole page navigator, and the page's scale beside the
+    Scale's ruler.
+  - Middle: the First, Previous, Next and Last buttons go (the page field
+    and page keys turn pages). A 960-pixel window (half a 1080p screen on
+    macOS) with Page Thumbnails collapsed shows it for an unsigned document
+    of up to 99 pages; a longer page count or a signed document's shield
+    takes the next form there.
   - Zoom Out and Zoom In move into the zoom menu (their keys still work).
   - Fit Width and Fit Page move into the zoom menu too, as Acrobat and Revu
     keep them.
   - Continuous View, Single Page View and their mouse-wheel menus merge
     into one menu button showing the view in use.
-  - Compact: icons in place of the Edit and Page Scale labels.
-  - Tightest: small switches. It is 521 points wide for a signed document
-    of a four-digit page count, the widest case.
+  - Compact: the scale shown beside the ruler goes (the Scale's tooltip and
+    the status bar name it).
   - Narrowest: the zoom menu shows a magnifier for the zoom (its tooltip
-    and menu give the zoom), and the page field the page in view alone (its
-    tooltip gives the page count). It shows only between side panels in
-    a narrow band of widths: the panels keep it 423 points wide for a
-    signed document of a four-digit page count, the widest case.
-  Every form lays its groups out alike (decided 2026-11-23): the page
-  navigator pinned at the left edge, Edit and Page Scale pinned at the
-  right edge, and zoom with the page layout in the toolbar's centre while
-  it fits there; a wider side pushes them toward the narrower side, and at
-  a form's least width the groups meet at the 8-point group gap.
-  Each group of toolbar controls sits in its
-  own frame. The signatures button is always the shield
-  alone, coloured by the verdict; its tooltip says the verdict, and a click
-  lists the signatures.
+    and menu give the zoom), the page field the page in view alone (its
+    tooltip gives the page count), and the gaps are halved. It shows only
+    between side panels in a narrow band of widths: the panels keep it 415
+    points wide for a signed document of a four-digit page count, the
+    widest case.
+  Every form lays its groups out alike (decided 2026-11-25): Undo and Redo
+  pinned at the left edge, Edit PDF and the Scale pinned at the right edge
+  (then the signatures button), and the page navigator, zoom and page
+  layout in the toolbar's centre while they fit there; a wider side pushes
+  them toward the narrower side, and at a form's least width the groups
+  meet at the 8-point group gap. Each group of toolbar controls sits in its
+  own frame. The signatures button is always the shield alone, coloured by
+  the verdict; its tooltip says the verdict, and a click lists the
+  signatures.
+- The toolbar's Undo and Redo send the Edit menu's Undo and Redo, and are
+  enabled as its items are (for a focused text field, or the document's
+  history). Their tooltips show the keys the platform's way (⌘Z and ⇧⌘Z
+  on macOS, Ctrl+Z and Ctrl+Y on Windows and Linux).
 - Windows have a least size: document windows 918 × 480, where the view
   toolbar shows Edit PDF, Page Scale, the signatures button and all its view
   controls, with the page field, between the left
   rail and the two-column tool rail (the tool rail folds into its overflow
   menu when short), Settings 600 × 420. Side panels give way before the
   viewer toolbar gets narrower than its narrowest form (decided
-  2026-11-23): the page column between them keeps that width (26.4375 rem,
+  2026-11-23): the page column between them keeps that width (25.9375 rem,
   never less than 15 rem). So a 1200-point window holds Page Thumbnails
   and the properties panel side by side at their usual widths. Alone, Page Thumbnails or the properties panel opens at any
   window width, narrower than its preferred width when it must (down to
@@ -281,6 +341,12 @@ changes it; history is in git.
 - Buttons in a framed toolbar group (the page navigator, zoom) reach the
   frame: the end buttons' hover and press fill it to its rounded edge, as
   a stock button group's do.
+- The toolbar's on/off controls are icon toggles, as Fit Width is (decided
+  2026-11-25, replacing labelled switches): Edit PDF is an icon button,
+  selected while on; the Scale is one split button, as the page-view
+  controls are, whose ruler half turns the current page's scale on and off
+  and whose caret drops down the Page Scale panel. Each control's
+  accessible name says whether it is on, and the Scale's names the scale.
 - Recovery and save problems live in a conditional Recovery button beside
   New PDF, with a warning icon and item count. Its bounded, scrollable panel
   has a fixed top-right X; closing it never discards data. Unsaved changes
@@ -323,36 +389,84 @@ changes it; history is in git.
 - Transient panels and dialogs close with an icon-only top-right X inside the
   content; the word Cancel is reserved for a decision prompt beside a commit or
   destructive action.
-- Sidebars: page thumbnails on the left, properties on the right, both 300px
-  by default and resizable; thumbnails yield to properties only, hiding
+- Sidebars: page thumbnails or search on the left, properties on the
+  right, both 300px by default and resizable; the left sidebar yields to
+  properties only, hiding
   while the page between the two is too narrow (see the window size entry).
   The right tool rail has two columns and cannot be resized, in sections
-  General, Edit, Review and Draw. When it overflows, an ellipsis cue at the hidden edge covers
+  General, Edit, Review and Draw. General holds Select and Hand, then
+  Rotate Left and Rotate Right, which turn the current page at once (as
+  the Document menu's commands do) and are never shown selected;
+  Shift+click turns every page (decided 2026-11-25; the tooltip's second
+  line says so). A keyboard press on a button carries no modifiers, so the
+  keyboard turns every page through the Document menu. When it overflows, an ellipsis cue at the hidden edge covers
   the tools faded under it; hovering it shows "Scroll to see other tools"
   beside the ellipsis, and a rail with nothing to scroll never shows it.
 - Pages are arranged from Page Thumbnails (its right-click menu, drag, the
   header's +, and the clipboard keys when the thumbnails are focused), as in
-  Revu and Acrobat. Arranging is undoable until the document is saved;
+  Revu and Acrobat. The header's Rotate All Pages Left and Right, beside
+  the +, Shift+click on the rail's Rotate buttons, and the Document menu's
+  items of the same names turn every page, whatever is selected, as one
+  undoable change. With Fit Width or Fit Page in force, a rotation that
+  turns the page in view, and its Undo or Redo, fits the turned page
+  again; a free zoom stays (decided 2026-11-25). Arranging is undoable until the document is saved;
   saving rearranged pages starts the undo history again, since earlier
   states name pages of the file as it was. Merging open documents is
   "Merge" (the user's word; Revu calls it Combine), in a dialog like Revu's
   Combine: open documents ticked in tab order, other PDFs added or dropped,
   rows dragged into order. It opens the result as a new untitled document,
   leaves the originals unchanged, and saves unsaved changes first.
-- The viewer toolbar has zoom, fit and page-mode controls, and the Edit PDF
-  switch at its left; CAD View was removed from it. A page navigator sits
-  right of the zoom percentage, after Revu's: First page, Previous page, "3
-  / 12" (click it to type a page), Next page and Last page. The narrower
-  toolbar forms drop the four page buttons; the page field always shows,
-  and the page keys and menu still turn pages. The view
-  controls are centred in the toolbar while they fit between its sides;
-  in a narrower toolbar they meet the wider side and move toward the
-  narrower one, rather than losing controls.
+- Single Page view remembers each page's zoom and scroll, as Revu does
+  (decided 2026-11-25). A page not seen before opens as Revu opens it at a
+  zoomed edge: from its top (its bottom when the wheel goes back), at the
+  same zoom and horizontal position, or fitted when Fit Width or Fit Page
+  is in force. The memory is part of the document's restart view, at most
+  100 pages a document; a rotation of a page forgets its view. It also stays
+  for each file after its tab closes, for the last 50 files (the least
+  recently used goes first), and returns when the file opens again (decided
+  2026-11-25 by the owner). It is kept in the app's own data, never in the
+  PDF, under the file's canonical path; a file that moved within its volume
+  is found again by file identity (bookmark, file ID) where the system has
+  one. A file reopens on the page that was shown, in Single Page view, with
+  that page's view; one left in Continuous view opens as usual (owner
+  decision, 2026-11-25). Quitting writes the memory for every open tab.
+  Accepted risk (owner decision, 2026-11-25): a build older than this memory
+  reads a session manifest with `pageViews` as not valid, so after a
+  downgrade it does not restore the last session. The PDFs do not change.
+- Settings ▸ Mouse wheel has Zoom speed (Fine ×1.10, Standard ×1.20,
+  Coarse ×1.35 a notch) and Page turning (Deliberate, Balanced,
+  Responsive) (decided 2026-11-25). Reverse scroll zoom and Zoom speed
+  are together under the heading Zoom (owner decision). The app
+  names no other product there. Responsive, the default, is after Revu 21.2
+  with Single Page set to Scroll, as measured: one notch (delta 120) turns
+  one page at Fit Page and any smaller delta also turns one; zoomed in, a
+  notch scrolls 54 points and one notch more at the edge turns the page;
+  notches during a turn are dropped (a 0 ms burst turns about one page,
+  gaps of 50 to 75 ms three or four, 100 ms or more every notch). Butter
+  Paper drops notches less than 40 ms after a turn, turns from the page
+  last asked for, and never queues a turn, so a fast spin no longer goes on
+  turning after the wheel stops. Unlike Revu, a part notch counts only when
+  the parts make a whole notch. Balanced and Deliberate turn one page a spin
+  (notches with no gap over 180 ms, or 450 ms) and stop at each page edge,
+  for readers who find Revu's flicking too fast. Zoom speed applies to every
+  discrete-wheel zoom, which moves smoothly unless reduce motion is set. A
+  trackpad pinch or Ctrl+swipe does not follow it: it follows the fingers,
+  so a speed would break the direct feel.
+- The viewer toolbar has Undo and Redo at its left; the page navigator,
+  zoom, fit and page-mode controls in its centre; and Edit PDF and the
+  page's Scale at its right. CAD View was removed from it. The page
+  navigator is after Revu's: First page, Previous page, "3 / 12" (click it
+  to type a page), Next page and Last page. The narrower toolbar forms
+  drop the four page buttons; the page field always shows, and the page
+  keys and menu still turn pages. The centre controls are centred in the
+  toolbar while they fit between its sides; in a narrower toolbar they meet
+  the wider side and move toward the narrower one, rather than losing
+  controls.
 - Page text editing takes the best of Revu, Acrobat and OnlyOffice rather
   than matching Revu alone (Revu's Edit Text is line-only, for minor
   changes). The target:
   - Edit PDF is a mode, not a tool (a choice made for Butter Paper; all
-    three use a separate tool): a switch at the left of the viewer toolbar
+    three use a separate tool): a toggle at the right of the viewer toolbar
     (`Shift+T`) under which Select edits and moves the page's own text,
     drawings and images, as Acrobat's Edit Text & Images does, wherever no
     markup or form field takes the press. Markups and fields stay on top,
@@ -518,6 +632,20 @@ changes it; history is in git.
   ListItem has no keyboard focus, accessibility role or tooltip. Select
   default template's rows take the stock list's hover and selected colours
   and the stock focus ring, as the Template Library's ListItem rows do.
+- A press on the page acts only when the page has the user's attention
+  (decided 2026-11-25 by the owner, extending the 2026-11-23 click-out
+  decision). Text typed anywhere in the window (the page field, a property
+  or default, a form field) makes the press a click-out that only finishes
+  the typing, for every tool. On macOS the press that activates an
+  inactive window only activates it, as AppKit document views do; on
+  Windows and Linux it acts, as those platforms do. A click away from a
+  property field keeps the markup selected; the next press deselects it.
+  Focus on a button, tab or thumbnail holds no typed text and stops
+  nothing.
+- In Continuous view a click on a page makes it the current page (decided
+  2026-11-25 by the owner), with no scroll, even when the click only
+  dismisses. A scroll makes the page level with the view centre current
+  again.
 
 ## Release
 
@@ -560,7 +688,22 @@ changes it; history is in git.
 - The + after the last tab, and a double-click on the track's empty space,
   open a New Tab: the blank workspace (Open and the recent files) in a tab of
   its own after the documents. There is at most one. Choosing another tab or
-  opening a document replaces it; closing it (its X or ⌘W) shows the document
+  opening a document replaces it; an opened document's tab takes its place at
+  once, selected while it loads, and if the open fails or the loading tab
+  closes, the New Tab returns. Closing it (its X or ⌘W) shows the document
   that was active before. The blank workspace's Open button still opens the
   file picker.
+- PDFs opened from outside the app open in a new tab of the most recently
+  active window by default, or in a window of their own (Settings ▸
+  Documents ▸ Open documents in; decided 2026-11-25). Dropped PDFs always
+  open as tabs in the window they are dropped on. On Windows and Linux one
+  app runs per profile for this: a launch with PDFs hands them to the
+  running app through a channel private to the user and exits. A launch
+  without PDFs still starts its own app. The channel is a Unix socket in the
+  user's runtime or temporary folder, used only when that folder is the
+  user's alone (owned by the user, mode 0700), each end checking that the
+  other runs as the same user; or, on Windows, a named pipe named with the
+  user's SID, open only to the user and SYSTEM, refusing remote clients, to
+  which a launch sends nothing unless the pipe's server runs as the same
+  user (a pipe another user made first gets nothing).
 - On macOS, ⌘W closes the active tab; with no tabs, it closes the window.

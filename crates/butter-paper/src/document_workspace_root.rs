@@ -48,6 +48,16 @@ impl DocumentWorkspace {
                 workspace.handle_space_pan_up(event, window, cx);
             }))
             .on_action(cx.listener(Self::open_pdf_from_action))
+            .on_action(cx.listener(|workspace, _: &FindInDocument, window, cx| {
+                workspace.open_find_bar(window, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &FindInDocuments, window, cx| {
+                workspace.open_search_panel(window, cx)
+            }))
+            .on_action(cx.listener(|workspace, _: &FindNext, _, cx| workspace.step_find(true, cx)))
+            .on_action(
+                cx.listener(|workspace, _: &FindPrevious, _, cx| workspace.step_find(false, cx)),
+            )
             .on_action(cx.listener(|workspace, _: &NewFromTemplate, _, cx| {
                 workspace.template_manage_requests =
                     workspace.template_manage_requests.saturating_add(1);
@@ -145,6 +155,12 @@ impl DocumentWorkspace {
             .on_action(cx.listener(|workspace, _: &RotatePageRight, _, cx| {
                 workspace.rotate_active_page_from_action(PageRotationDirection::Right, cx);
             }))
+            .on_action(cx.listener(|workspace, _: &RotateAllPagesLeft, _, cx| {
+                workspace.rotate_all_pages_from_action(PageRotationDirection::Left, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &RotateAllPagesRight, _, cx| {
+                workspace.rotate_all_pages_from_action(PageRotationDirection::Right, cx);
+            }))
             .on_action(cx.listener(|workspace, _: &ZoomIn, _, cx| {
                 workspace.zoom_active_document(true, cx);
             }))
@@ -236,6 +252,8 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::copy_pages_from_action))
             .on_action(cx.listener(Self::cut_pages_from_action))
             .on_action(cx.listener(Self::paste_pages_from_action))
+            .on_action(cx.listener(Self::select_all_pages_from_action))
+            .on_action(cx.listener(Self::clear_page_selection_from_action))
             .on_action(cx.listener(Self::rotate_pages_left_from_action))
             .on_action(cx.listener(Self::rotate_pages_right_from_action))
             .on_action(cx.listener(Self::merge_documents_from_action))
@@ -246,6 +264,8 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::delete_annotations_from_action))
             .on_action(cx.listener(Self::undo_annotations_from_action))
             .on_action(cx.listener(Self::redo_annotations_from_action))
+            .on_action(cx.listener(Self::undo_document_from_toolbar))
+            .on_action(cx.listener(Self::redo_document_from_toolbar))
             .on_action(cx.listener(|workspace, _: &Escape, window, cx| {
                 let pending_editor_focused = workspace
                     .pending_text_box_focus(cx)
@@ -326,6 +346,19 @@ impl DocumentWorkspace {
                     cx.propagate();
                     return;
                 };
+                // Escape clears what the page shows first: a selection, a
+                // drawing, a tool. Only when nothing is left does it close
+                // the find bar, then the highlights of a search result.
+                if !workspace.escape_has_page_state(document_id, cx) {
+                    if workspace.find_bar_open() {
+                        workspace.close_find_bar(window, cx);
+                        return;
+                    }
+                    if workspace.search_marks.take().is_some() {
+                        cx.notify();
+                        return;
+                    }
+                }
                 workspace.pan_tool_active = false;
                 workspace.pan_drag = None;
                 workspace.text_selection = None;
@@ -429,6 +462,10 @@ impl DocumentWorkspace {
                                 event.position,
                                 event.modifiers,
                                 event.click_count,
+                                // The press that activates an inactive window
+                                // only activates it on macOS, as AppKit
+                                // documents do; elsewhere it acts.
+                                cfg!(target_os = "macos") && event.first_mouse,
                                 window,
                                 cx,
                             )

@@ -53,7 +53,9 @@ impl DocumentWorkspace {
                         .get(&tab_document_id)
                         .expect("every retained session tab must own a bounds cell")
                         .clone();
-                    let is_active = self.active_document_id == Some(tab_document_id);
+                    // A loading tab that replaced the New Tab is selected.
+                    let is_active = self.active_document_id == Some(tab_document_id)
+                        || self.new_tab_opening_shown() == Some(tab_document_id);
                     let publication_warning = self
                         .session(tab_document_id, cx)
                         .and_then(|session| {

@@ -5,6 +5,14 @@ use gpui_component::Theme;
 
 use crate::application_shell::application_ui_zoom_font_size;
 
+/// Whether the system's appearance is dark: what Match System follows.
+pub fn is_dark_appearance(appearance: WindowAppearance) -> bool {
+    matches!(
+        appearance,
+        WindowAppearance::Dark | WindowAppearance::VibrantDark
+    )
+}
+
 /// Applies one window's native appearance through GPUI Component's complete
 /// theme transition, including its gpui-base projection.
 pub fn apply_window_appearance(appearance: WindowAppearance, window: &mut Window, cx: &mut App) {

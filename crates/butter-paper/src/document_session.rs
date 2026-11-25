@@ -14,6 +14,7 @@ use crate::{
     },
     document_viewer::{DocumentViewerState, ShownPage},
     native_document_view_state::NativeDocumentViewState,
+    paper_appearance::PaperAppearance,
 };
 use crate::{
     annotation_adapter::{AnnotationAdapter, IMAGE_PLACEMENT_PREVIEW_OPACITY},
@@ -279,17 +280,23 @@ pub(crate) struct AdjacentPageKey {
     pub(crate) resource_epoch: u64,
     pub(crate) rotation: PageRotation,
     pub(crate) content_revision: u64,
+    /// A Dark image never stands in for a Real page, or the reverse.
+    pub(crate) paper: PaperAppearance,
 }
 
 pub(crate) struct ThumbnailPresentation {
     pub(crate) page_index: u32,
     pub(crate) base_raster: RasterSurface,
     pub(crate) image: Arc<RenderImage>,
-    // Read where highlights are precomposed (Windows and Linux).
+    // Read where highlights are precomposed (always on Windows and Linux;
+    // on macOS for Dark pages).
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) highlight_pixels: usize,
     /// The page rotation the thumbnail shows.
     pub(crate) rotation: PageRotation,
+    /// The paper the thumbnail was drawn with: one drawn with another
+    /// paper is drawn again.
+    pub(crate) paper: PaperAppearance,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -310,6 +317,7 @@ pub struct PenAnnotationDefaults {
 pub(crate) struct ThumbnailRequestState {
     pub epoch: u64,
     pub rotation: PageRotation,
+    pub paper: PaperAppearance,
     /// The page's content revision the render shows.
     pub content: u64,
     pub error: Option<String>,
@@ -400,18 +408,30 @@ pub struct NativeDocumentSession {
     pub(crate) file_page_coordinate_spaces: Vec<PageCoordinateSpace>,
     /// The arrangement the `source_page_*` lists show, one slot a page.
     pub(crate) arranged_slots: Vec<crate::pdf_page_structure::PageSlot>,
+    /// Counts each change of `arranged_slots`: equal counts mean equal
+    /// slots, so a check each frame need not compare them.
+    pub(crate) arranged_revision: u64,
     pub(crate) presentation_error: Option<String>,
     pub(crate) recovery_generation: Option<u64>,
     pub(crate) recovery_preparation_generation: u64,
     pub(crate) recovery_preparation: DocumentRecoveryPreparation,
     pub(crate) resource_epoch: u64,
+    /// Every annotation as the file had it when it opened, for search.
+    pub(crate) markup_metadata: Arc<Vec<crate::search_markups::MarkupMetadata>>,
     pub(crate) pending_rotation_generation: Option<u64>,
     pub(crate) current_page: u32,
     pub(crate) requested_page: u32,
+    /// Continuous view: the scroll at which a click made `current_page` the
+    /// page clicked. The page stays current until the view scrolls away
+    /// from it; then the page in view is current again.
+    pub(crate) picked_page_scroll: Option<(f32, f32)>,
     pub(crate) pending_navigation_scroll: Option<u32>,
     /// A page gone back to from the top of the next: it shows from its
     /// bottom, as scrolling up would reach it.
     pub(crate) navigation_from_below: Option<u32>,
+    /// Single Page view: a page returned to and the scroll it was left at,
+    /// restored once the page is laid out.
+    pub(crate) pending_page_view_scroll: Option<(u32, (f32, f32))>,
     pub(crate) pending_zoom_anchor: Option<crate::zoom_anchor::ZoomAnchor>,
     /// A page to frame once the new layout is planned: centred for Fit
     /// Page, centred across for Fit Width.
@@ -422,6 +442,9 @@ pub struct NativeDocumentSession {
     pub(crate) save_status: NativeDocumentSaveStatus,
     pub(crate) publication_durability_warning: Option<PublicationDurabilityWarning>,
     pub(crate) current_base_raster: Option<RasterSurface>,
+    /// The paper `current_base_raster` was drawn with. It differs from
+    /// [`Self::paper`] only until the page is drawn again after a switch.
+    pub(crate) current_base_paper: PaperAppearance,
     pub(crate) current_image: Option<Arc<RenderImage>>,
     /// The page `current_image` and `current_base_raster` show: in
     /// Continuous view the current page follows scrolling and can differ.
@@ -453,9 +476,12 @@ pub struct NativeDocumentSession {
     pub(crate) view_state: NativeDocumentViewState,
     pub(crate) highlight_composite: HighlightCompositeEvidence,
     /// The highlights the page images and viewer tiles were composed with,
-    /// where highlights are precomposed (Windows and Linux).
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    /// where highlights are precomposed ([`cpu_highlights`]).
     composed_highlights: Option<Vec<crate::annotation_model::PenAnnotation>>,
+    /// Real colours or Dark pages: the paper this document's view draws
+    /// its tiles, page images and thumbnails with. Set through
+    /// [`Self::set_paper`].
+    pub(crate) paper: PaperAppearance,
     pub(crate) source_sha256: Option<[u8; 32]>,
     pub(crate) viewport_size: Option<(f32, f32)>,
     pub(crate) temporary_source: Option<(GeneratedDocumentStore, OwnedGeneratedDocument)>,
@@ -509,6 +535,11 @@ fn holds_previous_page(
 }
 
 impl NativeDocumentSession {
+    /// Every annotation as the file had it when it opened, for search.
+    pub fn markup_metadata(&self) -> &Arc<Vec<crate::search_markups::MarkupMetadata>> {
+        &self.markup_metadata
+    }
+
     pub(crate) fn opening(id: DocumentId, path: PathBuf, generation: u64) -> Self {
         let title = path
             .file_name()
@@ -529,16 +560,20 @@ impl NativeDocumentSession {
             file_page_rotations: Vec::new(),
             file_page_coordinate_spaces: Vec::new(),
             arranged_slots: Vec::new(),
+            arranged_revision: 0,
             presentation_error: None,
             recovery_generation: None,
             recovery_preparation_generation: 0,
             recovery_preparation: DocumentRecoveryPreparation::Unbound,
             resource_epoch: 0,
+            markup_metadata: Arc::default(),
             pending_rotation_generation: None,
             current_page: 0,
             requested_page: 0,
+            picked_page_scroll: None,
             pending_navigation_scroll: None,
             navigation_from_below: None,
+            pending_page_view_scroll: None,
             pending_zoom_anchor: None,
             pending_page_frame: None,
             generation,
@@ -547,6 +582,7 @@ impl NativeDocumentSession {
             save_status: NativeDocumentSaveStatus::Idle,
             publication_durability_warning: None,
             current_base_raster: None,
+            current_base_paper: PaperAppearance::Real,
             current_image: None,
             current_image_page: None,
             placeholder_page: None,
@@ -567,6 +603,7 @@ impl NativeDocumentSession {
             view_state: NativeDocumentViewState::default(),
             highlight_composite: HighlightCompositeEvidence::default(),
             composed_highlights: None,
+            paper: PaperAppearance::Real,
             source_sha256: None,
             viewport_size: None,
             temporary_source: None,
@@ -655,6 +692,9 @@ impl NativeDocumentSession {
     /// current page, otherwise show the current page from its top. Before
     /// the first layout there is no view to keep.
     pub(crate) fn hold_current_page_across_mode_change(&mut self) {
+        // Leaving Single Page view: the page shown keeps its view for the
+        // next time Single Page view shows it.
+        self.remember_shown_page_view();
         if self.viewer.plan_snapshot().is_none() {
             return;
         }
@@ -665,6 +705,18 @@ impl NativeDocumentSession {
             Some(anchor) => self.pending_zoom_anchor = Some(anchor),
             None => self.pending_navigation_scroll = Some(self.current_page),
         }
+    }
+
+    /// Single Page view leaves the page shown: remembers its zoom and
+    /// scroll. A page passed before it was laid out was never seen, and is
+    /// not remembered.
+    pub(crate) fn remember_shown_page_view(&mut self) {
+        if self.pending_navigation_scroll.is_some() || self.viewer.plan_snapshot().is_none() {
+            return;
+        }
+        let (scroll_x, scroll_y) = self.viewer.logical_scroll();
+        self.view_state.set_scroll(scroll_x, scroll_y);
+        self.view_state.remember_page_view(self.current_page);
     }
 
     pub fn page_count(&self) -> usize {
@@ -790,6 +842,7 @@ impl NativeDocumentSession {
         self.arranged_slots = (0..sizes.len() as u32)
             .map(|index| crate::pdf_page_structure::PageSlot::Source { index })
             .collect();
+        self.arranged_revision += 1;
         self.source_page_sizes = sizes.clone();
         self.source_page_rotations = rotations.clone();
         self.source_page_coordinate_spaces = coordinate_spaces.clone();
@@ -855,6 +908,7 @@ impl NativeDocumentSession {
             return false;
         }
         let previous = std::mem::replace(&mut self.arranged_slots, slots.clone());
+        self.arranged_revision += 1;
         // Where each page was shown before: the same slot, else another
         // copy of the same file page, whose thumbnail stands in until the
         // page is drawn again.
@@ -925,15 +979,21 @@ impl NativeDocumentSession {
                     image: old.image.clone(),
                     highlight_pixels: old.highlight_pixels,
                     rotation: old.rotation,
+                    paper: old.paper,
                 });
             } else if let PageSlot::Blank { .. } = slot {
                 let size = blank_size(*slot);
                 let width = crate::document_resource::thumbnail_width(size);
                 let height = ((width as f32 * size.1 / size.0).round() as u32).max(1);
+                // A blank page is plain paper, as the view draws it.
+                let [r, g, b] = match self.paper {
+                    PaperAppearance::Real => [0xff; 3],
+                    PaperAppearance::Dark => crate::paper_appearance::DarkPaper::DEFAULT.paper,
+                };
                 let raster = RasterSurface::new(
                     width,
                     height,
-                    vec![0xff; width as usize * height as usize * 4],
+                    [b, g, r, 0xff].repeat(width as usize * height as usize),
                 );
                 if let Ok(raster) = raster
                     && let Ok(image) = raster.clone().into_render_image()
@@ -944,6 +1004,7 @@ impl NativeDocumentSession {
                         image,
                         highlight_pixels: 0,
                         rotation: PageRotation::Degrees0,
+                        paper: self.paper,
                     });
                 }
             }
@@ -983,6 +1044,7 @@ impl NativeDocumentSession {
         self.placeholder_page = None;
         self.pending_navigation_scroll = None;
         self.navigation_from_below = None;
+        self.pending_page_view_scroll = None;
         for (index, size) in self.source_page_sizes.iter().enumerate() {
             self.annotations.set_semantic_snap_page_size(
                 self.id.value(),
@@ -1034,6 +1096,14 @@ impl NativeDocumentSession {
             .collect();
         let before = std::mem::take(&mut self.shown_quarter_turns);
         let after = self.page_rotation_quarter_turns();
+        // A remembered page view goes with its page, and is forgotten when
+        // the page turns or goes. Before the first sync nothing is shown.
+        if !before.is_empty() {
+            self.view_state.remap_page_views(|page| {
+                let to = moved(page as usize)?;
+                (before.get(page as usize)? == after.get(to)?).then_some(to as u32)
+            });
+        }
         self.viewer.invalidate_raster(|page| {
             let to = moved(page)?;
             Some(ShownPage {
@@ -1109,10 +1179,11 @@ impl NativeDocumentSession {
             .ok_or_else(|| "current page rotation is unavailable".to_owned())?
             .delta_from(self.source_page_rotations[current_page as usize]);
         let current_raster = resource
-            .render_page(current_page, DEFAULT_PAGE_RENDER_WIDTH)?
+            .render_view_page(current_page, DEFAULT_PAGE_RENDER_WIDTH, self.paper)?
             .rotated(current_delta)?;
         let current_image = current_raster.clone().into_render_image()?;
         self.current_base_raster = Some(current_raster);
+        self.current_base_paper = self.paper;
         self.current_image_page = Some(current_page);
         if let Some(previous) = self.current_image.replace(current_image) {
             self.retired_images.push(previous);
@@ -1155,6 +1226,7 @@ impl NativeDocumentSession {
         &mut self,
         page_index: u32,
         rotation: PageRotation,
+        paper: PaperAppearance,
         base_raster: RasterSurface,
         image: Arc<RenderImage>,
     ) -> Result<(), String> {
@@ -1164,6 +1236,7 @@ impl NativeDocumentSession {
             image,
             highlight_pixels: 0,
             rotation,
+            paper,
         };
         let index = match self
             .thumbnails
@@ -1179,9 +1252,9 @@ impl NativeDocumentSession {
                 index
             }
         };
-        #[cfg(target_os = "macos")]
-        let _ = index;
-        #[cfg(not(target_os = "macos"))]
+        if !cpu_highlights(paper) {
+            return Ok(());
+        }
         {
             let Some(snapshot) = self.annotations.snapshot(self.id.value()) else {
                 return Ok(());
@@ -1204,6 +1277,7 @@ impl NativeDocumentSession {
                     f64::from(thumbnail.base_raster.height()),
                 ),
                 &snapshot.pens,
+                thumbnail.paper,
             )?;
             thumbnail.highlight_pixels = pixels;
             let plain = std::mem::replace(&mut thumbnail.image, composited.into_render_image()?);
@@ -1215,6 +1289,33 @@ impl NativeDocumentSession {
                 .sum();
         }
         Ok(())
+    }
+
+    /// Draws this document's view with `paper` from now on: tiles, the
+    /// page image, adjacent page images and thumbnails. What is on screen
+    /// stays until its replacement arrives; the workspace asks for the new
+    /// page image. Returns whether the paper changed.
+    pub(crate) fn set_paper(&mut self, paper: PaperAppearance) -> bool {
+        if self.paper == paper {
+            return false;
+        }
+        self.paper = paper;
+        self.viewer.set_paper(paper);
+        // The page image stays on screen with its own paper
+        // (`current_base_paper`) until the workspace draws it again.
+        self.prune_adjacent_page_images();
+        // Renders on the way are for the other paper: their results are
+        // dropped, and the pages are asked for again.
+        self.thumbnail_requests.clear();
+        self.composed_highlights = None;
+        true
+    }
+
+    /// The page image of `page_index` in the document's real colours, to
+    /// cut a copy from: none while the view shows Dark pages.
+    pub(crate) fn real_base_raster_of(&self, page_index: u32) -> Option<&RasterSurface> {
+        self.base_raster_of(page_index)
+            .filter(|_| self.current_base_paper == PaperAppearance::Real)
     }
 
     /// What a whole-page image of `page_index` drawn now would show.
@@ -1230,6 +1331,7 @@ impl NativeDocumentSession {
                 .get(&page_index)
                 .copied()
                 .unwrap_or(0),
+            paper: self.paper,
         })
     }
 
@@ -1407,8 +1509,8 @@ impl NativeDocumentSession {
     /// Edits that leave the highlights as they were (most edits) keep the
     /// page images and tiles on screen untouched.
     pub(crate) fn sync_stable_highlight_presentations(&mut self) -> Result<(), String> {
-        #[cfg(not(target_os = "macos"))]
-        if let Some(snapshot) = self.annotations.snapshot(self.id.value())
+        if cpu_highlights(self.paper)
+            && let Some(snapshot) = self.annotations.snapshot(self.id.value())
             && self.composed_highlights.as_ref() == Some(&composed_highlights(&snapshot.pens))
         {
             self.highlight_composite.annotation_revision = snapshot.revision;
@@ -1420,8 +1522,8 @@ impl NativeDocumentSession {
     /// Composes the highlights into a newly shown current page. Thumbnails
     /// and tiles are recomposed only when the highlights changed too.
     pub(crate) fn present_current_page_highlights(&mut self) -> Result<(), String> {
-        #[cfg(not(target_os = "macos"))]
-        if let Some(snapshot) = self.annotations.snapshot(self.id.value())
+        if cpu_highlights(self.paper)
+            && let Some(snapshot) = self.annotations.snapshot(self.id.value())
             && self.composed_highlights.as_ref() == Some(&composed_highlights(&snapshot.pens))
         {
             self.compose_current_page_highlights(&snapshot.pens)?;
@@ -1435,17 +1537,15 @@ impl NativeDocumentSession {
         let Some(snapshot) = self.annotations.snapshot(self.id.value()) else {
             return Ok(());
         };
-        #[cfg(target_os = "macos")]
-        {
+        if !cpu_highlights(self.paper) {
             // Ordered native paths blend against the live opaque page scene.
             // Annotation edits therefore leave PDF raster/cache identities intact.
             self.highlight_composite = HighlightCompositeEvidence {
                 annotation_revision: snapshot.revision,
                 ..HighlightCompositeEvidence::default()
             };
-            Ok(())
+            return Ok(());
         }
-        #[cfg(not(target_os = "macos"))]
         {
             let coordinate_spaces = (0..self.page_sizes.len())
                 .map(|page_index| {
@@ -1456,6 +1556,10 @@ impl NativeDocumentSession {
             self.compose_current_page_highlights(&snapshot.pens)?;
             let mut thumbnail_pixels = 0usize;
             for thumbnail in &mut self.thumbnails {
+                // A thumbnail of the other paper, until it is drawn again.
+                if !cpu_highlights(thumbnail.paper) {
+                    continue;
+                }
                 let mut composited = thumbnail.base_raster.clone();
                 thumbnail.highlight_pixels = composited.precompose_highlights(
                     thumbnail.page_index,
@@ -1467,6 +1571,7 @@ impl NativeDocumentSession {
                         f64::from(thumbnail.base_raster.height()),
                     ),
                     &snapshot.pens,
+                    thumbnail.paper,
                 )?;
                 thumbnail_pixels = thumbnail_pixels.saturating_add(thumbnail.highlight_pixels);
                 let previous =
@@ -1489,7 +1594,6 @@ impl NativeDocumentSession {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     fn compose_current_page_highlights(
         &mut self,
         pens: &[crate::annotation_model::PenAnnotation],
@@ -1508,6 +1612,7 @@ impl NativeDocumentSession {
                 0.,
                 (f64::from(base.width()), f64::from(base.height())),
                 pens,
+                self.current_base_paper,
             )?;
             if let Some(previous) = self.current_image.replace(composited.into_render_image()?) {
                 self.retired_images.push(previous);
@@ -1581,8 +1686,16 @@ impl Drop for NativeDocumentSession {
     }
 }
 
+/// Whether highlights are composed into the page rasters on the CPU (with
+/// [`RasterSurface::precompose_highlights`]) rather than drawn by the GPU.
+/// Windows and Linux always compose them. macOS draws Real highlights
+/// with the Metal renderer's Multiply, and composes Dark highlights
+/// (Screen) on the CPU, which needs no GPUI change.
+pub(crate) fn cpu_highlights(paper: PaperAppearance) -> bool {
+    !cfg!(target_os = "macos") || paper == PaperAppearance::Dark
+}
+
 /// The pens composed into page images: highlights.
-#[cfg(not(target_os = "macos"))]
 fn composed_highlights(
     pens: &[crate::annotation_model::PenAnnotation],
 ) -> Vec<crate::annotation_model::PenAnnotation> {
@@ -1660,5 +1773,90 @@ mod page_turn_tests {
         assert_eq!(adjacent_render_width(1_203.2), 1_204);
         assert_eq!(adjacent_render_width(300.), DEFAULT_PAGE_RENDER_WIDTH);
         assert_eq!(adjacent_render_width(9_000.), MAX_ADJACENT_RENDER_WIDTH);
+    }
+}
+
+#[cfg(test)]
+mod dark_pages_tests {
+    use super::*;
+
+    fn raster() -> RasterSurface {
+        RasterSurface::new(4, 4, vec![0xff; 64]).unwrap()
+    }
+
+    fn shown_session() -> NativeDocumentSession {
+        let mut session =
+            NativeDocumentSession::opening(DocumentId::new(7), PathBuf::from("dark.pdf"), 1);
+        session.source_page_rotations = vec![PageRotation::Degrees0; 2];
+        session.current_page = 0;
+        session.current_image_page = Some(0);
+        session.current_base_raster = Some(raster());
+        session
+    }
+
+    /// Dark pages: an adjacent page image drawn for one paper never stands
+    /// in for the other, and the switch reaches the viewer.
+    #[test]
+    fn a_paper_switch_separates_adjacent_page_images() {
+        let mut session = shown_session();
+        let real = session.adjacent_page_key(1).unwrap();
+        assert_eq!(real.paper, PaperAppearance::Real);
+        assert!(session.set_paper(PaperAppearance::Dark));
+        assert!(!session.set_paper(PaperAppearance::Dark), "no change");
+        let dark = session.adjacent_page_key(1).unwrap();
+        assert_eq!(dark.paper, PaperAppearance::Dark);
+        assert_ne!(real, dark);
+        // An image drawn for the Real key is not kept beside a Dark page.
+        let image = raster().into_render_image().unwrap();
+        assert!(!session.keep_adjacent_page_image(1, real, raster(), image, true));
+        let image = raster().into_render_image().unwrap();
+        assert!(session.keep_adjacent_page_image(1, dark, raster(), image, true));
+        assert!(session.adjacent_page_image(1).is_some());
+        assert!(session.set_paper(PaperAppearance::Real));
+        assert!(session.adjacent_page_image(1).is_none());
+    }
+
+    /// Copies cut from the page on screen (Snapshot fallback, Signature
+    /// "From the page") take real colours only: never a Dark page image.
+    #[test]
+    fn only_a_real_page_image_can_be_cut_for_a_copy() {
+        let mut session = shown_session();
+        assert!(session.real_base_raster_of(0).is_some());
+        session.set_paper(PaperAppearance::Dark);
+        // Until the page is drawn again, the image on screen is still real.
+        assert!(session.real_base_raster_of(0).is_some());
+        session.current_base_paper = PaperAppearance::Dark;
+        assert!(session.real_base_raster_of(0).is_none());
+        assert!(session.base_raster_of(0).is_some(), "it still shows");
+    }
+
+    /// macOS draws Real highlights on the GPU and composes Dark highlights
+    /// on the CPU, as Windows and Linux always do.
+    #[test]
+    fn dark_highlights_are_composed_on_the_cpu_on_every_platform() {
+        assert!(cpu_highlights(PaperAppearance::Dark));
+        assert_eq!(
+            cpu_highlights(PaperAppearance::Real),
+            !cfg!(target_os = "macos")
+        );
+    }
+
+    /// A blank page added while Dark pages is on shows dark paper in its
+    /// thumbnail.
+    #[test]
+    fn paper_thumbnails_record_their_paper() {
+        let mut session = shown_session();
+        session.set_paper(PaperAppearance::Dark);
+        let image = raster().into_render_image().unwrap();
+        session
+            .present_thumbnail(
+                0,
+                PageRotation::Degrees0,
+                PaperAppearance::Dark,
+                raster(),
+                image,
+            )
+            .unwrap();
+        assert_eq!(session.thumbnail(0).unwrap().paper, PaperAppearance::Dark);
     }
 }

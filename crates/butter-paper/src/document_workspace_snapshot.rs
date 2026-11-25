@@ -112,12 +112,13 @@ impl DocumentWorkspace {
             let media_box = session
                 .source_page_coordinate_space(page_index)
                 .map(|space| space.media_box());
-            // The page image already on screen, if the worker cannot draw.
+            // The page image already on screen, if the worker cannot draw,
+            // and only if it shows the document's real colours.
             let fallback = session
                 .annotation_page_coordinate_space(page_index)
                 .and_then(|space| {
                     session
-                        .base_raster_of(page_index)?
+                        .real_base_raster_of(page_index)?
                         .snapshot_asset(rect, space)
                         .ok()
                 });

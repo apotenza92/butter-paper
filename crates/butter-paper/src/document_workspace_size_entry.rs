@@ -214,7 +214,7 @@ impl DocumentWorkspace {
             return false;
         };
         self.apply_size_entry(cx);
-        if self.begin_annotation_pointer(position, modifiers, 1, window, cx) {
+        if self.begin_annotation_pointer(position, modifiers, 1, false, window, cx) {
             self.finish_annotation_pointer(position, modifiers, window, cx);
         }
         self.size_entry = None;

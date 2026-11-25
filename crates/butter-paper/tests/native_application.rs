@@ -65,6 +65,7 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
         continuous_view_checked: true,
         single_page_view_checked: false,
         can_move_document_to_new_window: true,
+        can_merge_all_windows: true,
     });
 
     assert_eq!(
@@ -116,6 +117,9 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
             "Explode Block",
             "<separator>",
             "Select All",
+            "<separator>",
+            "Find",
+            "Find in Documents",
         ]
     );
     assert_action(item(edit, "Undo"), |action| action.as_any().is::<Undo>());
@@ -136,6 +140,17 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert_action(item(edit, "Select All"), |action| {
         action.as_any().is::<SelectAll>()
     });
+    // Find opens the find bar; Find in Documents, the search panel.
+    assert_action(item(edit, "Find"), |action| {
+        action
+            .as_any()
+            .is::<butter_paper::document_workspace::FindInDocument>()
+    });
+    assert_action(item(edit, "Find in Documents"), |action| {
+        action
+            .as_any()
+            .is::<butter_paper::document_workspace::FindInDocuments>()
+    });
     assert!(!item(edit, "Undo").is_disabled());
     assert!(item(edit, "Redo").is_disabled());
     assert!(!item(edit, "Cut").is_disabled());
@@ -153,6 +168,8 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
             "<separator>",
             "Rotate Left",
             "Rotate Right",
+            "Rotate All Pages Left",
+            "Rotate All Pages Right",
             "<separator>",
             "Move Document to New Window",
         ]
@@ -170,10 +187,22 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert_action(item(document, "Rotate Right"), |action| {
         action.as_any().is::<RotatePageRight>()
     });
+    assert_action(item(document, "Rotate All Pages Left"), |action| {
+        action
+            .as_any()
+            .is::<butter_paper::document_workspace::RotateAllPagesLeft>()
+    });
+    assert_action(item(document, "Rotate All Pages Right"), |action| {
+        action
+            .as_any()
+            .is::<butter_paper::document_workspace::RotateAllPagesRight>()
+    });
     assert!(item(document, "Previous Page").is_disabled());
     assert!(!item(document, "Next Page").is_disabled());
     assert!(!item(document, "Rotate Left").is_disabled());
     assert!(!item(document, "Rotate Right").is_disabled());
+    assert!(!item(document, "Rotate All Pages Left").is_disabled());
+    assert!(!item(document, "Rotate All Pages Right").is_disabled());
 
     let view = menu(&menus, "View");
     assert_eq!(
@@ -234,11 +263,46 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     ] {
         assert!(item(edit, name).is_disabled(), "{name} must be disabled");
     }
-    for name in ["Previous Page", "Next Page", "Rotate Left", "Rotate Right"] {
+    for name in [
+        "Previous Page",
+        "Next Page",
+        "Rotate Left",
+        "Rotate Right",
+        "Rotate All Pages Left",
+        "Rotate All Pages Right",
+    ] {
         assert!(
             item(menu(&disabled, "Document"), name).is_disabled(),
             "{name} must be disabled"
         );
+    }
+    // A page still turning holds back every rotation, as saving does.
+    for busy in [
+        NativeApplicationMenuState {
+            document_ready: true,
+            has_active_document: true,
+            rotation_busy: true,
+            ..Default::default()
+        },
+        NativeApplicationMenuState {
+            document_ready: true,
+            has_active_document: true,
+            save_busy: true,
+            ..Default::default()
+        },
+    ] {
+        let busy = build_native_application_menus(busy);
+        for name in [
+            "Rotate Left",
+            "Rotate Right",
+            "Rotate All Pages Left",
+            "Rotate All Pages Right",
+        ] {
+            assert!(
+                item(menu(&busy, "Document"), name).is_disabled(),
+                "{name} must be disabled while busy"
+            );
+        }
     }
     for name in [
         "Zoom In",
@@ -341,6 +405,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
             reverse_scroll_zoom: false,
+            page_appearance: Default::default(),
             updates: Default::default(),
         },
     );
@@ -375,18 +440,25 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             "Explode Block",
             "<separator>",
             "Select All",
+            "<separator>",
+            "Find",
+            "Find in Documents",
         ]
     );
-    assert_eq!(
-        menu_item_names(menu(&menus, "View")),
-        [
-            "Show Menu Bar in App Windows",
-            "<separator>",
-            "Reverse Scroll Zoom",
-            "<separator>",
-            "Toggle Full Screen",
-        ]
-    );
+    let mut view = vec![
+        "Show Menu Bar in App Windows",
+        "<separator>",
+        "Reverse Scroll Zoom",
+        "<separator>",
+        // The Page Appearance submenu.
+        "<other>",
+        "<separator>",
+        "Toggle Full Screen",
+    ];
+    if !cfg!(target_os = "macos") {
+        view.extend(["<separator>", "Merge All Windows"]);
+    }
+    assert_eq!(menu_item_names(menu(&menus, "View")), view);
     assert!(!item(menu(&menus, "View"), "Show Menu Bar in App Windows").is_checked());
     assert!(
         !menu_item_names(menu(&menus, "View"))
@@ -417,6 +489,7 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
             reverse_scroll_zoom: false,
+            page_appearance: Default::default(),
             updates: Default::default(),
         },
     );
@@ -432,6 +505,67 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
         item(menu(&menus, "View"), "Show Menu Bar in App Windows"),
         |action| action.as_any().is::<ToggleApplicationMenuBar>(),
     );
+}
+
+/// Merge All Windows is in the Window menu on macOS (AppKit adds no tab
+/// commands of its own, as document windows have no tabbing identifier) and
+/// in the View menu of both menu surfaces elsewhere. It needs two windows.
+#[test]
+fn merge_all_windows_is_in_the_window_menu_on_macos_and_the_view_menu_elsewhere() {
+    use butter_paper::application_shell::MergeAllWindows;
+    let shell = ApplicationMenuShellState {
+        menu_bar_visibility_supported: !cfg!(target_os = "macos"),
+        ..Default::default()
+    };
+    for can_merge in [false, true] {
+        let state = NativeApplicationMenuState {
+            can_merge_all_windows: can_merge,
+            ..Default::default()
+        };
+        let native = build_native_application_menus_with_shell(state, shell);
+        let in_window = build_in_window_application_menus(state, shell);
+        let holders = |menus: &[Menu]| {
+            menus
+                .iter()
+                .filter(|menu| menu_item_names(menu).contains(&"Merge All Windows"))
+                .map(|menu| menu.name.to_string())
+                .collect::<Vec<_>>()
+        };
+        if cfg!(target_os = "macos") {
+            assert_eq!(holders(&native), ["Window"]);
+            assert_eq!(
+                menu_item_names(menu(&native, "Window")),
+                [
+                    "Minimise",
+                    "Zoom",
+                    "<separator>",
+                    "Merge All Windows",
+                    "<separator>",
+                    "Close Window",
+                ]
+            );
+            assert!(holders(&in_window).is_empty());
+        } else {
+            assert_eq!(holders(&native), ["View"]);
+            assert_eq!(holders(&in_window), ["View"]);
+            assert_eq!(menu_item_names(menu(&native, "Window")), ["Close Window"]);
+            let item = item(menu(&in_window, "View"), "Merge All Windows");
+            assert_eq!(item.is_disabled(), !can_merge);
+            assert_action(item, |action| action.as_any().is::<MergeAllWindows>());
+        }
+        let menu_name = if cfg!(target_os = "macos") {
+            "Window"
+        } else {
+            "View"
+        };
+        let item = item(menu(&native, menu_name), "Merge All Windows");
+        assert_eq!(
+            item.is_disabled(),
+            !can_merge,
+            "one window has nothing to merge"
+        );
+        assert_action(item, |action| action.as_any().is::<MergeAllWindows>());
+    }
 }
 
 /// Users cannot change the interface size for now (decisions.md, "Interface
@@ -504,6 +638,72 @@ fn about_and_settings_are_available_in_both_menu_surfaces() {
                     .filter(|name| **name != "Check for Updates…")
                     .any(|name| name.contains("Update") || name.contains("Automatically"))
             );
+        }
+    }
+}
+
+/// View ▸ Page Appearance: a submenu of Light, Dark and Match System in the
+/// native menu bar and the in-window View menu, with the setting checked.
+/// It follows Reverse Scroll Zoom, in a group of its own.
+#[test]
+fn page_appearance_is_a_view_submenu_with_the_setting_checked_in_both_menu_surfaces() {
+    use butter_paper::application_shell::{
+        SetPageAppearanceDark, SetPageAppearanceLight, SetPageAppearanceMatchSystem,
+    };
+    use butter_paper::paper_appearance::PageAppearance;
+    for setting in PageAppearance::ALL {
+        let shell = ApplicationMenuShellState {
+            menu_bar_visibility_supported: !cfg!(target_os = "macos"),
+            page_appearance: setting,
+            ..Default::default()
+        };
+        let state = NativeApplicationMenuState::default();
+        let native = build_native_application_menus_with_shell(state, shell);
+        let in_window = build_in_window_application_menus(state, shell);
+        for menus in [&native, &in_window] {
+            let view = menu(menus, "View");
+            let position = view
+                .items
+                .iter()
+                .position(|item| matches!(item, MenuItem::Submenu(submenu) if submenu.name == "Page Appearance"))
+                .expect("View has a Page Appearance submenu");
+            // Reverse Scroll Zoom, a separator, the submenu, a separator.
+            assert!(matches!(
+                &view.items[position - 2],
+                MenuItem::Action { name, .. } if name == "Reverse Scroll Zoom"
+            ));
+            assert!(matches!(view.items[position - 1], MenuItem::Separator));
+            assert!(matches!(view.items[position + 1], MenuItem::Separator));
+            let MenuItem::Submenu(submenu) = &view.items[position] else {
+                unreachable!()
+            };
+            assert_eq!(
+                menu_item_names(submenu),
+                ["Light", "Dark", "Match System"],
+                "title case in the menu bar"
+            );
+            for (name, expected) in PageAppearance::ALL
+                .iter()
+                .map(|appearance| (appearance.menu_label(), *appearance == setting))
+            {
+                let MenuItem::Action { checked, .. } = item(submenu, name) else {
+                    unreachable!()
+                };
+                assert_eq!(*checked, expected, "{name} with {setting:?} set");
+            }
+            assert_action(item(submenu, "Light"), |action| {
+                action.as_any().is::<SetPageAppearanceLight>()
+            });
+            assert_action(item(submenu, "Dark"), |action| {
+                action.as_any().is::<SetPageAppearanceDark>()
+            });
+            assert_action(item(submenu, "Match System"), |action| {
+                action.as_any().is::<SetPageAppearanceMatchSystem>()
+            });
+            // Never disabled: it is a setting, not a document command.
+            for name in ["Light", "Dark", "Match System"] {
+                assert!(!item(submenu, name).is_disabled(), "{name}");
+            }
         }
     }
 }
@@ -1611,9 +1811,9 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
                 .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_PAGE_LAYOUT_ID)
                 .unwrap();
             let content = cx.debug_bounds(VIEWER_TOOLBAR_CONTENT_ID).unwrap();
-            // Ordered by complexity: the pages, zoom with the page layout,
-            // then the Edit PDF switch. With room, zoom and the layout sit as
-            // far from the pages as from the switches. The toolbar never
+            // Undo and Redo, then the pages, zoom with the page layout, then
+            // Edit PDF and the Scale. With room, the centre controls sit as
+            // far from Undo and Redo as from Edit PDF. The toolbar never
             // scrolls: side panels give way before it gets too narrow.
             let edit_pdf = cx.debug_bounds("viewer-edit-pdf").unwrap();
             let layout = cx
@@ -1621,7 +1821,7 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
                 .unwrap();
             assert!(
                 layout.right() <= edit_pdf.left() && last.right() <= edit_pdf.left(),
-                "Edit PDF switch overlaps at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, layout={layout:?}"
+                "Edit PDF overlaps at width {width}: toolbar={toolbar:?}, edit={edit_pdf:?}, layout={layout:?}"
             );
             if content.size.width <= toolbar.size.width {
                 assert!(
@@ -1636,8 +1836,8 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
                             4,
                         ))
                 {
-                    let pages = cx
-                        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_PAGES_GROUP_ID)
+                    let history = cx
+                        .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_HISTORY_GROUP_ID)
                         .unwrap();
                     let zoom = cx
                         .debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_ZOOM_GROUP_ID)
@@ -1651,17 +1851,17 @@ fn workspace_integration_sidebar_matrix_preserves_canvas_boundaries(cx: &mut Tes
                         .unwrap();
                     let half = controls.size.width / 2.;
                     let centre = toolbar.center().x;
-                    let room = centre - half >= pages.right() && centre + half <= edit_pdf.left();
+                    let room = centre - half >= history.right() && centre + half <= edit_pdf.left();
                     if room {
                         assert!(
                             (controls.center().x - centre).abs() <= px(1.),
-                            "zoom and layout not centred at width {width}: {controls:?} in {toolbar:?}, first={first:?}, zoom={zoom:?}"
+                            "the centre controls not centred at width {width}: {controls:?} in {toolbar:?}, first={first:?}, zoom={zoom:?}"
                         );
                     } else {
                         assert!(
-                            (controls.left() - pages.right()).abs() <= px(1.)
+                            (controls.left() - history.right()).abs() <= px(1.)
                                 || (edit_pdf.left() - controls.right()).abs() <= px(1.),
-                            "zoom and layout not against the wider side at width {width}: {controls:?}"
+                            "the centre controls not against the wider side at width {width}: {controls:?}"
                         );
                     }
                 }
@@ -3340,7 +3540,12 @@ impl NativeDocumentResource for RecordingResource {
         Ok(raster(width, width.max(1)))
     }
 
-    fn render_thumbnail(&self, page: u32, width: u32) -> Result<RasterSurface, String> {
+    fn render_thumbnail(
+        &self,
+        page: u32,
+        width: u32,
+        _paper: butter_paper::paper_appearance::PaperAppearance,
+    ) -> Result<RasterSurface, String> {
         self.thumbnail_renders.lock().unwrap().push(page);
         self.render_page(page, width)
     }
@@ -3520,4 +3725,104 @@ fn production_update_button_is_pinned_in_empty_and_document_workspaces(cx: &mut 
         );
         cx.simulate_resize(gpui::size(px(1280.), px(800.)));
     }
+}
+
+/// A PDF dropped anywhere on a window opens as a new tab in that window,
+/// several in drop order: on the tab strip, on the page, on the New Tab
+/// page and on an empty window. Another window keeps its tabs.
+#[gpui::test]
+fn pdfs_dropped_on_a_window_open_as_tabs_in_that_window(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{DOCUMENT_EMPTY_ID, DOCUMENT_PAGE_ID};
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let backend = Arc::new(RecordingBackend::default());
+    // A window with a document, and one with none.
+    let window = |open: Option<&str>, cx: &mut TestAppContext| {
+        let workspace = cx.new({
+            let backend = backend.clone();
+            move |cx| DocumentWorkspace::with_opener(backend, cx)
+        });
+        if let Some(path) = open {
+            workspace.update(cx, |workspace, cx| {
+                workspace.open_path(PathBuf::from(path), cx)
+            });
+            cx.run_until_parked();
+        }
+        let close = cx.new({
+            let workspace = workspace.clone();
+            let backend = backend.clone();
+            move |_| ApplicationCloseWorkspace::new(workspace, backend)
+        });
+        let (_, window_cx) = cx.add_window_view(move |window, cx| {
+            let shell =
+                cx.new(|cx| ApplicationCloseShell::new_for_native_window(close, window, cx));
+            Root::new(shell, window, cx)
+        });
+        let window_cx = window_cx.clone();
+        (workspace, window_cx)
+    };
+    let (other, mut other_cx) = window(Some("/tmp/other-window.pdf"), cx);
+    let (workspace, mut window_cx) = window(Some("/tmp/this-window.pdf"), cx);
+    let (empty, mut empty_cx) = window(None, cx);
+    let paths = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .sessions()
+                .iter()
+                .map(|session| session.read(cx).path().to_owned())
+                .collect::<Vec<_>>()
+        })
+    };
+    let drop = |cx: &mut gpui::VisualTestContext, at: gpui::Point<gpui::Pixels>, files: &[&str]| {
+        cx.simulate_event(FileDropEvent::Entered {
+            position: at,
+            paths: ExternalPaths(files.iter().map(PathBuf::from).collect()),
+        });
+        cx.simulate_event(FileDropEvent::Submit { position: at });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    for cx in [&mut other_cx, &mut window_cx, &mut empty_cx] {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    let strip = window_cx
+        .debug_bounds(butter_paper::document_workspace::DOCUMENT_SESSION_TABS_ID)
+        .unwrap()
+        .center();
+    drop(
+        &mut window_cx,
+        strip,
+        &["/tmp/strip-b.pdf", "/tmp/strip-a.pdf"],
+    );
+    let page = window_cx.debug_bounds(DOCUMENT_PAGE_ID).unwrap().center();
+    drop(&mut window_cx, page, &["/tmp/page.pdf"]);
+    workspace.update(&mut window_cx, |workspace, cx| workspace.open_new_tab(cx));
+    window_cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(workspace.read_with(&window_cx, |workspace, _| workspace.is_new_tab_open()));
+    drop(&mut window_cx, page, &["/tmp/new-tab.pdf"]);
+    assert_eq!(
+        paths(&workspace, &mut window_cx),
+        [
+            "/tmp/this-window.pdf",
+            "/tmp/strip-b.pdf",
+            "/tmp/strip-a.pdf",
+            "/tmp/page.pdf",
+            "/tmp/new-tab.pdf",
+        ]
+        .map(PathBuf::from),
+        "each drop opens in this window, in drop order"
+    );
+    let centre = empty_cx.debug_bounds(DOCUMENT_EMPTY_ID).unwrap().center();
+    drop(&mut empty_cx, centre, &["/tmp/empty.pdf"]);
+    assert_eq!(
+        paths(&empty, &mut empty_cx),
+        [PathBuf::from("/tmp/empty.pdf")]
+    );
+    assert_eq!(
+        paths(&other, &mut other_cx),
+        [PathBuf::from("/tmp/other-window.pdf")],
+        "the other window keeps its tabs"
+    );
 }

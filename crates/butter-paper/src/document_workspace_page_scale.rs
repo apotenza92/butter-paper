@@ -18,6 +18,10 @@ impl DocumentWorkspace {
 
     /// Shows the current page's scale in the toolbar.
     pub(super) fn sync_viewer_toolbar_scale(&mut self, cx: &mut Context<Self>) {
+        let menu_open = self
+            .page_scale_control
+            .as_ref()
+            .is_some_and(|control| control.read(cx).is_open());
         let panel_open = self.page_scale_control.as_ref().is_some_and(|control| {
             let control = control.read(cx);
             control.is_open() || control.is_picking()
@@ -39,6 +43,7 @@ impl DocumentWorkspace {
                 label: shown
                     .as_ref()
                     .map(|scale| crate::page_scale_catalog::scale_label(scale).into()),
+                menu_open,
             }
         });
         self.viewer_toolbar
@@ -93,7 +98,7 @@ impl DocumentWorkspace {
             match self.remove_page_scale(document_id, PageScaleApplyTarget::Current(page_index), cx)
             {
                 Ok(_) => format!(
-                    "Removed the scale from page {page}. Switch Page Scale on to bring back {}.",
+                    "Removed the scale from page {page}. Turn Page Scale on to bring back {}.",
                     crate::page_scale_catalog::scale_label(&current)
                 ),
                 Err(error) => error,

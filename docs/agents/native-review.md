@@ -119,7 +119,16 @@ coordinates, so they survive layout changes and window margins:
   the command they click inside the app. Windows uses
   `scripts/windows/click.ps1`, Linux CI `xdotool` under Xvfb.
 - `expect-dialog W open|closed`, `expect-shown W SELECTOR`, `expect-hidden W
-  SELECTOR` and `expect-tool W TOOL` check state. A failure is logged as
+  SELECTOR`, `expect-tool W TOOL` and `expect-tabs W N` (window W holds N
+  documents) check state. `expect-find W COUNT` checks that the find bar is
+  open and its finished search reads COUNT (`1 of 3`, `No results`);
+  `log-find W` logs what the bar shows. `page-view W single|continuous` sets
+  the page view where the toolbar's buttons are not drawn (a narrow window).
+- Press Escape before `quit` when a text field has focus: a debug build then
+  exits with "leaked handles" and status 101.
+- `drop-files W X Y PATH...` drops files at a window point as the system
+  does; `@document` names the window's active document's file, so a script
+  needs no machine path. A failure is logged as
   `FAIL:`; at `quit` the app writes `FAILED` beside the log and exits 1.
 
 `cargo test` rebuilds `target/debug/butter-paper` without the driver, which

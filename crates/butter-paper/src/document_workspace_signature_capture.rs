@@ -1,7 +1,8 @@
-//! Boxes drawn on a page for signatures, with the Snapshot tool: round a
-//! handwritten signature to take it as one (From the page), or where a
-//! digital signature goes (Sign with Certificate, as Acrobat and Revu ask).
-//! Neither leaves a snapshot markup. Paste takes a signature from a picture
+//! Boxes drawn on a page with the Snapshot tool for another purpose than a
+//! Snapshot: round a handwritten signature to take it as one (From the
+//! page), where a digital signature goes (Sign with Certificate), or round
+//! what a visual search finds (Draw box). None leaves a snapshot markup or
+//! copies anything. Paste takes a signature from a picture
 //! on the clipboard instead. Pictures are cleaned up as an imported image
 //! is: the paper made transparent and cropped to the ink.
 
@@ -15,6 +16,8 @@ pub(super) enum BoxPurpose {
     TakeSignature,
     /// Place a digital signature in it.
     PlaceDigitalSignature,
+    /// Find more of what is inside it (visual search).
+    VisualSearch,
 }
 
 /// A box being drawn for a signature on a document.
@@ -69,6 +72,18 @@ impl DocumentWorkspace {
             BoxPurpose::PlaceDigitalSignature => {
                 "Sign with Certificate · Click or drag a box where the signature goes · Esc to cancel"
             }
+            BoxPurpose::VisualSearch => {
+                "Visual search · Drag a box around what to find · Esc to cancel"
+            }
+        })
+    }
+
+    /// Whether a box is being drawn for a signature (the Signature tool
+    /// shows it as busy).
+    pub(super) fn signature_box_for_signature(&self) -> bool {
+        self.signature_box.as_ref().is_some_and(|capture| {
+            Some(capture.document_id) == self.active_document_id
+                && capture.purpose != BoxPurpose::VisualSearch
         })
     }
 
@@ -87,6 +102,7 @@ impl DocumentWorkspace {
         let text = match capture.purpose {
             BoxPurpose::TakeSignature => "Drag a box around the signature on the page",
             BoxPurpose::PlaceDigitalSignature => "Drag a box where the signature goes",
+            BoxPurpose::VisualSearch => "Drag a box around what to find",
         };
         let bounds = self.signature_box_prompt_bounds.clone();
         let theme = cx.theme();
@@ -189,36 +205,43 @@ impl DocumentWorkspace {
         let _ = self.set_annotation_tool(document_id, AnnotationTool::Select, cx);
         match capture.purpose {
             BoxPurpose::TakeSignature => {
-                let asset = self.session(document_id, cx).and_then(|session| {
-                    let session = session.read(cx);
-                    let space = session.annotation_page_coordinate_space(page)?;
-                    session
-                        .base_raster_of(page)?
-                        .snapshot_asset(rect, space)
+                let Some(session) = self.session(document_id, cx).cloned() else {
+                    return true;
+                };
+                let session = session.read(cx);
+                // The page image on screen, when it shows real colours.
+                let shown = session
+                    .annotation_page_coordinate_space(page)
+                    .and_then(|space| {
+                        session
+                            .real_base_raster_of(page)?
+                            .snapshot_asset(rect, space)
+                            .ok()
+                    });
+                if let Some(asset) = shown {
+                    self.show_captured_signature(signature_from_page(Some(asset)), cx);
+                    return true;
+                }
+                // Dark pages: the worker draws the box in real colours.
+                let resource = session.resource.clone();
+                let rotation = session.page_rotation(page);
+                let (Some(resource), Some(rotation)) = (resource, rotation) else {
+                    self.show_captured_signature(signature_from_page(None), cx);
+                    return true;
+                };
+                let task = cx.background_executor().spawn(async move {
+                    resource
+                        .render_page_region(page, rect, SIGNATURE_PAGE_PIXELS_PER_POINT, rotation)
+                        .and_then(|raster| raster.to_rgba_asset())
                         .ok()
                 });
-                let result = match asset {
-                    None => Err("That page is not shown yet. Choose From the page again.".into()),
-                    Some(asset) => sanitize_signature_rgba_pixels(
-                        asset.width_px(),
-                        asset.height_px(),
-                        asset.rgba().to_vec(),
-                    )
-                    .map_err(|error| match error {
-                        crate::image_asset_decode::SignatureImageError::NoInk => {
-                            "That box has no signature in it. Choose From the page again and draw \
-                             the box round the signature."
-                                .to_owned()
-                        }
-                        crate::image_asset_decode::SignatureImageError::ExcessiveCoverage => {
-                            "That box holds more than a signature. Choose From the page again and \
-                             draw the box closer round it."
-                                .to_owned()
-                        }
-                        error => error.to_string(),
-                    }),
-                };
-                self.show_captured_signature(result, cx);
+                cx.spawn(async move |owner, cx| {
+                    let asset = task.await;
+                    let _ = owner.update(cx, |workspace, cx| {
+                        workspace.show_captured_signature(signature_from_page(asset), cx);
+                    });
+                })
+                .detach();
             }
             BoxPurpose::PlaceDigitalSignature => {
                 self.open_sign_dialog_for_box(
@@ -227,6 +250,9 @@ impl DocumentWorkspace {
                     [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height],
                     cx,
                 );
+            }
+            BoxPurpose::VisualSearch => {
+                self.take_visual_search_box(document_id, page, rect, cx);
             }
         }
         true
@@ -278,5 +304,36 @@ impl DocumentWorkspace {
             }
         };
         cx.notify();
+    }
+}
+
+/// How finely Signature "From the page" draws its box when the page on
+/// screen does not show real colours (Dark pages): about 216 dpi.
+const SIGNATURE_PAGE_PIXELS_PER_POINT: f64 = 3.;
+
+/// A signature cut from a page box, or why it cannot be used.
+fn signature_from_page(
+    asset: Option<crate::annotation_model::DecodedRgbaAsset>,
+) -> Result<SanitizedSignatureFile, String> {
+    match asset {
+        None => Err("That page is not shown yet. Choose From the page again.".into()),
+        Some(asset) => sanitize_signature_rgba_pixels(
+            asset.width_px(),
+            asset.height_px(),
+            asset.rgba().to_vec(),
+        )
+        .map_err(|error| match error {
+            crate::image_asset_decode::SignatureImageError::NoInk => {
+                "That box has no signature in it. Choose From the page again and draw \
+                 the box round the signature."
+                    .to_owned()
+            }
+            crate::image_asset_decode::SignatureImageError::ExcessiveCoverage => {
+                "That box holds more than a signature. Choose From the page again and \
+                 draw the box closer round it."
+                    .to_owned()
+            }
+            error => error.to_string(),
+        }),
     }
 }

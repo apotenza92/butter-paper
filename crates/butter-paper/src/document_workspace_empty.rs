@@ -329,7 +329,9 @@ impl DocumentWorkspace {
         let inactive_tab_focus_handles = self.session_tab_focus_handles.clone();
         // With documents open, a New Tab sits in the document strip, where tabs
         // keep dragging, keyboard reordering and the overflow menu.
-        let session_tab_strip = if self.new_tab_open && !session_tabs.is_empty() {
+        let session_tab_strip = if (self.new_tab_open || self.new_tab_opening_shown().is_some())
+            && !session_tabs.is_empty()
+        {
             self.render_session_tab_strip(session_tabs.clone(), window, cx)
         } else {
             h_flex()

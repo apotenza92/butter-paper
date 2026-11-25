@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::paper_appearance::PaperAppearance;
 use crate::pdf_content_geometry::PageSnapGeometry;
 use crate::pdf_forms::FormFieldEdit;
 use crate::pdf_text_edit::{PageTextEdit, PageTextLayer};
@@ -300,6 +301,19 @@ pub struct RenderRequest {
     /// twice as fast, for a raster scaled down afterwards (thumbnails).
     #[serde(default)]
     pub draft: bool,
+    /// Real colours, or Dark pages for a view. A request without the field
+    /// is Real. Only view renders can ask for Dark. Every path that must
+    /// give the document's colours builds its request with Real.
+    #[serde(default)]
+    pub paper: PaperAppearance,
+}
+
+/// What a render tells beside its pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RenderReport {
+    /// For a Dark render: the fraction (0 to 1) of the surface that
+    /// pictures cover and that keeps its real colours. `None` for Real.
+    pub picture_coverage: Option<f32>,
 }
 
 impl RenderRequest {
@@ -405,6 +419,10 @@ pub enum WorkerRequest {
         /// Blocks exploded into the page, in order.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         explodes: Vec<crate::pdf_content_moves::ContentExplode>,
+        /// Reads the text for a search: `objects` (the movable drawings
+        /// and images) stays empty.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        text_only: bool,
     },
     /// A kept page (a one-page PDF named by its SHA-256), which edits'
     /// bases and page text requests then name.
@@ -457,6 +475,10 @@ pub enum WorkerRequest {
         pdf_base64: String,
         transform: [f32; 6],
         surface: SurfaceDescriptor,
+        /// Real colours, or Dark pages for a picture the view draws (dragged
+        /// page content). A request without the field is Real.
+        #[serde(default)]
+        paper: PaperAppearance,
     },
     Cancel {
         request_id: RequestId,
@@ -535,6 +557,9 @@ pub enum WorkerResponse {
         request_id: RequestId,
         job_id: JobId,
         surface_id: SurfaceId,
+        /// See [`RenderReport::picture_coverage`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picture_coverage: Option<f32>,
     },
     Cancelled {
         request_id: RequestId,
@@ -635,6 +660,20 @@ pub trait PdfBackend {
         }
     }
 
+    /// [`Self::page_text_with`] for a search: the page's `objects` are not
+    /// read, as a search does not need them.
+    fn page_search_text(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+        base: Option<&str>,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, WorkerError> {
+        let mut layer = self.page_text_with(document, page_index, base, explodes)?;
+        layer.objects.clear();
+        Ok(layer)
+    }
+
     fn add_page_base(
         &mut self,
         _document: &mut Self::Document,
@@ -658,7 +697,7 @@ pub trait PdfBackend {
         request: &RenderRequest,
         output: &mut [u8],
         cancelled: &AtomicBool,
-    ) -> Result<(), WorkerError>;
+    ) -> Result<RenderReport, WorkerError>;
 
     /// See [`WorkerRequest::RegionPdf`].
     fn region_pdf(
@@ -688,6 +727,7 @@ pub trait PdfBackend {
         _pdf: Vec<u8>,
         _transform: [f32; 6],
         _surface: &SurfaceDescriptor,
+        _paper: PaperAppearance,
         _output: &mut [u8],
     ) -> Result<(), WorkerError> {
         Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
@@ -1043,6 +1083,7 @@ where
                 page_index,
                 base,
                 explodes,
+                text_only,
                 ..
             } => {
                 let Some(document) = self.documents.get_mut(&session_id) else {
@@ -1055,9 +1096,13 @@ where
                         ),
                     );
                 };
-                let layer =
+                let layer = if text_only {
                     self.backend
-                        .page_text_with(document, page_index, base.as_deref(), &explodes);
+                        .page_search_text(document, page_index, base.as_deref(), &explodes)
+                } else {
+                    self.backend
+                        .page_text_with(document, page_index, base.as_deref(), &explodes)
+                };
                 match layer {
                     Ok(layer) => WorkerResponse::PageText {
                         request_id,
@@ -1151,10 +1196,11 @@ where
                 });
                 self.cancellation.finish(job_id);
                 match result {
-                    Ok(()) => WorkerResponse::Rendered {
+                    Ok(report) => WorkerResponse::Rendered {
                         request_id,
                         job_id,
                         surface_id,
+                        picture_coverage: report.picture_coverage,
                     },
                     Err(error) => failed(request_id, Some(job_id), error),
                 }
@@ -1204,6 +1250,7 @@ where
                 pdf_base64,
                 transform,
                 surface,
+                paper,
                 ..
             } => {
                 if let Err(error) = surface.validate(self.limits) {
@@ -1233,13 +1280,14 @@ where
                 let surface_id = surface.surface_id;
                 let backend = &mut self.backend;
                 let result = self.surfaces.with_surface(&surface, |output| {
-                    backend.render_pdf(pdf, transform, &surface, output)
+                    backend.render_pdf(pdf, transform, &surface, paper, output)
                 });
                 match result {
                     Ok(()) => WorkerResponse::Rendered {
                         request_id,
                         job_id,
                         surface_id,
+                        picture_coverage: None,
                     },
                     Err(error) => failed(request_id, Some(job_id), error),
                 }
@@ -3055,6 +3103,57 @@ mod worker_lifecycle_tests {
 mod annotation_mode_tests {
     use super::*;
 
+    /// Clients older than Dark pages send no `paper` and read no
+    /// `picture_coverage`: they get Real renders.
+    #[test]
+    fn paper_appearance_is_real_unless_a_request_names_dark() {
+        let request = r#"{"type":"render_crop","request_id":1,"job_id":1,"session_id":1,
+            "page_index":0,"annotation_mode":"none","transform":[1,0,0,1,0,0],
+            "clip":{"x":0,"y":0,"width":1,"height":1},
+            "surface":{"surface_id":1,"width":1,"height":1,"stride":4,"byte_len":4,
+            "format":"bgra8_premultiplied"}}"#;
+        let decoded = decode_request(request).unwrap();
+        assert!(matches!(
+            decoded,
+            WorkerRequest::RenderCrop { ref render, .. } if render.paper == PaperAppearance::Real
+        ));
+        let dark = request.replace("\"page_index\"", "\"paper\":\"dark\",\"page_index\"");
+        assert!(matches!(
+            decode_request(&dark).unwrap(),
+            WorkerRequest::RenderCrop { render, .. } if render.paper == PaperAppearance::Dark
+        ));
+        let real = WorkerResponse::Rendered {
+            request_id: RequestId(1),
+            job_id: JobId(1),
+            surface_id: SurfaceId(1),
+            picture_coverage: None,
+        };
+        let text = serde_json::to_string(&real).unwrap();
+        assert!(!text.contains("picture_coverage"), "{text}");
+        assert_eq!(serde_json::from_str::<WorkerResponse>(&text).unwrap(), real);
+        // A one-page PDF drawn for the view (dragged content) is Real
+        // unless it names Dark.
+        let render_pdf = r#"{"type":"render_pdf","request_id":2,"job_id":2,
+            "pdf_base64":"","transform":[1,0,0,1,0,0],
+            "surface":{"surface_id":2,"width":1,"height":1,"stride":4,"byte_len":4,
+            "format":"bgra8_premultiplied"}}"#;
+        assert!(matches!(
+            decode_request(render_pdf).unwrap(),
+            WorkerRequest::RenderPdf {
+                paper: PaperAppearance::Real,
+                ..
+            }
+        ));
+        let dark = render_pdf.replace("\"job_id\"", "\"paper\":\"dark\",\"job_id\"");
+        assert!(matches!(
+            decode_request(&dark).unwrap(),
+            WorkerRequest::RenderPdf {
+                paper: PaperAppearance::Dark,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn retained_annotation_protocol_requires_explicit_known_mode() {
         for mode in [
@@ -3085,6 +3184,7 @@ mod annotation_mode_tests {
                         format: SurfaceFormat::Bgra8Premultiplied,
                     },
                     draft: false,
+                    paper: PaperAppearance::Real,
                 },
             };
             let mut value = serde_json::to_value(&request).unwrap();
@@ -3180,8 +3280,8 @@ mod page_snap_geometry_tests {
             _: &RenderRequest,
             _: &mut [u8],
             _: &AtomicBool,
-        ) -> Result<(), WorkerError> {
-            Ok(())
+        ) -> Result<RenderReport, WorkerError> {
+            Ok(RenderReport::default())
         }
 
         fn close(&mut self, _: Self::Document) {}
@@ -3209,6 +3309,125 @@ mod page_snap_geometry_tests {
                 },
             ],
         }
+    }
+
+    /// Reads a page with one movable drawing, as a drawing page has.
+    struct TextBackend;
+
+    impl PdfBackend for TextBackend {
+        type Document = ();
+
+        fn open(
+            &mut self,
+            _: SourceHandleId,
+            _: Option<&str>,
+        ) -> Result<(Self::Document, DocumentInfo), WorkerError> {
+            Ok((
+                (),
+                DocumentInfo {
+                    page_count: 1,
+                    repaired: false,
+                },
+            ))
+        }
+
+        fn page_geometry(
+            &mut self,
+            _: &mut Self::Document,
+            _: u32,
+        ) -> Result<PageGeometry, WorkerError> {
+            Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+        }
+
+        fn page_snap_geometry(
+            &mut self,
+            _: &mut Self::Document,
+            _: u32,
+        ) -> Result<PageSnapGeometry, WorkerError> {
+            Err(WorkerError::new(WorkerErrorCode::BackendUnavailable))
+        }
+
+        fn page_text(
+            &mut self,
+            _: &mut Self::Document,
+            page_index: u32,
+        ) -> Result<PageTextLayer, WorkerError> {
+            Ok(PageTextLayer {
+                page_index,
+                objects: vec![crate::pdf_content_moves::PageObject::default()],
+                ..PageTextLayer::default()
+            })
+        }
+
+        fn render_crop(
+            &mut self,
+            _: &mut Self::Document,
+            _: &RenderRequest,
+            _: &mut [u8],
+            _: &AtomicBool,
+        ) -> Result<RenderReport, WorkerError> {
+            Ok(RenderReport::default())
+        }
+
+        fn close(&mut self, _: Self::Document) {}
+    }
+
+    fn page_text_request(request_id: u64, text_only: bool) -> WorkerRequest {
+        WorkerRequest::PageText {
+            request_id: RequestId(request_id),
+            session_id: SessionId(7),
+            page_index: 0,
+            base: None,
+            explodes: Vec::new(),
+            text_only,
+        }
+    }
+
+    #[test]
+    fn page_text_request_for_search_round_trips_and_an_older_request_is_not_for_search() {
+        for text_only in [false, true] {
+            let request = page_text_request(1, text_only);
+            let encoded = serde_json::to_vec(&request).unwrap();
+            let decoded: WorkerRequest = serde_json::from_slice(&encoded).unwrap();
+            assert!(matches!(
+                decoded,
+                WorkerRequest::PageText { text_only: actual, .. } if actual == text_only
+            ));
+        }
+        // The flag is left out when false, so old and new messages agree.
+        let plain =
+            String::from_utf8(serde_json::to_vec(&page_text_request(1, false)).unwrap()).unwrap();
+        assert!(!plain.contains("text_only"), "{plain}");
+        let old = r#"{"type":"page_text","request_id":1,"session_id":7,"page_index":0}"#;
+        assert!(matches!(
+            serde_json::from_str::<WorkerRequest>(old).unwrap(),
+            WorkerRequest::PageText {
+                text_only: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn page_text_for_search_leaves_the_movable_objects_out() {
+        let mut state = WorkerState::new(
+            TextBackend,
+            NoopSurfaceStore,
+            SurfaceLimits::default(),
+            CancellationRegistry::default(),
+        );
+        state.handle(WorkerRequest::Open {
+            request_id: RequestId(1),
+            session_id: SessionId(7),
+            source_handle_id: SourceHandleId(1),
+            password: None,
+        });
+        let objects = |response| match response {
+            WorkerResponse::PageText { layer, .. } => layer.objects.len(),
+            other => panic!("not page text: {other:?}"),
+        };
+        assert_eq!(objects(state.handle(page_text_request(2, false))), 1);
+        assert_eq!(objects(state.handle(page_text_request(3, true))), 0);
     }
 
     #[test]

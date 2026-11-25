@@ -461,7 +461,7 @@ impl Default for SemanticSnapSettings {
             dimension_increment_enabled: true,
             dimension_increment_mm: 1.,
             angle_snap_enabled: true,
-            angle_snap_preset: AngleSnapPreset::Degrees90,
+            angle_snap_preset: AngleSnapPreset::Degrees15,
             angle_snap_custom_degrees: DEFAULT_CUSTOM_ANGLE_SNAP_DEGREES,
             guides_enabled: true,
             alignment_guides: true,
@@ -553,6 +553,104 @@ pub fn constrain_direction(anchor: PdfPoint, point: PdfPoint, step: Option<f64>)
     PdfPoint {
         x: anchor.x + along * ux,
         y: anchor.y + along * uy,
+    }
+}
+
+/// The point that the path point at `index` keeps its direction from while
+/// it is dragged: the previous point in path order. The first point of an
+/// open path has no previous point, so it takes the next one; the first
+/// point of a closed path takes the last. `None` for fewer than two points
+/// or an index out of range.
+pub fn path_point_angle_anchor(
+    points: &[PdfPoint],
+    index: usize,
+    closed: bool,
+) -> Option<PdfPoint> {
+    if points.len() < 2 || index >= points.len() {
+        return None;
+    }
+    match (index, closed) {
+        (0, true) => points.last().copied(),
+        (0, false) => points.get(1).copied(),
+        _ => points.get(index - 1).copied(),
+    }
+}
+
+/// A direction held at an angle snap increment, shown as a dashed line from
+/// its anchor through and past the pointer, with its angle beside the
+/// anchor. The direction is in page (PDF) space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AngleSnapGuide {
+    pub anchor: PdfPoint,
+    /// The held direction, a unit vector.
+    pub direction: (f64, f64),
+    /// How far the pointer is from the anchor, in PDF points.
+    pub reach: f64,
+    /// The angle the label shows, in degrees from 0 up to (not including)
+    /// 360.
+    pub label_degrees: f64,
+    /// The label sits at the far end of the line, not at the anchor: for a
+    /// turn, whose anchor is under the markup being turned.
+    pub label_at_end: bool,
+}
+
+impl AngleSnapGuide {
+    /// The label: whole degrees, or one decimal when the angle is not whole
+    /// (`45°`, `7.5°`).
+    pub fn label(&self) -> String {
+        let rounded = (self.label_degrees * 10.).round() / 10.;
+        let rounded = if rounded >= 360. { 0. } else { rounded };
+        if rounded.fract() == 0. {
+            format!("{}°", rounded as i64)
+        } else {
+            format!("{rounded:.1}°")
+        }
+    }
+}
+
+/// The guide for a direction drawn from `anchor` towards `pointer`, held at
+/// a multiple of `step` degrees; `None` when the direction is free (no
+/// `step`) or the two points are the same. Its label is the held angle in
+/// degrees anticlockwise from the right, as a typed angle is.
+pub fn angle_snap_guide(
+    anchor: PdfPoint,
+    pointer: PdfPoint,
+    step: Option<f64>,
+) -> Option<AngleSnapGuide> {
+    let step = step.filter(|step| step.is_finite() && *step > 0.)?;
+    let direction = snapped_direction(anchor, pointer, step)?;
+    let degrees = direction.1.atan2(direction.0).to_degrees();
+    Some(AngleSnapGuide {
+        anchor,
+        direction,
+        reach: (pointer.x - anchor.x).hypot(pointer.y - anchor.y),
+        label_degrees: degrees.rem_euclid(360.),
+        label_at_end: false,
+    })
+}
+
+/// The guide for a turn about `centre`: the pointer pressed at
+/// `start_angle_degrees` about it (anticlockwise from +x), the markup first
+/// turned `original_rotation_degrees`, now turned `rotation_degrees`.
+/// A turn is the pointer's angle change taken away, so the held pointer
+/// direction is the start angle less the turn made. The label is the
+/// markup's new rotation.
+pub fn turn_snap_guide(
+    centre: PdfPoint,
+    reach: f64,
+    start_angle_degrees: f64,
+    original_rotation_degrees: f64,
+    rotation_degrees: f64,
+) -> AngleSnapGuide {
+    let held = (start_angle_degrees - (rotation_degrees - original_rotation_degrees))
+        .rem_euclid(360.)
+        .to_radians();
+    AngleSnapGuide {
+        anchor: centre,
+        direction: (held.cos(), held.sin()),
+        reach,
+        label_degrees: rotation_degrees.rem_euclid(360.),
+        label_at_end: true,
     }
 }
 
@@ -3154,11 +3252,11 @@ mod tests {
     }
 
     #[test]
-    fn angle_snap_is_on_at_ninety_degrees_by_default_and_shift_inverts_it() {
+    fn angle_snap_is_on_at_fifteen_degrees_by_default_and_shift_inverts_it() {
         let defaults = SemanticSnapSettings::default();
         assert!(defaults.angle_snap_enabled());
-        assert_eq!(defaults.angle_snap_preset(), AngleSnapPreset::Degrees90);
-        assert_eq!(defaults.angle_snap_increment_degrees(), 90.);
+        assert_eq!(defaults.angle_snap_preset(), AngleSnapPreset::Degrees15);
+        assert_eq!(defaults.angle_snap_increment_degrees(), 15.);
         assert_eq!(defaults.angle_snap_custom_degrees(), 5.);
         assert_eq!(defaults.validate(), Ok(()));
         // The setting XOR Shift.
@@ -3166,13 +3264,13 @@ mod tests {
         assert!(!angle_snap_applies(true, true));
         assert!(!angle_snap_applies(false, false));
         assert!(angle_snap_applies(false, true));
-        assert_eq!(defaults.angle_snap_step_degrees(false), Some(90.));
+        assert_eq!(defaults.angle_snap_step_degrees(false), Some(15.));
         assert_eq!(defaults.angle_snap_step_degrees(true), None);
         let off = defaults
             .with_angle_snap_enabled(false)
-            .with_angle_snap_preset(AngleSnapPreset::Degrees15);
+            .with_angle_snap_preset(AngleSnapPreset::Degrees45);
         assert_eq!(off.angle_snap_step_degrees(false), None);
-        assert_eq!(off.angle_snap_step_degrees(true), Some(15.));
+        assert_eq!(off.angle_snap_step_degrees(true), Some(45.));
         // Each preset gives its own step; Custom gives the custom angle,
         // which is kept while another preset is chosen.
         let custom = defaults.with_angle_snap_custom_degrees(7.5);
@@ -3187,6 +3285,54 @@ mod tests {
             assert_eq!(settings.angle_snap_increment_degrees(), step);
             assert_eq!(settings.angle_snap_step_degrees(false), Some(step));
         }
+    }
+
+    #[test]
+    fn a_held_direction_has_a_guide_labelled_with_its_angle() {
+        let anchor = PdfPoint { x: 10., y: 10. };
+        // 45 degrees anticlockwise from the right: up and to the right.
+        let guide = angle_snap_guide(anchor, PdfPoint { x: 90., y: 80. }, Some(15.)).unwrap();
+        assert_eq!(guide.anchor, anchor);
+        assert_eq!(guide.label(), "45°");
+        assert!((guide.direction.0 - guide.direction.1).abs() < 1e-12);
+        assert!(guide.direction.0 > 0.);
+        // The guide reaches the pointer; the painter runs it past.
+        assert!((guide.reach - (80f64).hypot(70.)).abs() < 1e-12);
+        // Level and plumb directions are exact, and 270 is below the anchor.
+        let level = angle_snap_guide(anchor, PdfPoint { x: 90., y: 12. }, Some(15.)).unwrap();
+        assert_eq!((level.direction, level.label().as_str()), ((1., 0.), "0°"));
+        let down = angle_snap_guide(anchor, PdfPoint { x: 12., y: -50. }, Some(15.)).unwrap();
+        assert_eq!((down.direction, down.label().as_str()), ((0., -1.), "270°"));
+        // The 15 degree step of a shallow line.
+        let shallow = angle_snap_guide(anchor, PdfPoint { x: 110., y: 36. }, Some(15.)).unwrap();
+        assert_eq!(shallow.label(), "15°");
+        // A custom increment that is not whole shows its decimal.
+        let custom = angle_snap_guide(anchor, PdfPoint { x: 110., y: 23. }, Some(7.5)).unwrap();
+        assert_eq!(custom.label(), "7.5°");
+    }
+
+    #[test]
+    fn a_free_direction_or_no_distance_has_no_guide() {
+        let anchor = PdfPoint { x: 10., y: 10. };
+        let far = PdfPoint { x: 90., y: 80. };
+        assert_eq!(angle_snap_guide(anchor, far, None), None);
+        assert_eq!(angle_snap_guide(anchor, far, Some(0.)), None);
+        assert_eq!(angle_snap_guide(anchor, anchor, Some(15.)), None);
+    }
+
+    #[test]
+    fn a_turn_guide_shows_the_held_pointer_direction_and_the_new_rotation() {
+        let centre = PdfPoint { x: 50., y: 50. };
+        // Pressed straight above the centre (90 degrees), turned from 0 to
+        // 30 degrees clockwise: the pointer is held 30 degrees clockwise
+        // of straight up, at 60 degrees anticlockwise from the right.
+        let guide = turn_snap_guide(centre, 40., 90., 0., 30.);
+        assert_eq!(guide.anchor, centre);
+        assert_eq!(guide.label(), "30°");
+        let degrees = guide.direction.1.atan2(guide.direction.0).to_degrees();
+        assert!((degrees - 60.).abs() < 1e-9, "{degrees}");
+        // A rotation below zero reads as its turn from 0 to 360.
+        assert_eq!(turn_snap_guide(centre, 40., 90., 0., -15.).label(), "345°");
     }
 
     #[test]

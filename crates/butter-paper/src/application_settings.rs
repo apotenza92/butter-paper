@@ -228,6 +228,12 @@ pub fn open_update_settings(window: &mut Window, cx: &mut App) {
     open_settings_category(SettingsCategory::Updates, window, cx);
 }
 
+/// Settings ▸ View, which a review script opens.
+#[cfg(feature = "review-driver")]
+pub fn open_view_settings(window: &mut Window, cx: &mut App) {
+    open_settings_category(SettingsCategory::View, window, cx);
+}
+
 /// Settings ▸ Signatures, where the timestamp server is set.
 pub fn open_signature_settings(window: &mut Window, cx: &mut App) {
     open_settings_category(SettingsCategory::Signatures, window, cx);
@@ -300,10 +306,26 @@ pub fn review_window(cx: &App) -> Option<gpui::AnyWindowHandle> {
 pub const SETTINGS_TIMESTAMP_SERVER_ID: &str = "settings-timestamp-server";
 /// The Settings switch for new images' proportions.
 pub const SETTINGS_LOCK_IMAGE_PROPORTIONS_ID: &str = "settings-lock-image-proportions";
+/// The Settings choice of where PDFs opened from outside the app go.
+pub const SETTINGS_OPEN_DOCUMENTS_IN_ID: &str = "settings-open-documents-in";
+/// Settings ▸ View: the Page appearance choice.
+pub const SETTINGS_PAGE_APPEARANCE_ID: &str = "settings-page-appearance";
+/// Settings ▸ Mouse wheel: how much a notch zooms.
+pub const SETTINGS_ZOOM_SPEED_ID: &str = "settings-zoom-speed";
+/// Settings ▸ Mouse wheel: the Reverse Scroll Zoom switch.
+pub const SETTINGS_REVERSE_SCROLL_ZOOM_ID: &str = "settings-reverse-scroll-zoom";
+/// Settings ▸ Mouse wheel: how the wheel turns pages in Single Page view.
+pub const SETTINGS_PAGE_TURNING_ID: &str = "settings-page-turning";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SettingsCategory {
     Updates,
+    #[cfg_attr(not(test), allow(dead_code))]
+    Documents,
+    #[cfg_attr(not(test), allow(dead_code))]
+    View,
+    #[cfg_attr(not(test), allow(dead_code))]
+    MouseWheel,
     Signatures,
 }
 
@@ -315,6 +337,9 @@ struct SettingsView {
     scroll: ScrollHandle,
     _updates: Subscription,
     _markups: Subscription,
+    _documents: Subscription,
+    _mouse_wheel: [Subscription; 3],
+    _page_appearance: Subscription,
     focus: gpui::FocusHandle,
     /// Signatures: the timestamp server field, made on first render.
     timestamp_server: Option<gpui::Entity<gpui_component::input::InputState>>,
@@ -331,6 +356,24 @@ impl SettingsView {
             _markups: cx.observe_global::<crate::application_shell::LockImageProportions>(
                 |_, cx| cx.notify(),
             ),
+            _documents: cx.observe_global::<crate::application_shell::OpenDocumentsInPreference>(
+                |_, cx| cx.notify(),
+            ),
+            _mouse_wheel: [
+                cx.observe_global::<crate::application_shell::ZoomSpeedPreference>(|_, cx| {
+                    cx.notify()
+                }),
+                cx.observe_global::<crate::application_shell::PageTurningPreference>(|_, cx| {
+                    cx.notify()
+                }),
+                cx.observe_global::<crate::application_shell::ReverseScrollZoom>(|_, cx| {
+                    cx.notify()
+                }),
+            ],
+            _page_appearance: cx
+                .observe_global::<crate::application_shell::PageAppearancePreference>(|_, cx| {
+                    cx.notify()
+                }),
             focus: cx.focus_handle(),
             timestamp_server: None,
             timestamp_server_error: None,
@@ -420,6 +463,243 @@ impl SettingsView {
     }
 
     /// Markups: how new images are placed and resized.
+    /// Documents: where a PDF opened from outside the app goes.
+    fn render_document_sections(&self, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
+        use crate::application_shell::{
+            OpenDocumentsIn, OpenDocumentsInNewTab, OpenDocumentsInNewWindow,
+            OpenDocumentsInPreference,
+        };
+        let current = OpenDocumentsInPreference::current(cx);
+        let opening = v_flex()
+            .id("settings-opening-section")
+            .debug_selector(|| "settings-opening-section".into())
+            .gap_3()
+            .child(
+                div()
+                    .id(SETTINGS_OPEN_DOCUMENTS_IN_ID)
+                    .debug_selector(|| SETTINGS_OPEN_DOCUMENTS_IN_ID.into())
+                    .child(
+                        gpui_component::radio::RadioGroup::vertical(
+                            "settings-open-documents-in-group",
+                        )
+                        .child(
+                            gpui_component::radio::Radio::new("settings-open-documents-new-tab")
+                                .label("New tab"),
+                        )
+                        .child(
+                            gpui_component::radio::Radio::new("settings-open-documents-new-window")
+                                .label("New window"),
+                        )
+                        .selected_index(Some(match current {
+                            OpenDocumentsIn::NewTab => 0,
+                            OpenDocumentsIn::NewWindow => 1,
+                        }))
+                        .on_click(|index, window, cx| {
+                            let action: Box<dyn gpui::Action> = if *index == 0 {
+                                Box::new(OpenDocumentsInNewTab)
+                            } else {
+                                Box::new(OpenDocumentsInNewWindow)
+                            };
+                            window.dispatch_action(action, cx);
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "For PDFs opened from outside Butter Paper, such as from the file \
+                         manager or the command line. A new tab goes in the window you used \
+                         last. PDFs dropped on a window always open as tabs in that window.",
+                    ),
+            )
+            .into_any_element();
+        vec![("Open documents in", opening)]
+    }
+
+    /// View: whether pages draw dark.
+    fn render_view_sections(&self, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
+        use crate::application_shell::{PageAppearancePreference, page_appearance_action};
+        use crate::paper_appearance::PageAppearance;
+        let muted = cx.theme().muted_foreground;
+        let current = PageAppearancePreference::current(cx);
+        let choice = |id: &'static str, appearance: PageAppearance| {
+            gpui_component::radio::Radio::new(id)
+                .label(appearance.label())
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(appearance.description()),
+                )
+        };
+        let appearance = v_flex()
+            .id("settings-page-appearance-section")
+            .debug_selector(|| "settings-page-appearance-section".into())
+            .gap_3()
+            .child(
+                div()
+                    .id(SETTINGS_PAGE_APPEARANCE_ID)
+                    .debug_selector(|| SETTINGS_PAGE_APPEARANCE_ID.into())
+                    .child(
+                        gpui_component::radio::RadioGroup::vertical(
+                            "settings-page-appearance-group",
+                        )
+                        .children(PageAppearance::ALL.map(|appearance| {
+                            choice(
+                                match appearance {
+                                    PageAppearance::Light => "settings-page-appearance-light",
+                                    PageAppearance::Dark => "settings-page-appearance-dark",
+                                    PageAppearance::MatchSystem => {
+                                        "settings-page-appearance-match-system"
+                                    }
+                                },
+                                appearance,
+                            )
+                        }))
+                        .selected_index(
+                            PageAppearance::ALL.iter().position(|item| *item == current),
+                        )
+                        .on_click(|index, window, cx| {
+                            if let Some(appearance) = PageAppearance::ALL.get(*index) {
+                                window.dispatch_action(page_appearance_action(*appearance), cx);
+                            }
+                        }),
+                    ),
+            )
+            .child(div().text_sm().text_color(muted).child(format!(
+                "The pages only. Saved files, exports and copies keep the document’s own \
+                 colours. {} switches between Light and Dark.",
+                crate::shortcut_label::shortcut_label(if cfg!(target_os = "macos") {
+                    "Cmd+Shift+D"
+                } else {
+                    "Ctrl+Shift+D"
+                }),
+            )))
+            .into_any_element();
+        vec![("Page appearance", appearance)]
+    }
+
+    /// Mouse wheel: how far a notch zooms, and how the wheel turns pages in
+    /// Single Page view.
+    fn render_mouse_wheel_sections(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> Vec<(&'static str, AnyElement)> {
+        use crate::application_shell::{
+            PageTurningPreference, ReverseScrollZoom, ToggleReverseScrollZoom, ZoomSpeedPreference,
+            page_turning_action, zoom_speed_action,
+        };
+        use crate::mouse_wheel::{PageTurning, ZoomSpeed};
+        let muted = cx.theme().muted_foreground;
+        let choice = |id: &'static str, label: &'static str, description: &'static str| {
+            gpui_component::radio::Radio::new(id)
+                .label(label)
+                .child(div().text_sm().text_color(muted).child(description))
+        };
+        let speed = ZoomSpeedPreference::current(cx);
+        let reverse = cx
+            .try_global::<ReverseScrollZoom>()
+            .is_some_and(|reverse| reverse.0);
+        let zoom = v_flex()
+            .id("settings-zoom-section")
+            .debug_selector(|| "settings-zoom-section".into())
+            .gap_3()
+            // The Zoom group holds the Zoom speed choices and the Reverse
+            // scroll zoom switch (owner decision, 2026-11-25).
+            .child(
+                gpui_component::label::Label::new("Zoom speed")
+                    .text_sm()
+                    .font_medium(),
+            )
+            .child(
+                div()
+                    .id(SETTINGS_ZOOM_SPEED_ID)
+                    .debug_selector(|| SETTINGS_ZOOM_SPEED_ID.into())
+                    .child(
+                        gpui_component::radio::RadioGroup::vertical("settings-zoom-speed-group")
+                            .children(ZoomSpeed::ALL.map(|speed| {
+                                choice(
+                                    match speed {
+                                        ZoomSpeed::Fine => "settings-zoom-speed-fine",
+                                        ZoomSpeed::Standard => "settings-zoom-speed-standard",
+                                        ZoomSpeed::Coarse => "settings-zoom-speed-coarse",
+                                    },
+                                    speed.label(),
+                                    speed.description(),
+                                )
+                            }))
+                            .selected_index(ZoomSpeed::ALL.iter().position(|item| *item == speed))
+                            .on_click(|index, window, cx| {
+                                if let Some(speed) = ZoomSpeed::ALL.get(*index) {
+                                    window.dispatch_action(zoom_speed_action(*speed), cx);
+                                }
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id(SETTINGS_REVERSE_SCROLL_ZOOM_ID)
+                    .debug_selector(|| SETTINGS_REVERSE_SCROLL_ZOOM_ID.into())
+                    .child(
+                        gpui_component::switch::Switch::new("settings-reverse-scroll-zoom-switch")
+                            .label("Reverse scroll zoom")
+                            .checked(reverse)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(ToggleReverseScrollZoom), cx);
+                            }),
+                    ),
+            )
+            .child(div().text_sm().text_color(muted).child(
+                "Scrolling up zooms in. Reverse it for a mouse whose scrolling a utility \
+                 reverses. A trackpad pinch always follows your fingers.",
+            ))
+            .into_any_element();
+        let turning = PageTurningPreference::current(cx);
+        let pages = v_flex()
+            .id("settings-page-turning-section")
+            .debug_selector(|| "settings-page-turning-section".into())
+            .gap_3()
+            .child(
+                div()
+                    .id(SETTINGS_PAGE_TURNING_ID)
+                    .debug_selector(|| SETTINGS_PAGE_TURNING_ID.into())
+                    .child(
+                        gpui_component::radio::RadioGroup::vertical("settings-page-turning-group")
+                            .children(PageTurning::ALL.map(|turning| {
+                                choice(
+                                    match turning {
+                                        PageTurning::Deliberate => {
+                                            "settings-page-turning-deliberate"
+                                        }
+                                        PageTurning::Balanced => "settings-page-turning-balanced",
+                                        PageTurning::Responsive => {
+                                            "settings-page-turning-responsive"
+                                        }
+                                    },
+                                    turning.label(),
+                                    turning.description(),
+                                )
+                            }))
+                            .selected_index(
+                                PageTurning::ALL.iter().position(|item| *item == turning),
+                            )
+                            .on_click(|index, window, cx| {
+                                if let Some(turning) = PageTurning::ALL.get(*index) {
+                                    window.dispatch_action(page_turning_action(*turning), cx);
+                                }
+                            }),
+                    ),
+            )
+            .child(div().text_sm().text_color(muted).child(
+                "In Single Page view, with the mouse wheel set to Scroll. A trackpad \
+                 turns one page for each swipe.",
+            ))
+            .into_any_element();
+        vec![("Zoom", zoom), ("Page turning", pages)]
+    }
+
     fn render_markup_sections(&self, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
         let locked = crate::application_shell::LockImageProportions::current(cx);
         let images = v_flex()
@@ -619,6 +899,21 @@ impl Render for SettingsView {
                 self.render_update_sections(cx),
             ),
             page(
+                "Documents",
+                Icon::default().path(crate::application_assets::NEW_DOCUMENT_ICON),
+                self.render_document_sections(cx),
+            ),
+            page(
+                "View",
+                Icon::default().path("icons/eye.svg"),
+                self.render_view_sections(cx),
+            ),
+            page(
+                "Mouse wheel",
+                Icon::default().path(crate::application_assets::MOUSE_WHEEL_ICON),
+                self.render_mouse_wheel_sections(cx),
+            ),
+            page(
                 "Markups",
                 Icon::default().path("icons/rail/image.svg"),
                 self.render_markup_sections(cx),
@@ -631,8 +926,11 @@ impl Render for SettingsView {
         ];
         let page_ix = match self.category {
             SettingsCategory::Updates => 0,
-            // Markups, page 1, opens from the Settings sidebar.
-            SettingsCategory::Signatures => 2,
+            SettingsCategory::Documents => 1,
+            SettingsCategory::View => 2,
+            SettingsCategory::MouseWheel => 3,
+            // Markups, page 4, opens from the Settings sidebar.
+            SettingsCategory::Signatures => 5,
         };
         let body = div()
             .id("application-settings-screen")
@@ -818,6 +1116,234 @@ mod tests {
         ] {
             assert!(cx.debug_bounds(id).is_none());
         }
+    }
+
+    /// Settings ▸ Documents chooses where PDFs opened from outside the app
+    /// go, with the stock radio buttons, and shows the choice in force.
+    #[gpui::test]
+    fn the_documents_page_chooses_a_new_tab_or_a_new_window(cx: &mut TestAppContext) {
+        use crate::application_shell::{
+            OpenDocumentsIn, OpenDocumentsInNewTab, OpenDocumentsInNewWindow,
+            OpenDocumentsInPreference,
+        };
+        cx.update(gpui_component::init);
+        let chosen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let tab = chosen.clone();
+            cx.on_action(move |_: &OpenDocumentsInNewTab, cx| {
+                tab.borrow_mut().push(OpenDocumentsIn::NewTab);
+                cx.set_global(OpenDocumentsInPreference(OpenDocumentsIn::NewTab));
+            });
+            let window = chosen.clone();
+            cx.on_action(move |_: &OpenDocumentsInNewWindow, cx| {
+                window.borrow_mut().push(OpenDocumentsIn::NewWindow);
+                cx.set_global(OpenDocumentsInPreference(OpenDocumentsIn::NewWindow));
+            });
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| SettingsView::new(SettingsCategory::Documents, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let choice = cx
+            .debug_bounds(SETTINGS_OPEN_DOCUMENTS_IN_ID)
+            .expect("the Documents page shows the choice");
+        if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+            assert!(tree.contains("New tab") && tree.contains("New window"));
+        }
+        // The rows are stacked: New tab, then New window.
+        let new_window = gpui::point(choice.left() + px(8.), choice.bottom() - px(8.));
+        let new_tab = gpui::point(choice.left() + px(8.), choice.top() + px(8.));
+        cx.simulate_click(new_window, Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_click(new_tab, Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(
+            *chosen.borrow(),
+            [OpenDocumentsIn::NewWindow, OpenDocumentsIn::NewTab]
+        );
+    }
+
+    /// Settings ▸ View chooses Light, Dark or Match system with the stock
+    /// radio buttons, shows the choice in force and names the shortcut.
+    #[gpui::test]
+    fn the_view_page_chooses_the_page_appearance(cx: &mut TestAppContext) {
+        use crate::application_shell::{
+            PageAppearancePreference, SetPageAppearanceDark, SetPageAppearanceLight,
+            SetPageAppearanceMatchSystem,
+        };
+        use crate::paper_appearance::PageAppearance;
+        cx.update(gpui_component::init);
+        let chosen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            for (appearance, record) in [
+                (PageAppearance::Light, 0),
+                (PageAppearance::Dark, 1),
+                (PageAppearance::MatchSystem, 2),
+            ] {
+                let chosen = chosen.clone();
+                let set = move |cx: &mut App| {
+                    chosen.borrow_mut().push(appearance);
+                    cx.set_global(PageAppearancePreference(appearance));
+                };
+                match record {
+                    0 => {
+                        cx.on_action(move |_: &SetPageAppearanceLight, cx| set(cx));
+                    }
+                    1 => {
+                        cx.on_action(move |_: &SetPageAppearanceDark, cx| set(cx));
+                    }
+                    _ => {
+                        cx.on_action(move |_: &SetPageAppearanceMatchSystem, cx| set(cx));
+                    }
+                }
+            }
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| SettingsView::new(SettingsCategory::View, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let choice = cx
+            .debug_bounds(SETTINGS_PAGE_APPEARANCE_ID)
+            .expect("the View page shows the choice");
+        if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+            assert!(
+                tree.contains("Light") && tree.contains("Dark") && tree.contains("Match system")
+            );
+        }
+        // The rows are stacked: Light, Dark, Match system.
+        let row = |index: usize| {
+            let height = choice.size.height / 3.;
+            gpui::point(
+                choice.left() + px(8.),
+                choice.top() + height * (index as f32 + 0.5),
+            )
+        };
+        for index in [1, 2, 0] {
+            cx.simulate_click(row(index), Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        assert_eq!(
+            *chosen.borrow(),
+            [
+                PageAppearance::Dark,
+                PageAppearance::MatchSystem,
+                PageAppearance::Light
+            ]
+        );
+        cx.update(|_, cx| {
+            assert_eq!(PageAppearancePreference::current(cx), PageAppearance::Light);
+        });
+    }
+
+    /// Settings ▸ Mouse wheel chooses the Zoom speed and the Page turning
+    /// with stock radio buttons, and groups the Zoom speed with the Reverse
+    /// scroll zoom switch under Zoom. It shows the choices in force.
+    #[gpui::test]
+    fn the_mouse_wheel_page_chooses_zoom_speed_and_page_turning(cx: &mut TestAppContext) {
+        use crate::application_shell::{
+            PageTurningPreference, ReverseScrollZoom, ToggleReverseScrollZoom, ZoomSpeedPreference,
+        };
+        use crate::mouse_wheel::{PageTurning, ZoomSpeed};
+        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            use crate::application_shell::{
+                SetPageTurningBalanced, SetPageTurningDeliberate, SetPageTurningResponsive,
+                SetZoomSpeedCoarse, SetZoomSpeedFine, SetZoomSpeedStandard,
+            };
+            cx.on_action(|_: &SetZoomSpeedFine, cx| {
+                cx.set_global(ZoomSpeedPreference(ZoomSpeed::Fine))
+            });
+            cx.on_action(|_: &SetZoomSpeedStandard, cx| {
+                cx.set_global(ZoomSpeedPreference(ZoomSpeed::Standard))
+            });
+            cx.on_action(|_: &SetZoomSpeedCoarse, cx| {
+                cx.set_global(ZoomSpeedPreference(ZoomSpeed::Coarse))
+            });
+            cx.on_action(|_: &SetPageTurningDeliberate, cx| {
+                cx.set_global(PageTurningPreference(PageTurning::Deliberate))
+            });
+            cx.on_action(|_: &SetPageTurningBalanced, cx| {
+                cx.set_global(PageTurningPreference(PageTurning::Balanced))
+            });
+            cx.on_action(|_: &SetPageTurningResponsive, cx| {
+                cx.set_global(PageTurningPreference(PageTurning::Responsive))
+            });
+            cx.on_action(|_: &ToggleReverseScrollZoom, cx| {
+                let reverse = cx.try_global::<ReverseScrollZoom>().is_some_and(|r| r.0);
+                cx.set_global(ReverseScrollZoom(!reverse));
+            });
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| SettingsView::new(SettingsCategory::MouseWheel, cx));
+            gpui_component::Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        for id in [
+            SETTINGS_ZOOM_SPEED_ID,
+            SETTINGS_REVERSE_SCROLL_ZOOM_ID,
+            SETTINGS_PAGE_TURNING_ID,
+        ] {
+            assert!(cx.debug_bounds(id).is_some(), "{id}");
+        }
+        // The Zoom group holds both the Zoom speed and the Reverse scroll
+        // zoom switch.
+        let zoom = cx.debug_bounds("settings-zoom-section").unwrap();
+        for id in [SETTINGS_ZOOM_SPEED_ID, SETTINGS_REVERSE_SCROLL_ZOOM_ID] {
+            let bounds = cx.debug_bounds(id).unwrap();
+            assert!(
+                zoom.contains(&bounds.origin) && zoom.contains(&bounds.center()),
+                "{id}"
+            );
+        }
+        if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+            assert!(tree.contains("Zoom speed"), "{tree}");
+            for turning in PageTurning::ALL {
+                assert!(tree.contains(turning.label()), "{tree}");
+            }
+            for speed in ZoomSpeed::ALL {
+                assert!(tree.contains(speed.label()), "{tree}");
+            }
+        }
+        // Each group stacks its three choices, a label and a line of
+        // description each: the choice's radio is at the top left of its
+        // third.
+        for (group, row, check) in [
+            (SETTINGS_ZOOM_SPEED_ID, 2., 0),
+            (SETTINGS_PAGE_TURNING_ID, 0., 1),
+            (SETTINGS_PAGE_TURNING_ID, 1., 2),
+            (SETTINGS_ZOOM_SPEED_ID, 0., 3),
+        ] {
+            let id = group;
+            let bounds = cx.debug_bounds(group).unwrap();
+            let third = bounds.size.height / 3.;
+            cx.simulate_click(
+                gpui::point(bounds.left() + px(8.), bounds.top() + third * row + px(8.)),
+                Modifiers::default(),
+            );
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            let (speed, turning) = cx.update(|_, cx| {
+                (
+                    ZoomSpeedPreference::current(cx),
+                    PageTurningPreference::current(cx),
+                )
+            });
+            let expected = [
+                (ZoomSpeed::Coarse, PageTurning::Responsive),
+                (ZoomSpeed::Coarse, PageTurning::Deliberate),
+                (ZoomSpeed::Coarse, PageTurning::Balanced),
+                (ZoomSpeed::Fine, PageTurning::Balanced),
+            ][check];
+            assert_eq!((speed, turning), expected, "{id}");
+        }
+        let switch = cx.debug_bounds(SETTINGS_REVERSE_SCROLL_ZOOM_ID).unwrap();
+        cx.simulate_click(switch.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.update(|_, cx| cx.global::<ReverseScrollZoom>().0));
     }
 
     struct EmptyView;

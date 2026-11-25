@@ -47,14 +47,15 @@ use crate::selection_geometry::{
     SelectionMarquee, SelectionOperation, SelectionPoint, SelectionShape,
 };
 use crate::semantic_snapping::{
-    AcquiredTrackingPoint, ObjectSnapTrackingResult, OrthogonalAxis, PageGridDefinition,
-    RelationshipSnapGuide, SemanticSnapDecision, SemanticSnapError, SemanticSnapIndex,
-    SemanticSnapSettings, SnapGuideRect, annotation_guide_rects, combined_guide_bounds,
-    constrain_direction, find_equal_size_snap, find_equal_spacing_snap,
-    find_object_snap_tracking_point, moving_annotation_snap_anchor_points,
-    moving_annotation_snap_anchor_points_with_selection_supplement,
+    AcquiredTrackingPoint, AngleSnapGuide, ObjectSnapTrackingResult, OrthogonalAxis,
+    PageGridDefinition, RelationshipSnapGuide, SemanticSnapDecision, SemanticSnapError,
+    SemanticSnapIndex, SemanticSnapSettings, SnapGuideRect, angle_snap_guide,
+    annotation_guide_rects, combined_guide_bounds, constrain_direction, find_equal_size_snap,
+    find_equal_spacing_snap, find_object_snap_tracking_point, moving_annotation_snap_anchor_points,
+    moving_annotation_snap_anchor_points_with_selection_supplement, path_point_angle_anchor,
     quantize_pdf_distance_to_mm_increment, resolve_construction_grid_point,
     resolve_construction_grid_point_on_ray, snap_angle_degrees, toggle_acquired_tracking_point,
+    turn_snap_guide,
 };
 
 pub const FROZEN_TEXT_CREATE: &str = "Beam B-12 / revision 3";
@@ -1245,6 +1246,8 @@ pub struct AnnotationAdapter {
     /// The last creation point snapped to a point target off the held
     /// direction: the point snap won, so the direction is free.
     point_snap_frees_direction: bool,
+    /// The calibration line's held direction, while its end is placed.
+    calibration_angle_guide: Option<AngleSnapGuide>,
 }
 
 /// Sizes typed while drawing, in the page's PDF frame: lengths in points,
@@ -1637,6 +1640,19 @@ impl AnnotationAdapter {
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
             .rotate_page(page_index, direction)
+    }
+
+    /// Turns every page of a document, as one undoable change
+    /// ([`AnnotationDocument::rotate_all_pages`]).
+    pub fn rotate_all_document_pages(
+        &mut self,
+        document_id: u64,
+        direction: PageRotationDirection,
+    ) -> Result<usize, AnnotationError> {
+        self.documents
+            .get_mut(&document_id)
+            .ok_or(AnnotationError::NoSelection)?
+            .rotate_all_pages(direction)
     }
 
     /// Rearranges a document's pages ([`AnnotationDocument::arrange_pages`]).
@@ -2270,7 +2286,253 @@ impl AnnotationAdapter {
         &self.relationship_snap_guides
     }
 
+    /// The direction now held at an angle snap increment, to show as a
+    /// guide: a line, path segment, leader or chord being drawn, the
+    /// calibration line, or a turn. `None` while the direction is free
+    /// (Shift inverts the setting, a typed angle is exact) and while a point
+    /// snap wins, which shows its own indicator.
+    pub fn angle_snap_guide(&self) -> Option<AngleSnapGuide> {
+        if let Some(guide) = self.turn_angle_snap_guide() {
+            return Some(guide);
+        }
+        if self.semantic_snap_decision.is_some() {
+            return None;
+        }
+        if let Some(guide) = self.calibration_angle_guide {
+            return Some(guide);
+        }
+        let step = self.creation_angle_step(self.pointer_shift)?;
+        let (anchor, end) = self.angle_guide_span()?;
+        angle_snap_guide(anchor, end, Some(step))
+    }
+
+    /// The fixed neighbour that an end or point being dragged keeps its
+    /// direction from, so the dragged point snaps to the angle increment as
+    /// it did when drawn. `None` when no such drag is active.
+    ///
+    /// - A Line, Arrow, Dimension, Length or Arc end: the other end.
+    /// - A Polyline, Polygon, Polylength or Area point, or a Callout leader
+    ///   point: the previous point in path order. The first point of an open
+    ///   path has none, so it takes the next point. The first point of a
+    ///   closed path takes the last point.
+    fn edit_angle_anchor(&self) -> Option<PdfPoint> {
+        match self.active.as_ref()? {
+            ActivePointer::StraightLineEndpoint {
+                document_id,
+                id,
+                endpoint,
+                ..
+            } => {
+                let line = self
+                    .documents
+                    .get(document_id)?
+                    .straight_lines()
+                    .iter()
+                    .find(|line| &line.id == id)?;
+                Some(match endpoint {
+                    LineEndpoint::Start => line.end,
+                    LineEndpoint::End => line.start,
+                })
+            }
+            ActivePointer::LengthEndpoint {
+                document_id,
+                id,
+                endpoint,
+                ..
+            } => {
+                let length = self
+                    .documents
+                    .get(document_id)?
+                    .lengths()
+                    .iter()
+                    .find(|length| &length.id == id)?;
+                Some(match endpoint {
+                    LengthEndpoint::Start => length.end,
+                    LengthEndpoint::End => length.start,
+                })
+            }
+            ActivePointer::DimensionEdit { kind, original, .. } => match kind {
+                DimensionPointerEditKind::Start => Some(original.end),
+                DimensionPointerEditKind::End => Some(original.start),
+                _ => None,
+            },
+            ActivePointer::ArcControlPoint {
+                control, original, ..
+            } => match control {
+                ArcControlPoint::Start => Some(original.end),
+                ArcControlPoint::End => Some(original.start),
+                ArcControlPoint::Mid => None,
+            },
+            ActivePointer::VertexPathPoint {
+                document_id,
+                id,
+                vertex_index,
+                ..
+            } => {
+                let path = self
+                    .documents
+                    .get(document_id)?
+                    .vertex_paths()
+                    .iter()
+                    .find(|path| &path.id == id)?;
+                path_point_angle_anchor(path.points(), *vertex_index, path.kind.is_closed())
+            }
+            ActivePointer::MeasurementPathPoint {
+                document_id,
+                id,
+                vertex_index,
+                ..
+            } => {
+                let path = self
+                    .documents
+                    .get(document_id)?
+                    .measurement_paths()
+                    .iter()
+                    .find(|path| &path.id == id)?;
+                path_point_angle_anchor(path.points(), *vertex_index, path.kind.is_closed())
+            }
+            ActivePointer::CalloutEdit {
+                kind: CalloutPointerEditKind::LeaderPoint(index),
+                original,
+                ..
+            } => path_point_angle_anchor(original.leader_points(), *index, false),
+            _ => None,
+        }
+    }
+
+    /// The anchor and the pointer's end of an end or point being dragged,
+    /// once the drag is past the threshold.
+    fn edit_angle_guide_span(&self) -> Option<(PdfPoint, PdfPoint)> {
+        let (start, current) = match self.active.as_ref()? {
+            ActivePointer::StraightLineEndpoint { start, current, .. }
+            | ActivePointer::VertexPathPoint { start, current, .. }
+            | ActivePointer::MeasurementPathPoint { start, current, .. }
+            | ActivePointer::DimensionEdit { start, current, .. }
+            | ActivePointer::CalloutEdit { start, current, .. }
+            | ActivePointer::ArcControlPoint { start, current, .. } => (*start, *current),
+            // A Length end edits at once, with no press point to leave.
+            ActivePointer::LengthEndpoint { current, .. } => (*current, *current),
+            _ => return None,
+        };
+        let anchor = self.edit_angle_anchor()?;
+        let past_threshold =
+            matches!(
+                self.active.as_ref(),
+                Some(ActivePointer::LengthEndpoint { .. })
+            ) || point_distance_css_px(start, current, self.observed_pixels_per_point.0)
+                >= POINTER_DRAG_THRESHOLD_CSS_PX;
+        past_threshold.then_some((anchor, current))
+    }
+
+    /// The anchor and the pointer's end of the direction being drawn.
+    fn angle_guide_span(&self) -> Option<(PdfPoint, PdfPoint)> {
+        if let Some(span) = self.edit_angle_guide_span() {
+            return Some(span);
+        }
+        match self.active.as_ref() {
+            Some(
+                ActivePointer::StraightLineCreate { start, current, .. }
+                | ActivePointer::CalloutCreate { start, current, .. }
+                | ActivePointer::LengthCreate { start, current, .. }
+                | ActivePointer::DimensionCreate { start, current, .. },
+            ) => return Some((*start, *current)),
+            Some(_) => return None,
+            None => {}
+        }
+        if let Some(draft) = &self.vertex_path_draft {
+            return Some((*draft.points.last()?, draft.hover));
+        }
+        if let Some(draft) = &self.measurement_path_draft {
+            return Some((*draft.points.last()?, draft.hover));
+        }
+        let draft = self.arc_draft.as_ref()?;
+        draft.end.is_none().then_some((draft.start, draft.mid))
+    }
+
+    /// The guide of a markup being turned by its rotation knob to a whole
+    /// multiple of the increment.
+    fn turn_angle_snap_guide(&self) -> Option<AngleSnapGuide> {
+        let step = self.rotation_angle_step(self.pointer_shift)?;
+        let pointer = self.typed_size_pointer;
+        let (centre, start, original_rotation, rotation, half_diagonal) =
+            match self.active.as_ref()? {
+                ActivePointer::EllipseRotate {
+                    start,
+                    current,
+                    original_rect,
+                    original_rotation_degrees,
+                    ..
+                }
+                | ActivePointer::TextBoxRotate {
+                    start,
+                    current,
+                    original_rect,
+                    original_rotation_degrees,
+                    ..
+                }
+                | ActivePointer::ImageRotate {
+                    start,
+                    current,
+                    original_rect,
+                    original_rotation_degrees,
+                    ..
+                }
+                | ActivePointer::SnapshotRotate {
+                    start,
+                    current,
+                    original_rect,
+                    original_rotation_degrees,
+                    ..
+                } => (
+                    PdfPoint {
+                        x: original_rect.x + original_rect.width * 0.5,
+                        y: original_rect.y + original_rect.height * 0.5,
+                    },
+                    *start,
+                    *original_rotation_degrees,
+                    ellipse_rotation_from_drag(
+                        *original_rect,
+                        *original_rotation_degrees,
+                        *start,
+                        *current,
+                        Some(step),
+                    ),
+                    original_rect.width.hypot(original_rect.height) * 0.5,
+                ),
+                ActivePointer::Domain {
+                    document_id,
+                    ink: false,
+                    ..
+                } => {
+                    let turn = self.documents.get(document_id)?.rotation_turn()?;
+                    (
+                        turn.centre,
+                        PdfPoint {
+                            x: turn.centre.x + turn.start_angle_degrees.to_radians().cos(),
+                            y: turn.centre.y + turn.start_angle_degrees.to_radians().sin(),
+                        },
+                        turn.original_rotation_degrees,
+                        turn.rotation_degrees,
+                        turn.half_diagonal,
+                    )
+                }
+                _ => return None,
+            };
+        let start_angle = (start.y - centre.y).atan2(start.x - centre.x).to_degrees();
+        let reach = pointer.map_or(half_diagonal, |pointer| {
+            (pointer.x - centre.x).hypot(pointer.y - centre.y)
+        });
+        Some(turn_snap_guide(
+            centre,
+            reach,
+            start_angle,
+            original_rotation,
+            rotation,
+        ))
+    }
+
     pub fn clear_semantic_snap_decision(&mut self) {
+        self.calibration_angle_guide = None;
         self.semantic_snap_decision = None;
         self.object_snap_tracking_result = None;
         self.relationship_snap_guides.clear();
@@ -3067,6 +3329,12 @@ impl AnnotationAdapter {
             },
             |decision| decision.point,
         );
+        self.calibration_angle_guide = if decision.is_none() {
+            angle_constraint
+                .and_then(|(anchor, step)| angle_snap_guide(anchor, resolved, Some(step)))
+        } else {
+            None
+        };
         self.semantic_snap_decision = decision;
         resolved
     }
@@ -3081,6 +3349,7 @@ impl AnnotationAdapter {
         shift: bool,
     ) -> PdfPoint {
         self.point_snap_frees_direction = false;
+        self.pointer_shift = shift;
         let angle_step = self.creation_angle_step(shift);
         let snapped =
             self.resolve_snapped_creation_point(document_id, page_index, point, angle_step);
@@ -3143,6 +3412,14 @@ impl AnnotationAdapter {
             })
         };
         match self.active.as_ref() {
+            // An Arrow points at something; it takes no real-unit size, so
+            // it shows no size box and takes no typed size (snapping still
+            // applies).
+            Some(ActivePointer::StraightLineCreate {
+                document_id: active,
+                kind: LineKind::Arrow,
+                ..
+            }) if *active == document_id => return None,
             Some(ActivePointer::StraightLineCreate {
                 document_id: active,
                 page_index,
@@ -3584,6 +3861,15 @@ impl AnnotationAdapter {
             }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
                 Some(id.clone())
             }
+            Some(ActivePointer::DimensionEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind: DimensionPointerEditKind::Start | DimensionPointerEditKind::End,
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                Some(id.clone())
+            }
             Some(ActivePointer::CalloutEdit {
                 document_id: active_document_id,
                 page_index: active_page_index,
@@ -3608,77 +3894,24 @@ impl AnnotationAdapter {
             }
             _ => None,
         };
-        if let Some(manipulated_id) = manipulated_id {
-            let annotation_decision = self
-                .semantic_snap_index(
-                    document_id,
-                    page_index,
-                    std::slice::from_ref(&manipulated_id),
-                    &AnnotationSelectionSupplement::new(),
-                )
-                .resolve_point(
-                    point,
-                    &self.semantic_snap_settings,
-                    self.observed_pixels_per_point.0,
-                );
-            let construction_grid_decision = self
-                .semantic_snap_page_sizes
-                .get(&(document_id, page_index))
-                .and_then(|(width, height)| {
-                    resolve_construction_grid_point(
-                        point,
-                        *width,
-                        *height,
-                        &self.semantic_snap_settings,
-                        self.observed_pixels_per_point.0,
-                    )
-                });
-            let decision = match (annotation_decision, construction_grid_decision) {
-                (Some(annotation), Some(grid)) => Some(
-                    if annotation.distance_window_px <= grid.distance_window_px {
-                        annotation
-                    } else {
-                        grid
-                    },
-                ),
-                (annotation @ Some(_), None) => annotation,
-                (None, grid) => grid,
-            };
-            if let Some(decision) = decision {
-                let resolved = decision.point;
-                self.update_tracking_acquisition(Some(&decision));
-                self.object_snap_tracking_result = None;
-                self.semantic_snap_decision = Some(decision);
-                return resolved;
-            }
-            self.update_tracking_acquisition(None);
-            self.semantic_snap_decision = None;
-            let tracking = find_object_snap_tracking_point(
-                point,
-                &self.acquired_tracking_for_enabled_sources(),
-                self.observed_pixels_per_point.0,
-                self.semantic_snap_settings.sensitivity_window_px(),
-                &[OrthogonalAxis::Horizontal, OrthogonalAxis::Vertical],
-            );
-            let resolved = tracking.as_ref().map_or(point, |tracking| tracking.point);
-            self.object_snap_tracking_result = tracking;
-            return resolved;
-        }
-        if !matches!(
-            self.tool,
-            AnnotationTool::Rectangle
-                | AnnotationTool::Ellipse
-                | AnnotationTool::Line
-                | AnnotationTool::Arrow
-                | AnnotationTool::Length
-                | AnnotationTool::Dimension
-                | AnnotationTool::Image
-                | AnnotationTool::Polyline
-                | AnnotationTool::Polygon
-                | AnnotationTool::Polylength
-                | AnnotationTool::Area
-                | AnnotationTool::Arc
-        ) {
+        let editing = manipulated_id.is_some();
+        if !editing
+            && !matches!(
+                self.tool,
+                AnnotationTool::Rectangle
+                    | AnnotationTool::Ellipse
+                    | AnnotationTool::Line
+                    | AnnotationTool::Arrow
+                    | AnnotationTool::Length
+                    | AnnotationTool::Dimension
+                    | AnnotationTool::Image
+                    | AnnotationTool::Polyline
+                    | AnnotationTool::Polygon
+                    | AnnotationTool::Polylength
+                    | AnnotationTool::Area
+                    | AnnotationTool::Arc
+            )
+        {
             self.semantic_snap_decision = None;
             self.object_snap_tracking_result = None;
             return point;
@@ -3747,17 +3980,27 @@ impl AnnotationAdapter {
                 })
                 .unwrap_or((Vec::new(), None)),
         };
+        // An end or point being dragged keeps its direction from its
+        // neighbour (see `edit_angle_anchor`), and snaps to every other
+        // markup but its own.
+        let (excluded_ids, creation_anchor) = match manipulated_id {
+            Some(id) => (vec![id], self.edit_angle_anchor()),
+            None => (excluded_ids, creation_anchor),
+        };
         // A path being drawn snaps to its own placed points, to close it.
         let draft_path = self
             .vertex_path_draft
             .as_ref()
-            .filter(|draft| (draft.document_id, draft.page_index) == (document_id, page_index))
+            .filter(|draft| {
+                !editing && (draft.document_id, draft.page_index) == (document_id, page_index)
+            })
             .map(|draft| (&draft.points, &draft.id))
             .or_else(|| {
                 self.measurement_path_draft
                     .as_ref()
                     .filter(|draft| {
-                        (draft.document_id, draft.page_index) == (document_id, page_index)
+                        !editing
+                            && (draft.document_id, draft.page_index) == (document_id, page_index)
                     })
                     .map(|draft| (&draft.points, &draft.id))
             })
@@ -3839,7 +4082,8 @@ impl AnnotationAdapter {
         });
         let mut resolved = constrained;
         let mut increment_applied = false;
-        if self.tool == AnnotationTool::Dimension
+        if !editing
+            && self.tool == AnnotationTool::Dimension
             && self.semantic_snap_settings.dimension_increment_enabled()
             && let Some(anchor) = creation_anchor
         {
@@ -12071,6 +12315,22 @@ impl AnnotationAdapter {
         Ok(())
     }
 
+    /// Every markup of a document, bottom first.
+    pub fn annotations_in_document(&self, document_id: u64) -> Vec<Annotation> {
+        self.documents
+            .get(&document_id)
+            .map(AnnotationDocument::all_annotations)
+            .unwrap_or_default()
+    }
+
+    /// The revision of a document's committed markups: it changes with every
+    /// edit, and costs nothing to read.
+    pub fn document_revision(&self, document_id: u64) -> u64 {
+        self.documents
+            .get(&document_id)
+            .map_or(0, AnnotationDocument::revision)
+    }
+
     pub fn annotations_on_page(&self, document_id: u64, page_index: u32) -> Vec<Annotation> {
         self.documents
             .get(&document_id)
@@ -18246,7 +18506,8 @@ mod tests {
             .with_source(SemanticSnapSource::Content, false)
             .with_source(SemanticSnapSource::Annotation, false)
             .with_source(SemanticSnapSource::PageGrid, false)
-            .with_source(SemanticSnapSource::ConstructionGrid, false);
+            .with_source(SemanticSnapSource::ConstructionGrid, false)
+            .with_angle_snap_enabled(false);
         adapter.set_semantic_snap_settings(snapping_off).unwrap();
         let before = adapter.snapshot(7).unwrap();
         let original = before.dimensions[0].clone();
@@ -18420,6 +18681,12 @@ mod tests {
     fn callout_pointer_edits_keep_leader_order_and_distinguish_text_box_from_group() {
         let mut adapter = AnnotationAdapter::default();
         let id = seed_callout(&mut adapter);
+        // Angle snap has its own tests: here the leader point follows the pointer.
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default().with_angle_snap_enabled(false),
+            )
+            .unwrap();
         let original = adapter.snapshot(7).unwrap().callouts[0].clone();
         let base_revision = adapter.snapshot(7).unwrap().revision;
         assert_eq!(
@@ -19932,9 +20199,10 @@ mod tests {
             assert_eq!(line.end, preview, "the preview matches the commit");
             line.end
         };
-        let defaults = SemanticSnapSettings::default();
+        let defaults =
+            SemanticSnapSettings::default().with_angle_snap_preset(AngleSnapPreset::Degrees90);
         let to = point(100., 40.);
-        // On at 90 degrees by default: level; Shift frees it.
+        // On at 90 degrees: level; Shift frees it.
         assert_eq!(draw(defaults, false, to), point(100., 10.));
         assert_eq!(draw(defaults, true, to), to);
         // Off: free; Shift snaps it to the increment.
@@ -19963,6 +20231,463 @@ mod tests {
         assert!((angle - 20.).abs() < 1e-9, "{angle}");
     }
 
+    /// The guide label while `tool` is dragged from (10, 10) to `to`.
+    fn dragged_guide(
+        settings: SemanticSnapSettings,
+        tool: AnnotationTool,
+        shift: bool,
+        to: PdfPoint,
+    ) -> Option<crate::semantic_snapping::AngleSnapGuide> {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        adapter.set_semantic_snap_settings(settings).unwrap();
+        adapter.set_tool(tool).unwrap();
+        let id = MarkupId::new("markup:guide").unwrap();
+        match tool {
+            // These two place their ends by clicks.
+            AnnotationTool::Length => {
+                adapter
+                    .begin_length_placement(7, 0, id, point(10., 10.))
+                    .unwrap();
+                adapter.update_length_placement(to, shift).unwrap();
+            }
+            AnnotationTool::Dimension => {
+                adapter
+                    .begin_dimension_placement(7, 0, id, point(10., 10.))
+                    .unwrap();
+                adapter.update_dimension_placement(to, shift).unwrap();
+            }
+            _ => {
+                adapter.pointer_down(7, 0, 1, point(10., 10.), 2.).unwrap();
+                adapter.pointer_move_with_constraint(1, to, shift).unwrap();
+            }
+        }
+        adapter.angle_snap_guide()
+    }
+
+    #[test]
+    fn a_guide_shows_the_held_angle_of_every_two_point_tool() {
+        let settings = SemanticSnapSettings::default();
+        // 45 degrees, up and to the right, 15 degree increment by default.
+        let to = point(110., 108.);
+        for tool in [
+            AnnotationTool::Line,
+            AnnotationTool::Arrow,
+            AnnotationTool::Length,
+            AnnotationTool::Dimension,
+            AnnotationTool::Callout,
+        ] {
+            let guide = dragged_guide(settings, tool, false, to)
+                .unwrap_or_else(|| panic!("{tool:?} shows its held angle"));
+            assert_eq!(guide.label(), "45°", "{tool:?}");
+            assert_eq!(guide.anchor, point(10., 10.), "{tool:?}");
+            // Shift frees the direction: no guide.
+            assert_eq!(dragged_guide(settings, tool, true, to), None, "{tool:?}");
+            // With angle snap off, there is none; Shift then holds it.
+            let off = settings.with_angle_snap_enabled(false);
+            assert_eq!(dragged_guide(off, tool, false, to), None, "{tool:?}");
+            assert!(dragged_guide(off, tool, true, to).is_some(), "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn a_guide_follows_the_increment_and_ends_with_the_gesture() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        adapter.set_tool(AnnotationTool::Line).unwrap();
+        assert_eq!(adapter.angle_snap_guide(), None, "nothing is drawn yet");
+        adapter.pointer_down(7, 0, 1, point(10., 10.), 2.).unwrap();
+        // A shallow drag at the default 15 degrees.
+        adapter.pointer_move(1, point(110., 38.)).unwrap();
+        assert_eq!(adapter.angle_snap_guide().unwrap().label(), "15°");
+        // 90 degrees: the same pointer holds level.
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default().with_angle_snap_preset(AngleSnapPreset::Degrees90),
+            )
+            .unwrap();
+        adapter.pointer_move(1, point(110., 38.)).unwrap();
+        assert_eq!(adapter.angle_snap_guide().unwrap().label(), "0°");
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default()
+                    .with_angle_snap_preset(AngleSnapPreset::Degrees45)
+                    .with_angle_snap_enabled(true),
+            )
+            .unwrap();
+        // Anticlockwise from the right: a drag down and right is 315.
+        adapter.pointer_move(1, point(110., -90.)).unwrap();
+        assert_eq!(adapter.angle_snap_guide().unwrap().label(), "315°");
+        adapter.pointer_up(1, point(110., -90.)).unwrap();
+        assert_eq!(adapter.angle_snap_guide(), None, "the line is placed");
+    }
+
+    #[test]
+    fn a_typed_angle_or_a_point_snap_hides_the_guide() {
+        // A box whose corner is off the level ray from (10, 10).
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        adapter.set_semantic_snap_page_size(7, 0, 600., 800.);
+        adapter.set_tool(AnnotationTool::Rectangle).unwrap();
+        adapter
+            .pointer_down(7, 0, 1, point(200., 150.), 1.)
+            .unwrap();
+        adapter.pointer_move(1, point(300., 250.)).unwrap();
+        adapter.pointer_up(1, point(300., 250.)).unwrap();
+        adapter.set_tool(AnnotationTool::Line).unwrap();
+        adapter.pointer_down(7, 0, 2, point(10., 10.), 1.).unwrap();
+        adapter.pointer_move(2, point(150., 120.)).unwrap();
+        assert!(adapter.semantic_snap_decision().is_none());
+        assert!(adapter.angle_snap_guide().is_some(), "away from targets");
+        // The corner wins near it: its indicator shows, not the guide.
+        adapter.pointer_move(2, point(204., 153.)).unwrap();
+        assert!(adapter.semantic_snap_decision().is_some());
+        assert_eq!(adapter.angle_snap_guide(), None);
+        // Away again, the guide returns.
+        adapter.pointer_move(2, point(150., 120.)).unwrap();
+        assert!(adapter.angle_snap_guide().is_some());
+    }
+
+    #[test]
+    fn a_guide_shows_each_path_segment_and_the_arc_chord() {
+        let mut polyline = AnnotationAdapter::default();
+        polyline.set_observed_pixels_per_point(1.).unwrap();
+        polyline.set_tool(AnnotationTool::Polyline).unwrap();
+        polyline.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        assert_eq!(polyline.angle_snap_guide(), None, "one point, no segment");
+        // A segment at 15 degrees from the first point.
+        polyline.pointer_move(2, point(120., 50.)).unwrap();
+        let guide = polyline.angle_snap_guide().unwrap();
+        assert_eq!(
+            (guide.anchor, guide.label().as_str()),
+            (point(20., 20.), "15°")
+        );
+        polyline
+            .pointer_down(7, 0, 2, point(120., 46.), 4.)
+            .unwrap();
+        // The next segment starts from the last point placed.
+        polyline.pointer_move(3, point(140., 150.)).unwrap();
+        let guide = polyline.angle_snap_guide().unwrap();
+        assert_eq!(
+            guide.anchor.x,
+            polyline.vertex_path_draft.as_ref().unwrap().points[1].x
+        );
+        assert_eq!(guide.label(), "75°");
+        polyline.finish_vertex_path(7).unwrap();
+        assert_eq!(polyline.angle_snap_guide(), None, "the path is placed");
+
+        let mut area = AnnotationAdapter::default();
+        area.set_observed_pixels_per_point(1.).unwrap();
+        area.set_tool(AnnotationTool::Area).unwrap();
+        area.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        area.pointer_move(2, point(100., 100.)).unwrap();
+        assert_eq!(area.angle_snap_guide().unwrap().label(), "45°");
+
+        let mut arc = AnnotationAdapter::default();
+        arc.set_observed_pixels_per_point(1.).unwrap();
+        arc.set_tool(AnnotationTool::Arc).unwrap();
+        arc.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        arc.pointer_move(2, point(120., 125.)).unwrap();
+        assert_eq!(arc.angle_snap_guide().unwrap().label(), "45°");
+        arc.pointer_move_with_constraint(2, point(120., 125.), true)
+            .unwrap();
+        assert_eq!(arc.angle_snap_guide(), None, "Shift frees the chord");
+    }
+
+    fn selected_line_adapter(
+        settings: SemanticSnapSettings,
+        lines: &[(&str, PdfPoint, PdfPoint)],
+    ) -> AnnotationAdapter {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        adapter.set_semantic_snap_settings(settings).unwrap();
+        let document = adapter.documents.entry(7).or_default();
+        for (id, start, end) in lines {
+            let line = StraightLineAnnotation::new(
+                MarkupId::new(*id).unwrap(),
+                0,
+                *start,
+                *end,
+                LineKind::Line,
+                StraightLineAppearance::default_for(LineKind::Line),
+            )
+            .unwrap();
+            document
+                .apply_command(AnnotationCommand::CreateAnnotation(
+                    Annotation::StraightLine(line),
+                ))
+                .unwrap();
+        }
+        assert!(document.select(&MarkupId::new(lines[0].0).unwrap()));
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter
+    }
+
+    fn scene_line_end(adapter: &AnnotationAdapter) -> PdfPoint {
+        adapter.document_scene(7, 0).straight_lines[0].end
+    }
+
+    #[test]
+    fn dragging_a_line_end_holds_its_direction_from_the_other_end() {
+        let settings = SemanticSnapSettings::default();
+        let line = ("line:end-angle", point(10., 10.), point(100., 10.));
+        let mut adapter = selected_line_adapter(settings, &[line]);
+        adapter.pointer_down(7, 0, 1, point(100., 10.), 4.).unwrap();
+        // 44.4 degrees from the other end: held at 45 degrees.
+        adapter.pointer_move(1, point(110., 108.)).unwrap();
+        let end = scene_line_end(&adapter);
+        assert!((end.x - 10. - (end.y - 10.)).abs() < 1e-9, "{end:?}");
+        let guide = adapter.angle_snap_guide().expect("a guide while dragging");
+        assert_eq!(
+            (guide.anchor, guide.label().as_str()),
+            (point(10., 10.), "45°")
+        );
+        // The pointer's distance along the ray is kept.
+        assert!((guide.reach - 140.).abs() < 1., "{}", guide.reach);
+        // Shift frees the direction, and the end follows the pointer.
+        adapter
+            .pointer_move_with_constraint(1, point(110., 108.), true)
+            .unwrap();
+        assert_eq!(scene_line_end(&adapter), point(110., 108.));
+        assert_eq!(adapter.angle_snap_guide(), None);
+        // The next move without Shift holds it again, and the drop keeps it.
+        adapter.pointer_move(1, point(110., 108.)).unwrap();
+        adapter.pointer_up(1, point(110., 108.)).unwrap();
+        let committed = adapter.snapshot(7).unwrap().straight_lines[0].end;
+        assert!((committed.x - committed.y).abs() < 1e-9, "{committed:?}");
+        assert_eq!(adapter.angle_snap_guide(), None, "the drag is over");
+        // The start end holds its direction from the end just set.
+        let mut start = selected_line_adapter(settings, &[line]);
+        start.pointer_down(7, 0, 2, point(10., 10.), 4.).unwrap();
+        start.pointer_move(2, point(-30., 52.)).unwrap();
+        let guide = start.angle_snap_guide().unwrap();
+        assert_eq!(
+            (guide.anchor, guide.label().as_str()),
+            (point(100., 10.), "165°")
+        );
+    }
+
+    #[test]
+    fn a_line_end_drag_follows_the_angle_setting_and_a_point_snap_wins() {
+        let line = ("line:end-angle", point(10., 10.), point(100., 10.));
+        let setting_off = SemanticSnapSettings::default().with_angle_snap_enabled(false);
+        let mut off = selected_line_adapter(setting_off, &[line]);
+        off.pointer_down(7, 0, 1, point(100., 10.), 4.).unwrap();
+        off.pointer_move(1, point(110., 108.)).unwrap();
+        assert_eq!(scene_line_end(&off), point(110., 108.));
+        assert_eq!(off.angle_snap_guide(), None);
+        // With the setting off, Shift holds the direction.
+        off.pointer_move_with_constraint(1, point(110., 108.), true)
+            .unwrap();
+        assert_eq!(off.angle_snap_guide().unwrap().label(), "45°");
+
+        // Another line's end, off the 45 degree ray, wins near the pointer.
+        let target = ("line:end-target", point(200., 150.), point(260., 150.));
+        let mut adapter = selected_line_adapter(SemanticSnapSettings::default(), &[line, target]);
+        adapter.pointer_down(7, 0, 2, point(100., 10.), 4.).unwrap();
+        adapter.pointer_move(2, point(150., 120.)).unwrap();
+        assert!(adapter.semantic_snap_decision().is_none());
+        assert!(adapter.angle_snap_guide().is_some(), "away from targets");
+        adapter.pointer_move(2, point(204., 153.)).unwrap();
+        assert!(adapter.semantic_snap_decision().is_some());
+        assert_eq!(scene_line_end(&adapter), point(200., 150.));
+        assert_eq!(adapter.angle_snap_guide(), None, "the indicator shows");
+        adapter.pointer_up(2, point(204., 153.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().straight_lines[0].end,
+            point(200., 150.)
+        );
+    }
+
+    #[test]
+    fn dragging_a_path_point_holds_its_direction_from_a_neighbour() {
+        let points = [point(20., 20.), point(120., 20.), point(120., 120.)];
+        // The previous point in path order, or the next for the first point
+        // of an open path, or the last for the first point of a closed one.
+        assert_eq!(path_point_angle_anchor(&points, 1, false), Some(points[0]));
+        assert_eq!(path_point_angle_anchor(&points, 2, false), Some(points[1]));
+        assert_eq!(path_point_angle_anchor(&points, 0, false), Some(points[1]));
+        assert_eq!(path_point_angle_anchor(&points, 0, true), Some(points[2]));
+        assert_eq!(path_point_angle_anchor(&points, 3, false), None);
+        assert_eq!(path_point_angle_anchor(&points[..1], 0, false), None);
+
+        for (kind, closed_first_anchor) in [
+            (VertexPathKind::Polyline, points[1]),
+            (VertexPathKind::Polygon, points[2]),
+        ] {
+            let id = MarkupId::new("path:point-angle").unwrap();
+            let path = VertexPathAnnotation::new(
+                id.clone(),
+                0,
+                points.to_vec(),
+                kind,
+                RectangleAppearance::default(),
+            )
+            .unwrap();
+            let mut adapter = AnnotationAdapter::default();
+            adapter.set_observed_pixels_per_point(1.).unwrap();
+            let document = adapter.documents.entry(7).or_default();
+            document
+                .load_imported_annotations(vec![Annotation::VertexPath(path)], Vec::new())
+                .unwrap();
+            assert!(document.select(&id));
+            adapter.set_tool(AnnotationTool::Select).unwrap();
+            // The middle point holds its direction from the first point.
+            adapter.pointer_down(7, 0, 1, points[1], 4.).unwrap();
+            adapter.pointer_move(1, point(150., 70.)).unwrap();
+            let guide = adapter.angle_snap_guide().unwrap();
+            assert_eq!(
+                (guide.anchor, guide.label().as_str()),
+                (points[0], "15°"),
+                "{kind:?}"
+            );
+            adapter
+                .pointer_move_with_constraint(1, point(150., 70.), true)
+                .unwrap();
+            assert_eq!(adapter.angle_snap_guide(), None, "{kind:?}");
+            adapter.cancel(PointerCancelReason::CaptureLost).unwrap();
+            // The first point: the next point (open) or the last (closed).
+            adapter.pointer_down(7, 0, 2, points[0], 4.).unwrap();
+            adapter.pointer_move(2, point(60., 80.)).unwrap();
+            let guide = adapter.angle_snap_guide().unwrap();
+            assert_eq!(guide.anchor, closed_first_anchor, "{kind:?}");
+            adapter.pointer_up(2, point(60., 80.)).unwrap();
+            let moved = adapter.snapshot(7).unwrap().vertex_paths[0].points()[0];
+            let direction = (moved.y - closed_first_anchor.y)
+                .atan2(moved.x - closed_first_anchor.x)
+                .to_degrees();
+            let step = (direction / 15.).round() * 15.;
+            assert!((direction - step).abs() < 1e-9, "{kind:?} {direction}");
+        }
+    }
+
+    #[test]
+    fn dragging_a_dimension_end_or_a_callout_leader_point_holds_its_direction() {
+        let mut dimension = AnnotationAdapter::default();
+        dimension.set_observed_pixels_per_point(1.).unwrap();
+        let id = seed_dimension(&mut dimension);
+        dimension.documents.get_mut(&7).unwrap().select(&id);
+        let original = dimension.snapshot(7).unwrap().dimensions[0].clone();
+        dimension.pointer_down(7, 0, 1, original.start, 4.).unwrap();
+        dimension.pointer_move(1, point(-30., 62.)).unwrap();
+        let guide = dimension.angle_snap_guide().unwrap();
+        assert_eq!(
+            (guide.anchor, guide.label().as_str()),
+            (original.end, "165°")
+        );
+        dimension
+            .pointer_move_with_constraint(1, point(-30., 62.), true)
+            .unwrap();
+        assert_eq!(dimension.angle_snap_guide(), None, "Shift frees it");
+        assert_eq!(
+            dimension.document_scene(7, 0).dimensions[0].start,
+            point(-30., 62.)
+        );
+
+        let mut callout = AnnotationAdapter::default();
+        callout.set_observed_pixels_per_point(1.).unwrap();
+        let id = seed_callout(&mut callout);
+        callout.documents.get_mut(&7).unwrap().select(&id);
+        let original = callout.snapshot(7).unwrap().callouts[0].clone();
+        // The knee holds its direction from the leader's tip before it.
+        callout
+            .pointer_down(7, 0, 2, original.leader_points()[1], 4.)
+            .unwrap();
+        callout.pointer_move(2, point(64., 60.)).unwrap();
+        let guide = callout.angle_snap_guide().unwrap();
+        assert_eq!(
+            (guide.anchor, guide.label().as_str()),
+            (original.leader_points()[0], "45°")
+        );
+        callout.cancel(PointerCancelReason::CaptureLost).unwrap();
+        // The tip, with no point before it, takes the knee after it.
+        callout
+            .pointer_down(7, 0, 3, original.leader_points()[0], 4.)
+            .unwrap();
+        callout.pointer_move(3, point(10., 5.)).unwrap();
+        assert_eq!(
+            callout.angle_snap_guide().unwrap().anchor,
+            original.leader_points()[1]
+        );
+    }
+
+    #[test]
+    fn a_calibration_line_has_a_guide_until_it_is_cleared() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_observed_pixels_per_point(1.).unwrap();
+        let start = Some(point(10., 10.));
+        // Shift frees the direction: no guide.
+        adapter.resolve_calibration_point(7, 0, point(110., 108.), start, true);
+        assert_eq!(adapter.angle_snap_guide(), None);
+        let end = adapter.resolve_calibration_point(7, 0, point(110., 108.), start, false);
+        assert!(
+            (end.x - 110.).abs() < 1.5 && (end.y - end.x).abs() < 1e-9,
+            "{end:?}"
+        );
+        assert_eq!(adapter.angle_snap_guide().unwrap().label(), "45°");
+        // Before the first end is placed, there is no direction.
+        adapter.resolve_calibration_point(7, 0, point(110., 108.), None, false);
+        assert_eq!(adapter.angle_snap_guide(), None);
+        adapter.resolve_calibration_point(7, 0, point(110., 108.), start, false);
+        adapter.clear_semantic_snap_decision();
+        assert_eq!(adapter.angle_snap_guide(), None);
+    }
+
+    #[test]
+    fn a_knob_turn_has_a_guide_labelled_with_the_snapped_rotation() {
+        let turn = |shift: bool, degrees: f64| {
+            let mut adapter = AnnotationAdapter::default();
+            adapter.set_tool(AnnotationTool::Select).unwrap();
+            let id = MarkupId::new("text-box:turn-guide").unwrap();
+            let text = TextBoxAnnotation::new(
+                id.clone(),
+                0,
+                PdfRect::new(20., 20., 100., 50.).unwrap(),
+                "Text",
+                TextBoxStyle::new("Helvetica", 12., "#ff0000", 1.).unwrap(),
+            )
+            .unwrap();
+            let document = adapter.documents.entry(7).or_default();
+            document
+                .load_imported_annotations(vec![Annotation::TextBox(text.clone())], Vec::new())
+                .unwrap();
+            document.select(&id);
+            let handle = text_box_rotation_handle_point(&text, 1.).unwrap();
+            let center = point(70., 45.);
+            let start_angle = (handle.y - center.y).atan2(handle.x - center.x);
+            let radius = distance(center, handle);
+            assert_eq!(adapter.angle_snap_guide(), None, "no turn yet");
+            adapter.pointer_down(7, 0, 10, handle, 1.).unwrap();
+            // A drag that turns it clockwise by `degrees`.
+            let target_angle = start_angle - degrees.to_radians();
+            let target = point(
+                center.x + radius * target_angle.cos(),
+                center.y + radius * target_angle.sin(),
+            );
+            adapter
+                .pointer_move_with_constraint(10, target, shift)
+                .unwrap();
+            let guide = adapter.angle_snap_guide();
+            adapter
+                .pointer_up_with_constraint(10, target, shift)
+                .unwrap();
+            assert_eq!(adapter.angle_snap_guide(), None, "the turn is done");
+            (guide, center, start_angle.to_degrees())
+        };
+        // 31 degrees turns to 30, held at 30 degrees clockwise from the
+        // knob's own direction.
+        let (guide, center, knob) = turn(false, 31.);
+        let guide = guide.unwrap();
+        assert_eq!(guide.label(), "30°");
+        assert_eq!(guide.anchor, center);
+        let held = guide.direction.1.atan2(guide.direction.0).to_degrees();
+        assert!((held - (knob - 30.)).abs() < 1e-9, "{held} {knob}");
+        // Shift frees the turn: no guide.
+        assert_eq!(turn(true, 31.).0, None);
+        // A turn of 6 degrees is held at 0.
+        assert_eq!(turn(false, 6.).0.unwrap().label(), "0°");
+    }
+
     #[test]
     fn a_point_target_in_range_wins_over_angle_snap_and_grids_do_not() {
         // A box whose corners are off every level and plumb line from the
@@ -19987,9 +20712,10 @@ mod tests {
             let end = adapter.snapshot(7).unwrap().straight_lines[0].end;
             (point(rect.x, rect.y), end, decision)
         };
-        let defaults = SemanticSnapSettings::default();
+        let defaults =
+            SemanticSnapSettings::default().with_angle_snap_preset(AngleSnapPreset::Degrees90);
         let near_corner = point(204., 153.);
-        // At the default (on, 90 degrees), the corner in range wins: the
+        // At 90 degrees, the corner in range wins: the
         // line ends on it, off the increment, and its marker shows.
         let (corner, end, decision) = draw(defaults, false, near_corner);
         assert_eq!(end, corner);
@@ -20028,6 +20754,11 @@ mod tests {
     fn a_calibration_line_follows_the_same_precedence_as_a_line() {
         let mut adapter = AnnotationAdapter::default();
         adapter.set_observed_pixels_per_point(1.).unwrap();
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default().with_angle_snap_preset(AngleSnapPreset::Degrees90),
+            )
+            .unwrap();
         adapter.set_tool(AnnotationTool::Rectangle).unwrap();
         adapter
             .pointer_down(7, 0, 1, point(200., 150.), 1.)
@@ -20036,7 +20767,7 @@ mod tests {
         adapter.pointer_up(1, point(300., 250.)).unwrap();
         adapter.set_tool(AnnotationTool::Select).unwrap();
         let start = Some(point(10., 10.));
-        // At the default, a corner in range wins over the held direction.
+        // At 90 degrees, a corner in range wins over the held direction.
         assert_eq!(
             adapter.resolve_calibration_point(7, 0, point(204., 153.), start, false),
             point(200., 150.)
@@ -20116,7 +20847,8 @@ mod tests {
             assert!((preview - committed).abs() < 1e-9, "{preview} {committed}");
             committed
         };
-        let defaults = SemanticSnapSettings::default();
+        let defaults =
+            SemanticSnapSettings::default().with_angle_snap_preset(AngleSnapPreset::Degrees90);
         assert_eq!(turn(defaults, false), 90.);
         assert!((turn(defaults, true) - 80.).abs() < 1e-9);
         let disabled = defaults
@@ -20600,6 +21332,36 @@ mod tests {
     }
 
     #[test]
+    fn an_arrow_takes_no_typed_size_and_shows_no_size_box() {
+        // A Line between its clicks has a size to type; an Arrow has none,
+        // so its second click lands where the pointer is.
+        let mut line = AnnotationAdapter::default();
+        line.set_tool(AnnotationTool::Line).unwrap();
+        line.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        line.pointer_up(1, point(20., 20.)).unwrap();
+        assert!(line.typed_size_anchor(7).is_some());
+
+        let mut arrow = AnnotationAdapter::default();
+        arrow.set_tool(AnnotationTool::Arrow).unwrap();
+        arrow.pointer_down(7, 0, 1, point(20., 20.), 4.).unwrap();
+        arrow.pointer_up(1, point(20., 20.)).unwrap();
+        assert_eq!(arrow.typed_size_anchor(7), None, "no size box for an Arrow");
+        arrow.set_typed_size(
+            7,
+            Some(TypedSize {
+                length: Some(50.),
+                ..TypedSize::default()
+            }),
+        );
+        assert_eq!(arrow.typed_size(7), None, "an Arrow takes no typed size");
+        arrow.pointer_down(7, 0, 1, point(83., 20.), 4.).unwrap();
+        arrow.pointer_up(1, point(83., 20.)).unwrap();
+        let created = &arrow.snapshot(7).unwrap().straight_lines[0];
+        assert_eq!(created.kind, LineKind::Arrow);
+        assert!((created.end.x - 83.).abs() < 1e-6 && (created.end.y - 20.).abs() < 1e-6);
+    }
+
+    #[test]
     fn tool_defaults_drive_vertex_cloud_and_measurement_path_creation() {
         for tool in [AnnotationTool::Polyline, AnnotationTool::Polygon] {
             let mut adapter = AnnotationAdapter::default();
@@ -20979,6 +21741,11 @@ mod tests {
     fn a_path_being_drawn_snaps_back_to_its_own_points() {
         let mut polyline = AnnotationAdapter::default();
         polyline.set_observed_pixels_per_point(1.).unwrap();
+        polyline
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default().with_angle_snap_preset(AngleSnapPreset::Degrees90),
+            )
+            .unwrap();
         polyline.set_tool(AnnotationTool::Polyline).unwrap();
         for (pointer_id, vertex) in [
             (1, point(20., 20.)),
@@ -20989,7 +21756,7 @@ mod tests {
         }
         let draft_id = polyline.vertex_path_draft.as_ref().unwrap().id.clone();
         // Near its start, the next point snaps to the start, although the
-        // start is off the level and plumb lines the default angle snap
+        // start is off the level and plumb lines the 90 degree angle snap
         // holds the side to.
         polyline.pointer_move(4, point(22., 23.)).unwrap();
         let hover = polyline.vertex_path_draft.as_ref().unwrap().hover;
@@ -20998,7 +21765,7 @@ mod tests {
         assert_eq!(decision.owner_id.as_ref(), Some(&draft_id));
         assert_eq!(decision.role, SemanticSnapRole::Endpoint);
         // Its last point is where the next side starts, not a target: the
-        // pointer beside it is held level by the default angle snap, not
+        // pointer beside it is held level by the 90 degree angle snap, not
         // pulled onto it.
         polyline.pointer_move(4, point(101., 81.)).unwrap();
         let hover = polyline.vertex_path_draft.as_ref().unwrap().hover;
@@ -21791,7 +22558,8 @@ mod tests {
             .with_source(SemanticSnapSource::Content, false)
             .with_source(SemanticSnapSource::Annotation, false)
             .with_source(SemanticSnapSource::PageGrid, false)
-            .with_source(SemanticSnapSource::ConstructionGrid, false);
+            .with_source(SemanticSnapSource::ConstructionGrid, false)
+            .with_angle_snap_enabled(false);
         adapter.set_semantic_snap_settings(snapping_off).unwrap();
         adapter
             .pointer_down(7, 0, 41, PdfPoint::new(100., 10.).unwrap(), 4.)
@@ -22815,6 +23583,7 @@ mod tests {
         }
 
         let snapping = SemanticSnapSettings::default()
+            .with_angle_snap_preset(AngleSnapPreset::Degrees90)
             .with_source(SemanticSnapSource::Content, false)
             .with_source(SemanticSnapSource::PageGrid, false)
             .with_source(SemanticSnapSource::ConstructionGrid, false);
@@ -23025,7 +23794,11 @@ mod tests {
             )
             .unwrap();
         creation
-            .set_semantic_snap_settings(adapter.semantic_snap_settings())
+            .set_semantic_snap_settings(
+                adapter
+                    .semantic_snap_settings()
+                    .with_angle_snap_preset(AngleSnapPreset::Degrees90),
+            )
             .unwrap();
         creation.set_tool(AnnotationTool::Arc).unwrap();
         creation
@@ -24224,6 +24997,12 @@ mod tests {
 
         // The end's extension line, out to the arrow, grabs the end: the
         // hover shows it and the press drags it, without the end jumping.
+        // Angle snap would hold the end to the increment, not follow it.
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default().with_angle_snap_enabled(false),
+            )
+            .unwrap();
         let grab = layout.extension_lines[1].1;
         assert!(
             distance(grab, end) > 9.,

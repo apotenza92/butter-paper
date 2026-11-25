@@ -760,3 +760,54 @@ fn settle(
     }
     cx.update(|window, cx| window.draw(cx).clear(cx));
 }
+
+/// T7: a press on the page after typing in a form field only commits it:
+/// no selection box. A press on another field moves to it at once.
+#[gpui::test]
+fn a_page_press_after_typing_in_a_form_field_only_commits_it(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::CLICK_OUT_TYPING_STATUS;
+    let (workspace, document_id, _shown, cx) = form_workspace(cx);
+    let name = widget_centre(cx, document_id, "ApplicantName", 0);
+    click(cx, name);
+    cx.simulate_input("Ada");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .click_out_status(document_id, cx)),
+        Some(CLICK_OUT_TYPING_STATUS)
+    );
+    // A corner of the page, away from every field.
+    let empty = rect_centre_on(cx, document_id, [20., 20., 30., 30.], 0);
+    click(cx, empty);
+    assert_eq!(
+        value_of(&workspace, cx, document_id, "ApplicantName"),
+        FormValue::Text("Ada".into()),
+        "the value committed"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.form_field_focus_summary(cx)),
+        None,
+        "filling finished"
+    );
+    assert!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .active_selection_marquee(document_id, cx)
+            .is_none()),
+        "the click-out armed no selection box"
+    );
+
+    click(cx, name);
+    cx.simulate_keystrokes("end");
+    cx.simulate_input(" Lovelace");
+    let email = widget_centre(cx, document_id, "Email", 0);
+    click(cx, email);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.form_field_focus_summary(cx)),
+        Some(("Email".into(), String::new())),
+        "a press on another field moves to it at once"
+    );
+    assert_eq!(
+        value_of(&workspace, cx, document_id, "ApplicantName"),
+        FormValue::Text("Ada Lovelace".into())
+    );
+}

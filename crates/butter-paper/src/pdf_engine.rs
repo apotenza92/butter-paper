@@ -129,6 +129,8 @@ pub struct PdfPersistenceSession {
     changed_page_rotations: std::collections::BTreeSet<u32>,
     untouched_annotations: Vec<UntouchedAnnotation>,
     retained_annotation_obstacles: Vec<RetainedAnnotationObstacle>,
+    /// Every annotation as the file had it when it opened, for search.
+    markup_metadata: Vec<crate::search_markups::MarkupMetadata>,
 }
 
 pub struct PreparedPdfSave {
@@ -1112,7 +1114,7 @@ impl PdfPersistenceSession {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PdfPersistenceError> {
         let source_path = path.as_ref().to_path_buf();
-        let document = Document::load(&source_path)?;
+        let document = crate::pdf_load::load_pdf(&source_path)?;
         Self::from_document(source_path, document, None)
     }
 
@@ -1139,7 +1141,7 @@ impl PdfPersistenceSession {
             ));
         }
         let source_guard = SourceGuard::capture(&canonical_path, &snapshot)?;
-        let document = Document::load_mem(&snapshot.bytes)?;
+        let document = crate::pdf_load::load_pdf_mem(&snapshot.bytes)?;
         Self::from_document(canonical_path, document, Some(source_guard))
     }
 
@@ -1158,7 +1160,7 @@ impl PdfPersistenceSession {
                 "recovery base PDF does not match its source digest".into(),
             ));
         }
-        let document = Document::load_mem(base_pdf)?;
+        let document = crate::pdf_load::load_pdf_mem(base_pdf)?;
         Self::from_document(source_path.as_ref().to_path_buf(), document, None)
     }
 
@@ -1223,6 +1225,7 @@ impl PdfPersistenceSession {
             changed_page_rotations: std::collections::BTreeSet::new(),
             untouched_annotations: imported.untouched,
             retained_annotation_obstacles: imported.retained_annotation_obstacles,
+            markup_metadata: imported.markup_metadata,
         })
     }
 
@@ -1947,6 +1950,11 @@ impl PdfPersistenceSession {
 
     pub fn retained_annotation_obstacles(&self) -> &[RetainedAnnotationObstacle] {
         &self.retained_annotation_obstacles
+    }
+
+    /// Every annotation as the file had it when it opened, for search.
+    pub fn markup_metadata(&self) -> &[crate::search_markups::MarkupMetadata] {
+        &self.markup_metadata
     }
 
     pub fn source_path(&self) -> &Path {
@@ -10082,7 +10090,7 @@ fn markup_border_style(width_pt: f64, style: StrokeStyle) -> Dictionary {
 }
 
 /// The operating-system account name, which Revu records as the author.
-fn markup_author() -> String {
+pub(crate) fn markup_author() -> String {
     ["USER", "USERNAME", "LOGNAME"]
         .iter()
         .find_map(|key| {
@@ -10337,7 +10345,13 @@ pub fn pdfium_display_render_bytes(
     }
 
     let mut display = document.clone();
+    let mut changed = BTreeSet::new();
     for location in locations {
+        changed.insert(match location {
+            PdfiumViewStateOnLocation::IndirectView(id)
+            | PdfiumViewStateOnLocation::DirectViewInUsage(id)
+            | PdfiumViewStateOnLocation::DirectViewInGroup(id) => id,
+        });
         let view = match location {
             PdfiumViewStateOnLocation::IndirectView(view_id) => {
                 display.get_object_mut(view_id)?.as_dict_mut()?
@@ -10357,9 +10371,106 @@ pub fn pdfium_display_render_bytes(
         };
         view.remove(b"ViewState");
     }
+    // Only the view dictionaries change: they go in an incremental update,
+    // so objects that lopdf could not parse stay in the bytes PDFium reads.
+    let objects = changed
+        .into_iter()
+        .filter_map(|id| Some((id, display.objects.get(&id)?.clone())));
+    if let Some(update) = incremental_update(&source_bytes, &display, objects, None) {
+        let mut bytes = source_bytes;
+        bytes.extend_from_slice(&update);
+        return Ok(bytes);
+    }
     let mut bytes = Vec::new();
     display.save_to(&mut bytes)?;
     Ok(bytes)
+}
+
+/// An incremental update (ISO 32000-1, 7.5.6) to append to `base`: it
+/// writes `objects` and, when given, makes `root` the catalog. A render-only
+/// copy made this way keeps every object of `base`, also those that lopdf
+/// could not parse and a full save would drop. `document` is `base` as
+/// lopdf read it. `None` when `base` is encrypted or its last
+/// cross-reference section cannot be found.
+pub fn incremental_update(
+    base: &[u8],
+    document: &Document,
+    objects: impl IntoIterator<Item = (ObjectId, Object)>,
+    root: Option<ObjectId>,
+) -> Option<Vec<u8>> {
+    if document.trailer.has(b"Encrypt") || document.encryption_state.is_some() {
+        return None;
+    }
+    let xref_start = last_cross_reference_offset(base)?;
+    let mut previous = Document::new();
+    previous.version = document.version.clone();
+    previous.max_id = document.max_id;
+    previous.xref_start = xref_start;
+    previous.reference_table.cross_reference_type = if base[xref_start..].starts_with(b"xref") {
+        lopdf::xref::XrefType::CrossReferenceTable
+    } else {
+        lopdf::xref::XrefType::CrossReferenceStream
+    };
+    for key in [b"Root".as_slice(), b"Info", b"ID"] {
+        if let Ok(value) = document.trailer.get(key) {
+            previous.trailer.set(key, value.clone());
+        }
+    }
+    // The writer needs only the base's length and last byte: a zeroed
+    // stand-in (mapped lazily) spares copying a large base.
+    let mut stand_in = vec![0u8; base.len()];
+    if let (Some(last), Some(&byte)) = (stand_in.last_mut(), base.last()) {
+        *last = byte;
+    }
+    let mut update = lopdf::IncrementalDocument::create_from(stand_in, previous);
+    update.new_document.max_id = document.max_id;
+    if let Some(root) = root {
+        update.new_document.trailer.set("Root", root);
+    }
+    update.new_document.objects.extend(objects);
+    let mut written = AfterBase {
+        skip: base.len(),
+        bytes: Vec::new(),
+    };
+    update.save_to(&mut written).ok()?;
+    Some(written.bytes)
+}
+
+/// The offset of the last cross-reference section, from the last
+/// `startxref` of `bytes`.
+fn last_cross_reference_offset(bytes: &[u8]) -> Option<usize> {
+    let tail_start = bytes.len().saturating_sub(1024);
+    let tail = &bytes[tail_start..];
+    let keyword = tail
+        .windows(b"startxref".len())
+        .rposition(|window| window == b"startxref")?;
+    let number = std::str::from_utf8(&tail[keyword + b"startxref".len()..])
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse::<usize>()
+        .ok()?;
+    (number > 0 && number < bytes.len()).then_some(number)
+}
+
+/// A writer that drops the first `skip` bytes: the base that an
+/// incremental update's writer writes first.
+struct AfterBase {
+    skip: usize,
+    bytes: Vec<u8>,
+}
+
+impl std::io::Write for AfterBase {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let skipped = self.skip.min(buf.len());
+        self.skip -= skipped;
+        self.bytes.extend_from_slice(&buf[skipped..]);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn optional_content_group_default_visibility(document: &Document) -> HashMap<ObjectId, bool> {
@@ -10629,6 +10740,31 @@ pub fn managed_annotation_slots(
 pub fn retained_annotation_render(
     document: &Document,
 ) -> Result<RetainedAnnotationRender, PdfPersistenceError> {
+    Ok(match retained_annotation_document(document)? {
+        RetainedAnnotationDocument::None => RetainedAnnotationRender::None,
+        RetainedAnnotationDocument::Original => RetainedAnnotationRender::Original,
+        RetainedAnnotationDocument::Filtered(mut filtered) => {
+            let mut bytes = Vec::new();
+            filtered.save_to(&mut bytes)?;
+            RetainedAnnotationRender::Filtered(bytes)
+        }
+    })
+}
+
+/// [`retained_annotation_render`] before it writes the filtered document.
+/// The worker writes it as an incremental update of the source bytes when
+/// it can: a full save drops each object that lopdf could not parse.
+#[derive(Debug)]
+pub enum RetainedAnnotationDocument {
+    None,
+    Original,
+    Filtered(Box<Document>),
+}
+
+/// The filtered document of [`retained_annotation_render`], not yet written.
+pub fn retained_annotation_document(
+    document: &Document,
+) -> Result<RetainedAnnotationDocument, PdfPersistenceError> {
     let calibrations = import_page_scales(document)
         .iter()
         .filter_map(|scale| {
@@ -10639,7 +10775,7 @@ pub fn retained_annotation_render(
         .collect();
     let imported = import_annotations(document, &calibrations)?;
     if imported.untouched.is_empty() {
-        return Ok(RetainedAnnotationRender::None);
+        return Ok(RetainedAnnotationDocument::None);
     }
     let mut widgets = BTreeMap::new();
     let mut hidden_slots: BTreeMap<ObjectId, BTreeSet<usize>> = BTreeMap::new();
@@ -10677,7 +10813,7 @@ pub fn retained_annotation_render(
     }
     if imported.managed_annotation_slots.is_empty() && widgets.is_empty() && hidden_slots.is_empty()
     {
-        return Ok(RetainedAnnotationRender::Original);
+        return Ok(RetainedAnnotationDocument::Original);
     }
     let mut filtered = document.clone();
     for (_, page_id) in document.get_pages() {
@@ -10714,9 +10850,34 @@ pub fn retained_annotation_render(
             .as_dict_mut()?
             .set("Annots", Object::Array(retained));
     }
-    let mut bytes = Vec::new();
-    filtered.save_to(&mut bytes)?;
-    Ok(RetainedAnnotationRender::Filtered(bytes))
+    Ok(RetainedAnnotationDocument::Filtered(Box::new(filtered)))
+}
+
+/// The `/NM` of the render-only Stamp that stands in for a form field's
+/// widget ([`retained_widget_surrogate`]). Dark pages maps it as ink.
+pub const RETAINED_WIDGET_SURROGATE_NAME: &str = "bp:retained-widget";
+/// The `/NM` of the render-only Stamp that stands in for a digital-signature
+/// field's widget. Dark pages keeps it in real colours, as a picture.
+pub const RETAINED_SIGNATURE_SURROGATE_NAME: &str = "bp:retained-signature";
+
+/// Whether a widget belongs to a digital-signature field (`/FT /Sig` on the
+/// widget or on a parent field).
+fn widget_is_signature_field(document: &Document, annotation: &Dictionary) -> bool {
+    let mut field = Some(annotation);
+    for _ in 0..32 {
+        let Some(current) = field else {
+            return false;
+        };
+        if let Some(kind) = dictionary_name(current, b"FT") {
+            return kind == "Sig";
+        }
+        field = current
+            .get(b"Parent")
+            .ok()
+            .and_then(|parent| resolve_object(document, parent).ok())
+            .and_then(|parent| parent.as_dict().ok());
+    }
+    false
 }
 
 /// PDFium's annotation pass excludes Widgets. Reuse a resolved existing normal
@@ -10771,8 +10932,15 @@ fn retained_widget_surrogate(document: &Document, annotation: &Dictionary) -> Op
         )?)
     };
     resolve_object(document, &selected).ok()?.as_stream().ok()?;
+    // The name tells Dark pages a form field (ink) from a real Stamp or a
+    // signature field (a picture). The bytes are for rendering only.
+    let name = if widget_is_signature_field(document, annotation) {
+        RETAINED_SIGNATURE_SURROGATE_NAME
+    } else {
+        RETAINED_WIDGET_SURROGATE_NAME
+    };
     let mut surrogate = dictionary! { "Type" => "Annot", "Subtype" => "Stamp", "Rect" => rect,
-    "AP" => dictionary! { "N" => selected } };
+    "AP" => dictionary! { "N" => selected }, "NM" => pdf_literal(name) };
     for key in [b"F".as_slice(), b"CA".as_slice(), b"OC".as_slice()] {
         if let Ok(value) = annotation.get(key) {
             surrogate.set(key.to_vec(), value.clone());
@@ -10850,6 +11018,8 @@ struct ImportedAnnotations {
     annotation_order: Vec<MarkupId>,
     untouched: Vec<UntouchedAnnotation>,
     retained_annotation_obstacles: Vec<RetainedAnnotationObstacle>,
+    /// Every annotation as the file had it when it opened, for search.
+    markup_metadata: Vec<crate::search_markups::MarkupMetadata>,
 }
 
 fn scale_unit_from_revu(unit: &str) -> Option<ScaleUnit> {
@@ -11643,6 +11813,7 @@ fn import_annotations(
         annotation_order: Vec::new(),
         untouched: Vec::new(),
         retained_annotation_obstacles: Vec::new(),
+        markup_metadata: Vec::new(),
     };
     for (page_number, page_id) in document.get_pages() {
         let page = document.get_object(page_id)?.as_dict()?;
@@ -12301,6 +12472,7 @@ fn import_annotations(
     }
     imported.retained_annotation_obstacles =
         retained_annotation_obstacles(document, &imported.managed_annotation_slots);
+    imported.markup_metadata = import_markup_metadata(document, &imported.managed_annotation_slots);
     Ok(imported)
 }
 
@@ -12328,6 +12500,82 @@ fn measurement_path_kind(annotation: &Dictionary, subtype: &str) -> Option<Measu
         }
         _ => None,
     }
+}
+
+/// Each annotation of the file, as a search reads it: its author, subject,
+/// text and dates, and the annotation it replies to. `managed_slots` names
+/// the annotations the editable model holds, whose text the model then
+/// gives. Links and pop-ups are left out.
+fn import_markup_metadata(
+    document: &Document,
+    managed_slots: &BTreeMap<ObjectId, HashSet<usize>>,
+) -> Vec<crate::search_markups::MarkupMetadata> {
+    fn text_of(document: &Document, annotation: &Dictionary, key: &[u8]) -> Option<String> {
+        let object = resolve_object(document, annotation.get(key).ok()?).ok()?;
+        match object {
+            Object::Stream(stream) => stream
+                .decompressed_content()
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+            object => decode_pdf_text_string_compat(object).ok(),
+        }
+    }
+    let mut metadata = Vec::new();
+    for (page_number, page_id) in document.get_pages() {
+        let Ok(page) = document.get_object(page_id).and_then(Object::as_dict) else {
+            continue;
+        };
+        let Ok(annotation_object) = page.get(b"Annots") else {
+            continue;
+        };
+        let Ok(annotations) =
+            resolve_object(document, annotation_object).and_then(Object::as_array)
+        else {
+            continue;
+        };
+        let page_index = page_number.saturating_sub(1);
+        for (annotation_index, annotation_object) in annotations.iter().enumerate() {
+            let Ok(annotation) =
+                resolve_object(document, annotation_object).and_then(Object::as_dict)
+            else {
+                continue;
+            };
+            let subtype = dictionary_name(annotation, b"Subtype").unwrap_or_default();
+            if matches!(subtype.as_str(), "Link" | "Popup" | "Widget") {
+                continue;
+            }
+            let reference = |object: &Object| match object {
+                Object::Reference((number, generation)) => Some((*number, *generation)),
+                _ => None,
+            };
+            let contents = text_of(document, annotation, b"Contents")
+                .filter(|text| !text.trim().is_empty())
+                .or_else(|| {
+                    text_of(document, annotation, b"RC")
+                        .map(|rich| crate::search_markups::plain_text_of_rich_text(&rich))
+                        .filter(|text| !text.is_empty())
+                });
+            metadata.push(crate::search_markups::MarkupMetadata {
+                name: dictionary_string(annotation, b"NM")
+                    .unwrap_or_else(|| format!("page-{page_index}-annotation-{annotation_index}")),
+                object: reference(annotation_object),
+                page_index,
+                subtype,
+                subject: text_of(document, annotation, b"Subj"),
+                author: text_of(document, annotation, b"T"),
+                contents,
+                created: text_of(document, annotation, b"CreationDate"),
+                modified: text_of(document, annotation, b"M"),
+                in_reply_to: annotation.get(b"IRT").ok().and_then(reference),
+                rect: best_effort_annotation_rect(document, annotation)
+                    .map(|rect| [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]),
+                in_model: managed_slots
+                    .get(&page_id)
+                    .is_some_and(|slots| slots.contains(&annotation_index)),
+            });
+        }
+    }
+    metadata
 }
 
 fn retained_annotation_obstacles(
@@ -14327,6 +14575,21 @@ fn flattened_appearance_placement(annotation: &Dictionary, form: &Dictionary) ->
 /// order, each the Snapshot's unrotated box with its Form drawn on it. The PDF
 /// worker rasterises these pages for the canvas.
 pub fn vector_snapshot_layer(document: &Document) -> Result<Option<Vec<u8>>, PdfPersistenceError> {
+    let Some(mut layer) = vector_snapshot_layer_document(document)? else {
+        return Ok(None);
+    };
+    let mut bytes = Vec::new();
+    layer.save_to(&mut bytes)?;
+    Ok(Some(bytes))
+}
+
+/// [`vector_snapshot_layer`] before it is written: a copy of `document`
+/// whose catalog lists one page for each vector Snapshot. The worker writes
+/// it as an incremental update of the source bytes when it can, since a
+/// full save drops each object that lopdf could not parse.
+pub fn vector_snapshot_layer_document(
+    document: &Document,
+) -> Result<Option<Box<Document>>, PdfPersistenceError> {
     let calibrations = import_page_scales(document)
         .iter()
         .filter_map(|scale| {
@@ -14379,9 +14642,7 @@ pub fn vector_snapshot_layer(document: &Document) -> Result<Option<Vec<u8>>, Pdf
     );
     let catalog_id = layer.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
     layer.trailer = dictionary! { "Root" => catalog_id };
-    let mut bytes = Vec::new();
-    layer.save_to(&mut bytes)?;
-    Ok(Some(bytes))
+    Ok(Some(Box::new(layer)))
 }
 
 /// The first image XObject reachable from a resource dictionary, searching
@@ -16446,6 +16707,124 @@ mod tests {
         );
     }
 
+    #[test]
+    fn import_records_every_annotation_for_search_with_author_subject_text_and_replies() {
+        use super::*;
+        let mut seed = PdfPersistenceSession::from_document(
+            PathBuf::from("source.pdf"),
+            retained_render_test_document(),
+            None,
+        )
+        .unwrap();
+        seed.add_cloud_plus(persistence_order_test_cloud_plus())
+            .unwrap();
+        let rect = || Object::Array(vec![24.into(), 36.into(), 120.into(), 84.into()]);
+        let note = append_native_annotation(
+            &mut seed.document,
+            0,
+            dictionary! {
+                "Subtype" => "Text", "NM" => pdf_literal("note"), "T" => pdf_literal("Sam"),
+                "Subj" => pdf_literal("Note"), "Contents" => pdf_literal("Check the fire door"),
+                "M" => pdf_literal("D:20261001120000"), "Rect" => rect(),
+            },
+        )
+        .unwrap();
+        append_native_annotation(
+            &mut seed.document,
+            0,
+            dictionary! {
+                "Subtype" => "Text", "NM" => pdf_literal("reply"), "T" => pdf_literal("Kim"),
+                "Contents" => pdf_literal("Agreed, 60 min"), "IRT" => Object::Reference(note),
+                "RT" => "R", "Rect" => rect(),
+            },
+        )
+        .unwrap();
+        append_native_annotation(
+            &mut seed.document,
+            0,
+            dictionary! {
+                "Subtype" => "FreeText", "NM" => pdf_literal("other-app"),
+                "T" => pdf_literal("Lee"), "Rect" => rect(),
+                "RC" => pdf_literal("<body><p>Rich &amp; <b>plain</b></p></body>"),
+            },
+        )
+        .unwrap();
+        // UTF-16BE with a byte order mark: "Äb".
+        append_native_annotation(
+            &mut seed.document,
+            0,
+            dictionary! {
+                "Subtype" => "Text", "NM" => pdf_literal("wide"), "Rect" => rect(),
+                "Contents" => Object::String(
+                    vec![0xFE, 0xFF, 0x00, 0xC4, 0x00, b'b'],
+                    lopdf::StringFormat::Literal,
+                ),
+            },
+        )
+        .unwrap();
+        append_native_annotation(
+            &mut seed.document,
+            0,
+            dictionary! { "Subtype" => "Link", "NM" => pdf_literal("link"), "Rect" => rect() },
+        )
+        .unwrap();
+        append_native_annotation(
+            &mut seed.document,
+            0,
+            dictionary! { "Subtype" => "Popup", "NM" => pdf_literal("popup"), "Rect" => rect() },
+        )
+        .unwrap();
+        append_native_annotation(
+            &mut seed.document,
+            0,
+            dictionary! { "Subtype" => "Square", "T" => pdf_literal("Alex"),
+                "Subj" => pdf_literal("Rectangle"), "C" => Object::Array(vec![1.into(), 0.into(), 0.into()]),
+                "Rect" => rect() },
+        )
+        .unwrap();
+        let imported = import_annotations(&seed.document, &BTreeMap::new()).unwrap();
+        let metadata = &imported.markup_metadata;
+        let named = |name: &str| {
+            metadata
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("no entry named {name}: {metadata:#?}"))
+        };
+        // Links and pop-ups are left out.
+        assert!(!metadata.iter().any(|entry| entry.subtype == "Link"));
+        assert!(!metadata.iter().any(|entry| entry.subtype == "Popup"));
+        let sticky = named("note");
+        assert_eq!(sticky.object, Some(note));
+        assert_eq!(sticky.author.as_deref(), Some("Sam"));
+        assert_eq!(sticky.subject.as_deref(), Some("Note"));
+        assert_eq!(sticky.contents.as_deref(), Some("Check the fire door"));
+        assert_eq!(sticky.modified.as_deref(), Some("D:20261001120000"));
+        assert_eq!(sticky.rect, Some([24., 36., 120., 84.]));
+        assert!(!sticky.in_model, "a sticky note is retained, not modelled");
+        let reply = named("reply");
+        assert_eq!(reply.in_reply_to, Some(note));
+        assert_eq!(reply.author.as_deref(), Some("Kim"));
+        assert_eq!(reply.contents.as_deref(), Some("Agreed, 60 min"));
+        // Rich text reads as plain text when there is no /Contents.
+        assert_eq!(named("other-app").contents.as_deref(), Some("Rich & plain"));
+        assert_eq!(named("wide").contents.as_deref(), Some("Äb"));
+        // The model's markups are marked, and so are both members of a
+        // Cloud+ pair.
+        let modelled = metadata.iter().filter(|entry| entry.in_model).count();
+        assert!(
+            modelled >= 2,
+            "the Cloud+ pair is in the model: {metadata:#?}"
+        );
+        let cloud_plus = imported.cloud_pluses[0].id.as_str();
+        assert!(named(cloud_plus).in_model);
+        let square = metadata
+            .iter()
+            .find(|entry| entry.subtype == "Square")
+            .unwrap();
+        assert_eq!(square.author.as_deref(), Some("Alex"));
+        assert!(square.name.starts_with("page-0-annotation-"));
+    }
+
     fn persistence_order_test_cloud_plus() -> crate::annotation_model::CloudPlusAnnotation {
         use super::*;
         CloudPlusAnnotation::new(
@@ -16583,6 +16962,148 @@ mod tests {
         assert_eq!(imported.cloud_pluses.len(), 1);
         assert!(imported.cloud_pluses[0].cloud_appearance_path().is_none());
         assert!(imported.cloud_pluses[0].same_persisted_state_as(&cloud_plus));
+    }
+
+    /// Opens `source` bytes as a session, adds a rectangle, saves to a new
+    /// file and returns the saved bytes. The scratch folder goes at drop.
+    #[cfg(any(unix, windows))]
+    fn open_add_rectangle_and_save(name: &str, source_bytes: &[u8]) -> (Vec<String>, Vec<u8>) {
+        use super::*;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "target/test-scratch/{name}-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _scratch = Scratch(root.clone());
+        let source = root.join("source.pdf");
+        let saved = root.join("saved.pdf");
+        std::fs::write(&source, source_bytes).unwrap();
+
+        let mut opened = PdfPersistenceSession::open(&source).unwrap();
+        let mut names: Vec<String> = opened
+            .untouched_annotations()
+            .iter()
+            .map(|annotation| format!("{} {}", annotation.subtype, annotation.name))
+            .collect();
+        names.extend(
+            opened
+                .rectangles()
+                .iter()
+                .map(|rectangle| format!("Rectangle {}", rectangle.id.as_str())),
+        );
+        names.sort();
+        opened
+            .add_rectangle(RectangleAnnotation {
+                id: MarkupId::new("rectangle:added").unwrap(),
+                page_index: 0,
+                rect: PdfRect::new(100., 10., 140., 30.).unwrap(),
+                rotation_degrees: 0.,
+                appearance: RectangleAppearance::default(),
+                locked: false,
+            })
+            .unwrap();
+        let authority = SaveAsTargetAuthority::bind(saved.clone(), &source).unwrap();
+        opened
+            .prepare_save_authorized(&authority)
+            .unwrap()
+            .publish()
+            .unwrap();
+        let bytes = std::fs::read(&saved).unwrap();
+        let reopened = PdfPersistenceSession::open(&saved).unwrap();
+        assert!(
+            reopened
+                .rectangles()
+                .iter()
+                .any(|rectangle| rectangle.id.as_str() == "rectangle:added")
+        );
+        (names, bytes)
+    }
+
+    /// The annotation dictionaries of page 1, found by `/NM`.
+    fn page_one_annotation_names(bytes: &[u8]) -> Vec<String> {
+        use super::resolve_object;
+        let document = Document::load_mem(bytes).unwrap();
+        let page = document.get_pages()[&1];
+        let annots = document
+            .get_dictionary(page)
+            .unwrap()
+            .get(b"Annots")
+            .and_then(|annots| resolve_object(&document, annots))
+            .and_then(Object::as_array)
+            .unwrap();
+        annots
+            .iter()
+            .map(|annot| {
+                let annot = resolve_object(&document, annot).unwrap().as_dict().unwrap();
+                let subtype =
+                    String::from_utf8_lossy(annot.get(b"Subtype").unwrap().as_name().unwrap())
+                        .into_owned();
+                let name = annot
+                    .get(b"NM")
+                    .ok()
+                    .and_then(|name| name.as_str().ok())
+                    .map(|name| String::from_utf8_lossy(name).into_owned())
+                    .unwrap_or_default();
+                format!("{subtype} {name}")
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn a_bluebeam_name_with_a_stray_hash_opens_and_saves_its_annotation() {
+        use super::*;
+        let source = crate::pdf_load::tests::stray_hash_object_stream_pdf("", "");
+        let (imported, saved) = open_add_rectangle_and_save("stray-hash-save", &source);
+        assert!(
+            imported.contains(&"Stamp stamp-with-stray-hash".to_owned()),
+            "{imported:?}"
+        );
+        assert_eq!(imported.len(), 2, "{imported:?}");
+
+        let names = page_one_annotation_names(&saved);
+        assert!(
+            names.contains(&"Stamp stamp-with-stray-hash".to_owned()),
+            "{names:?}"
+        );
+        assert_eq!(names.len(), 3, "{names:?}");
+        let document = Document::load_mem(&saved).unwrap();
+        let stamp = document
+            .objects
+            .values()
+            .filter_map(|object| object.as_dict().ok())
+            .find(|dict| {
+                dict.get(b"NM").and_then(Object::as_str).ok() == Some(b"stamp-with-stray-hash")
+            })
+            .unwrap();
+        assert_eq!(
+            stamp.get(b"Name").unwrap().as_name().unwrap(),
+            b"#YURy297yQ"
+        );
+        assert_eq!(stamp.get(b"Subj").unwrap().as_str().unwrap(), b"REV E");
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn a_missing_annotation_object_reads_as_null_on_open_and_save() {
+        // `/Annots` and the Square's `/Popup` name object 9, which is absent.
+        let source =
+            crate::pdf_load::tests::stray_hash_object_stream_pdf(" 9 0 R", " /Popup 9 0 R");
+        let (imported, saved) = open_add_rectangle_and_save("missing-annot-save", &source);
+        assert_eq!(imported.len(), 2, "{imported:?}");
+        let names = page_one_annotation_names(&saved);
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert!(
+            names.contains(&"Stamp stamp-with-stray-hash".to_owned()),
+            "{names:?}"
+        );
     }
 
     #[test]
@@ -17215,6 +17736,68 @@ mod tests {
             unchanged, display_bytes,
             "documents without valid ViewState ON must retain their exact supplied bytes",
         );
+    }
+
+    /// A view state cleared for PDFium's display goes in an incremental
+    /// update: a content stream that lopdf cannot parse (a stray `#` in a
+    /// name of its dictionary) stays in the bytes PDFium reads.
+    #[test]
+    fn pdfium_display_render_keeps_objects_lopdf_cannot_parse() {
+        let mut document = Document::with_version("1.7");
+        let pages = document.new_object_id();
+        let content = document.add_object(lopdf::Stream::new(
+            dictionary! { "Note" => "PLACEHOLDE" },
+            b"0 0 0 rg 1 1 8 8 re f".to_vec(),
+        ));
+        let page = document.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages, "Contents" => content,
+            "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+        });
+        document.objects.insert(
+            pages,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
+            }),
+        );
+        let group = document.add_object(dictionary! {
+            "Type" => "OCG",
+            "Usage" => dictionary! { "View" => dictionary! { "ViewState" => "ON" } },
+        });
+        let catalog = document.add_object(dictionary! {
+            "Type" => "Catalog", "Pages" => pages,
+            "OCProperties" => dictionary! {
+                "OCGs" => vec![group.into()],
+                "D" => dictionary! { "BaseState" => "OFF" },
+            },
+        });
+        document.trailer.set("Root", catalog);
+        let mut source = Vec::new();
+        document.save_to(&mut source).unwrap();
+        let at = source
+            .windows(b"/PLACEHOLDE".len())
+            .position(|window| window == b"/PLACEHOLDE")
+            .unwrap();
+        source[at..at + b"/PLACEHOLDE".len()].copy_from_slice(b"/#PLACEHOLD");
+        let loaded = crate::pdf_load::load_pdf_mem(&source).unwrap();
+        assert!(!loaded.objects.contains_key(&content), "lopdf drops it");
+
+        let display = pdfium_display_render_bytes(&loaded, source.clone()).unwrap();
+        assert!(display.starts_with(&source), "an incremental update");
+        let drawn = b"0 0 0 rg 1 1 8 8 re f";
+        assert!(
+            display.windows(drawn.len()).any(|window| window == drawn),
+            "the content stream is still in the display bytes"
+        );
+        let reread = Document::load_mem(&display).unwrap();
+        let usage = reread.get_dictionary(group).unwrap().get(b"Usage").unwrap();
+        let view = usage
+            .as_dict()
+            .unwrap()
+            .get(b"View")
+            .unwrap()
+            .as_dict()
+            .unwrap();
+        assert!(view.get(b"ViewState").is_err(), "the view state is cleared");
     }
 
     #[test]

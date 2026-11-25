@@ -8,7 +8,6 @@ use gpui::{
     App, Bounds, FontWeight, Pixels, Point, ShapedLine, TextAlign, TextRun, TransformationMatrix,
     Window, WindowTextSystem, font, point, px, radians, size,
 };
-use gpui_component::try_parse_color;
 
 pub(crate) struct CaptionLayout {
     /// The painted extent, including any rotation.
@@ -308,7 +307,8 @@ fn layout(
     };
     let mut caption_font = font(display_family.to_owned());
     caption_font.weight = FontWeight(style.weight() as f32);
-    let colour = try_parse_color(style.color())
+    // A markup colour: mapped on dark paper (Dark pages) where painted.
+    let colour = crate::paper_chrome::parse_markup_colour(style.color())
         .unwrap_or(gpui::black())
         .opacity(style.opacity() as f32);
     let lines = text

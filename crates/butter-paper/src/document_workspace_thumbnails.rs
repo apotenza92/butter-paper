@@ -68,6 +68,27 @@ pub(super) struct ThumbnailSidebarInputs {
     pub ink_mutation_disabled: bool,
 }
 
+/// The left sidebar's resizable panel, which Page Thumbnails and Search
+/// share: one width, and one yield rule.
+fn left_sidebar_frame(
+    visible: bool,
+    max_width: Option<Pixels>,
+    window: &mut Window,
+) -> ResizablePanel {
+    resizable_panel()
+        .visible(visible)
+        .size(window.rem_size() * 18.75)
+        // Preserve full stock controls when the interface scale grows;
+        // narrower than preferred when the page column would otherwise
+        // squeeze the viewer toolbar.
+        .size_range({
+            let rem = window.rem_size();
+            let range = super::THUMBNAILS_WIDTH_REMS;
+            rem * range.start..max_width.unwrap_or(rem * range.end).min(rem * range.end)
+        })
+        .flex_none()
+}
+
 impl DocumentWorkspace {
     pub(super) fn render_thumbnail_sidebar(
         &self,
@@ -88,6 +109,10 @@ impl DocumentWorkspace {
             selection_color,
             ink_mutation_disabled,
         } = inputs;
+        let rotate_all_disabled = {
+            let commands = self.document_command_state(cx);
+            !commands.document_ready || commands.save_busy || commands.rotation_busy
+        };
         // Moved pages' rows slide from their old places to their new ones.
         let row_pitch = f32::from(window.rem_size()) * 12.5;
         let slide = self
@@ -103,21 +128,18 @@ impl DocumentWorkspace {
             window.request_animation_frame();
         }
         let slide = Arc::new(slide);
-        resizable_panel()
-                        .visible(thumbnails_visible)
-                        .size(window.rem_size() * 18.75)
-                        // Preserve full stock controls when the interface scale
-                        // grows; narrower than preferred when the page column
-                        // would otherwise squeeze the viewer toolbar.
-                        .size_range({
-                            let rem = window.rem_size();
-                            let range = super::THUMBNAILS_WIDTH_REMS;
-                            rem * range.start
-                                ..thumbnails_max_width
-                                    .unwrap_or(rem * range.end)
-                                    .min(rem * range.end)
-                        })
-                        .flex_none()
+        let frame = left_sidebar_frame(thumbnails_visible, thumbnails_max_width, window);
+        // Search shares the sidebar and its width.
+        if self.left_panel == Some(super::search_panel::LeftPanel::Search) {
+            return frame.child(
+                gpui::div()
+                    .on_prepaint(self.left_sidebar_sizing.measure())
+                    .size_full()
+                    .min_h_0()
+                    .child(self.render_search_panel(window, cx)),
+            );
+        }
+        frame
                         .child({
                             let thumbnail_rows = Arc::new(thumbnails);
                             let thumbnail_count = thumbnail_rows.len();
@@ -150,23 +172,65 @@ impl DocumentWorkspace {
                                 .child(crate::property_controls::PropertyInspectorHeader::new(
                                     "document-left-sidebar-header",
                                     "Page Thumbnails",
-                                ).trailing({
+                                )
+                                // Three small buttons, 4px apart.
+                                .trailing_lane(gpui::rems(5.))
+                                .trailing({
                                     let focus = self.thumbnail_focus.clone();
-                                    accessible_icon_button(
-                                        Button::new(DOCUMENT_THUMBNAIL_ADD_PAGE_ID)
-                                            .debug_selector(|| DOCUMENT_THUMBNAIL_ADD_PAGE_ID.into())
-                                            .icon(IconName::Plus)
-                                            .ghost()
-                                            .small()
-                                            .disabled(ink_mutation_disabled)
-                                            .tooltip("Add page"),
-                                        "Add page",
-                                    )
-                                    .dropdown_menu(move |menu, _, _| {
-                                        menu.action_context(focus.clone())
-                                            .menu("After current page", Box::new(InsertPageAfter))
-                                            .menu("At end of document", Box::new(InsertPageAtEnd))
-                                    })
+                                    // Every page turns, whatever is selected:
+                                    // as the Document menu's Rotate All Pages.
+                                    let rotate_all = |id: &'static str,
+                                                      label: &'static str,
+                                                      icon: &'static str,
+                                                      direction: PageRotationDirection,
+                                                      cx: &mut Context<Self>| {
+                                        accessible_icon_button(
+                                            Button::new(id)
+                                                .debug_selector(move || id.into())
+                                                .icon(gpui_component::Icon::default().path(icon))
+                                                .ghost()
+                                                .small()
+                                                .disabled(rotate_all_disabled)
+                                                .tooltip(label)
+                                                .on_click(cx.listener(move |workspace, _, _, cx| {
+                                                    workspace.rotate_all_pages_from_action(direction, cx);
+                                                })),
+                                            label,
+                                        )
+                                    };
+                                    h_flex()
+                                        .gap_1()
+                                        .child(rotate_all(
+                                            DOCUMENT_THUMBNAIL_ROTATE_ALL_LEFT_ID,
+                                            "Rotate All Pages Left",
+                                            "icons/thumbnail-rotate-left.svg",
+                                            PageRotationDirection::Left,
+                                            cx,
+                                        ))
+                                        .child(rotate_all(
+                                            DOCUMENT_THUMBNAIL_ROTATE_ALL_RIGHT_ID,
+                                            "Rotate All Pages Right",
+                                            "icons/thumbnail-rotate-right.svg",
+                                            PageRotationDirection::Right,
+                                            cx,
+                                        ))
+                                        .child(
+                                            accessible_icon_button(
+                                                Button::new(DOCUMENT_THUMBNAIL_ADD_PAGE_ID)
+                                                    .debug_selector(|| DOCUMENT_THUMBNAIL_ADD_PAGE_ID.into())
+                                                    .icon(IconName::Plus)
+                                                    .ghost()
+                                                    .small()
+                                                    .disabled(ink_mutation_disabled)
+                                                    .tooltip("Add page"),
+                                                "Add page",
+                                            )
+                                            .dropdown_menu(move |menu, _, _| {
+                                                menu.action_context(focus.clone())
+                                                    .menu("After current page", Box::new(InsertPageAfter))
+                                                    .menu("At end of document", Box::new(InsertPageAtEnd))
+                                            }),
+                                        )
                                 }))
                                 .child(
                             gpui::div()
@@ -435,6 +499,7 @@ impl DocumentWorkspace {
                                                                             None,
                                                                             None,
                                                                             Vec::new(),
+                                                                            None,
                                                                             None,
                                                                             None,
                                                                             None,

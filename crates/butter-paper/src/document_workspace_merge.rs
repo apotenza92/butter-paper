@@ -105,7 +105,7 @@ impl MergeDialog {
             });
             // Counted, and checked readable, without holding up the dialog.
             let count = cx.background_executor().spawn(async move {
-                lopdf::Document::load(&path)
+                crate::pdf_load::load_pdf(&path)
                     .map_err(|_| ())
                     .and_then(|document| {
                         if document.is_encrypted() || document.encryption_state.is_some() {

@@ -355,7 +355,8 @@ pub fn sign_pdf_with(
     network: &Network<'_>,
 ) -> Result<Vec<u8>, SigningError> {
     let document = |reason: &str| SigningError::Document(reason.to_owned());
-    let source = Document::load_mem(pdf).map_err(|_| document("it could not be read"))?;
+    let source =
+        crate::pdf_load::load_pdf_mem(pdf).map_err(|_| document("it could not be read"))?;
     if source.is_encrypted() {
         return Err(document("it needs a password to open"));
     }
@@ -509,7 +510,8 @@ fn append_validation_data(
         }
     }
 
-    let source = Document::load_mem(pdf).map_err(|_| document("it could not be read"))?;
+    let source =
+        crate::pdf_load::load_pdf_mem(pdf).map_err(|_| document("it could not be read"))?;
     let mut previous = Document::new();
     previous.version = source.version.clone();
     previous.max_id = source.max_id;

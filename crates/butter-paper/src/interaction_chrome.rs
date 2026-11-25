@@ -1,30 +1,33 @@
 //! Screen-space interaction chrome. These colours never become PDF appearance data.
+//! They follow the paper painted on ([`crate::paper_chrome`]): a light-paper
+//! set and a dark-paper set, never the shell theme.
+use crate::paper_chrome::chrome_colour;
 use crate::selection_geometry::{SelectionKind, SelectionMarquee, SelectionPoint, SelectionShape};
-use gpui::{Bounds, Hsla, Path, PathBuilder, Pixels, Point, Window, fill, px, rgb};
+use gpui::{Bounds, Hsla, Path, PathBuilder, Pixels, Point, Window, fill, px};
 
 pub(super) fn selection_colour() -> Hsla {
-    rgb(0x2563eb).into()
+    chrome_colour(|chrome| chrome.selection)
 }
 fn halo_colour() -> Hsla {
-    rgb(0xffffff).into()
+    chrome_colour(|chrome| chrome.halo)
 }
 
 /// Locked handles are visibly inert; they do not imply the active yellow affordance.
 pub(super) fn locked_handle_colour() -> Hsla {
-    rgb(0x94a3b8).into()
+    chrome_colour(|chrome| chrome.locked)
 }
 
 pub(super) fn hover_colour() -> Hsla {
-    rgb(0x93c5fd).into()
+    chrome_colour(|chrome| chrome.hover)
 }
 
 #[cfg(test)]
 pub(super) fn focus_colour() -> Hsla {
-    rgb(0x1d4ed8).into()
+    chrome_colour(|chrome| chrome.focus)
 }
 
 pub(super) fn draft_colour() -> Hsla {
-    rgb(0x0f766e).into()
+    chrome_colour(|chrome| chrome.draft)
 }
 
 /// Feedback state for one annotation. Active marquee candidates are Hover even
@@ -462,7 +465,7 @@ fn rotation_connector_path(
 fn marquee_style(kind: SelectionKind) -> (Hsla, f32, bool) {
     match kind {
         SelectionKind::Window => (selection_colour(), 0.13, false),
-        SelectionKind::Crossing => (rgb(0x22c55e).into(), 0.14, true),
+        SelectionKind::Crossing => (chrome_colour(|chrome| chrome.crossing), 0.14, true),
     }
 }
 

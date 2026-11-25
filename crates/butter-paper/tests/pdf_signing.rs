@@ -557,3 +557,103 @@ fn system_store_identities_sign() {
     }
     assert!(signed_any >= 2, "the RSA and EC test signers: {names:?}");
 }
+
+/// A one-page PDF whose content stream, a black square, has a stray `#` in a
+/// name of its dictionary. lopdf cannot parse that stream; PDFium can.
+fn unparsed_content_stream_pdf() -> Vec<u8> {
+    use lopdf::{Document, Object, Stream};
+    let mut document = Document::with_version("1.4");
+    let pages = document.new_object_id();
+    let content = document.add_object(Stream::new(
+        dictionary! { "Note" => "PLACEHOLDE" },
+        b"0 0 0 rg 20 20 160 160 re f".to_vec(),
+    ));
+    let page = document.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages,
+        "MediaBox" => vec![0.into(), 0.into(), 200.into(), 200.into()],
+        "Contents" => content,
+    });
+    document.objects.insert(
+        pages,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page.into()],
+            "Count" => 1,
+        }),
+    );
+    let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+    document.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    let at = bytes
+        .windows(b"/PLACEHOLDE".len())
+        .position(|window| window == b"/PLACEHOLDE")
+        .unwrap();
+    bytes[at..at + b"/PLACEHOLDE".len()].copy_from_slice(b"/#PLACEHOLD");
+    bytes
+}
+
+fn sign_visibly(pdf: &[u8]) -> Vec<u8> {
+    sign_pdf(
+        pdf,
+        &identity("test-signer-rsa.p12"),
+        &SignOptions {
+            appearance: Some(SignatureAppearance {
+                page: 0,
+                rect: [150., 150., 190., 190.],
+                ..SignatureAppearance::default()
+            }),
+            ..SignOptions::default()
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn signing_keeps_a_content_stream_that_lopdf_cannot_parse() {
+    let pdf = unparsed_content_stream_pdf();
+    let signed = sign_visibly(&pdf);
+    let document = lopdf::Document::load_mem(&signed).unwrap();
+    let page = *document.get_pages().get(&1).unwrap();
+    let page = document.get_dictionary(page).unwrap();
+    assert!(
+        page.get(b"Contents").is_ok(),
+        "the signed revision of the page keeps its /Contents"
+    );
+    assert!(page.get(b"Annots").is_ok(), "and gains the widget");
+}
+
+#[test]
+#[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+fn a_signed_page_with_a_content_stream_lopdf_cannot_parse_still_draws_it() {
+    use butter_paper::document_resource::{
+        DocumentId, NativeDocumentOpener, OpenDocumentRequest, PdfiumWorkerBackend,
+    };
+    let library = PathBuf::from(std::env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY"));
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/test-scratch")
+        .join(format!("signing-content-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("surfaces")).unwrap();
+    let path = root.join("signed.pdf");
+    std::fs::write(&path, sign_visibly(&unparsed_content_stream_pdf())).unwrap();
+    let worker = PathBuf::from(env!("CARGO_BIN_EXE_butter-paper-pdf-worker"));
+    let backend = PdfiumWorkerBackend::new(worker, library, root.join("surfaces"));
+    let opened = backend
+        .open(&OpenDocumentRequest {
+            document_id: DocumentId::new(1),
+            generation: 1,
+            path,
+        })
+        .unwrap();
+    let raster = opened.render_page(0, 200).unwrap();
+    // The square covers (20, 20) to (180, 180) in page space; the page
+    // centre is inside it and outside the signature box.
+    let at = ((100 * raster.width() + 100) * 4) as usize;
+    let pixel = &raster.pixels_bgra()[at..at + 4];
+    assert!(
+        pixel[0] < 50 && pixel[1] < 50 && pixel[2] < 50,
+        "the page still draws its content: {pixel:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

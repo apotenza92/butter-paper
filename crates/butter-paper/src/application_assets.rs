@@ -12,6 +12,16 @@ pub const NEW_DOCUMENT_ICON: &str = "icons/file-plus.svg";
 pub const TEMPLATE_LIBRARY_ICON: &str = "icons/book-open.svg";
 pub const LOCK_ICON: &str = "icons/lock.svg";
 pub const LOCK_OPEN_ICON: &str = "icons/lock-open.svg";
+/// Settings ▸ Mouse wheel.
+pub const MOUSE_WHEEL_ICON: &str = "icons/mouse.svg";
+/// The find bar's Match whole word toggle.
+pub const WHOLE_WORD_ICON: &str = "icons/whole-word.svg";
+/// The search panel's Collapse results toggle.
+pub const LIST_COLLAPSE_ICON: &str = "icons/list-collapse.svg";
+/// The search panel's More context toggle.
+pub const MORE_CONTEXT_ICON: &str = "icons/unfold-vertical.svg";
+/// A markup in the search panel's results.
+pub const MARKUP_RESULT_ICON: &str = "icons/message-square.svg";
 
 /// Product icons supplement, rather than modify, the stock component assets.
 pub struct ApplicationAssets;
@@ -26,7 +36,12 @@ impl AssetSource for ApplicationAssets {
             NEW_DOCUMENT_ICON => Some(include_bytes!("../assets/icons/file-plus.svg")),
             TEMPLATE_LIBRARY_ICON => Some(include_bytes!("../assets/icons/book-open.svg")),
             LOCK_ICON => Some(include_bytes!("../assets/icons/lock.svg")),
+            WHOLE_WORD_ICON => Some(include_bytes!("../assets/icons/whole-word.svg")),
+            LIST_COLLAPSE_ICON => Some(include_bytes!("../assets/icons/list-collapse.svg")),
+            MORE_CONTEXT_ICON => Some(include_bytes!("../assets/icons/unfold-vertical.svg")),
+            MARKUP_RESULT_ICON => Some(include_bytes!("../assets/icons/message-square.svg")),
             LOCK_OPEN_ICON => Some(include_bytes!("../assets/icons/lock-open.svg")),
+            MOUSE_WHEEL_ICON => Some(include_bytes!("../assets/icons/mouse.svg")),
             "icons/grip-vertical.svg" => Some(include_bytes!("../assets/icons/grip-vertical.svg")),
             "icons/thumbnail-rotate-left.svg" => {
                 Some(include_bytes!("../assets/icons/thumbnail-rotate-left.svg"))
@@ -106,6 +121,8 @@ impl AssetSource for ApplicationAssets {
         let mut entries = gpui_component_assets::Assets.list(path)?;
         for icon in [
             EDIT_PDF_ICON,
+            MOUSE_WHEEL_ICON,
+            WHOLE_WORD_ICON,
             "icons/grip-vertical.svg",
             "icons/thumbnail-rotate-left.svg",
             "icons/thumbnail-rotate-right.svg",
@@ -262,8 +279,11 @@ mod tests {
 
     #[test]
     fn composite_rail_glyphs_preserve_reference_size_and_absolute_stroke() {
-        // Electron centres a 6px Type in Callout and positions a 7px Type at
-        // right/top -2px in Cloud+. Compensate stroke before scaling the SVG group.
+        // Electron centres a 6px Type in Callout. Cloud+ is a larger Cloud
+        // glyph at lower left, the Callout glyph at upper right and a
+        // straight line from the Callout's tail tip to the Cloud. Compensate
+        // stroke before scaling each SVG group, so every stroke is 1.5px
+        // wide at the 16px icon size (the 36 unit box is drawn at 24px).
         for (path, transform, stroke, scale) in [
             (
                 "icons/rail/callout.svg",
@@ -273,22 +293,104 @@ mod tests {
             ),
             (
                 "icons/rail/cloud-plus.svg",
-                "translate(16.5 -3) scale(.4375)",
-                "5.142857",
-                0.4375_f64,
+                "translate(-7.125 7.5) scale(1.125)",
+                "2",
+                1.125_f64,
+            ),
+            (
+                "icons/rail/cloud-plus.svg",
+                "translate(9.625 -7.5) scale(.875)",
+                "2.571429",
+                0.875_f64,
             ),
         ] {
             let bytes = ApplicationAssets.load(path).unwrap().unwrap();
             let svg = std::str::from_utf8(&bytes).unwrap();
-            assert!(svg.contains(&format!(
-                "transform=\"{transform}\" stroke-width=\"{stroke}\""
-            )));
-            assert!((stroke.parse::<f64>().unwrap() * scale * 16. / 24. - 1.5).abs() < 0.000001);
+            assert!(
+                svg.contains(&format!(
+                    "transform=\"{transform}\" stroke-width=\"{stroke}\""
+                )),
+                "{path} {transform}"
+            );
+            assert!((stroke.parse::<f64>().unwrap() * scale * 16. / 24. - 1.5).abs() < 0.00001);
         }
-        // Cloud+ overscan contains the full Type stroke, not just its centreline.
-        let stroke_radius = 5.142857_f64 * 0.4375 / 2.;
-        assert!(-3. + 4. * 0.4375 - stroke_radius >= -6.);
-        assert!(16.5 + 20. * 0.4375 + stroke_radius <= 30.);
+        let bytes = ApplicationAssets
+            .load("icons/rail/cloud-plus.svg")
+            .unwrap()
+            .unwrap();
+        let svg = std::str::from_utf8(&bytes).unwrap();
+        // The Callout's Type keeps callout.svg's weight against its outline
+        // (both 2.25 once scaled), inside the scaled Callout group.
+        assert!(
+            svg.contains(
+                r#"<g transform="translate(7.5 7.5) scale(.375)" stroke-width="6.857143">"#
+            )
+        );
+        assert!((6.857143_f64 * 0.375 * 0.875 * 16. / 24. - 1.5).abs() < 0.00001);
+        // The link has no scale group: it keeps the default 2.25 stroke,
+        // which is 1.5px.
+        assert!(svg.contains(r#"<path d="M12.436 11.564 8.568 15.432"/></svg>"#));
+        assert!(svg.contains("stroke-width=\"2.25\""));
+        assert!(
+            svg.contains("stroke=\"currentColor\"") && !svg.contains('#'),
+            "Cloud+ draws in the theme's colour only"
+        );
+        assert!(
+            svg.contains(r#"<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>"#),
+            "Cloud+ holds the Cloud glyph as cloud.svg draws it"
+        );
+        let callout = ApplicationAssets
+            .load("icons/rail/callout.svg")
+            .unwrap()
+            .unwrap();
+        let callout = std::str::from_utf8(&callout).unwrap();
+        let callout_path = callout.split("<path d=\"").nth(1).unwrap();
+        let callout_path = &callout_path[..callout_path.find('"').unwrap()];
+        assert!(
+            svg.contains(&format!("<path d=\"{callout_path}\"/>")),
+            "Cloud+ holds the Callout glyph as callout.svg draws it"
+        );
+        // The overscan holds every stroke whole, not just its centreline.
+        // Cloud: x 2..22, y 5..19 scaled 1.125 and moved by (-7.125, 7.5).
+        // Callout: x 2..22, y 3..21.788 scaled .875 and moved by (9.625, -7.5).
+        let half = 2.25_f64 / 2.;
+        let cloud = (
+            2. * 1.125 - 7.125,
+            22. * 1.125 - 7.125,
+            5. * 1.125 + 7.5,
+            19. * 1.125 + 7.5,
+        );
+        let callout = (
+            2. * 0.875 + 9.625,
+            22. * 0.875 + 9.625,
+            3. * 0.875 - 7.5,
+            21.788 * 0.875 - 7.5,
+        );
+        assert!(cloud.0 - half >= -6. && cloud.3 + half <= 30.);
+        assert!(callout.1 + half <= 30. && callout.2 - half >= -6.);
+        // The Cloud is larger than the 20 unit Cloud glyph that came before,
+        // and the Callout stays near its 18.75 unit size.
+        assert!(cloud.1 - cloud.0 > 22. && callout.1 - callout.0 > 17.);
+        // The link runs from the Callout's tail tip, down and to the left at
+        // 45 degrees, to the Cloud's outline, and is long enough to read.
+        let tail = (3.212 * 0.875 + 9.625, 21.788 * 0.875 - 7.5);
+        let (start, end) = ((12.436_f64, 11.564_f64), (8.568_f64, 15.432_f64));
+        assert!(
+            (start.0 - tail.0).hypot(start.1 - tail.1) < 0.01,
+            "{tail:?}"
+        );
+        assert!(((start.0 - end.0) - (end.1 - start.1)).abs() < 0.001);
+        let length = (start.0 - end.0).hypot(end.1 - start.1);
+        assert!((5. ..=6.).contains(&length), "{length}");
+        // The end lies on the Cloud's big bulge: centre (9, 12), radius 7.
+        let bulge = (9. * 1.125 - 7.125, 12. * 1.125 + 7.5, 7. * 1.125);
+        assert!(((end.0 - bulge.0).hypot(end.1 - bulge.1) - bulge.2).abs() < 0.05);
+        // Away from the tail the two outlines stand a stroke's width apart
+        // or more. The Callout's bottom edge (y = 19) clears the Cloud's
+        // right bump, whose top is y = 10 and whose centre is (17.5, 14.5).
+        let bump = (17.5 * 1.125 - 7.125, 14.5 * 1.125 + 7.5, 4.5 * 1.125);
+        let bottom = 19. * 0.875 - 7.5;
+        assert!(bump.1 - bump.2 - bottom - 2. * half >= 2.25);
         assert_eq!(24. / 36., 16. / 24.);
     }
 }

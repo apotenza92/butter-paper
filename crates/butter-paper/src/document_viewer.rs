@@ -16,6 +16,7 @@ use gpui_component::scroll::ScrollbarHandle;
 #[cfg(test)]
 use crate::adaptive_performance::{AdaptiveViewerPerformance, ViewerRenderDiagnostics};
 use crate::page_view_control::PageViewMode;
+use crate::paper_appearance::PaperAppearance;
 
 /// While panned into blank space, at least this much of the pages stays in view.
 pub const PAN_KEEP_VISIBLE_PX: f32 = 48.;
@@ -221,6 +222,8 @@ pub(crate) struct DocumentViewerState {
     /// The logical scroll last placed, from which wheel scrolling is bounded.
     placed_scroll: std::cell::Cell<Option<(f32, f32)>>,
     scrollbar: PageScrollbarHandle,
+    /// Real colours or Dark pages: every tile the plan asks for carries it.
+    paper: PaperAppearance,
 }
 
 /// Scroll positions that keep the view on the pages, per axis as
@@ -313,6 +316,7 @@ impl Default for DocumentViewerState {
             mode: PageViewMode::Continuous,
             zoom_percent: 100.,
             device_scale: 1.,
+            paper: PaperAppearance::Real,
             raster_revision: 1,
             planner: RenderPlanner::default(),
             plan: None,
@@ -350,6 +354,18 @@ impl Default for DocumentViewerState {
 }
 
 impl DocumentViewerState {
+    /// Draws the pages with `paper` from now on. The tiles on screen stay
+    /// until their replacements arrive, so a switch does not flash the
+    /// page white or black. Returns whether the paper changed.
+    pub fn set_paper(&mut self, paper: PaperAppearance) -> bool {
+        if self.paper == paper {
+            return false;
+        }
+        self.paper = paper;
+        self.refresh_content();
+        true
+    }
+
     pub fn configure(&mut self, mode: PageViewMode, zoom_percent: f32) {
         let zoom_percent = if zoom_percent.is_finite() {
             zoom_percent.clamp(6.25, 6_400.)
@@ -787,6 +803,7 @@ impl DocumentViewerState {
         };
         for request in &mut plan.tiles {
             request.rotation_quarter_turns = page_rotation_quarter_turns[request.page] % 4;
+            request.paper = self.paper;
         }
         let snapshot = ViewerPlanSnapshot {
             generation: plan.generation,
@@ -1984,6 +2001,74 @@ mod tests {
             assert!(viewer.finish_at(*job, Ok((test_image(), 16)), now));
         }
         assert!(viewer.shows_fresh_tiles(0));
+    }
+
+    /// Dark pages: a switch asks for every tile again with the new paper.
+    /// The tiles on screen stay until their replacements arrive (no flash),
+    /// and a tile of one paper never stands in for the other.
+    #[test]
+    fn a_paper_switch_redraws_tiles_with_the_new_paper_and_keeps_the_old_meanwhile() {
+        let mut viewer = DocumentViewerState::default();
+        let now = Instant::now();
+        viewer.configure(PageViewMode::SinglePage, 100.);
+        let plan = viewer
+            .plan_at(11, &[(612., 792.)], &[0], 0, 800., 600., 0., 0., 1., now)
+            .unwrap();
+        assert!(
+            plan.tiles
+                .iter()
+                .all(|tile| tile.paper == PaperAppearance::Real)
+        );
+        for job in viewer.claim_jobs() {
+            assert!(viewer.finish_at(job, Ok((test_image(), 16)), now));
+        }
+        let real_tiles = viewer.visible_tiles(0);
+        assert_eq!(real_tiles.len(), plan.tiles.len());
+
+        assert!(viewer.set_paper(PaperAppearance::Dark));
+        assert!(!viewer.set_paper(PaperAppearance::Dark), "no change");
+        let dark_plan = viewer
+            .plan_at(11, &[(612., 792.)], &[0], 0, 800., 600., 0., 0., 1., now)
+            .unwrap();
+        assert!(
+            dark_plan
+                .tiles
+                .iter()
+                .all(|tile| tile.paper == PaperAppearance::Dark)
+        );
+        // The real tiles still show.
+        let shown = viewer.visible_tiles(0);
+        assert_eq!(shown.len(), real_tiles.len());
+        assert!(
+            shown
+                .iter()
+                .zip(&real_tiles)
+                .all(|((_, shown), (_, before))| Arc::ptr_eq(shown, before))
+        );
+        // Every tile is asked for again, as Dark, at full quality.
+        let jobs = viewer.claim_jobs();
+        assert_eq!(jobs.len(), dark_plan.tiles.len());
+        assert!(jobs.iter().all(|job| {
+            job.raster.paper == PaperAppearance::Dark && job.quality == ViewerRenderQuality::Full
+        }));
+        // A Real tile is not a cache hit for its Dark twin.
+        let real_twin = TileRequest {
+            paper: PaperAppearance::Real,
+            ..dark_plan.tiles[0]
+        };
+        assert!(viewer.insert_direct(real_twin, test_image(), 16));
+        assert!(!viewer.touch_cached(dark_plan.tiles[0]));
+        assert!(viewer.touch_cached(real_twin));
+        for job in jobs {
+            assert!(viewer.finish_at(job, Ok((test_image(), 16)), now));
+        }
+        assert!(viewer.shows_fresh_tiles(0));
+        assert!(
+            viewer
+                .visible_tiles(0)
+                .iter()
+                .all(|(request, _)| request.paper == PaperAppearance::Dark)
+        );
     }
 
     #[test]

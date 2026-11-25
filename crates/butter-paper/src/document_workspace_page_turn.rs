@@ -37,11 +37,13 @@ pub(super) fn slide_remaining(started: Instant, now: Instant) -> f32 {
 /// The Snapshot tool's copied box flashes white and fades over this.
 pub(super) const SNAPSHOT_FLASH_DURATION: Duration = Duration::from_millis(250);
 
-/// The snap indicator, tracking guides and relationship guides of a frame.
+/// The snap indicator, tracking guides, relationship guides and held angle
+/// guide of a frame.
 pub(super) type SnapGuides = (
     Option<SemanticSnapDecision>,
     Option<crate::semantic_snapping::ObjectSnapTrackingResult>,
     Vec<RelationshipSnapGuide>,
+    Option<crate::semantic_snapping::AngleSnapGuide>,
 );
 
 /// Snap guides fading in since a time, or the last ones shown fading out.
@@ -210,7 +212,8 @@ impl DocumentWorkspace {
         window: &mut Window,
         cx: &App,
     ) -> SnapGuides {
-        let shown = guides.0.is_some() || guides.1.is_some() || !guides.2.is_empty();
+        let shown =
+            guides.0.is_some() || guides.1.is_some() || !guides.2.is_empty() || guides.3.is_some();
         let progress = |since: Instant| {
             now.saturating_duration_since(since).as_secs_f32()
                 / SNAP_GUIDE_FADE_DURATION.as_secs_f32()
@@ -408,17 +411,17 @@ impl DocumentWorkspace {
 }
 
 thread_local! {
-    /// One white pixel, stretched and turned to draw the turning page's
-    /// paper: GPUI turns images but not filled rectangles.
-    static PAPER: Arc<RenderImage> = {
-        let buffer = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-            1,
-            1,
-            vec![255, 255, 255, 255],
-        )
-        .expect("one pixel fits one pixel's bytes");
-        Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]))
-    };
+    /// One pixel of each paper (white, and the dark paper of Dark pages),
+    /// stretched and turned to draw the turning page's paper: GPUI turns
+    /// images but not filled rectangles.
+    static PAPER: [Arc<RenderImage>; 2] = [0xffffff, crate::paper_chrome::PaperChrome::DARK.paper]
+        .map(|colour: u32| {
+            let [_, r, g, b] = colour.to_be_bytes();
+            let buffer =
+                image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(1, 1, vec![b, g, r, 255])
+                    .expect("one pixel fits one pixel's bytes");
+            Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]))
+        });
 }
 
 /// Draws the turning page: its paper and kept tiles, turned by `paint.angle`
@@ -443,7 +446,13 @@ pub(super) fn page_turn_element(paint: PageTurnPaint) -> impl IntoElement {
                 .translate(pivot)
                 .rotate(gpui::Radians(paint.angle))
                 .translate(back);
-            let paper = PAPER.with(Arc::clone);
+            let paper = PAPER.with(|paper| {
+                paper[usize::from(
+                    crate::paper_chrome::paint_paper()
+                        == crate::paper_appearance::PaperAppearance::Dark,
+                )]
+                .clone()
+            });
             let _ = window.paint_image_transformed(
                 bounds,
                 bounds,

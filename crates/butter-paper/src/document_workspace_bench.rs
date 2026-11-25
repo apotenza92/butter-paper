@@ -154,7 +154,7 @@ impl DocumentWorkspace {
     }
 
     pub fn thumbnail_bench_open_pages_panel(&mut self, cx: &mut Context<Self>) {
-        self.pages_panel_open = true;
+        self.left_panel = Some(super::search_panel::LeftPanel::Thumbnails);
         cx.notify();
     }
 

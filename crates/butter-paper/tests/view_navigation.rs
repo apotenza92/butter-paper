@@ -13,15 +13,17 @@ use std::{
     },
 };
 
+use butter_paper::application_shell::{PageTurningPreference, ZoomSpeedPreference};
 use butter_paper::document_workspace::{
-    ActualSize, ContinuousView, DOCUMENT_VIEWPORT_ID, DocumentId, DocumentWorkspace, FitPage,
-    FitWidth, NativeDocumentOpener, NativeDocumentResource, NavigateDown, NavigateEnd,
-    NavigateHome, NavigateNextPage, NavigatePageDown, NavigatePageUp, NavigatePreviousPage,
-    NavigateUp, OpenDocumentRequest, OpenedNativeDocument, RasterSurface, SinglePageView,
-    ThumbnailSurface, ZoomIn, ZoomOut, document_session_tab_id, document_viewer_page_id,
-    init_document_workspace_actions,
+    ActualSize, ContinuousView, DOCUMENT_VIEWPORT_ID, DocumentId, DocumentOpenBatchRequest,
+    DocumentOpenOrigin, DocumentWorkspace, FitPage, FitWidth, NativeDocumentOpener,
+    NativeDocumentResource, NavigateDown, NavigateEnd, NavigateHome, NavigateNextPage,
+    NavigatePageDown, NavigatePageUp, NavigatePreviousPage, NavigateUp, OpenDocumentRequest,
+    OpenedNativeDocument, RasterSurface, SinglePageView, ThumbnailSurface, ZoomIn, ZoomOut,
+    document_session_tab_id, document_viewer_page_id, init_document_workspace_actions,
 };
-use butter_paper::native_document_view_state::ViewerZoomPreset;
+use butter_paper::mouse_wheel::{NOTCH_LINES, PageTurning, ZoomSpeed};
+use butter_paper::native_document_view_state::{RememberedPageView, RestartZoom, ViewerZoomPreset};
 use butter_paper::page_view_control::{
     CONTINUOUS_PRIMARY_ID, PageViewMode, SINGLE_PAGE_PRIMARY_ID, WheelBehavior,
 };
@@ -507,17 +509,41 @@ impl Harness<'_> {
         self.settle();
     }
 
-    /// Notches of a discrete mouse wheel; negative turns it down.
-    fn notch(&mut self, lines: f32) {
+    /// Notches of a discrete mouse wheel after a clear pause; negative turns
+    /// it down.
+    fn notch(&mut self, notches: f32) {
+        self.notch_after(600, notches);
+    }
+
+    /// Notches of a discrete mouse wheel `gap_ms` after the last event.
+    fn notch_after(&mut self, gap_ms: u64, notches: f32) {
         self.settle();
+        self.cx
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(gap_ms));
         let at = self.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
         self.cx.simulate_mouse_move(at, None, Modifiers::default());
         self.cx.simulate_event(ScrollWheelEvent {
             position: at,
-            delta: ScrollDelta::Lines(point(0., lines)),
+            delta: ScrollDelta::Lines(point(0., notches * NOTCH_LINES)),
             ..Default::default()
         });
         self.settle();
+    }
+
+    fn set_page_turning(&mut self, turning: PageTurning) {
+        self.cx
+            .update(|_, cx| cx.set_global(PageTurningPreference(turning)));
+    }
+
+    fn remembered(&mut self, page: u32) -> Option<RememberedPageView> {
+        let document = self.document;
+        self.workspace.read_with(self.cx, |workspace, cx| {
+            workspace
+                .document_view_state(document, cx)
+                .unwrap()
+                .page_view(page)
+        })
     }
 
     fn single_page_wheel_scrolls(&mut self) {
@@ -1041,8 +1067,8 @@ fn single_page_scrolling_past_the_edge_turns_to_the_same_place_on_the_next_page(
 fn single_page_wheel_scrolls_a_zoomed_page_then_turns_to_the_same_place(cx: &mut TestAppContext) {
     single_page_scrolling_past_the_edge_turns_to_the_same_place_on_the_next_page(
         cx,
-        |h| h.notch(-3.),
-        |h| h.notch(3.),
+        |h| h.notch(-1.),
+        |h| h.notch(1.),
     );
 }
 
@@ -1919,9 +1945,10 @@ fn a_narrow_toolbar_keeps_the_page_field_and_drops_the_page_buttons(cx: &mut Tes
         content.size.width, toolbar.size.width,
         "the toolbar scrolls"
     );
-    // The whole toolbar changes form at once. Just narrower than the middle
-    // form needs, still compact; at its width, the labels with the page
-    // field alone; at the full form's width, every page button too.
+    // The whole toolbar changes form at once. Just narrower than the
+    // compact form needs, the narrowest; at the middle form's width, the
+    // zoom steps with the page field alone; at the full form's width, every
+    // page button too.
     let window_at = |fit| {
         16. * butter_paper::viewer_toolbar_strip::viewer_toolbar_rems(fit, false, 4)
             + f32::from(butter_paper::window_title_bar::DOCUMENT_WINDOW_MIN_SIZE.width)
@@ -1931,16 +1958,16 @@ fn a_narrow_toolbar_keeps_the_page_field_and_drops_the_page_buttons(cx: &mut Tes
     let full = window_at(ViewerToolbarFit::Full);
     let middle = window_at(ViewerToolbarFit::Middle);
     let compact = window_at(ViewerToolbarFit::Compact);
-    let labelled = |h: &mut Harness<'_>| {
-        h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::EDIT_PDF_ICON_ID)
-            .is_none()
+    let fit_buttons = |h: &mut Harness<'_>| {
+        h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::FIT_WIDTH_ID)
+            .is_some()
     };
     let zoom_steps = |h: &mut Harness<'_>| {
         h.cx.debug_bounds(butter_paper::zoom_control::ZOOM_OUT_ID)
             .is_some()
     };
     let page_field = [false, false, true, false, false];
-    for (width, pages, labels, steps) in [
+    for (width, pages, fits, steps) in [
         (compact - 1., page_field, false, false),
         (compact, page_field, false, false),
         (middle - 1., page_field, true, false),
@@ -1952,7 +1979,7 @@ fn a_narrow_toolbar_keeps_the_page_field_and_drops_the_page_buttons(cx: &mut Tes
         h.settle();
         h.settle();
         assert_eq!(shown(&mut h), pages, "{width}");
-        assert_eq!(labelled(&mut h), labels, "{width}");
+        assert_eq!(fit_buttons(&mut h), fits, "{width}");
         assert_eq!(zoom_steps(&mut h), steps, "{width}");
         let toolbar = h.cx.debug_bounds("viewer-toolbar").unwrap();
         let content = h.cx.debug_bounds("viewer-toolbar-content").unwrap();
@@ -1969,14 +1996,14 @@ static PAGES_12: [(f32, f32); 12] = [(612., 792.); 12];
 const HALF_1080P_MAC_WIDTH: f32 = 960.;
 
 #[gpui::test]
-fn a_960_px_window_shows_the_middle_toolbar_with_both_labels(cx: &mut TestAppContext) {
+fn a_960_px_window_shows_the_middle_toolbar(cx: &mut TestAppContext) {
     use butter_paper::page_navigator::{
         PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_LAST_ID, PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
     };
     use butter_paper::viewer_toolbar_strip::{
-        EDIT_PDF_ICON_ID, EDIT_PDF_ID, VIEWER_PAGE_LAYOUT_ID, VIEWER_PAGES_GROUP_ID,
-        VIEWER_SCALE_ICON_ID, VIEWER_SCALE_ID, VIEWER_SCALE_MENU_ID, VIEWER_SCALE_VALUE_ID,
-        VIEWER_TOOLBAR_CONTENT_ID, VIEWER_TOOLBAR_ID, VIEWER_ZOOM_GROUP_ID,
+        EDIT_PDF_ID, FIT_WIDTH_ID, VIEWER_HISTORY_GROUP_ID, VIEWER_PAGE_LAYOUT_ID,
+        VIEWER_PAGES_GROUP_ID, VIEWER_SCALE_ID, VIEWER_SCALE_MENU_ID, VIEWER_TOOLBAR_CONTENT_ID,
+        VIEWER_TOOLBAR_ID, VIEWER_ZOOM_GROUP_ID,
     };
     // Page Thumbnails start collapsed.
     let mut h = setup(cx, &PAGES_12);
@@ -1989,20 +2016,17 @@ fn a_960_px_window_shows_the_middle_toolbar_with_both_labels(cx: &mut TestAppCon
         content.size.width, toolbar.size.width,
         "the toolbar scrolls at 960 px"
     );
-    // The middle form: both labels, the page field alone, the Scale menu
-    // without the scale shown.
-    for id in [
-        EDIT_PDF_ICON_ID,
-        VIEWER_SCALE_ICON_ID,
-        VIEWER_SCALE_VALUE_ID,
-    ] {
-        assert!(h.cx.debug_bounds(id).is_none(), "{id} shows at 960 px");
-    }
+    // The middle form: the page field alone, with the zoom steps and the
+    // fit and page-view buttons.
     for id in [PAGE_FIRST_ID, PAGE_PREVIOUS_ID, PAGE_NEXT_ID, PAGE_LAST_ID] {
         assert!(h.cx.debug_bounds(id).is_none(), "{id} shows at 960 px");
     }
+    for id in [butter_paper::zoom_control::ZOOM_OUT_ID, FIT_WIDTH_ID] {
+        assert!(h.cx.debug_bounds(id).is_some(), "{id} hidden at 960 px");
+    }
     // Every group shows whole, in order, inside the toolbar.
     let order = [
+        VIEWER_HISTORY_GROUP_ID,
         VIEWER_PAGES_GROUP_ID,
         VIEWER_ZOOM_GROUP_ID,
         VIEWER_PAGE_LAYOUT_ID,
@@ -2017,7 +2041,7 @@ fn a_960_px_window_shows_the_middle_toolbar_with_both_labels(cx: &mut TestAppCon
         assert!(pair[0].right() <= pair[1].left(), "{order:?}");
     }
     assert!(order[0].left() >= toolbar.left() + px(8.));
-    assert!(order[4].right() <= toolbar.right() - px(8.));
+    assert!(order[5].right() <= toolbar.right() - px(8.));
     for id in [PAGE_INDICATOR_ID, VIEWER_SCALE_MENU_ID] {
         let bounds =
             h.cx.debug_bounds(id)
@@ -2068,14 +2092,9 @@ fn a_signed_document_s_whole_toolbar_fits_half_a_1080p_screen(cx: &mut TestAppCo
     let (mut h, _) = setup_tabs(cx, &PAGES_1000, &[signed]);
     let wide_edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
     whole_toolbar_fits(&mut h, "signed");
-    // Edit PDF keeps its label: the zoom and fit buttons step into the
-    // zoom menu first.
+    // Edit PDF is the same icon toggle in every form.
     let edit_pdf = h.cx.debug_bounds(EDIT_PDF_ID).unwrap();
-    assert_eq!(edit_pdf.size.width, wide_edit_pdf.size.width);
-    assert!(
-        h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::EDIT_PDF_ICON_ID)
-            .is_none()
-    );
+    assert_eq!(edit_pdf.size, wide_edit_pdf.size);
     let toolbar = h.cx.debug_bounds("viewer-toolbar").unwrap();
     let controls =
         h.cx.debug_bounds(butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_CONTROLS_ID)
@@ -2254,4 +2273,682 @@ fn every_toolbar_group_shows_at_every_window_width_for_a_signed_document(cx: &mu
     );
     let (mut h, _) = setup_tabs(cx, &PAGES_1000, &[signed]);
     every_toolbar_group_shows_at_every_window_width(&mut h, true);
+}
+
+/// The point at a fraction across a laid-out page, in window pixels.
+fn page_point(h: &mut Harness<'_>, page: u32, fx: f32, fy: f32) -> gpui::Point<Pixels> {
+    let frame = h.frame();
+    let at = frame
+        .screen_point((page, fx, fy))
+        .unwrap_or_else(|| panic!("page {page} is laid out: {frame:?}"));
+    assert!(frame.viewport.contains(&at), "{at:?} is in view: {frame:?}");
+    at
+}
+
+fn box_armed(h: &mut Harness<'_>) -> bool {
+    let document = h.document;
+    h.workspace.read_with(h.cx, |workspace, cx| {
+        workspace.active_selection_marquee(document, cx).is_some()
+    })
+}
+
+fn rectangle_count_in(h: &mut Harness<'_>) -> usize {
+    let document = h.document;
+    h.workspace
+        .read_with(h.cx, |workspace, cx| {
+            workspace.annotation_snapshot(document, cx)
+        })
+        .unwrap()
+        .rectangles
+        .len()
+}
+
+fn press_at(h: &mut Harness<'_>, at: gpui::Point<Pixels>) {
+    h.cx.simulate_click(at, Modifiers::default());
+    h.settle();
+}
+
+fn drag_on_page(h: &mut Harness<'_>, from: gpui::Point<Pixels>) {
+    let to = point(from.x + px(80.), from.y + px(60.));
+    h.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    h.cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    h.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    h.settle();
+}
+
+fn open_page_field(h: &mut Harness<'_>, typed: &str) {
+    use butter_paper::page_navigator::{PAGE_INDICATOR_ID, PAGE_INPUT_ID};
+    h.click(PAGE_INDICATOR_ID);
+    assert!(h.cx.debug_bounds(PAGE_INPUT_ID).is_some());
+    h.cx.simulate_input(typed);
+    h.settle();
+}
+
+fn page_field_open(h: &mut Harness<'_>) -> bool {
+    h.cx.debug_bounds(butter_paper::page_navigator::PAGE_INPUT_ID)
+        .is_some()
+}
+
+/// T1 and T8: with the page field open, a press on the page only closes the
+/// field. The pointer shows the arrow and the status bar says so first.
+#[gpui::test]
+fn a_page_press_only_closes_the_page_field(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::CLICK_OUT_TYPING_STATUS;
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    let empty = page_point(&mut h, 0, 0.5, 0.3);
+    let document = h.document;
+    let status = |h: &mut Harness<'_>| {
+        h.workspace.read_with(h.cx, |workspace, cx| {
+            workspace.click_out_status(document, cx)
+        })
+    };
+    assert_eq!(status(&mut h), None);
+
+    open_page_field(&mut h, "3");
+    h.cx.simulate_mouse_move(empty, None, Modifiers::default());
+    h.cx.simulate_keystrokes("r");
+    h.settle();
+    assert!(page_field_open(&mut h), "r types into the field");
+    assert_eq!(status(&mut h), Some(CLICK_OUT_TYPING_STATUS));
+    assert_eq!(
+        h.workspace
+            .read_with(h.cx, |workspace, _| workspace.viewport_cursor()),
+        gpui::CursorStyle::Arrow,
+        "the pointer promises no gesture"
+    );
+
+    press_at(&mut h, empty);
+    assert!(!page_field_open(&mut h), "the press closed the field");
+    assert_eq!(h.frame().current_page, 0, "the page stays");
+    assert!(!box_armed(&mut h), "the press armed no selection box");
+    assert_eq!(status(&mut h), None);
+
+    press_at(&mut h, empty);
+    assert!(box_armed(&mut h), "the next press arms a box");
+    h.cx.simulate_keystrokes("escape");
+    h.settle();
+    assert!(!box_armed(&mut h));
+}
+
+/// T2 (Q1): a focused text field stops drawing tools too.
+#[gpui::test]
+fn a_page_drag_with_a_drawing_tool_only_closes_the_page_field(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    h.cx.simulate_keystrokes("r");
+    h.settle();
+    let from = page_point(&mut h, 0, 0.3, 0.3);
+    let before = rectangle_count_in(&mut h);
+
+    open_page_field(&mut h, "2");
+    drag_on_page(&mut h, from);
+    assert!(!page_field_open(&mut h));
+    assert_eq!(
+        rectangle_count_in(&mut h),
+        before,
+        "the click-out drew nothing"
+    );
+    assert_eq!(h.frame().current_page, 0, "the typed page was not taken");
+
+    drag_on_page(&mut h, from);
+    assert_eq!(
+        rectangle_count_in(&mut h),
+        before + 1,
+        "the next drag draws"
+    );
+}
+
+/// T10: a path draft survives a page-field click-out, and the next press
+/// places its point.
+#[gpui::test]
+fn a_path_draft_survives_a_page_field_click_out(cx: &mut TestAppContext) {
+    use butter_paper::annotation_adapter::AnnotationTool;
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    let document = h.document;
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document, AnnotationTool::Polyline, cx)
+            .unwrap()
+    });
+    h.settle();
+    let draft_points = |h: &mut Harness<'_>| {
+        h.workspace.read_with(h.cx, |workspace, cx| {
+            workspace
+                .annotation_scene(document, 0, cx)
+                .vertex_paths
+                .iter()
+                .find(|path| path.draft)
+                .map(|path| path.points.len())
+        })
+    };
+    for (fx, fy) in [(0.2, 0.1), (0.4, 0.2)] {
+        let at = page_point(&mut h, 0, fx, fy);
+        press_at(&mut h, at);
+    }
+    let placed = draft_points(&mut h).expect("a draft is open");
+
+    open_page_field(&mut h, "4");
+    let next = page_point(&mut h, 0, 0.6, 0.3);
+    press_at(&mut h, next);
+    assert!(!page_field_open(&mut h));
+    assert_eq!(draft_points(&mut h), Some(placed), "no point was placed");
+
+    press_at(&mut h, next);
+    assert_eq!(
+        draft_points(&mut h).map(|points| points > placed),
+        Some(true),
+        "the next press places a point"
+    );
+}
+
+/// Item 14: in Continuous view a press on a page makes it the current page,
+/// with no scroll, even when the press only dismisses. A scroll makes the
+/// page in view current again.
+#[gpui::test]
+fn a_press_picks_the_current_page_in_continuous_view(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(ContinuousView);
+    h.set_zoom(30.);
+    let start = h.frame();
+    let in_view = start.current_page;
+    let other = (0..5)
+        .find(|page| {
+            *page != in_view && {
+                let (width, height) = start.visible(*page);
+                width > 40. && height > 120.
+            }
+        })
+        .unwrap_or_else(|| panic!("a second page is in view: {start:?}"));
+    let label = |page: u32| format!("{} / 5", page + 1);
+    assert_eq!(navigator_label(&mut h), label(in_view));
+
+    let at = page_point(&mut h, other, 0.5, 0.2);
+    press_at(&mut h, at);
+    let picked = h.frame();
+    assert_eq!(picked.current_page, other, "{picked:?}");
+    assert_eq!(picked.scroll, start.scroll, "picking moves nothing");
+    assert_eq!(navigator_label(&mut h), label(other));
+    h.cx.simulate_keystrokes("escape");
+    h.settle();
+
+    // A press that only closes the page field picks the page too.
+    let at = page_point(&mut h, in_view, 0.5, 0.2);
+    open_page_field(&mut h, "5");
+    press_at(&mut h, at);
+    assert!(!page_field_open(&mut h));
+    assert!(!box_armed(&mut h), "the click-out armed no box");
+    let frame = h.frame();
+    assert_eq!(frame.current_page, in_view, "{frame:?}");
+    assert_eq!(frame.scroll, start.scroll);
+
+    // Picked again, then scrolled away and back: the page level with the
+    // view centre is current again.
+    let at = page_point(&mut h, other, 0.5, 0.2);
+    press_at(&mut h, at);
+    h.cx.simulate_keystrokes("escape");
+    assert_eq!(h.frame().current_page, other);
+    h.wheel(0., -30., false);
+    let scrolled = h.frame();
+    assert_ne!(scrolled.scroll, start.scroll, "the wheel scrolled");
+    let centre = scrolled
+        .document_point(scrolled.viewport.center())
+        .map(|(page, ..)| page)
+        .unwrap_or_else(|| panic!("a page is at the view centre: {scrolled:?}"));
+    assert_ne!(centre, other, "{scrolled:?}");
+    assert_eq!(scrolled.current_page, centre, "{scrolled:?}");
+    assert_eq!(navigator_label(&mut h), label(centre));
+}
+
+/// Item 14: Single Page view shows one page, which stays current.
+#[gpui::test]
+fn a_press_in_single_page_view_keeps_the_current_page(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    h.go_to_page(2);
+    let before = h.frame();
+    let at = page_point(&mut h, 2, 0.5, 0.3);
+    press_at(&mut h, at);
+    let after = h.frame();
+    assert_eq!(after.current_page, 2);
+    assert_eq!(after.scroll, before.scroll);
+}
+
+const MANY_PAGES: [(f32, f32); 12] = [(612., 792.); 12];
+
+fn near(a: f32, b: f32) -> bool {
+    (a - b).abs() <= TOLERANCE
+}
+
+#[gpui::test]
+fn single_page_view_remembers_each_pages_zoom_and_position(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    h.go_to_page(1);
+    h.set_zoom(300.);
+    h.pan(-300., -400.);
+    let first = h.frame();
+
+    // A page not seen before keeps the zoom and shows from its top edge.
+    h.go_to_page(2);
+    let fresh = h.frame();
+    assert_eq!(fresh.zoom, first.zoom, "{fresh:?}");
+    assert!(
+        near(
+            f32::from(fresh.page(2).unwrap().top() - fresh.viewport.top()),
+            0.
+        ),
+        "{fresh:?}"
+    );
+    h.set_zoom(150.);
+    h.pan(0., -100.);
+    let second = h.frame();
+
+    // Back to each page: the zoom and position it was left at.
+    h.go_to_page(1);
+    let back = h.frame();
+    assert_eq!(back.zoom, first.zoom, "{back:?}");
+    assert!(
+        near(back.scroll.0, first.scroll.0) && near(back.scroll.1, first.scroll.1),
+        "{first:?} → {back:?}"
+    );
+    h.go_to_page(2);
+    let again = h.frame();
+    assert_eq!(again.zoom, second.zoom, "{again:?}");
+    assert!(
+        near(again.scroll.0, second.scroll.0) && near(again.scroll.1, second.scroll.1),
+        "{second:?} → {again:?}"
+    );
+
+    // Continuous view has one view; switching back keeps the memory.
+    h.action(ContinuousView);
+    h.action(SinglePageView);
+    h.go_to_page(1);
+    assert_eq!(h.frame().zoom, first.zoom);
+
+    // Fit Page replaces the view page 1 was left at.
+    h.action(FitPage);
+    let fitted = h.frame();
+    assert_eq!(h.remembered(1), None);
+    h.go_to_page(2);
+    assert_eq!(h.frame().zoom, second.zoom);
+    h.go_to_page(1);
+    let refitted = h.frame();
+    assert_eq!(refitted.preset, ViewerZoomPreset::FitPage, "{refitted:?}");
+    assert_eq!(refitted.zoom, fitted.zoom);
+}
+
+#[gpui::test]
+fn a_file_gets_its_remembered_pages_back_when_it_opens_again(cx: &mut TestAppContext) {
+    let (mut h, documents) = setup_tabs(
+        cx,
+        &UNIFORM_PAGES,
+        &["/documents/memory-a.pdf", "/documents/memory-b.pdf"],
+    );
+    let (first, second) = (documents[0], documents[1]);
+    h.switch_to(first);
+    h.action(SinglePageView);
+    h.go_to_page(1);
+    h.set_zoom(300.);
+    h.pan(-300., -400.);
+    let left = h.frame();
+    h.go_to_page(2);
+    let remembered = h.remembered(1).expect("page 1 is remembered while open");
+
+    // The other file keeps nothing of it.
+    h.switch_to(second);
+    h.action(SinglePageView);
+    h.go_to_page(1);
+    h.go_to_page(2);
+    assert!(h.remembered(1).is_some_and(|view| view != remembered));
+
+    // Closing the file's tab and opening it again brings the pages back.
+    h.switch_to(first);
+    let workspace = h.workspace.clone();
+    h.cx.update(|_, cx| {
+        workspace.update(cx, |workspace, cx| workspace.close_document(first, cx));
+    });
+    h.cx.run_until_parked();
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace.open_documents(
+            DocumentOpenBatchRequest::new(
+                DocumentOpenOrigin::Menu,
+                [PathBuf::from("/documents/memory-a.pdf")],
+            ),
+            cx,
+        )
+    });
+    h.cx.run_until_parked();
+    let reopened = h.workspace.read_with(h.cx, |workspace, cx| {
+        *workspace.session_order(cx).last().unwrap()
+    });
+    h.switch_to(reopened);
+    // It opens on the page left, in Single Page view, with that page's view.
+    let opened = h.frame();
+    assert_eq!(opened.mode, PageViewMode::SinglePage, "{opened:?}");
+    assert_eq!(opened.current_page, 2, "{opened:?}");
+    assert_eq!(opened.zoom, left.zoom, "{opened:?}");
+    assert_eq!(h.remembered(1), Some(remembered));
+    h.go_to_page(1);
+    let back = h.frame();
+    assert_eq!(back.zoom, left.zoom, "{back:?}");
+    assert!(
+        near(back.scroll.0, left.scroll.0) && near(back.scroll.1, left.scroll.1),
+        "{left:?} → {back:?}"
+    );
+
+    // A file never seen opens with no memory.
+    let fresh = h.workspace.update(h.cx, |workspace, cx| {
+        workspace.open_path(PathBuf::from("/documents/memory-c.pdf"), cx)
+    });
+    h.cx.run_until_parked();
+    h.document = fresh;
+    assert_eq!(h.remembered(1), None);
+}
+
+#[gpui::test]
+fn quitting_keeps_the_pages_of_every_open_tab(cx: &mut TestAppContext) {
+    let (mut h, documents) = setup_tabs(
+        cx,
+        &UNIFORM_PAGES,
+        &["/documents/quit-a.pdf", "/documents/quit-b.pdf"],
+    );
+    let memory =
+        h.cx.update(|_, cx| cx.new(|_| butter_paper::page_memory::PageMemory::default()));
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace.bind_page_memory(memory.clone(), cx)
+    });
+    for document in documents {
+        h.switch_to(document);
+        h.action(SinglePageView);
+        h.go_to_page(1);
+        h.set_zoom(250.);
+        h.go_to_page(2);
+    }
+    // Nothing is kept while the tabs stay open.
+    assert!(memory.read_with(h.cx, |memory, _| memory.paths().count()) == 0);
+    h.workspace
+        .update(h.cx, |workspace, cx| workspace.keep_all_page_memory(cx));
+    for name in ["/documents/quit-a.pdf", "/documents/quit-b.pdf"] {
+        let view = memory
+            .read_with(h.cx, |memory, _| {
+                memory.restart_view(std::path::Path::new(name))
+            })
+            .unwrap_or_else(|| panic!("{name} keeps its pages"));
+        assert_eq!(view.current_page(), 2, "{name}");
+        assert_eq!(view.page_views().len(), 2, "{name}");
+    }
+}
+
+#[gpui::test]
+fn rotating_pages_forgets_their_remembered_views(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    for page in [1, 2, 3] {
+        h.go_to_page(page);
+        h.set_zoom(200. + page as f32 * 10.);
+    }
+    h.go_to_page(0);
+    assert!(h.remembered(1).is_some() && h.remembered(2).is_some());
+    let document = h.document;
+    // One page turned: only its view is forgotten.
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace.rotate_pages(
+            document,
+            vec![2],
+            butter_paper::annotation_model::PageRotationDirection::Right,
+            cx,
+        )
+    });
+    h.settle();
+    assert_eq!(h.remembered(2), None);
+    assert_eq!(
+        h.remembered(1).map(|view| view.zoom()),
+        Some(RestartZoom::Manual(210.))
+    );
+    // Undo turns it back: the view seen since is forgotten too.
+    h.go_to_page(3);
+    h.go_to_page(2);
+    h.go_to_page(0);
+    assert!(h.remembered(2).is_some());
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace.undo_annotations(document, cx).unwrap()
+    });
+    h.settle();
+    assert_eq!(h.remembered(2), None);
+    assert!(h.remembered(3).is_some());
+    // Every page turned: nothing is remembered.
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace
+            .rotate_all_pages(
+                document,
+                butter_paper::annotation_model::PageRotationDirection::Left,
+                cx,
+            )
+            .unwrap()
+    });
+    h.settle();
+    for page in 0..5 {
+        assert_eq!(h.remembered(page), None, "page {page}");
+    }
+}
+
+/// Single Page view at Fit Page with the wheel set to Scroll.
+fn wheel_turning_setup(cx: &mut TestAppContext, turning: PageTurning) -> Harness<'_> {
+    let mut h = setup(cx, &MANY_PAGES);
+    h.action(SinglePageView);
+    h.single_page_wheel_scrolls();
+    h.action(FitPage);
+    h.set_page_turning(turning);
+    h
+}
+
+/// Notches down, each `gap_ms` after the last; the first after a pause.
+fn spin(h: &mut Harness, gap_ms: u64, notches: usize) {
+    for index in 0..notches {
+        h.notch_after(if index == 0 { 600 } else { gap_ms }, -1.);
+    }
+}
+
+fn wheel_bursts_turn(cx: &mut TestAppContext, turning: PageTurning, expected: [u32; 3]) {
+    let mut h = wheel_turning_setup(cx, turning);
+    // A fast spin: ten notches 10 ms apart.
+    spin(&mut h, 10, 10);
+    let fast = h.frame().current_page;
+    // No turn waits behind the wheel once it stops.
+    h.cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    assert_eq!(h.frame().current_page, fast, "{turning:?}");
+    // A second fast spin after a pause.
+    spin(&mut h, 10, 4);
+    let two = h.frame().current_page;
+    // A slow scroll: a notch each 250 ms.
+    spin(&mut h, 250, 4);
+    let slow = h.frame().current_page;
+    assert_eq!(
+        [fast, two - fast, slow - two],
+        expected,
+        "{turning:?}: pages for a fast spin, another spin, a slow scroll"
+    );
+}
+
+#[gpui::test]
+fn responsive_turns_a_page_each_notch_except_during_a_turn(cx: &mut TestAppContext) {
+    wheel_bursts_turn(cx, PageTurning::Responsive, [3, 1, 4]);
+}
+
+#[gpui::test]
+fn balanced_turns_one_page_each_spin(cx: &mut TestAppContext) {
+    wheel_bursts_turn(cx, PageTurning::Balanced, [1, 1, 4]);
+}
+
+#[gpui::test]
+fn deliberate_turns_one_page_after_each_clear_pause(cx: &mut TestAppContext) {
+    wheel_bursts_turn(cx, PageTurning::Deliberate, [1, 1, 1]);
+}
+
+#[gpui::test]
+fn small_wheel_movements_add_up_to_one_notch(cx: &mut TestAppContext) {
+    let mut h = wheel_turning_setup(cx, PageTurning::Responsive);
+    for index in 0..3 {
+        h.notch_after(if index == 0 { 600 } else { 5 }, -0.25);
+        assert_eq!(h.frame().current_page, 0, "a quarter notch waits");
+    }
+    h.notch_after(5, -0.25);
+    assert_eq!(h.frame().current_page, 1, "four quarters are one notch");
+}
+
+#[gpui::test]
+fn zoomed_in_the_wheel_stops_at_the_edge_or_turns_as_set(cx: &mut TestAppContext) {
+    for (turning, turns_in_the_spin) in [
+        (PageTurning::Responsive, true),
+        (PageTurning::Balanced, false),
+        (PageTurning::Deliberate, false),
+    ] {
+        let mut cx = cx.clone();
+        let mut h = wheel_turning_setup(&mut cx, turning);
+        h.go_to_page(1);
+        h.set_zoom(300.);
+        // One long spin, a notch each 20 ms: far more than the page holds.
+        spin(&mut h, 20, 60);
+        let frame = h.frame();
+        if turns_in_the_spin {
+            assert!(frame.current_page > 1, "{turning:?}: {frame:?}");
+            continue;
+        }
+        assert_eq!(frame.current_page, 1, "{turning:?} stops at the edge");
+        let page = frame.page(1).unwrap();
+        assert!(
+            page.bottom() <= frame.viewport.bottom() + px(TOLERANCE),
+            "{turning:?}: the page's bottom edge is in view: {frame:?}"
+        );
+        // A new spin turns the page.
+        spin(&mut h, 20, 1);
+        assert_eq!(h.frame().current_page, 2, "{turning:?}");
+    }
+}
+
+#[gpui::test]
+fn a_wheel_zoom_moves_smoothly_about_the_pointer_unless_reduce_motion_is_set(
+    cx: &mut TestAppContext,
+) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.set_zoom(100.);
+    for (speed, factor) in [(ZoomSpeed::Fine, 1.10), (ZoomSpeed::Coarse, 1.35)] {
+        h.cx.update(|_, cx| cx.set_global(ZoomSpeedPreference(speed)));
+        let before = h.frame().zoom;
+        let at =
+            h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center() + point(px(120.), px(80.));
+        // With reduce motion set the zoom is there at once.
+        h.cx.simulate_mouse_move(at, None, Modifiers::default());
+        h.cx.simulate_event(ScrollWheelEvent {
+            position: at,
+            delta: ScrollDelta::Lines(point(0., NOTCH_LINES)),
+            modifiers: Modifiers {
+                control: true,
+                ..Modifiers::default()
+            },
+            ..Default::default()
+        });
+        let zoomed = h.frame().zoom;
+        assert!(
+            (zoomed - before * factor).abs() < 0.2,
+            "{speed:?}: {before} → {zoomed}"
+        );
+    }
+
+    // Motion on: the zoom moves over frames to the same end.
+    h.cx.update(|_, cx| cx.set_reduce_motion(false));
+    h.cx.update(|_, cx| cx.set_global(ZoomSpeedPreference(ZoomSpeed::Standard)));
+    let start = h.frame();
+    let at = start.viewport.center() + point(px(120.), px(80.));
+    h.cx.simulate_mouse_move(at, None, Modifiers::default());
+    for _ in 0..2 {
+        h.cx.simulate_event(ScrollWheelEvent {
+            position: at,
+            delta: ScrollDelta::Lines(point(0., NOTCH_LINES)),
+            modifiers: Modifiers {
+                control: true,
+                ..Modifiers::default()
+            },
+            ..Default::default()
+        });
+    }
+    h.cx.update(|window, cx| window.draw(cx).clear(cx));
+    let early = h.workspace.read_with(h.cx, |workspace, cx| {
+        workspace
+            .document_view_state(start_document(workspace), cx)
+            .unwrap()
+            .zoom_percent()
+    });
+    assert!(early < start.zoom * 1.44 - 1., "the zoom moves: {early}");
+    for _ in 0..20 {
+        h.cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        h.cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    let end = h.frame();
+    // Two notches during the motion: the second goes on from the first's end.
+    assert!(
+        (end.zoom - start.zoom * 1.44).abs() < 0.2,
+        "{} → {}",
+        start.zoom,
+        end.zoom
+    );
+}
+
+fn start_document(workspace: &DocumentWorkspace) -> DocumentId {
+    workspace.active_document_id().unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// Rotate All Pages
+// ---------------------------------------------------------------------------
+
+/// Rotate All Pages, and its Undo and Redo, change the height of the pages
+/// above the view in Continuous view at a free zoom: the view stays on the
+/// page it showed.
+#[gpui::test]
+fn rotate_all_pages_keeps_the_view_on_its_page_in_continuous_view(cx: &mut TestAppContext) {
+    use butter_paper::annotation_model::PageRotationDirection;
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(ContinuousView);
+    h.set_zoom(80.);
+    h.go_to_page(3);
+    let before = h.frame();
+    assert_eq!(before.current_page, 3);
+    let centre_page = |frame: &Frame| {
+        let centre = frame.viewport.center();
+        frame
+            .pages
+            .iter()
+            .find(|(_, bounds)| bounds.contains(&centre))
+            .map(|(page, _)| *page)
+    };
+    assert_eq!(centre_page(&before), Some(3), "{before:?}");
+    let document = h.document;
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace
+            .rotate_all_pages(document, PageRotationDirection::Right, cx)
+            .unwrap();
+    });
+    let turned = h.frame();
+    assert_eq!(
+        centre_page(&turned),
+        Some(3),
+        "after Rotate All: {turned:?}"
+    );
+    assert_eq!(turned.current_page, 3);
+    for undo in [true, false] {
+        h.workspace.update(h.cx, |workspace, cx| {
+            if undo {
+                workspace.undo_annotations(document, cx).unwrap();
+            } else {
+                workspace.redo_annotations(document, cx).unwrap();
+            }
+        });
+        let frame = h.frame();
+        assert_eq!(centre_page(&frame), Some(3), "undo {undo}: {frame:?}");
+    }
 }

@@ -188,7 +188,7 @@ fn check_document(
         }
     };
     report.bytes = bytes.len() as u64;
-    let document = match PdfMetadataDocument::load_mem(&bytes) {
+    let document = match butter_paper::pdf_load::load_pdf_mem(&bytes) {
         Ok(document) => document,
         Err(error) => {
             report.error = Some(format!("lopdf: {error}"));
@@ -659,6 +659,7 @@ fn check_page_pdfium(
             format: SurfaceFormat::Bgra8Premultiplied,
         },
         draft: false,
+        paper: butter_paper::paper_appearance::PaperAppearance::Real,
     };
     let mut pixels = vec![0u8; request.surface.byte_len as usize];
     backend

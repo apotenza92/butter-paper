@@ -7,6 +7,10 @@
 //! motion ends, the command itself runs, so the final view is exactly the one
 //! the command gives without motion. With reduce motion set, the command runs
 //! at once.
+//!
+//! A discrete mouse wheel's zoom moves the same way, about the pointer: each
+//! frame keeps the page point under the pointer in place. A notch during the
+//! motion goes on from the zoom the motion heads for.
 
 use super::*;
 use crate::zoom_anchor::ZoomAnchor;
@@ -23,6 +27,11 @@ pub(super) enum ViewMotionEnd {
         zoom_percent: f32,
     },
     Fit(ViewerFitPreset),
+    /// A mouse wheel zoom, about the page point at `anchor`.
+    WheelZoom {
+        zoom_percent: f32,
+        anchor: ZoomAnchor,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -35,6 +44,9 @@ pub(super) struct ViewMotion {
     to_fraction: (f32, f32),
     started: Instant,
     end: ViewMotionEnd,
+    /// The view point the page point stays at: the view centre, or the
+    /// pointer for a wheel zoom.
+    viewport_point: Option<(f32, f32)>,
 }
 
 impl ViewMotion {
@@ -110,6 +122,8 @@ impl DocumentWorkspace {
                         crate::native_document_view_state::clamp_zoom_percent(zoom_percent),
                     )
                 }
+                // Started by begin_wheel_zoom_motion only.
+                ViewMotionEnd::WheelZoom { .. } => return false,
                 ViewMotionEnd::Fit(preset) => {
                     let page = session.current_page as usize;
                     let Some(page_size) = session.page_sizes.get(page).copied() else {
@@ -149,9 +163,82 @@ impl DocumentWorkspace {
                 to_fraction,
                 started: cx.background_executor().now(),
                 end,
+                viewport_point: None,
             }
         };
         self.view_motion = Some(motion);
+        cx.notify();
+        true
+    }
+
+    /// The zoom a wheel zoom of `document_id` still moving heads for.
+    pub(super) fn wheel_zoom_target(&self, document_id: DocumentId) -> Option<f32> {
+        let motion = self.view_motion?;
+        match motion.end {
+            ViewMotionEnd::WheelZoom { zoom_percent, .. } if motion.document_id == document_id => {
+                Some(zoom_percent)
+            }
+            _ => None,
+        }
+    }
+
+    /// Starts moving the view of `document_id` from `from_zoom` to
+    /// `to_zoom`, keeping the page point under `position` (the pointer) in
+    /// place. Returns false when the zoom must apply at once instead: reduce
+    /// motion is set, the view has no layout yet, or no page is under the
+    /// pointer.
+    pub(super) fn begin_wheel_zoom_motion(
+        &mut self,
+        document_id: DocumentId,
+        position: gpui::Point<Pixels>,
+        from_zoom: f32,
+        to_zoom: f32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.finishing_view_motion || cx.reduce_motion() {
+            return false;
+        }
+        let Some(bounds) = self.viewport_bounds.get(&document_id).copied() else {
+            return false;
+        };
+        let Some(painted_scroll) = self.viewport_painted_scroll.get(&document_id).copied() else {
+            return false;
+        };
+        let local = (
+            f32::from(position.x - bounds.origin.x),
+            f32::from(position.y - bounds.origin.y),
+        );
+        let Some(anchor) = self
+            .viewport_painted_layouts
+            .get(&document_id)
+            .and_then(|layouts| crate::zoom_anchor::zoom_anchor_at(layouts, painted_scroll, local))
+        else {
+            return false;
+        };
+        let to_zoom = crate::native_document_view_state::clamp_zoom_percent(to_zoom);
+        if from_zoom <= 0. || (to_zoom - from_zoom).abs() < 0.01 {
+            return false;
+        }
+        self.view_motion = Some(ViewMotion {
+            document_id,
+            page: anchor.page,
+            from_zoom,
+            to_zoom,
+            from_fraction: anchor.page_fraction,
+            to_fraction: anchor.page_fraction,
+            started: cx.background_executor().now(),
+            end: ViewMotionEnd::WheelZoom {
+                zoom_percent: to_zoom,
+                anchor,
+            },
+            viewport_point: Some(anchor.viewport_point),
+        });
+        // The first frame of the motion is drawn at the zoom shown now.
+        if let Some(session) = self.session(document_id, cx).cloned() {
+            session.update(cx, |session, _| {
+                session.view_state.set_manual_zoom(from_zoom);
+            });
+        }
         cx.notify();
         true
     }
@@ -181,6 +268,31 @@ impl DocumentWorkspace {
                 ViewMotionEnd::Fit(preset) => {
                     self.set_fit_preset(motion.document_id, preset, cx);
                 }
+                ViewMotionEnd::WheelZoom {
+                    zoom_percent,
+                    anchor,
+                } => {
+                    if let Some(session) = self.session(motion.document_id, cx).cloned() {
+                        session.update(cx, |session, cx| {
+                            session.view_state.set_manual_zoom(zoom_percent);
+                            session.pending_page_frame = None;
+                            session.pending_zoom_anchor = Some(anchor);
+                            session
+                                .viewer
+                                .configure(session.view_state.mode(), zoom_percent);
+                            cx.notify();
+                        });
+                        if let Some((width, height)) = session.read(cx).view_state.viewport_size() {
+                            let _ = self.refresh_viewport_async(
+                                motion.document_id,
+                                width,
+                                height,
+                                window.scale_factor(),
+                                cx,
+                            );
+                        }
+                    }
+                }
             }
             self.finishing_view_motion = false;
             return;
@@ -199,7 +311,7 @@ impl DocumentWorkspace {
             session.pending_zoom_anchor = Some(ZoomAnchor {
                 page: motion.page,
                 page_fraction: fraction,
-                viewport_point: (width / 2., height / 2.),
+                viewport_point: motion.viewport_point.unwrap_or((width / 2., height / 2.)),
             });
             session
                 .viewer
@@ -232,6 +344,7 @@ mod tests {
             to_fraction: (0.5, 0.4),
             started: Instant::now(),
             end: ViewMotionEnd::Fit(ViewerFitPreset::Width),
+            viewport_point: None,
         };
         assert_eq!(motion.sample(0.), (50., (0.2, 0.4)));
         let (zoom, (x, y)) = motion.sample(1.);

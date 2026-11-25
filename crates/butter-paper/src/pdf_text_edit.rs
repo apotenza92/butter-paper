@@ -6734,6 +6734,28 @@ pub fn extract_page_text_with(
     explodes: &[crate::pdf_content_moves::ContentExplode],
     limits: &TextEditLimits,
 ) -> Result<PageTextLayer, TextEditError> {
+    extract_page_text_with_objects(document, page_index, explodes, limits, true)
+}
+
+/// [`extract_page_text_with`] for a search: the page's `objects` (its
+/// movable drawings and images) are not read, which is most of the work on
+/// a drawing. Its lines, tables and rules are those the full read gives.
+pub fn extract_page_search_text(
+    document: &Document,
+    page_index: u32,
+    explodes: &[crate::pdf_content_moves::ContentExplode],
+    limits: &TextEditLimits,
+) -> Result<PageTextLayer, TextEditError> {
+    extract_page_text_with_objects(document, page_index, explodes, limits, false)
+}
+
+fn extract_page_text_with_objects(
+    document: &Document,
+    page_index: u32,
+    explodes: &[crate::pdf_content_moves::ContentExplode],
+    limits: &TextEditLimits,
+    with_objects: bool,
+) -> Result<PageTextLayer, TextEditError> {
     let page_id = page_id(document, page_index)?;
     let explodes = explodes
         .iter()
@@ -6753,6 +6775,7 @@ pub fn extract_page_text_with(
         &explodes,
         limits,
         &FontCache::default(),
+        with_objects,
     )
     .map(|(mut layer, _)| {
         layer.page_index = page_index;
@@ -6781,7 +6804,7 @@ pub fn extract_page_text_and_images_at(
     limits: &TextEditLimits,
     fonts: &FontCache,
 ) -> Result<(PageTextLayer, Vec<PageImage>), TextEditError> {
-    extract_layer_at(document, page_index, page_id, &[], limits, fonts)
+    extract_layer_at(document, page_index, page_id, &[], limits, fonts, true)
 }
 
 /// [`extract_page_text_and_images_at`] with `explodes` exploded into the
@@ -6793,6 +6816,7 @@ fn extract_layer_at(
     explodes: &[&crate::pdf_content_moves::ContentExplode],
     limits: &TextEditLimits,
     fonts: &FontCache,
+    with_objects: bool,
 ) -> Result<(PageTextLayer, Vec<PageImage>), TextEditError> {
     let (page, _) = explode::extract_exploded(document, page_id, explodes, limits, Some(fonts))?;
     let page_box = visible_box_of_page(document, page_id);
@@ -6807,7 +6831,11 @@ fn extract_layer_at(
         })
         .collect::<Vec<_>>();
     let (rules, fills) = page.rules();
-    let objects = page.objects(page_box);
+    let objects = if with_objects {
+        page.objects(page_box)
+    } else {
+        Vec::new()
+    };
     let paragraphs = crate::pdf_structure::page_paragraph_elements(document, page.page_id);
     let layer = PageTextLayer {
         page_index,

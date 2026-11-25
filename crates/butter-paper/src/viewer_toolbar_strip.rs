@@ -3,17 +3,17 @@ use std::{cell::Cell, rc::Rc};
 use gpui::{
     App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
     IntoElement, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rems,
+    Styled as _, Window, div, prelude::FluentBuilder as _, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, ElementExt as _, Icon, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, ElementExt as _, Icon, Selectable as _,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
+    input::{Redo, Undo},
     menu::{DropdownMenu as _, PopupMenuItem},
-    switch::Switch,
 };
 
-use crate::accessible_button::{accessible_icon_button, focus_ring_switch};
+use crate::accessible_button::accessible_icon_button;
 use crate::cad_view_control::{CadViewControl, CadViewControlEvent};
 use crate::continuous_view_control::ContinuousViewControl;
 use crate::page_navigator::{PageNavigator, PageNavigatorFit};
@@ -25,55 +25,64 @@ use crate::viewer_icons::{fit_page_icon, fit_width_icon};
 use crate::zoom_control::ZoomControl;
 
 pub const VIEWER_TOOLBAR_ID: &str = "viewer-toolbar";
+/// The stock Lucide arrows for Undo and Redo, and the ruler the Scale
+/// shows.
+const UNDO_ICON: &str = "icons/undo-2.svg";
+const REDO_ICON: &str = "icons/redo-2.svg";
+const SCALE_ICON: &str = "icons/rail/ruler-dimension-line.svg";
 pub const VIEWER_TOOLBAR_SCROLL_ID: &str = "viewer-toolbar-scroll";
 pub const VIEWER_TOOLBAR_CONTENT_ID: &str = "viewer-toolbar-content";
 pub const FIT_BUTTON_GROUP_ID: &str = "viewer-fit-controls";
 pub const FIT_WIDTH_ID: &str = "viewer-fit-width";
 pub const FIT_PAGE_ID: &str = "viewer-fit-page";
+/// The Edit PDF toggle: an icon button, selected while Edit PDF is on.
 pub const EDIT_PDF_ID: &str = "viewer-edit-pdf";
-/// The page's Scale: a switch and the scale's menu, beside Edit PDF.
+/// The page's Scale: one split button beside Edit PDF. Its icon half turns
+/// the current page's scale on and off, and its caret drops down the Page
+/// Scale panel.
 pub const VIEWER_SCALE_ID: &str = "viewer-scale";
-pub const VIEWER_SCALE_SWITCH_ID: &str = "viewer-scale-switch";
+pub const VIEWER_SCALE_TOGGLE_ID: &str = "viewer-scale-toggle";
 pub const VIEWER_SCALE_MENU_ID: &str = "viewer-scale-menu";
-/// The scale shown in the Scale menu button (the full form only).
+/// The scale shown beside the ruler while the page has one, in every form
+/// but the two narrowest.
 pub const VIEWER_SCALE_VALUE_ID: &str = "viewer-scale-value";
-/// The ruler and pencil icons the compact form shows for the "Page Scale"
-/// and "Edit" labels.
-pub const VIEWER_SCALE_ICON_ID: &str = "viewer-scale-icon";
-pub const EDIT_PDF_ICON_ID: &str = "viewer-edit-pdf-icon";
-/// The width of the scale shown in the Scale menu button, in rems; a longer
-/// scale is cut short, and its tooltip names it in full.
+/// Undo and Redo, at the toolbar's leading edge.
+pub const VIEWER_HISTORY_GROUP_ID: &str = "viewer-history";
+pub const VIEWER_UNDO_ID: &str = "viewer-undo";
+pub const VIEWER_REDO_ID: &str = "viewer-redo";
+/// The key context whose Undo and Redo bindings the tooltips show: the
+/// document workspace's, as the Edit menu's.
+const HISTORY_BINDING_CONTEXT: &str = "DocumentWorkspace";
+/// The greatest width of the scale shown beside the ruler, in rems; a longer
+/// scale is cut short with an ellipsis, and the tooltip names it in full.
 const SCALE_VALUE_REMS: f32 = 5.75;
 /// A signed document's signatures button, at the trailing edge.
 pub const VIEWER_SIGNATURES_ID: &str = "viewer-signatures";
-/// The zoom and page-layout controls, centred in the toolbar.
+/// The page navigator, zoom and page-layout controls, centred in the
+/// toolbar.
 pub const VIEWER_TOOLBAR_CONTROLS_ID: &str = "viewer-toolbar-controls";
 /// The frames of the page navigator and of the zoom controls.
 pub const VIEWER_PAGES_GROUP_ID: &str = "viewer-pages-group";
 pub const VIEWER_ZOOM_GROUP_ID: &str = "viewer-zoom-group";
-/// The slots the page navigator and the switches are pinned in, at the
-/// toolbar's left and right edges.
+/// The slots Undo and Redo, and Edit PDF and the Scale, are pinned in, at
+/// the toolbar's left and right edges.
 pub const VIEWER_TOOLBAR_LEFT_ID: &str = "viewer-toolbar-left";
 pub const VIEWER_TOOLBAR_RIGHT_ID: &str = "viewer-toolbar-right";
 /// The fit and page-view controls, beside the zoom.
 pub const VIEWER_PAGE_LAYOUT_ID: &str = "viewer-page-layout";
-/// The least width of the slot of the Edit PDF switch and the Scale in the
-/// full form, in rems: the labels "Edit" and "Page Scale" and the scale
-/// shown, at the trailing edge's inset.
-pub const EDIT_PDF_SLOT_MIN_REMS: f32 = 25.25;
-/// The slot of the middle form's Edit PDF switch and Scale: their labels,
-/// without the scale shown (its menu button keeps its caret), in rems.
-pub const EDIT_PDF_MIDDLE_SLOT_REMS: f32 = EDIT_PDF_SLOT_MIN_REMS - SCALE_VALUE_REMS - 0.25;
-/// The slot of the compact Edit PDF switch and Scale, icons in place of
-/// their labels and no scale shown, in rems.
-pub const EDIT_PDF_COMPACT_SLOT_REMS: f32 = 12.75;
-/// The same slot with small switches, the tightest form's, in rems: each
-/// switch is 8px narrower.
-pub const EDIT_PDF_TIGHTEST_SLOT_REMS: f32 = EDIT_PDF_COMPACT_SLOT_REMS - 1.;
+/// The left slot: its edge inset, Undo and Redo, and the gap before the
+/// page navigator, in rems.
+const HISTORY_SLOT_REMS: f32 = 4.5;
+/// The right slot without the scale shown: the gap after the page layout,
+/// Edit PDF, the Scale's ruler and caret, and the edge inset, in rems.
+const EDIT_SCALE_SLOT_REMS: f32 = 7.;
+/// The room the scale shown beside the ruler adds, in rems: the label at
+/// its greatest width, the gap before it and the button's padding.
+const SCALE_LABEL_REMS: f32 = 6.625;
 /// The slot of the signatures button, a shield alone, in rems.
 pub const TOOLBAR_ICON_SLOT_REMS: f32 = 2.5;
 /// The zoom, fit and page-view controls other than the page navigator, with
-/// the frames of the zoom and page groups.
+/// the frames of the zoom and page groups and the gap before the zoom.
 const VIEW_CONTROLS_REMS: f32 = 26.5;
 /// The room Zoom Out and Zoom In take as buttons, in rems.
 const ZOOM_STEPS_REMS: f32 = 4.5;
@@ -86,34 +95,33 @@ const PAGE_VIEW_MERGE_REMS: f32 = 5.375;
 /// rems.
 const ZOOM_ICON_SAVING_REMS: f32 = 2.125;
 /// The room halving the gaps between groups and the edge insets gives back,
-/// in rems: the left and right insets, the view controls' two insets and
-/// gap, and the gap between Edit PDF and the Scale.
-const HALF_GAPS_SAVING_REMS: f32 = 1.5;
+/// in rems: the left and right insets, the centre controls' two insets and
+/// their gaps either side of the zoom, and the gap between Edit PDF and the
+/// Scale.
+const HALF_GAPS_SAVING_REMS: f32 = 1.75;
 
 /// The merged page-view menu button of the narrower forms.
 pub const VIEWER_PAGE_VIEW_MENU_ID: &str = "viewer-page-view-menu";
 
 /// What a toolbar of a given width has room for. The whole toolbar changes
-/// form at once, from the widest to the tightest. Each step gives up the
-/// least-used control it can, and the Edit and Page Scale labels stay to
-/// the last; every function stays reachable by pointer and keyboard:
-/// - Full: the labelled switches, the scale shown and the whole page
-///   navigator.
-/// - Middle: the scale shown and the First, Previous, Next and Last page
-///   buttons go (the scale shows in the status bar and the Scale menu; the
-///   page field and page keys turn pages).
+/// form at once, from the widest to the narrowest. Each step gives up the
+/// least-used control it can, and the scale shown stays until the view
+/// controls are in menus; every function stays reachable by pointer and
+/// keyboard:
+/// - Full: the whole page navigator and the scale shown beside the ruler.
+/// - Middle: the First, Previous, Next and Last page buttons go (the page
+///   field and page keys turn pages).
 /// - StepsInMenu: Zoom Out and Zoom In move into the zoom menu (their keys
 ///   still work).
 /// - FitInMenu: Fit Width and Fit Page move into the zoom menu too.
 /// - ViewMenu: Continuous View, Single Page View and their mouse-wheel
 ///   menus merge into one menu button.
-/// - Compact: icons in place of the Edit and Page Scale labels.
-/// - Tightest: small switches.
-/// - Narrowest: the zoom menu shows a magnifier for the zoom, and the page
-///   field the page in view alone. Side panels give way before the toolbar
-///   gets narrower than this form for the widest document (signed, four
-///   digits), so Page Thumbnails and properties fit side by side in a
-///   1200px window.
+/// - Compact: the scale shown goes (the status bar and the Scale's tooltip
+///   name it).
+/// - Narrowest: the zoom menu shows a magnifier for the zoom, the page
+///   field the page in view alone, and the gaps are halved. Side panels
+///   give way before the toolbar gets narrower than this form for the
+///   widest document (signed, four digits).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ViewerToolbarFit {
     Full,
@@ -122,20 +130,18 @@ pub enum ViewerToolbarFit {
     FitInMenu,
     ViewMenu,
     Compact,
-    Tightest,
     Narrowest,
 }
 
 impl ViewerToolbarFit {
     /// Every form, from the widest to the narrowest.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Full,
         Self::Middle,
         Self::StepsInMenu,
         Self::FitInMenu,
         Self::ViewMenu,
         Self::Compact,
-        Self::Tightest,
         Self::Narrowest,
     ];
 
@@ -147,8 +153,8 @@ impl ViewerToolbarFit {
         }
     }
 
-    /// Whether the switches show their labels.
-    pub fn labelled(self) -> bool {
+    /// Whether the Scale shows the page's scale beside its ruler.
+    pub fn scale_shown(self) -> bool {
         self < Self::Compact
     }
 
@@ -167,15 +173,19 @@ impl ViewerToolbarFit {
         self >= Self::ViewMenu
     }
 
-    /// Whether the switches are small.
-    pub fn small_switches(self) -> bool {
-        self >= Self::Tightest
-    }
-
     /// Whether the zoom menu shows a magnifier, the page field the page in
     /// view alone, and the gaps between groups are halved.
     pub fn narrowest(self) -> bool {
         self == Self::Narrowest
+    }
+}
+
+/// The right slot's room in `fit`, in rems: Edit PDF and the Scale, with
+/// the scale shown where `fit` shows it.
+const fn edit_scale_slot_rems(fit: ViewerToolbarFit) -> f32 {
+    match fit {
+        ViewerToolbarFit::Compact | ViewerToolbarFit::Narrowest => EDIT_SCALE_SLOT_REMS,
+        _ => EDIT_SCALE_SLOT_REMS + SCALE_LABEL_REMS,
     }
 }
 
@@ -184,36 +194,16 @@ impl ViewerToolbarFit {
 /// page-count digits.
 pub const fn viewer_toolbar_rems(fit: ViewerToolbarFit, signed: bool, digits: u32) -> f32 {
     use crate::page_navigator::{PAGE_NAVIGATOR_BUTTON_PAIR_REMS, indicator_room_rems};
-    let (edit_pdf, pairs, view_controls) = match fit {
-        ViewerToolbarFit::Full => (EDIT_PDF_SLOT_MIN_REMS, 2., VIEW_CONTROLS_REMS),
-        ViewerToolbarFit::Middle => (EDIT_PDF_MIDDLE_SLOT_REMS, 0., VIEW_CONTROLS_REMS),
-        ViewerToolbarFit::StepsInMenu => (
-            EDIT_PDF_MIDDLE_SLOT_REMS,
-            0.,
-            VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS,
-        ),
-        ViewerToolbarFit::FitInMenu => (
-            EDIT_PDF_MIDDLE_SLOT_REMS,
-            0.,
-            VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - FIT_GROUP_REMS,
-        ),
-        ViewerToolbarFit::ViewMenu => (
-            EDIT_PDF_MIDDLE_SLOT_REMS,
-            0.,
-            VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - FIT_GROUP_REMS - PAGE_VIEW_MERGE_REMS,
-        ),
-        ViewerToolbarFit::Compact => (
-            EDIT_PDF_COMPACT_SLOT_REMS,
-            0.,
-            VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - FIT_GROUP_REMS - PAGE_VIEW_MERGE_REMS,
-        ),
-        ViewerToolbarFit::Tightest => (
-            EDIT_PDF_TIGHTEST_SLOT_REMS,
+    let (pairs, view_controls) = match fit {
+        ViewerToolbarFit::Full => (2., VIEW_CONTROLS_REMS),
+        ViewerToolbarFit::Middle => (0., VIEW_CONTROLS_REMS),
+        ViewerToolbarFit::StepsInMenu => (0., VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS),
+        ViewerToolbarFit::FitInMenu => (0., VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - FIT_GROUP_REMS),
+        ViewerToolbarFit::ViewMenu | ViewerToolbarFit::Compact => (
             0.,
             VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - FIT_GROUP_REMS - PAGE_VIEW_MERGE_REMS,
         ),
         ViewerToolbarFit::Narrowest => (
-            EDIT_PDF_TIGHTEST_SLOT_REMS,
             0.,
             VIEW_CONTROLS_REMS
                 - ZOOM_STEPS_REMS
@@ -229,13 +219,18 @@ pub const fn viewer_toolbar_rems(fit: ViewerToolbarFit, signed: bool, digits: u3
     } else {
         indicator_room_rems(digits)
     };
-    edit_pdf + view_controls + page_field + pairs * PAGE_NAVIGATOR_BUTTON_PAIR_REMS + signatures
+    HISTORY_SLOT_REMS
+        + edit_scale_slot_rems(fit)
+        + view_controls
+        + page_field
+        + pairs * PAGE_NAVIGATOR_BUTTON_PAIR_REMS
+        + signatures
 }
 
 /// The toolbar width the least document window gives with no side panel
-/// open, in rems: the compact form for a signed document of a four-digit
-/// page count. The document window's least size is set from it, and stays
-/// as it was before the tighter forms came.
+/// open, in rems. The document window's least size (918 points wide with
+/// both rails) is set from it, and stays as it was before Undo, Redo and
+/// the icon toggles came.
 pub const VIEWER_TOOLBAR_MIN_REMS: f32 = 48.875;
 
 /// The narrowest toolbar any document needs, in rems: the narrowest form
@@ -243,15 +238,6 @@ pub const VIEWER_TOOLBAR_MIN_REMS: f32 = 48.875;
 /// before the toolbar gets narrower.
 pub const VIEWER_TOOLBAR_NARROWEST_REMS: f32 = viewer_toolbar_rems(
     ViewerToolbarFit::Narrowest,
-    true,
-    crate::page_navigator::PAGE_NAVIGATOR_MAX_DIGITS,
-);
-
-/// The tightest toolbar any document needs, in rems: the tightest form for
-/// a signed document of a four-digit page count. Side panels give way
-/// before the toolbar gets narrower.
-pub const VIEWER_TOOLBAR_TIGHTEST_REMS: f32 = viewer_toolbar_rems(
-    ViewerToolbarFit::Tightest,
     true,
     crate::page_navigator::PAGE_NAVIGATOR_MAX_DIGITS,
 );
@@ -269,17 +255,32 @@ pub struct ScaleToolbarState {
     pub page_number: u32,
     /// Whether the page has a scale (or one is being chosen for it).
     pub on: bool,
-    /// The page's scale; off, the one switching on brings back.
+    /// The page's scale; off, the one turning it on brings back.
     pub label: Option<SharedString>,
+    /// Whether the Page Scale panel is open: the caret shows pressed.
+    pub menu_open: bool,
 }
 
 /// What a press on the Scale control asks for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScaleRequest {
-    /// The switch: the page's scale on or off.
+    /// The icon half: the page's scale on or off.
     Toggle,
-    /// The menu button: the Page Scale panel.
+    /// The caret: the Page Scale panel.
     Menu,
+}
+
+// The toolbar's Undo and Redo. They act on the document's history, even
+// when a text field has the focus (owner decision); Edit ▸ Undo and Redo
+// and their keys go to the focused text field first.
+gpui::actions!(viewer_toolbar, [UndoDocument, RedoDocument]);
+
+/// Whether the toolbar's Undo and Redo are available: from the document's
+/// history only.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HistoryState {
+    pub can_undo: bool,
+    pub can_redo: bool,
 }
 
 /// Handles a press on the Scale control, with the window it was made in.
@@ -288,7 +289,7 @@ pub type ScaleHandler = Rc<dyn Fn(ScaleRequest, &mut Window, &mut App)>;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ViewerToolbarStripEvent {
     FitPresetChanged(FitPreset),
-    /// The Edit PDF switch was pressed.
+    /// The Edit PDF toggle was pressed.
     EditPdfToggled,
     /// The pointer entered or left the Scale control.
     ScaleHovered(bool),
@@ -314,9 +315,11 @@ pub struct ViewerToolbarStrip {
     fit_changes: usize,
     page_view_mode: PageViewMode,
     disabled: bool,
-    /// The Edit PDF switch, at the strip's leading edge, and whether it is
-    /// on; `None` hides it.
+    /// The Edit PDF toggle, pinned right, and whether it is on; `None`
+    /// hides it.
     edit_pdf: Option<bool>,
+    /// Whether Undo and Redo are available, as the Edit menu has them.
+    history: HistoryState,
     /// A signed document's signatures, which show the signatures button.
     signatures: Option<SignatureStatus>,
     /// The current page's Scale, beside Edit PDF; `None` hides it.
@@ -345,6 +348,7 @@ impl ViewerToolbarStrip {
             page_view_mode: PageViewMode::Continuous,
             disabled: false,
             edit_pdf: None,
+            history: HistoryState::default(),
             signatures: None,
             scale: None,
             scale_bounds: Rc::new(Cell::new(None)),
@@ -425,6 +429,7 @@ impl ViewerToolbarStrip {
             page_view_mode: PageViewMode::Continuous,
             disabled: false,
             edit_pdf: None,
+            history: HistoryState::default(),
             signatures: None,
             scale: None,
             scale_bounds: Rc::new(Cell::new(None)),
@@ -559,7 +564,7 @@ impl ViewerToolbarStrip {
         self.disabled
     }
 
-    /// Shows the Edit PDF switch, on or off, or hides it.
+    /// Shows the Edit PDF toggle, on or off, or hides it.
     pub fn set_edit_pdf(&mut self, edit_pdf: Option<bool>, cx: &mut Context<Self>) {
         if self.edit_pdf != edit_pdf {
             self.edit_pdf = edit_pdf;
@@ -569,6 +574,18 @@ impl ViewerToolbarStrip {
 
     pub fn edit_pdf(&self) -> Option<bool> {
         self.edit_pdf
+    }
+
+    /// Enables Undo and Redo as the Edit menu's items are.
+    pub fn set_history(&mut self, history: HistoryState, cx: &mut Context<Self>) {
+        if self.history != history {
+            self.history = history;
+            cx.notify();
+        }
+    }
+
+    pub fn history(&self) -> HistoryState {
+        self.history
     }
 
     /// Shows the current page's Scale, or hides it.
@@ -607,14 +624,21 @@ impl ViewerToolbarStrip {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let page = scale.page_number;
-        let switch_tooltip: SharedString = match (&scale.label, scale.on) {
+        let toggle_tooltip: SharedString = match (&scale.label, scale.on) {
             (Some(label), true) => {
-                format!("Page {page} · {label}. Switch off to remove page {page}'s scale.")
+                format!(
+                    "Page Scale on: page {page} at {label}. Click to remove page {page}'s scale."
+                )
             }
             (Some(label), false) => {
-                format!("Page {page} has no scale. Switch on to bring back {label}.")
+                format!("Page Scale off. Click to bring back {label} on page {page}.")
             }
-            (None, _) => format!("Page {page} has no scale. Switch on to set one."),
+            (None, _) => format!("Page Scale off. Click to set page {page}'s scale."),
+        }
+        .into();
+        let toggle_label: SharedString = match (&scale.label, scale.on) {
+            (Some(label), true) => format!("Page Scale, on, {label}"),
+            _ => "Page Scale, off".to_owned(),
         }
         .into();
         let menu_tooltip: SharedString = match &scale.label {
@@ -623,103 +647,134 @@ impl ViewerToolbarStrip {
         }
         .into();
         let menu_key_binding = crate::shortcut_label::shortcut_kbd("Shift+Alt+S");
-        let switch = Switch::new("viewer-scale-toggle")
-            .checked(scale.on)
-            .when(fit.small_switches(), |switch| switch.small())
-            .disabled(disabled)
-            .tooltip(switch_tooltip)
-            .on_click(cx.listener(|toolbar, _: &bool, window, cx| {
-                toolbar.request_scale(ScaleRequest::Toggle, window, cx);
-            }));
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let foreground = if disabled { muted } else { theme.foreground };
-        let switch_part = if fit.labelled() {
-            h_flex().child(focus_ring_switch(
-                "viewer-scale-toggle-ring",
-                switch.label("Page Scale"),
-            ))
-        } else {
-            // Narrow, a ruler where the label was; it toggles the switch as
-            // the label does.
-            h_flex()
-                .gap_2()
-                .child(focus_ring_switch("viewer-scale-toggle-ring", switch))
-                .child(
-                    div()
-                        .id(VIEWER_SCALE_ICON_ID)
-                        .debug_selector(|| VIEWER_SCALE_ICON_ID.into())
-                        .when(!disabled, |icon| {
-                            icon.cursor_pointer().on_click(cx.listener(
-                                |toolbar, _: &ClickEvent, window, cx| {
-                                    toolbar.request_scale(ScaleRequest::Toggle, window, cx);
-                                },
-                            ))
-                        })
-                        .child(
-                            Icon::default()
-                                .path("icons/rail/ruler-dimension-line.svg")
-                                .text_color(foreground),
-                        ),
-                )
-        };
-        let value: SharedString = scale.label.clone().unwrap_or_else(|| "Not set".into());
-        let menu = Button::new(VIEWER_SCALE_MENU_ID)
-            .debug_selector(|| VIEWER_SCALE_MENU_ID.into())
-            .accessibility_id(VIEWER_SCALE_MENU_ID)
-            .ghost()
-            .compact()
-            .dropdown_caret(true)
-            .rounded(px(0.))
-            .h_full()
-            .px_2()
-            .disabled(disabled)
-            .map(|button| match menu_key_binding {
-                Some(key_binding) => button.tooltip_with_key_binding(menu_tooltip, key_binding),
-                None => button.tooltip(menu_tooltip),
-            })
-            .when(fit == ViewerToolbarFit::Full, |button| {
-                button.child(
-                    div()
-                        .debug_selector(|| VIEWER_SCALE_VALUE_ID.into())
-                        .w(rems(SCALE_VALUE_REMS))
-                        .truncate()
-                        // Off, the scale switching on brings back.
-                        .when(!scale.on, |value| value.text_color(muted))
-                        .child(value.clone()),
-                )
-            })
-            .on_click(cx.listener(|toolbar, _: &ClickEvent, window, cx| {
-                toolbar.request_scale(ScaleRequest::Menu, window, cx);
-            }));
-        let menu = if fit == ViewerToolbarFit::Full {
-            menu.into_any_element()
-        } else {
-            // The caret alone: the button carries the scale's name.
-            accessible_icon_button(menu, format!("Page scale: {value}")).into_any_element()
-        };
+        // The scale beside the ruler while the page has one, cut short with
+        // an ellipsis when long.
+        let shown = scale
+            .label
+            .clone()
+            .filter(|_| scale.on && fit.scale_shown());
+        let toggle = accessible_icon_button(
+            Button::new(VIEWER_SCALE_TOGGLE_ID)
+                .debug_selector(|| VIEWER_SCALE_TOGGLE_ID.into())
+                .accessibility_id(VIEWER_SCALE_TOGGLE_ID)
+                .icon(Icon::default().path(SCALE_ICON))
+                .when_some(shown, |button, label| {
+                    button.child(
+                        div()
+                            .id(VIEWER_SCALE_VALUE_ID)
+                            .debug_selector(|| VIEWER_SCALE_VALUE_ID.into())
+                            .max_w(rems(SCALE_VALUE_REMS))
+                            .truncate()
+                            .child(label),
+                    )
+                })
+                .selected(scale.on)
+                .disabled(disabled)
+                .tooltip(toggle_tooltip)
+                .on_click(cx.listener(|toolbar, _: &ClickEvent, window, cx| {
+                    toolbar.request_scale(ScaleRequest::Toggle, window, cx);
+                })),
+            toggle_label,
+        );
+        let menu = accessible_icon_button(
+            Button::new(VIEWER_SCALE_MENU_ID)
+                .debug_selector(|| VIEWER_SCALE_MENU_ID.into())
+                .accessibility_id(VIEWER_SCALE_MENU_ID)
+                .dropdown_caret(true)
+                // As a split button's halves: both show the scale on, and
+                // the caret shows pressed while its panel is open.
+                .selected(scale.on || scale.menu_open)
+                .disabled(disabled)
+                .map(|button| match menu_key_binding {
+                    Some(key_binding) => button.tooltip_with_key_binding(menu_tooltip, key_binding),
+                    None => button.tooltip(menu_tooltip),
+                })
+                .on_click(cx.listener(|toolbar, _: &ClickEvent, window, cx| {
+                    toolbar.request_scale(ScaleRequest::Menu, window, cx);
+                })),
+            "Page Scale menu",
+        );
         let anchor = self.scale_bounds.clone();
-        toolbar_group(cx)
+        h_flex()
             .id(VIEWER_SCALE_ID)
             .debug_selector(|| VIEWER_SCALE_ID.into())
+            .flex_shrink_0()
             .role(gpui::Role::Group)
-            .aria_label("Page scale")
-            .overflow_hidden()
+            .aria_label("Page Scale")
             .on_prepaint(move |bounds, _, _| anchor.set(Some(bounds)))
             .on_hover(cx.listener(|_, hovered: &bool, _, cx| {
                 cx.emit(ViewerToolbarStripEvent::ScaleHovered(*hovered));
             }))
+            // A split button of stock outline buttons, joined as the
+            // page-view controls' halves are; the group keeps each half's
+            // own disabled state.
             .child(
-                switch_part
-                    .id(VIEWER_SCALE_SWITCH_ID)
-                    .debug_selector(|| VIEWER_SCALE_SWITCH_ID.into())
-                    .px_2()
-                    .h_full()
-                    .items_center(),
+                ButtonGroup::new("viewer-scale-split")
+                    .outline()
+                    .children([toggle, menu]),
             )
-            .child(gpui_component::separator::Separator::vertical().h_full())
-            .child(menu)
             .into_any_element()
+    }
+
+    /// The Edit PDF toggle: an icon button, selected while Edit PDF is on,
+    /// as Fit Width is while it applies.
+    fn render_edit_pdf(&self, on: bool, disabled: bool, cx: &mut Context<Self>) -> Button {
+        let button = Button::new(EDIT_PDF_ID)
+            .debug_selector(|| EDIT_PDF_ID.into())
+            .accessibility_id(EDIT_PDF_ID)
+            .outline()
+            .icon(Icon::default().path(crate::application_assets::EDIT_PDF_ICON))
+            .selected(on)
+            .toggled(on)
+            .disabled(disabled)
+            .map(
+                |button| match crate::shortcut_label::shortcut_kbd("Shift+T") {
+                    Some(key_binding) => button.tooltip_with_key_binding("Edit PDF", key_binding),
+                    None => button.tooltip("Edit PDF"),
+                },
+            )
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
+            }));
+        accessible_icon_button(button, if on { "Edit PDF, on" } else { "Edit PDF, off" })
+    }
+
+    /// Undo and Redo of the document: they send [`UndoDocument`] and
+    /// [`RedoDocument`] from the toolbar, so a focused text field never
+    /// takes them. A toolbar button takes no focus when pressed.
+    fn render_history(&self) -> ButtonGroup {
+        let history = self.history;
+        let focus = self.focus_handle.clone();
+        let redo_focus = self.focus_handle.clone();
+        ButtonGroup::new("viewer-history-buttons")
+            .outline()
+            // `children` keeps each button's own disabled state.
+            .children([
+                accessible_icon_button(
+                    Button::new(VIEWER_UNDO_ID)
+                        .debug_selector(|| VIEWER_UNDO_ID.into())
+                        .accessibility_id(VIEWER_UNDO_ID)
+                        .icon(Icon::default().path(UNDO_ICON))
+                        .tooltip_with_action("Undo", &Undo, Some(HISTORY_BINDING_CONTEXT))
+                        .disabled(!history.can_undo)
+                        .on_click(move |_, window, cx| {
+                            focus.dispatch_action(&UndoDocument, window, cx);
+                        }),
+                    "Undo",
+                ),
+                accessible_icon_button(
+                    Button::new(VIEWER_REDO_ID)
+                        .debug_selector(|| VIEWER_REDO_ID.into())
+                        .accessibility_id(VIEWER_REDO_ID)
+                        .icon(Icon::default().path(REDO_ICON))
+                        .tooltip_with_action("Redo", &Redo, Some(HISTORY_BINDING_CONTEXT))
+                        .disabled(!history.can_redo)
+                        .on_click(move |_, window, cx| {
+                            redo_focus.dispatch_action(&RedoDocument, window, cx);
+                        }),
+                    "Redo",
+                ),
+            ])
     }
 
     /// Shows the signatures button for a signed document, or hides it.
@@ -960,35 +1015,23 @@ impl ViewerToolbarStrip {
     }
 }
 
-/// The slot of the Edit PDF switch and the Scale in `fit`, in rems.
-const fn edit_pdf_slot_rems(fit: ViewerToolbarFit) -> f32 {
-    match fit {
-        ViewerToolbarFit::Full => EDIT_PDF_SLOT_MIN_REMS,
-        ViewerToolbarFit::Middle
-        | ViewerToolbarFit::StepsInMenu
-        | ViewerToolbarFit::FitInMenu
-        | ViewerToolbarFit::ViewMenu => EDIT_PDF_MIDDLE_SLOT_REMS,
-        ViewerToolbarFit::Compact => EDIT_PDF_COMPACT_SLOT_REMS,
-        ViewerToolbarFit::Tightest | ViewerToolbarFit::Narrowest => EDIT_PDF_TIGHTEST_SLOT_REMS,
-    }
-}
-
-/// What a toolbar `width` wide has room for; `switches` when it shows the
-/// Edit PDF switch and the Scale (a toolbar without them needs less).
+/// What a toolbar `width` wide has room for; `edit_and_scale` when it
+/// shows the Edit PDF toggle and the Scale (a toolbar without them needs
+/// less).
 pub fn viewer_toolbar_fit(
     width: Pixels,
     rem: Pixels,
     signed: bool,
     digits: u32,
-    switches: bool,
+    edit_and_scale: bool,
 ) -> ViewerToolbarFit {
     ViewerToolbarFit::ALL
         .into_iter()
         .find(|fit| {
-            let slot = if switches {
+            let slot = if edit_and_scale {
                 0.
             } else {
-                edit_pdf_slot_rems(*fit)
+                edit_scale_slot_rems(*fit)
             };
             width >= rem * (viewer_toolbar_rems(*fit, signed, digits) - slot)
         })
@@ -1044,14 +1087,14 @@ impl Render for ViewerToolbarStrip {
             ));
 
         let signed = self.signatures.is_some();
-        let switches = self.edit_pdf.is_some();
+        let edit_and_scale = self.edit_pdf.is_some();
 
         let fit = viewer_toolbar_fit(
             self.width.get(),
             window.rem_size(),
             signed,
             self.page_digits,
-            switches,
+            edit_and_scale,
         );
         // The narrowest form halves the gaps between groups and the edge
         // insets.
@@ -1080,73 +1123,12 @@ impl Render for ViewerToolbarStrip {
         let page_view_menu = (fit.view_menu() && self.single_page_control.is_some())
             .then(|| self.render_page_view_menu(disabled || cad_active, cx));
 
-        // The Edit PDF switch and the page's Scale sit at the leading edge,
-        // and the signatures button at the trailing edge; matching flexible
-        // spaces keep the view controls centred. All scroll with the
-        // controls when the strip is narrow.
+        // Edit PDF and the page's Scale sit at the trailing edge, then the
+        // signatures button; Undo and Redo at the leading edge. Flexible
+        // spaces either side keep the page navigator, zoom and layout
+        // centred.
         let edit_pdf = self.edit_pdf.map(|on| {
-            let tooltip = if on {
-                "Stop editing the PDF's text, drawings and images"
-            } else {
-                "Edit the PDF's text, drawings and images"
-            };
-            let switch = Switch::new("viewer-edit-pdf-switch")
-                .checked(on)
-                .when(fit.small_switches(), |switch| switch.small())
-                .disabled(disabled)
-                .map(
-                    |switch| match crate::shortcut_label::shortcut_kbd("Shift+T") {
-                        Some(key_binding) => switch.tooltip_with_key_binding(tooltip, key_binding),
-                        None => switch.tooltip(tooltip),
-                    },
-                )
-                .on_click(cx.listener(|_, _: &bool, _, cx| {
-                    cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
-                }));
-            let control = match fit.labelled() {
-                true => toolbar_group(cx)
-                    .id("viewer-edit-pdf-full")
-                    .px_2()
-                    .role(gpui::Role::Group)
-                    .aria_label("Edit PDF")
-                    .child(focus_ring_switch(
-                        "viewer-edit-pdf-switch-ring",
-                        switch.label("Edit"),
-                    ))
-                    .into_any_element(),
-                // Narrow, the same switch with an icon where its label was;
-                // the icon toggles it as the label does, and the group
-                // carries the name.
-                false => toolbar_group(cx)
-                    .id("viewer-edit-pdf-compact")
-                    .px_2()
-                    .role(gpui::Role::Group)
-                    .aria_label("Edit PDF")
-                    .gap_2()
-                    .child(focus_ring_switch("viewer-edit-pdf-switch-ring", switch))
-                    .child(
-                        div()
-                            .id(EDIT_PDF_ICON_ID)
-                            .debug_selector(|| EDIT_PDF_ICON_ID.into())
-                            .when(!disabled, |icon| {
-                                icon.cursor_pointer().on_click(cx.listener(
-                                    |_, _: &ClickEvent, _, cx| {
-                                        cx.emit(ViewerToolbarStripEvent::EditPdfToggled);
-                                    },
-                                ))
-                            })
-                            .child(
-                                Icon::default()
-                                    .path(crate::application_assets::EDIT_PDF_ICON)
-                                    .text_color(if disabled {
-                                        cx.theme().muted_foreground
-                                    } else {
-                                        cx.theme().foreground
-                                    }),
-                            ),
-                    )
-                    .into_any_element(),
-            };
+            let control = self.render_edit_pdf(on, disabled, cx);
             let scale = self
                 .scale
                 .clone()
@@ -1162,15 +1144,11 @@ impl Render for ViewerToolbarStrip {
                 .flex_shrink_0()
                 .whitespace_nowrap()
                 .items_center()
-                .child(
-                    div()
-                        .id(EDIT_PDF_ID)
-                        .debug_selector(|| EDIT_PDF_ID.into())
-                        .child(control),
-                )
+                .child(control)
                 .children(scale)
         });
-        let has_switches = edit_pdf.is_some() || self.signatures.is_some();
+        let has_right_controls = edit_pdf.is_some() || self.signatures.is_some();
+        let history = self.render_history();
 
         // The shield alone, coloured by the verdict; its tooltip says what
         // it means, and a click lists the signatures.
@@ -1221,7 +1199,13 @@ impl Render for ViewerToolbarStrip {
                 // Whether the toolbar is compact follows the width laid
                 // out.
                 let band = |width: Pixels| {
-                    viewer_toolbar_fit(width, window.rem_size(), signed, page_digits, switches)
+                    viewer_toolbar_fit(
+                        width,
+                        window.rem_size(),
+                        signed,
+                        page_digits,
+                        edit_and_scale,
+                    )
                 };
                 let previous = band(width.replace(bounds.size.width));
                 if previous != band(bounds.size.width) {
@@ -1266,15 +1250,15 @@ impl Render for ViewerToolbarStrip {
                             .flex_shrink_0()
                             .justify_center()
                             .items_center()
-                            // Ordered by complexity, in every form: the pages
-                            // pinned left, the Edit PDF and Scale switches
-                            // pinned right, and zoom with the page layout in
-                            // the toolbar's centre. The two side slots share
-                            // the free space alike (each grows from nothing
-                            // but never below its content), so the controls
-                            // stay centred until a wider side reaches them;
-                            // then they sit between the sides, which meet
-                            // them at the group gap.
+                            // Alike in every form: Undo and Redo pinned
+                            // left, Edit PDF and the Scale pinned right, and
+                            // the page navigator, zoom and page layout in the
+                            // toolbar's centre. The two side slots share the
+                            // free space alike (each grows from nothing but
+                            // never below its content), so the controls stay
+                            // centred until a wider side reaches them; then
+                            // they sit between the sides, which meet them at
+                            // the group gap.
                             .child(
                                 h_flex()
                                     .id(VIEWER_TOOLBAR_LEFT_ID)
@@ -1282,15 +1266,13 @@ impl Render for ViewerToolbarStrip {
                                     .flex_1()
                                     .items_center()
                                     .map(|slot| if half { slot.pl_1() } else { slot.pl_2() })
-                                    .when_some(self.page_navigator.clone(), |slot, navigator| {
-                                        slot.child(
-                                            toolbar_group(cx)
-                                                .id(VIEWER_PAGES_GROUP_ID)
-                                                .debug_selector(|| VIEWER_PAGES_GROUP_ID.into())
-                                                .flex_shrink_0()
-                                                .child(navigator),
-                                        )
-                                    }),
+                                    .child(
+                                        h_flex()
+                                            .id(VIEWER_HISTORY_GROUP_ID)
+                                            .debug_selector(|| VIEWER_HISTORY_GROUP_ID.into())
+                                            .flex_shrink_0()
+                                            .child(history),
+                                    ),
                             )
                             .child(
                                 h_flex()
@@ -1310,6 +1292,15 @@ impl Render for ViewerToolbarStrip {
                                         }
                                     })
                                     .py_1()
+                                    .when_some(self.page_navigator.clone(), |toolbar, navigator| {
+                                        toolbar.child(
+                                            toolbar_group(cx)
+                                                .id(VIEWER_PAGES_GROUP_ID)
+                                                .debug_selector(|| VIEWER_PAGES_GROUP_ID.into())
+                                                .flex_shrink_0()
+                                                .child(navigator),
+                                        )
+                                    })
                                     .when_some(self.zoom_control.clone(), |toolbar, control| {
                                         toolbar.child(
                                             toolbar_group(cx)
@@ -1374,8 +1365,8 @@ impl Render for ViewerToolbarStrip {
                                     ),
                             )
                             .child(
-                                // The switches pinned right, the signatures
-                                // button at the trailing edge.
+                                // Edit PDF and the Scale pinned right, the
+                                // signatures button at the trailing edge.
                                 h_flex()
                                     .id(VIEWER_TOOLBAR_RIGHT_ID)
                                     .debug_selector(|| VIEWER_TOOLBAR_RIGHT_ID.into())
@@ -1386,7 +1377,7 @@ impl Render for ViewerToolbarStrip {
                                     // The edge inset, unless the slot is empty
                                     // and the page layout's own inset ends the
                                     // toolbar.
-                                    .when(has_switches, |slot| {
+                                    .when(has_right_controls, |slot| {
                                         if half { slot.pr_1() } else { slot.pr_2() }
                                     })
                                     .children(edit_pdf)

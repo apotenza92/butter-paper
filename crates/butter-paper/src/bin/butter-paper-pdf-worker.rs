@@ -1,21 +1,22 @@
 use butter_paper::page_geometry::{PageCoordinateSpace, PdfMetadataDocument};
+use butter_paper::paper_appearance::PaperAppearance;
 use butter_paper::pdf_content_geometry::{
     ContentGeometryError, ContentGeometryLimits, PageSnapGeometry, extract_page_snap_geometry,
 };
 use butter_paper::pdf_engine::{
-    RetainedAnnotationRender, pdfium_display_render_bytes, retained_annotation_render,
-    vector_snapshot_layer,
+    RetainedAnnotationDocument, pdfium_display_render_bytes, retained_annotation_document,
+    vector_snapshot_layer_document,
 };
 use butter_paper::pdf_forms::{apply_form_edits, needs_appearances, regenerate_appearances};
 use butter_paper::pdf_text_edit::{
-    PageTextLayer, TextEditError, TextEditLimits, apply_content_edits_with, extract_page_text,
-    extract_page_text_with,
+    PageTextLayer, TextEditError, TextEditLimits, apply_content_edits_with,
+    extract_page_search_text, extract_page_text, extract_page_text_with,
 };
 use butter_paper::pdf_worker::{
     AnnotationRenderMode, CancellationRegistry, DocumentEdits, DocumentInfo, FileSurfaceStore,
-    PageGeometry, PdfBackend, RenderRequest, Rotation, SourceHandleId, SurfaceDescriptor,
-    SurfaceLimits, WorkerError, WorkerErrorCode, WorkerLifecycleReporter, WorkerState,
-    run_worker_protocol,
+    PageGeometry, PdfBackend, RenderReport, RenderRequest, Rotation, SourceHandleId,
+    SurfaceDescriptor, SurfaceLimits, WorkerError, WorkerErrorCode, WorkerLifecycleReporter,
+    WorkerState, run_worker_protocol,
 };
 use pdfium_render::prelude::*;
 use std::env;
@@ -40,6 +41,53 @@ fn prepare_pdfium_display_bytes(
             format!("PDFium display preparation failed: {error}"),
         )
     })
+}
+
+/// The editable text of a page of the unedited document, or of the kept
+/// page `base` names, with `explodes` exploded into it. Without
+/// `with_objects`, the page's movable drawings and images are not read (a
+/// search does not need them).
+fn read_page_text(
+    document: &PdfiumDocument,
+    page_index: u32,
+    base: Option<&str>,
+    explodes: &[butter_paper::pdf_content_moves::ContentExplode],
+    with_objects: bool,
+) -> Result<PageTextLayer, WorkerError> {
+    let limits = TextEditLimits::default();
+    let read = |source: &PdfMetadataDocument, index: u32, explodes: &[_]| {
+        if with_objects {
+            extract_page_text_with(source, index, explodes, &limits)
+        } else {
+            extract_page_search_text(source, index, explodes, &limits)
+        }
+        .map_err(map_text_edit_error)
+    };
+    let explodes = &with_paste_pdfs(document, explodes)?;
+    let Some(base) = base else {
+        return read(&document.source, page_index, explodes);
+    };
+    let pdf = document.page_bases.get(base).ok_or_else(|| {
+        WorkerError::with_detail(WorkerErrorCode::InvalidRequest, "the kept page is missing")
+    })?;
+    let kept = PdfMetadataDocument::load_mem(pdf).map_err(|error| {
+        WorkerError::with_detail(
+            WorkerErrorCode::MalformedDocument,
+            format!("a kept page cannot be read: {error}"),
+        )
+    })?;
+    // The kept page is page 0 of its PDF: its explodes name it so.
+    let explodes = explodes
+        .iter()
+        .filter(|explode| explode.page_index == page_index)
+        .map(|explode| butter_paper::pdf_content_moves::ContentExplode {
+            page_index: 0,
+            ..explode.clone()
+        })
+        .collect::<Vec<_>>();
+    let mut layer = read(&kept, 0, &explodes)?;
+    layer.page_index = page_index;
+    Ok(layer)
 }
 
 /// `explodes` with the clips they paste, which the worker was sent once.
@@ -194,6 +242,11 @@ fn incremental_appendix(
         *last = byte;
     }
     let mut update = lopdf::IncrementalDocument::create_from(stand_in, previous);
+    // A render-only copy can have its own catalog (the vector Snapshot
+    // layer); an edited display keeps the source's.
+    if let Ok(root) = edited.trailer.get(b"Root") {
+        update.new_document.trailer.set("Root", root.clone());
+    }
     for (id, object) in &edited.objects {
         let original = source.objects.get(id);
         if !held.unchanged(id, object, original) && original != Some(object) {
@@ -266,6 +319,29 @@ impl std::io::Write for AfterPrevious {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// The bytes of a render-only copy of the document (`filtered`: the
+/// retained annotations or the vector Snapshot layer): the source bytes and
+/// an incremental update with the objects that `filtered` changes, when the
+/// source allows one. Objects that lopdf could not parse then stay in the
+/// source bytes. Otherwise a full save, which drops such objects.
+fn render_only_bytes(
+    source: &PdfMetadataDocument,
+    source_bytes: &[u8],
+    filtered: &mut PdfMetadataDocument,
+) -> lopdf::Result<Vec<u8>> {
+    if let Some((appendix, _)) =
+        incremental_appendix(source, source_bytes, filtered, &HeldImages::default())
+    {
+        let mut bytes = Vec::with_capacity(source_bytes.len() + appendix.len());
+        bytes.extend_from_slice(source_bytes);
+        bytes.extend_from_slice(&appendix);
+        return Ok(bytes);
+    }
+    let mut bytes = Vec::new();
+    filtered.save_to(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// The document as renders show it: the source with page-text edits and
@@ -456,6 +532,48 @@ fn render_page_into(
         .map_err(map_pdfium_error)
 }
 
+/// Draws `entry`'s page into `output` as `request` asks (pass A, the real
+/// colours). For Dark pages it then draws the picture pass and maps the
+/// ink and paper. It returns the picture coverage of a Dark render, when
+/// pictures reach the surface.
+fn render_paper_into(
+    entry: &mut LoadedPage,
+    space: Option<PageCoordinateSpace>,
+    transform: [f32; 6],
+    size: (i32, i32),
+    render_annotations: bool,
+    request: &RenderRequest,
+    output: &mut [u8],
+    cancelled: &AtomicBool,
+) -> Result<Option<Vec<u8>>, dark_pages::DarkError> {
+    render_page_into(
+        &entry.page,
+        transform,
+        size,
+        render_annotations,
+        request,
+        output,
+    )?;
+    match request.paper {
+        PaperAppearance::Real => Ok(None),
+        PaperAppearance::Dark => {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(WorkerError::new(WorkerErrorCode::Cancelled).into());
+            }
+            dark_pages::darken(
+                &entry.page,
+                &mut entry.pictures,
+                space,
+                transform,
+                size,
+                render_annotations,
+                request.draft,
+                output,
+            )
+        }
+    }
+}
+
 /// Which of a document's PDFium documents a page was loaded from.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RasterSource {
@@ -468,7 +586,17 @@ enum RasterSource {
 /// (the next viewer tile, or its thumbnail after its page) then neither
 /// parses its content nor decodes its images again.
 #[derive(Default)]
-struct LoadedPages(Vec<(RasterSource, i32, PdfPage<'static>)>, PageRasters);
+struct LoadedPages(Vec<LoadedPage>, PageRasters);
+
+/// A page kept loaded, with what Dark pages found on it.
+struct LoadedPage {
+    source: RasterSource,
+    index: i32,
+    /// Made on the first Dark render of the page. Declared before `page`:
+    /// it holds handles to the page's objects, so it is dropped first.
+    pictures: Option<dark_pages::PictureIndex>,
+    page: PdfPage<'static>,
+}
 
 /// A render of a whole page that is slow to draw (large images PDFium does
 /// not keep decoded), which the next tiles of it at the same scale are cut
@@ -489,6 +617,11 @@ impl PageRasters {
         let mut pixels = 0;
         self.rasters.retain(|kept| {
             pixels += (kept.width * kept.height) as u64;
+            // A coverage mask is one byte for each pixel: a quarter pixel.
+            pixels += kept
+                .coverage
+                .as_ref()
+                .map_or(0, |mask| mask.len() as u64 / 4);
             pixels <= MAX_PAGE_RASTER_PIXELS
         });
     }
@@ -512,6 +645,8 @@ struct PageRasterKey {
     linear: [u32; 4],
     mode: AnnotationRenderMode,
     draft: bool,
+    /// Dark and real renders of a page are separate rasters.
+    paper: PaperAppearance,
 }
 
 struct PageRaster {
@@ -520,7 +655,11 @@ struct PageRaster {
     origin: (f64, f64),
     width: usize,
     height: usize,
+    /// The drawn pixels: for Dark pages, already mapped.
     pixels: Vec<u8>,
+    /// For Dark pages: the picture coverage of each pixel, when pictures
+    /// reach the raster.
+    coverage: Option<Vec<u8>>,
 }
 
 impl PageRasterKey {
@@ -532,6 +671,7 @@ impl PageRasterKey {
             linear: [a.to_bits(), b.to_bits(), c.to_bits(), d.to_bits()],
             mode: request.annotation_mode,
             draft: request.draft,
+            paper: request.paper,
         }
     }
 }
@@ -560,12 +700,37 @@ impl PageRaster {
         }
         true
     }
+
+    /// What a tile cut with [`Self::crop`] reports.
+    fn report(&self, (e, f): (f64, f64), width: usize, height: usize) -> RenderReport {
+        if self.key.paper == PaperAppearance::Real {
+            return RenderReport::default();
+        }
+        let Some(coverage) = &self.coverage else {
+            return dark_pages::report(PaperAppearance::Dark, None);
+        };
+        let (x, y) = ((self.origin.0 - e).round(), (self.origin.1 - f).round());
+        // A tile this raster does not hold (the caller then draws the tile
+        // alone) has no part of the mask to cut.
+        if x < 0. || y < 0. || x as usize + width > self.width || y as usize + height > self.height
+        {
+            return dark_pages::report(PaperAppearance::Dark, None);
+        }
+        let (x, y) = (x as usize, y as usize);
+        let cut: Vec<u8> = (0..height)
+            .flat_map(|row| {
+                let from = (y + row) * self.width + x;
+                coverage[from..from + width].iter().copied()
+            })
+            .collect();
+        dark_pages::report(PaperAppearance::Dark, Some(&cut))
+    }
 }
 
 /// Pages and a document an edit replaced, waiting to close: the pages
 /// first.
 struct Retired {
-    _pages: Vec<(RasterSource, i32, PdfPage<'static>)>,
+    _pages: Vec<LoadedPage>,
     _document: PdfDocument<'static>,
     _retained: RetainedPdfiumDocument,
 }
@@ -577,16 +742,16 @@ const MAX_RETIRED: usize = 2;
 impl LoadedPages {
     const CAPACITY: usize = 3;
 
-    fn get(
+    fn entry(
         &mut self,
         source: RasterSource,
         index: i32,
         document: &PdfDocument<'static>,
-    ) -> Result<&PdfPage<'static>, WorkerError> {
+    ) -> Result<&mut LoadedPage, WorkerError> {
         if let Some(position) = self
             .0
             .iter()
-            .position(|(loaded, page, _)| *loaded == source && *page == index)
+            .position(|loaded| loaded.source == source && loaded.index == index)
         {
             let entry = self.0.remove(position);
             self.0.push(entry);
@@ -595,9 +760,21 @@ impl LoadedPages {
             if self.0.len() == Self::CAPACITY {
                 self.0.remove(0);
             }
-            self.0.push((source, index, page));
+            self.0.push(LoadedPage {
+                source,
+                index,
+                pictures: None,
+                page,
+            });
         }
-        Ok(&self.0.last().expect("a page was just loaded").2)
+        Ok(self.0.last_mut().expect("a page was just loaded"))
+    }
+
+    /// Closes a page, so that its next render loads it again.
+    fn forget(&mut self, source: RasterSource, index: i32) {
+        self.0
+            .retain(|loaded| loaded.source != source || loaded.index != index);
+        self.1.rasters.clear();
     }
 
     fn clear(&mut self) {
@@ -715,7 +892,7 @@ impl PdfBackend for PdfiumBackend {
         source
             .read_to_end(&mut metadata_bytes)
             .map_err(WorkerError::from)?;
-        let metadata = PdfMetadataDocument::load_mem(&metadata_bytes).map_err(|error| {
+        let metadata = butter_paper::pdf_load::load_pdf_mem(&metadata_bytes).map_err(|error| {
             WorkerError::with_detail(
                 WorkerErrorCode::MalformedDocument,
                 format!("page metadata parser rejected the PDF: {error}"),
@@ -905,38 +1082,17 @@ impl PdfBackend for PdfiumBackend {
         base: Option<&str>,
         explodes: &[butter_paper::pdf_content_moves::ContentExplode],
     ) -> Result<PageTextLayer, WorkerError> {
-        let explodes = &with_paste_pdfs(document, explodes)?;
-        let Some(base) = base else {
-            return extract_page_text_with(
-                &document.source,
-                page_index,
-                explodes,
-                &TextEditLimits::default(),
-            )
-            .map_err(map_text_edit_error);
-        };
-        let pdf = document.page_bases.get(base).ok_or_else(|| {
-            WorkerError::with_detail(WorkerErrorCode::InvalidRequest, "the kept page is missing")
-        })?;
-        let kept = PdfMetadataDocument::load_mem(pdf).map_err(|error| {
-            WorkerError::with_detail(
-                WorkerErrorCode::MalformedDocument,
-                format!("a kept page cannot be read: {error}"),
-            )
-        })?;
-        // The kept page is page 0 of its PDF: its explodes name it so.
-        let explodes = explodes
-            .iter()
-            .filter(|explode| explode.page_index == page_index)
-            .map(|explode| butter_paper::pdf_content_moves::ContentExplode {
-                page_index: 0,
-                ..explode.clone()
-            })
-            .collect::<Vec<_>>();
-        let mut layer = extract_page_text_with(&kept, 0, &explodes, &TextEditLimits::default())
-            .map_err(map_text_edit_error)?;
-        layer.page_index = page_index;
-        Ok(layer)
+        read_page_text(document, page_index, base, explodes, true)
+    }
+
+    fn page_search_text(
+        &mut self,
+        document: &mut Self::Document,
+        page_index: u32,
+        base: Option<&str>,
+        explodes: &[butter_paper::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, WorkerError> {
+        read_page_text(document, page_index, base, explodes, false)
     }
 
     fn content_clip(
@@ -1087,9 +1243,14 @@ impl PdfBackend for PdfiumBackend {
         request: &RenderRequest,
         output: &mut [u8],
         cancelled: &AtomicBool,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<RenderReport, WorkerError> {
         if cancelled.load(Ordering::Acquire) {
             return Err(WorkerError::new(WorkerErrorCode::Cancelled));
+        }
+        if request.paper == PaperAppearance::Dark {
+            // The first Dark render builds the colour table while PDFium
+            // draws the page, rather than before it.
+            dark_pages::warm_map();
         }
         let page_index = i32::try_from(request.page_index)
             .map_err(|_| WorkerError::new(WorkerErrorCode::PageError))?;
@@ -1098,17 +1259,24 @@ impl PdfBackend for PdfiumBackend {
         {
             // Classification uses the immutable snapshot read from the inherited handle.
             // A second PDFium document is allocated only for genuinely mixed/converted content.
-            let prepared = retained_annotation_render(&document.metadata)
-                .map_err(|error| {
-                    WorkerError::with_detail(
-                        WorkerErrorCode::MalformedDocument,
-                        format!("retained annotation preparation failed: {error}"),
-                    )
-                })
+            let preparation_failed = |error: &dyn std::fmt::Display| {
+                WorkerError::with_detail(
+                    WorkerErrorCode::MalformedDocument,
+                    format!("retained annotation preparation failed: {error}"),
+                )
+            };
+            let prepared = retained_annotation_document(&document.metadata)
+                .map_err(|error| preparation_failed(&error))
                 .and_then(|render| match render {
-                    RetainedAnnotationRender::None => Ok(RetainedPdfiumDocument::None),
-                    RetainedAnnotationRender::Original => Ok(RetainedPdfiumDocument::Original),
-                    RetainedAnnotationRender::Filtered(bytes) => {
+                    RetainedAnnotationDocument::None => Ok(RetainedPdfiumDocument::None),
+                    RetainedAnnotationDocument::Original => Ok(RetainedPdfiumDocument::Original),
+                    RetainedAnnotationDocument::Filtered(mut filtered) => {
+                        let bytes = render_only_bytes(
+                            &document.source,
+                            &document.source_bytes,
+                            &mut filtered,
+                        )
+                        .map_err(|error| preparation_failed(&error))?;
                         let metadata = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
                             WorkerError::with_detail(
                                 WorkerErrorCode::MalformedDocument,
@@ -1125,20 +1293,24 @@ impl PdfBackend for PdfiumBackend {
         if request.annotation_mode == AnnotationRenderMode::VectorSnapshots
             && document.vector_snapshots.is_none()
         {
-            let prepared = vector_snapshot_layer(&document.metadata)
-                .map_err(|error| {
-                    WorkerError::with_detail(
-                        WorkerErrorCode::MalformedDocument,
-                        format!("vector Snapshot preparation failed: {error}"),
-                    )
-                })
+            let preparation_failed = |error: &dyn std::fmt::Display| {
+                WorkerError::with_detail(
+                    WorkerErrorCode::MalformedDocument,
+                    format!("vector Snapshot preparation failed: {error}"),
+                )
+            };
+            let prepared = vector_snapshot_layer_document(&document.metadata)
+                .map_err(|error| preparation_failed(&error))
                 .and_then(|layer| {
-                    let bytes = layer.ok_or_else(|| {
+                    let mut layer = layer.ok_or_else(|| {
                         WorkerError::with_detail(
                             WorkerErrorCode::PageError,
                             "the document has no vector Snapshots",
                         )
                     })?;
+                    let bytes =
+                        render_only_bytes(&document.source, &document.source_bytes, &mut layer)
+                            .map_err(|error| preparation_failed(&error))?;
                     let metadata = PdfMetadataDocument::load_mem(&bytes).map_err(|error| {
                         WorkerError::with_detail(
                             WorkerErrorCode::MalformedDocument,
@@ -1181,27 +1353,34 @@ impl PdfBackend for PdfiumBackend {
             request.surface.width as usize,
             request.surface.height as usize,
         );
-        if document.loaded_pages.1.rasters.iter().any(|raster| {
+        if let Some(raster) = document.loaded_pages.1.rasters.iter().find(|raster| {
             raster.key == key && raster.crop(translation, surface_width, surface_height, output)
         }) {
-            return Ok(());
+            return Ok(raster.report(translation, surface_width, surface_height));
         }
+        // Where Dark pages finds the page's boxes: the inherited page
+        // dictionary for the displayed document's pages, as page geometry
+        // uses; PDFium's own boxes for a vector Snapshot layer page.
+        let space = (request.paper == PaperAppearance::Dark
+            && source != RasterSource::VectorSnapshots)
+            .then(|| dark_pages::canonical_space(&document.metadata, page_index))
+            .flatten();
         let heavy = document
             .loaded_pages
             .1
             .heavy
             .contains(&(source, page_index));
-        let page = document
+        let entry = document
             .loaded_pages
-            .get(source, page_index, raster_document)?;
+            .entry(source, page_index, raster_document)?;
         let started = std::time::Instant::now();
         // A slow page is drawn whole once, at this scale, and its tiles cut
         // from that.
         if heavy {
             let [a, b, c, d, e, f] = request.transform.map(f64::from);
             let (w, h) = (
-                f64::from(page.width().value),
-                f64::from(page.height().value),
+                f64::from(entry.page.width().value),
+                f64::from(entry.page.height().value),
             );
             let corners = [(0., 0.), (w, 0.), (0., h), (w, h)]
                 .map(|(x, y)| (a * x + c * y + e, b * x + d * y + f));
@@ -1249,8 +1428,9 @@ impl PdfBackend for PdfiumBackend {
                 let origin = ((e - left) as f32, (f - top) as f32);
                 let (full_width, full_height) = (full_width as usize, full_height as usize);
                 let mut pixels = vec![0u8; full_width * full_height * 4];
-                let rendered = render_page_into(
-                    page,
+                let rendered = render_paper_into(
+                    entry,
+                    space,
                     [
                         request.transform[0],
                         request.transform[1],
@@ -1263,41 +1443,60 @@ impl PdfBackend for PdfiumBackend {
                     render_annotations,
                     request,
                     &mut pixels,
+                    cancelled,
                 );
-                if rendered.is_ok() {
-                    let raster = PageRaster {
-                        key,
-                        origin: (f64::from(origin.0), f64::from(origin.1)),
-                        width: full_width,
-                        height: full_height,
-                        pixels,
-                    };
-                    let cut = raster.crop(translation, surface_width, surface_height, output);
-                    document.loaded_pages.1.keep(raster);
-                    if cut {
-                        if cancelled.load(Ordering::Acquire) {
-                            return Err(WorkerError::new(WorkerErrorCode::Cancelled));
+                match rendered {
+                    Ok(coverage) => {
+                        let raster = PageRaster {
+                            key,
+                            origin: (f64::from(origin.0), f64::from(origin.1)),
+                            width: full_width,
+                            height: full_height,
+                            pixels,
+                            coverage,
+                        };
+                        let cut = raster.crop(translation, surface_width, surface_height, output);
+                        let report = raster.report(translation, surface_width, surface_height);
+                        document.loaded_pages.1.keep(raster);
+                        if cut {
+                            if cancelled.load(Ordering::Acquire) {
+                                return Err(WorkerError::new(WorkerErrorCode::Cancelled));
+                            }
+                            return Ok(report);
                         }
-                        return Ok(());
                     }
+                    // As before Dark pages: a failed whole-page render
+                    // falls back to the tile alone. A page whose objects
+                    // could not be set active again is not drawn again.
+                    Err(error) if error.needs_reload() => {
+                        return Err(error.settle(&mut document.loaded_pages, source, page_index));
+                    }
+                    Err(_) => {}
                 }
             }
         }
-        let page = document
+        let entry = document
             .loaded_pages
-            .get(source, page_index, raster_document)?;
+            .entry(source, page_index, raster_document)?;
         let width = i32::try_from(request.surface.width)
             .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
         let height = i32::try_from(request.surface.height)
             .map_err(|_| WorkerError::new(WorkerErrorCode::LimitExceeded))?;
-        render_page_into(
-            page,
+        let coverage = match render_paper_into(
+            entry,
+            space,
             request.transform,
             (width, height),
             render_annotations,
             request,
             output,
-        )?;
+            cancelled,
+        ) {
+            Ok(coverage) => coverage,
+            Err(error) => {
+                return Err(error.settle(&mut document.loaded_pages, source, page_index));
+            }
+        };
         let took = started.elapsed();
         let heavy_pages = &mut document.loaded_pages.1.heavy;
         if took > HEAVY_PAGE_RENDER && !heavy_pages.contains(&(source, page_index)) {
@@ -1308,7 +1507,7 @@ impl PdfBackend for PdfiumBackend {
             // result is discarded if cancellation arrived during the native call.
             return Err(WorkerError::new(WorkerErrorCode::Cancelled));
         }
-        Ok(())
+        Ok(dark_pages::report(request.paper, coverage.as_deref()))
     }
 
     fn region_pdf(
@@ -1326,6 +1525,7 @@ impl PdfBackend for PdfiumBackend {
         pdf: Vec<u8>,
         transform: [f32; 6],
         surface: &SurfaceDescriptor,
+        paper: PaperAppearance,
         output: &mut [u8],
     ) -> Result<(), WorkerError> {
         let document = self
@@ -1350,7 +1550,16 @@ impl PdfBackend for PdfiumBackend {
             .clip(0, 0, width, height)
             .set_clear_color(PdfColor::new(255, 255, 255, 0));
         page.render_into_bitmap_with_config(&mut bitmap, &config)
-            .map_err(map_pdfium_error)
+            .map_err(map_pdfium_error)?;
+        drop(bitmap);
+        if paper == PaperAppearance::Dark {
+            dark_pages::warm_map();
+            // The page is dropped after this call, so an object left
+            // inactive is never drawn or saved again.
+            dark_pages::darken_page(&page, transform, (width, height), output)
+                .map_err(dark_pages::DarkError::into_worker_error)?;
+        }
+        Ok(())
     }
 
     fn close(&mut self, document: Self::Document) {
@@ -2238,6 +2447,7 @@ mod tests {
                 format: SurfaceFormat::Bgra8Premultiplied,
             },
             draft: false,
+            paper: PaperAppearance::Real,
         }
     }
 
@@ -2726,11 +2936,13 @@ mod tests {
                 linear: [0; 4],
                 mode: AnnotationRenderMode::None,
                 draft: false,
+                paper: PaperAppearance::Real,
             },
             origin: (10., 20.),
             width: 4,
             height: 3,
             pixels: (0..12u8).flat_map(|pixel| [pixel; 4]).collect(),
+            coverage: None,
         };
         // A 2x2 tile one pixel in and one down: its translation is less.
         let mut tile = vec![0; 16];
@@ -2742,6 +2954,38 @@ mod tests {
         assert!(!raster.crop((9.5, 19.), 2, 2, &mut tile), "a part pixel");
         assert!(!raster.crop((7., 19.), 2, 2, &mut tile), "past its right");
         assert!(!raster.crop((11., 20.), 2, 2, &mut tile), "before its left");
+    }
+
+    /// A tile that a Dark page raster does not hold has no part of its
+    /// mask to report: asking must not slice outside the mask (a crash of
+    /// the worker, seen in review at a zoom with a part-pixel offset).
+    #[test]
+    fn a_dark_page_raster_reports_only_tiles_it_holds() {
+        let raster = PageRaster {
+            key: PageRasterKey {
+                source: RasterSource::Display,
+                page: 0,
+                linear: [0; 4],
+                mode: AnnotationRenderMode::None,
+                draft: false,
+                paper: PaperAppearance::Dark,
+            },
+            origin: (10., 20.),
+            width: 4,
+            height: 3,
+            pixels: vec![0; 4 * 3 * 4],
+            // Pictures cover the right half of each row.
+            coverage: Some(vec![0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255]),
+        };
+        // Held: the tile's two right columns are all picture.
+        let held = raster.report((8., 19.), 2, 2);
+        assert_eq!(held.picture_coverage, Some(1.));
+        // Not held: the tile reaches past the bottom, the right edge, and
+        // before the top and left. None of them panics.
+        for translation in [(7., 19.), (9., 18.), (7., 17.), (11., 20.), (10., 21.)] {
+            let report = raster.report(translation, 2, 2);
+            assert!(report.picture_coverage.is_some(), "{translation:?}");
+        }
     }
 
     /// A table edit renders through PDFium: a grown row moves the rows
@@ -3037,6 +3281,7 @@ mod tests {
                 clip.pdf.clone(),
                 [1., 0., 0., 1., 0., 0.],
                 &request.surface,
+                PaperAppearance::Real,
                 &mut pixels,
             )
             .unwrap();
@@ -4283,6 +4528,7 @@ mod tests {
             },
             surface: descriptor,
             draft: false,
+            paper: PaperAppearance::Real,
         };
         let mut pixels = vec![0; request.surface.byte_len as usize];
         backend
@@ -4304,3 +4550,6 @@ mod table_pages;
 #[cfg(test)]
 #[path = "butter-paper-pdf-worker/corpus.rs"]
 mod corpus;
+
+#[path = "butter-paper-pdf-worker/dark_pages.rs"]
+mod dark_pages;

@@ -82,7 +82,7 @@ impl FormFieldInput {
         }
     }
 
-    fn focus_handle(&self, cx: &App) -> FocusHandle {
+    pub(super) fn focus_handle(&self, cx: &App) -> FocusHandle {
         match self {
             Self::Line(input) => input.read(cx).focus_handle(cx),
             Self::Lines(input) => input.read(cx).focus_handle(cx),
@@ -165,6 +165,38 @@ fn editor_font_size(font_size: f64, rect: [f64; 4], multiline: bool) -> f64 {
     } else {
         ((rect[3] - rect[1]) * 0.65).clamp(4., 12.)
     }
+}
+
+/// The space kept between a revealed box and the edges of the view.
+const REVEAL_MARGIN: f32 = 24.;
+
+/// How far to scroll (right, down) so that `rect` (left, top, right,
+/// bottom, in window pixels) is in `viewport`, with `margin` to its edges,
+/// and at least `top_clearance` below its top for something floating there.
+/// A box taller or wider than the view shows its top left.
+fn reveal_scroll_delta(
+    rect: [f32; 4],
+    viewport: [f32; 4],
+    margin: f32,
+    top_clearance: f32,
+) -> (f32, f32) {
+    let [left, top, right, bottom] = rect;
+    let top_margin = margin.max(top_clearance);
+    let dx = if left < viewport[0] + margin {
+        left - viewport[0] - margin
+    } else if right > viewport[2] - margin {
+        (right - viewport[2] + margin).min(left - viewport[0])
+    } else {
+        0.
+    };
+    let dy = if top < viewport[1] + top_margin {
+        top - viewport[1] - top_margin
+    } else if bottom > viewport[3] - margin {
+        (bottom - viewport[3] + margin).min(top - viewport[1] - top_clearance)
+    } else {
+        0.
+    };
+    (dx, dy)
 }
 
 impl DocumentWorkspace {
@@ -841,15 +873,6 @@ impl DocumentWorkspace {
         else {
             return;
         };
-        let interaction = self
-            .page_interactions
-            .get(&(target.document_id, page))
-            .copied();
-        let viewport = self.viewport_bounds.get(&target.document_id).copied();
-        let (Some(interaction), Some(viewport)) = (interaction, viewport) else {
-            self.activate_thumbnail_page(target.document_id, page, cx);
-            return;
-        };
         let Ok(rect) = crate::annotation_model::PdfRect::new(
             widget.rect[0],
             widget.rect[1],
@@ -858,35 +881,58 @@ impl DocumentWorkspace {
         ) else {
             return;
         };
+        self.reveal_page_rect(target.document_id, page, rect, 0., cx);
+    }
+
+    /// Scrolls the view so that `rect` of page `page` (in the page's user
+    /// space) is in view, with a margin: within the page when it is laid out,
+    /// else the view goes to the page. `top_clearance` is how far from the
+    /// top of the view the rect must be at least, for something floating
+    /// there (the find bar); the usual margin applies when it is less.
+    pub(super) fn reveal_page_rect(
+        &mut self,
+        document_id: DocumentId,
+        page: u32,
+        rect: crate::annotation_model::PdfRect,
+        top_clearance: f32,
+        cx: &mut Context<Self>,
+    ) -> super::find_bar::RevealOutcome {
+        use super::find_bar::RevealOutcome;
+        let interaction = self.page_interactions.get(&(document_id, page)).copied();
+        let viewport = self.viewport_bounds.get(&document_id).copied();
+        let (Some(interaction), Some(viewport)) = (interaction, viewport) else {
+            return if self.activate_thumbnail_page(document_id, page, cx) {
+                RevealOutcome::Navigated
+            } else {
+                RevealOutcome::Unavailable
+            };
+        };
         let local = interaction.transform.rect_to_local_pixels(rect);
         let left = f32::from(interaction.bounds.origin.x) + local.x as f32;
         let top = f32::from(interaction.bounds.origin.y) + local.y as f32;
         let right = left + local.width as f32;
         let bottom = top + local.height as f32;
-        let margin = 24.;
-        let dx = if left < f32::from(viewport.left()) + margin {
-            left - f32::from(viewport.left()) - margin
-        } else if right > f32::from(viewport.right()) - margin {
-            (right - f32::from(viewport.right()) + margin).min(left - f32::from(viewport.left()))
-        } else {
-            0.
-        };
-        let dy = if top < f32::from(viewport.top()) + margin {
-            top - f32::from(viewport.top()) - margin
-        } else if bottom > f32::from(viewport.bottom()) - margin {
-            (bottom - f32::from(viewport.bottom()) + margin).min(top - f32::from(viewport.top()))
-        } else {
-            0.
-        };
+        let (dx, dy) = reveal_scroll_delta(
+            [left, top, right, bottom],
+            [
+                f32::from(viewport.left()),
+                f32::from(viewport.top()),
+                f32::from(viewport.right()),
+                f32::from(viewport.bottom()),
+            ],
+            REVEAL_MARGIN,
+            top_clearance,
+        );
         if dx != 0. || dy != 0. {
             let Some((x, y)) = self
-                .session(target.document_id, cx)
+                .session(document_id, cx)
                 .map(|session| session.read(cx).view_state.scroll())
             else {
-                return;
+                return RevealOutcome::Unavailable;
             };
-            self.set_viewport_scroll(target.document_id, x + dx, y + dy, cx);
+            self.set_viewport_scroll(document_id, x + dx, y + dy, cx);
         }
+        RevealOutcome::Revealed
     }
 
     /// Moves focus to the next (or previous) fillable field in tab order,
@@ -1381,8 +1427,8 @@ pub(super) fn form_overlay_element(
                 .border_1()
                 .border_color(accent)
                 // Paper-relative: the field is edited on the page.
-                .bg(gpui::white())
-                .text_color(gpui::black())
+                .bg(crate::paper_chrome::chrome_colour(|chrome| chrome.field))
+                .text_color(crate::paper_chrome::chrome_colour(|chrome| chrome.ink))
                 .text_size(font_size)
                 .px(padding)
                 .when(editor.quadding == 1, |editor| editor.text_center())
@@ -1414,4 +1460,65 @@ pub(super) fn form_overlay_element(
         );
     }
     layer.into_any_element()
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    use super::reveal_scroll_delta;
+
+    const VIEW: [f32; 4] = [0., 100., 800., 700.];
+
+    #[test]
+    fn a_box_in_view_does_not_move_the_view() {
+        assert_eq!(
+            reveal_scroll_delta([100., 300., 200., 320.], VIEW, 24., 0.),
+            (0., 0.)
+        );
+    }
+
+    #[test]
+    fn a_box_above_the_view_comes_to_the_margin_or_to_the_clearance() {
+        let above = [100., 40., 200., 60.];
+        // With no clearance: 24 px under the top of the view.
+        assert_eq!(reveal_scroll_delta(above, VIEW, 24., 0.), (0., -84.));
+        // Under a bar that reaches 58 px down: the box stops below it.
+        assert_eq!(reveal_scroll_delta(above, VIEW, 24., 58.), (0., -118.));
+        // A box already clear of the bar stays.
+        assert_eq!(
+            reveal_scroll_delta([100., 200., 200., 220.], VIEW, 24., 58.),
+            (0., 0.)
+        );
+        // A box between the margin and the clearance moves down to it.
+        assert_eq!(
+            reveal_scroll_delta([100., 140., 200., 160.], VIEW, 24., 58.),
+            (0., -18.)
+        );
+    }
+
+    #[test]
+    fn a_box_below_the_view_comes_to_the_bottom_margin() {
+        assert_eq!(
+            reveal_scroll_delta([100., 800., 200., 820.], VIEW, 24., 58.),
+            (0., 144.)
+        );
+    }
+
+    #[test]
+    fn a_box_taller_than_the_view_shows_its_top() {
+        let tall = [100., 300., 200., 1500.];
+        assert_eq!(reveal_scroll_delta(tall, VIEW, 24., 0.), (0., 200.));
+        assert_eq!(reveal_scroll_delta(tall, VIEW, 24., 58.), (0., 142.));
+    }
+
+    #[test]
+    fn a_box_beside_the_view_comes_to_the_side_margins() {
+        assert_eq!(
+            reveal_scroll_delta([-50., 300., -10., 320.], VIEW, 24., 0.),
+            (-74., 0.)
+        );
+        assert_eq!(
+            reveal_scroll_delta([850., 300., 900., 320.], VIEW, 24., 0.),
+            (124., 0.)
+        );
+    }
 }

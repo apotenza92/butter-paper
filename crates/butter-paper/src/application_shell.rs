@@ -10,6 +10,9 @@ use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use serde::{Deserialize, Serialize};
 
+use crate::mouse_wheel::{PageTurning, ZoomSpeed};
+use crate::paper_appearance::PageAppearance;
+
 const APPLICATION_DATA_DIRECTORY_ENV: &str = "BP_GPUI_DATA_DIR";
 pub(crate) const PREFERENCES_FILE_NAME: &str = "application-shell.json";
 const DEFAULT_FONT_SIZE: Pixels = px(16.);
@@ -63,8 +66,21 @@ gpui::actions!(
         ToggleApplicationMenuBar,
         ToggleReverseScrollZoom,
         ToggleLockImageProportions,
+        OpenDocumentsInNewTab,
+        OpenDocumentsInNewWindow,
+        SetZoomSpeedFine,
+        SetZoomSpeedStandard,
+        SetZoomSpeedCoarse,
+        SetPageTurningDeliberate,
+        SetPageTurningBalanced,
+        SetPageTurningResponsive,
+        SetPageAppearanceLight,
+        SetPageAppearanceDark,
+        SetPageAppearanceMatchSystem,
+        TogglePageAppearance,
         NewWindow,
         MoveDocumentToNewWindow,
+        MergeAllWindows,
         MinimiseWindow,
         ZoomWindow,
         ToggleApplicationFullScreen,
@@ -104,6 +120,145 @@ pub struct ApplicationShellPreferences {
     /// New images keep their proportions as they are resized.
     #[serde(default = "locked_by_default")]
     lock_image_proportions: bool,
+    /// Where a PDF opened from outside the app goes.
+    #[serde(default)]
+    open_documents_in: OpenDocumentsIn,
+    /// How much one wheel notch zooms: Settings ▸ Mouse wheel.
+    #[serde(default)]
+    zoom_speed: ZoomSpeed,
+    /// How the wheel turns pages in Single Page view: Settings ▸ Mouse wheel.
+    #[serde(default)]
+    page_turning: PageTurning,
+    /// Whether pages draw dark: View ▸ Page Appearance and Settings ▸ View.
+    /// Light until set.
+    #[serde(default)]
+    page_appearance: PageAppearance,
+}
+
+/// Application-wide copy of the Zoom speed preference.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ZoomSpeedPreference(pub ZoomSpeed);
+
+impl gpui::Global for ZoomSpeedPreference {}
+
+impl ZoomSpeedPreference {
+    /// The preference as the application holds it.
+    pub fn current(cx: &gpui::App) -> ZoomSpeed {
+        cx.try_global::<Self>().copied().unwrap_or_default().0
+    }
+}
+
+/// Application-wide copy of the Page turning preference.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PageTurningPreference(pub PageTurning);
+
+impl gpui::Global for PageTurningPreference {}
+
+impl PageTurningPreference {
+    /// The preference as the application holds it.
+    pub fn current(cx: &gpui::App) -> PageTurning {
+        cx.try_global::<Self>().copied().unwrap_or_default().0
+    }
+}
+
+/// Application-wide copy of the Page Appearance preference.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PageAppearancePreference(pub PageAppearance);
+
+impl gpui::Global for PageAppearancePreference {}
+
+impl PageAppearancePreference {
+    /// The preference as the application holds it.
+    pub fn current(cx: &gpui::App) -> PageAppearance {
+        cx.try_global::<Self>().copied().unwrap_or_default().0
+    }
+}
+
+/// The action that chooses `appearance` in View ▸ Page Appearance and
+/// Settings ▸ View.
+pub fn page_appearance_action(appearance: PageAppearance) -> Box<dyn gpui::Action> {
+    match appearance {
+        PageAppearance::Light => Box::new(SetPageAppearanceLight),
+        PageAppearance::Dark => Box::new(SetPageAppearanceDark),
+        PageAppearance::MatchSystem => Box::new(SetPageAppearanceMatchSystem),
+    }
+}
+
+/// The shortcut that toggles Light and Dark pages, as the platform writes
+/// it. It follows the platform's command key, like the other shortcuts.
+pub const fn toggle_page_appearance_shortcut(macos: bool) -> &'static str {
+    if macos { "cmd-shift-d" } else { "ctrl-shift-d" }
+}
+
+/// The action that chooses `speed` in Settings ▸ Mouse wheel.
+pub fn zoom_speed_action(speed: ZoomSpeed) -> Box<dyn gpui::Action> {
+    match speed {
+        ZoomSpeed::Fine => Box::new(SetZoomSpeedFine),
+        ZoomSpeed::Standard => Box::new(SetZoomSpeedStandard),
+        ZoomSpeed::Coarse => Box::new(SetZoomSpeedCoarse),
+    }
+}
+
+/// The action that chooses `turning` in Settings ▸ Mouse wheel.
+pub fn page_turning_action(turning: PageTurning) -> Box<dyn gpui::Action> {
+    match turning {
+        PageTurning::Deliberate => Box::new(SetPageTurningDeliberate),
+        PageTurning::Balanced => Box::new(SetPageTurningBalanced),
+        PageTurning::Responsive => Box::new(SetPageTurningResponsive),
+    }
+}
+
+/// Where a PDF opened from outside the app (Finder or Explorer, the Dock or
+/// taskbar, the app icon, the command line) goes: Settings ▸ Documents.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenDocumentsIn {
+    /// A new tab in the most recently active document window.
+    #[default]
+    NewTab,
+    /// A window of its own.
+    NewWindow,
+}
+
+/// Application-wide copy of the Open Documents In preference.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpenDocumentsInPreference(pub OpenDocumentsIn);
+
+impl gpui::Global for OpenDocumentsInPreference {}
+
+impl OpenDocumentsInPreference {
+    /// The preference as the application holds it.
+    pub fn current(cx: &gpui::App) -> OpenDocumentsIn {
+        cx.try_global::<Self>().copied().unwrap_or_default().0
+    }
+}
+
+/// The window a PDF opened from outside the app goes to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutsideOpenTarget<W> {
+    /// This existing window, as a new tab.
+    Window(W),
+    /// A new window.
+    NewWindow,
+}
+
+/// Where an outside open goes, given the preference and the most recently
+/// active document window (`recent`), and whether that window holds no
+/// documents. A window with no documents takes the open under either
+/// preference, so a cold launch from a PDF opens one window, not two.
+pub fn outside_open_target<W>(
+    preference: OpenDocumentsIn,
+    recent: Option<W>,
+    recent_is_empty: bool,
+) -> OutsideOpenTarget<W> {
+    match (preference, recent) {
+        (_, None) => OutsideOpenTarget::NewWindow,
+        (OpenDocumentsIn::NewTab, Some(window)) => OutsideOpenTarget::Window(window),
+        (OpenDocumentsIn::NewWindow, Some(window)) if recent_is_empty => {
+            OutsideOpenTarget::Window(window)
+        }
+        (OpenDocumentsIn::NewWindow, Some(_)) => OutsideOpenTarget::NewWindow,
+    }
 }
 
 fn locked_by_default() -> bool {
@@ -143,6 +298,10 @@ impl Default for ApplicationShellPreferences {
             ui_zoom_level: APPLICATION_UI_ZOOM_DEFAULT_LEVEL,
             reverse_scroll_zoom: false,
             lock_image_proportions: true,
+            open_documents_in: OpenDocumentsIn::NewTab,
+            zoom_speed: ZoomSpeed::Standard,
+            page_turning: PageTurning::Responsive,
+            page_appearance: PageAppearance::Light,
         }
     }
 }
@@ -170,6 +329,38 @@ impl ApplicationShellPreferences {
 
     pub fn set_lock_image_proportions(&mut self, locked: bool) {
         self.lock_image_proportions = locked;
+    }
+
+    pub fn open_documents_in(&self) -> OpenDocumentsIn {
+        self.open_documents_in
+    }
+
+    pub fn set_open_documents_in(&mut self, open_documents_in: OpenDocumentsIn) {
+        self.open_documents_in = open_documents_in;
+    }
+
+    pub fn zoom_speed(&self) -> ZoomSpeed {
+        self.zoom_speed
+    }
+
+    pub fn set_zoom_speed(&mut self, zoom_speed: ZoomSpeed) {
+        self.zoom_speed = zoom_speed;
+    }
+
+    pub fn page_turning(&self) -> PageTurning {
+        self.page_turning
+    }
+
+    pub fn set_page_turning(&mut self, page_turning: PageTurning) {
+        self.page_turning = page_turning;
+    }
+
+    pub fn page_appearance(&self) -> PageAppearance {
+        self.page_appearance
+    }
+
+    pub fn set_page_appearance(&mut self, page_appearance: PageAppearance) {
+        self.page_appearance = page_appearance;
     }
 
     pub fn set_menu_bar_visible(&mut self, visible: bool) {
@@ -403,6 +594,136 @@ mod tests {
         let round_trip: ApplicationShellPreferences =
             serde_json::from_slice(&serde_json::to_vec(&free).unwrap()).unwrap();
         assert!(!round_trip.lock_image_proportions());
+    }
+
+    #[test]
+    fn open_documents_in_is_a_new_tab_until_set_and_survives_a_save() {
+        // A profile from before the setting opens documents in a new tab.
+        let saved = br#"{"menu_bar_visible":true,"ui_zoom_level":0,"reverse_scroll_zoom":false}"#;
+        let preferences: ApplicationShellPreferences = serde_json::from_slice(saved).unwrap();
+        assert_eq!(preferences.open_documents_in(), OpenDocumentsIn::NewTab);
+        let directory = std::env::temp_dir().join(format!(
+            "bp-open-documents-in-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let store = ApplicationShellPreferencesStore::new(&directory);
+        for setting in [OpenDocumentsIn::NewWindow, OpenDocumentsIn::NewTab] {
+            let mut preferences = preferences;
+            preferences.set_open_documents_in(setting);
+            store.save(preferences).unwrap();
+            assert_eq!(store.load().unwrap().open_documents_in(), setting);
+        }
+        let mut window = preferences;
+        window.set_open_documents_in(OpenDocumentsIn::NewWindow);
+        let text = String::from_utf8(serde_json::to_vec(&window).unwrap()).unwrap();
+        assert!(
+            text.contains(r#""open_documents_in":"new_window""#),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn page_appearance_is_light_until_set_and_survives_a_save() {
+        // A profile from before the setting shows the document's own colours.
+        let saved = br#"{"menu_bar_visible":true,"ui_zoom_level":0,"reverse_scroll_zoom":false}"#;
+        let preferences: ApplicationShellPreferences = serde_json::from_slice(saved).unwrap();
+        assert_eq!(preferences.page_appearance(), PageAppearance::Light);
+        assert_eq!(
+            ApplicationShellPreferences::default().page_appearance(),
+            PageAppearance::Light
+        );
+        let directory = std::env::temp_dir().join(format!(
+            "bp-page-appearance-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let store = ApplicationShellPreferencesStore::new(&directory);
+        for setting in [
+            PageAppearance::Dark,
+            PageAppearance::MatchSystem,
+            PageAppearance::Light,
+        ] {
+            let mut preferences = preferences;
+            preferences.set_page_appearance(setting);
+            store.save(preferences).unwrap();
+            let loaded = store.load().unwrap();
+            assert_eq!(loaded.page_appearance(), setting);
+            // The other preferences are untouched.
+            assert!(loaded.menu_bar_visible());
+        }
+        let mut dark = preferences;
+        dark.set_page_appearance(PageAppearance::MatchSystem);
+        let text = String::from_utf8(serde_json::to_vec(&dark).unwrap()).unwrap();
+        assert!(
+            text.contains(r#""page_appearance":"match_system""#),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    /// Cmd+Shift+D on macOS, Ctrl+Shift+D on Windows and Linux: the same
+    /// keys, with the platform's command key.
+    #[test]
+    fn the_page_appearance_shortcut_follows_the_platform_command_key() {
+        assert_eq!(toggle_page_appearance_shortcut(true), "cmd-shift-d");
+        assert_eq!(toggle_page_appearance_shortcut(false), "ctrl-shift-d");
+        // The same keys show in Settings, the platform's way.
+        let mac = cfg!(target_os = "macos");
+        assert_eq!(
+            crate::shortcut_label::shortcut_label(if mac { "Cmd+Shift+D" } else { "Ctrl+Shift+D" }),
+            if mac { "⇧⌘D" } else { "Ctrl+Shift+D" }
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_settings_default_and_survive_a_save() {
+        // A profile from before the settings: Standard zoom, Responsive turns.
+        let saved = br#"{"menu_bar_visible":true,"ui_zoom_level":0,"reverse_scroll_zoom":true}"#;
+        let preferences: ApplicationShellPreferences = serde_json::from_slice(saved).unwrap();
+        assert_eq!(preferences.zoom_speed(), ZoomSpeed::Standard);
+        assert_eq!(preferences.page_turning(), PageTurning::Responsive);
+        assert!(preferences.reverse_scroll_zoom());
+        let directory = std::env::temp_dir().join(format!(
+            "bp-mouse-wheel-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let store = ApplicationShellPreferencesStore::new(&directory);
+        for (speed, turning) in ZoomSpeed::ALL.into_iter().zip(PageTurning::ALL) {
+            let mut preferences = preferences;
+            preferences.set_zoom_speed(speed);
+            preferences.set_page_turning(turning);
+            store.save(preferences).unwrap();
+            let loaded = store.load().unwrap();
+            assert_eq!(loaded.zoom_speed(), speed);
+            assert_eq!(loaded.page_turning(), turning);
+            assert!(loaded.reverse_scroll_zoom());
+        }
+        let mut coarse = preferences;
+        coarse.set_zoom_speed(ZoomSpeed::Coarse);
+        coarse.set_page_turning(PageTurning::Deliberate);
+        let text = String::from_utf8(serde_json::to_vec(&coarse).unwrap()).unwrap();
+        assert!(text.contains(r#""zoom_speed":"coarse""#), "{text}");
+        assert!(text.contains(r#""page_turning":"deliberate""#), "{text}");
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn outside_opens_go_to_the_recent_window_or_a_new_one_as_set() {
+        use OpenDocumentsIn::{NewTab, NewWindow};
+        use OutsideOpenTarget::{NewWindow as Open, Window};
+        // No window: one opens, whatever the setting.
+        assert_eq!(outside_open_target::<u8>(NewTab, None, true), Open);
+        assert_eq!(outside_open_target::<u8>(NewWindow, None, true), Open);
+        // New tab: the most recently active window, empty or not.
+        assert_eq!(outside_open_target(NewTab, Some(7), false), Window(7));
+        assert_eq!(outside_open_target(NewTab, Some(7), true), Window(7));
+        // New window: a window of its own, unless the recent window is
+        // empty (a cold launch from a PDF opens one window, not two).
+        assert_eq!(outside_open_target(NewWindow, Some(7), false), Open);
+        assert_eq!(outside_open_target(NewWindow, Some(7), true), Window(7));
     }
 
     #[cfg(target_os = "macos")]

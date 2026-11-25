@@ -9,8 +9,31 @@ mod source_place;
 pub use bench::ThumbnailBenchProbe;
 #[path = "document_workspace_content.rs"]
 mod content;
+#[path = "document_workspace_find_bar.rs"]
+mod find_bar;
+pub use find_bar::{
+    FindBarSummary, FindHighlights, find_match_case_shortcut, find_next_shortcut,
+    find_previous_shortcut, find_shortcut, find_whole_word_shortcut,
+};
 #[path = "document_workspace_forms.rs"]
 mod forms;
+#[path = "document_workspace_search_panel.rs"]
+mod search_panel;
+pub use search_panel::{
+    DOCUMENT_LEFT_RAIL_SEARCH_ID, DOCUMENT_SEARCH_COLLAPSE_ID, DOCUMENT_SEARCH_EXPLAIN_ID,
+    DOCUMENT_SEARCH_EXPLANATION_ID, DOCUMENT_SEARCH_FOOTER_ID, DOCUMENT_SEARCH_INPUT_ID,
+    DOCUMENT_SEARCH_MATCH_CASE_ID, DOCUMENT_SEARCH_MODE_TEXT_ID, DOCUMENT_SEARCH_MODE_VISUAL_ID,
+    DOCUMENT_SEARCH_MORE_CONTEXT_ID, DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_RESULTS_ID,
+    DOCUMENT_SEARCH_SCOPE_ALL_ID, DOCUMENT_SEARCH_SCOPE_THIS_ID, DOCUMENT_SEARCH_SORT_ID,
+    DOCUMENT_SEARCH_SUMMARY_ID, DOCUMENT_SEARCH_TRY_VISUAL_ID, DOCUMENT_VISUAL_CLEAR_ID,
+    DOCUMENT_VISUAL_DRAW_BOX_ID, DOCUMENT_VISUAL_ERROR_ID, DOCUMENT_VISUAL_MIRRORED_ID,
+    DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_PROGRESS_ID, DOCUMENT_VISUAL_RESULTS_ID,
+    DOCUMENT_VISUAL_SIMILARITY_ID, DOCUMENT_VISUAL_SIZES_ID, DOCUMENT_VISUAL_STOP_ID,
+    DOCUMENT_VISUAL_SUMMARY_ID, DOCUMENT_VISUAL_TEMPLATE_ID, DOCUMENT_VISUAL_TURNS_ID, LeftPanel,
+    SearchMode, SearchPanelRow, SearchPanelSummary, TemplateOrigin, VisualPanelRow,
+    VisualPanelSummary, VisualTileView, search_panel_row_id, search_panel_shortcut, visual_row_id,
+    visual_tile_id,
+};
 #[path = "document_workspace_image_drop.rs"]
 mod image_drop;
 #[path = "document_workspace_links.rs"]
@@ -99,8 +122,8 @@ mod settings_popovers;
 #[path = "document_workspace_status_bar.rs"]
 mod status_bar;
 pub use status_bar::{
-    CALIBRATE_STATUS, CLICK_OUT_MARKUP_STATUS, CLICK_OUT_TEXT_STATUS, DOCUMENT_STATUS_MESSAGE_ID,
-    DOCUMENT_STATUS_SCALE_ID, DOCUMENT_TOAST_LAYER_ID,
+    CALIBRATE_STATUS, CLICK_OUT_MARKUP_STATUS, CLICK_OUT_TEXT_STATUS, CLICK_OUT_TYPING_STATUS,
+    DOCUMENT_STATUS_MESSAGE_ID, DOCUMENT_STATUS_SCALE_ID, DOCUMENT_TOAST_LAYER_ID,
 };
 #[path = "document_workspace_tabs.rs"]
 mod tabs;
@@ -181,7 +204,7 @@ use crate::{
         MeasurementPropertySnapshot,
     },
     native_document_view_state::{
-        CadViewOrganisation, DocumentNavigationAction, DocumentNavigationOutcome,
+        CadViewOrganisation, DiscreteWheel, DocumentNavigationAction, DocumentNavigationOutcome,
         NativeDocumentViewState, PreciseScroll, RestartView, ViewerZoomPreset, WheelOutcome,
     },
     page_scale_control::{
@@ -242,6 +265,8 @@ use crate::{
         decode_image_bytes, decode_image_path, sanitize_signature_path, sanitize_signature_raster,
     },
     page_geometry::PageCoordinateSpace,
+    paper_appearance::PaperAppearance,
+    paper_chrome::{chrome_colour, parse_markup_colour},
     pdf_engine::{InPlacePublicationCapability, PdfPersistenceSession, PdfPublicationOutcome},
     pdf_file_authority::{SaveAsTargetAuthority, SaveTargetErrorKind},
     recent_signature_store::{
@@ -286,7 +311,7 @@ use gpui_component::{
     scroll::ScrollableElement as _,
     spinner::Spinner,
     tab::{Tab, TabBar},
-    try_parse_color, v_flex,
+    v_flex,
 };
 
 gpui::actions!(
@@ -316,6 +341,8 @@ gpui::actions!(
         CloseDocument,
         RotatePageLeft,
         RotatePageRight,
+        RotateAllPagesLeft,
+        RotateAllPagesRight,
         ZoomIn,
         ZoomOut,
         ActualSize,
@@ -323,6 +350,12 @@ gpui::actions!(
         FitPage,
         ContinuousView,
         SinglePageView,
+        FindInDocument,
+        FindInDocuments,
+        FindNext,
+        FindPrevious,
+        ToggleFindMatchCase,
+        ToggleFindWholeWord,
         SelectTool,
         SelectTextBoxTool,
         SelectRectangleTool,
@@ -376,6 +409,44 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         KeyBinding::new("ctrl-s", Save, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("cmd-shift-s", SaveAs, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("ctrl-shift-s", SaveAs, Some(DOCUMENT_WORKSPACE_CONTEXT)),
+        // Dark pages on or off. Typed letters reach a focused text field.
+        KeyBinding::new(
+            crate::application_shell::toggle_page_appearance_shortcut(cfg!(target_os = "macos")),
+            crate::application_shell::TogglePageAppearance,
+            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
+        ),
+        // Find. The stock text field binds the same keys to its own search,
+        // which a field of ours does not use: ours is bound over it.
+        KeyBinding::new(
+            find_bar::find_shortcut(cfg!(target_os = "macos")),
+            FindInDocument,
+            Some(DOCUMENT_WORKSPACE_CONTEXT),
+        ),
+        KeyBinding::new(
+            find_bar::find_shortcut(cfg!(target_os = "macos")),
+            FindInDocument,
+            Some("DocumentWorkspace > Input"),
+        ),
+        KeyBinding::new(
+            find_bar::find_next_shortcut(cfg!(target_os = "macos")),
+            FindNext,
+            Some(DOCUMENT_WORKSPACE_CONTEXT),
+        ),
+        KeyBinding::new(
+            find_bar::find_previous_shortcut(cfg!(target_os = "macos")),
+            FindPrevious,
+            Some(DOCUMENT_WORKSPACE_CONTEXT),
+        ),
+        KeyBinding::new(
+            find_bar::find_match_case_shortcut(cfg!(target_os = "macos")),
+            ToggleFindMatchCase,
+            Some(find_bar::FIND_BAR_CONTEXT),
+        ),
+        KeyBinding::new(
+            find_bar::find_whole_word_shortcut(cfg!(target_os = "macos")),
+            ToggleFindWholeWord,
+            Some(find_bar::FIND_BAR_CONTEXT),
+        ),
         KeyBinding::new("home", NavigateHome, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("end", NavigateEnd, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new(
@@ -555,6 +626,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
     crate::page_text_editor::init_page_text_editor_actions(cx);
     forms::init_form_field_actions(cx);
     pages::init_page_actions(cx);
+    search_panel::init_search_panel_actions(cx);
 }
 
 pub fn register_document_workspace_global_actions(
@@ -630,6 +702,20 @@ pub fn register_document_workspace_actions_for(
             });
         }
     });
+    // Edit ▸ Find and Find in Documents, when no element of the window has
+    // the focus: they act on the next frame, which has the window.
+    let find = resolve.clone();
+    cx.on_action(move |_: &FindInDocument, cx| {
+        if let Some(workspace) = find(false, cx) {
+            workspace.update(cx, |workspace, cx| workspace.request_find_bar(cx));
+        }
+    });
+    let find_in_documents = resolve.clone();
+    cx.on_action(move |_: &FindInDocuments, cx| {
+        if let Some(workspace) = find_in_documents(false, cx) {
+            workspace.update(cx, |workspace, cx| workspace.request_search_panel(cx));
+        }
+    });
     let save_as = resolve;
     cx.on_action(move |_: &SaveAs, cx| {
         if let Some(workspace) = save_as(false, cx) {
@@ -645,6 +731,9 @@ pub fn register_document_workspace_actions_for(
 pub const DOCUMENT_WORKSPACE_ID: &str = "document-workspace";
 pub const DOCUMENT_THUMBNAIL_STRIP_ID: &str = "document-thumbnail-strip";
 pub const DOCUMENT_THUMBNAIL_ADD_PAGE_ID: &str = "document-thumbnail-add-page";
+/// Page Thumbnails' Rotate All Pages Left and Right, before Add page.
+pub const DOCUMENT_THUMBNAIL_ROTATE_ALL_LEFT_ID: &str = "document-thumbnail-rotate-all-left";
+pub const DOCUMENT_THUMBNAIL_ROTATE_ALL_RIGHT_ID: &str = "document-thumbnail-rotate-all-right";
 /// Thumbnails drawn ahead above and below the rows shown, once those are.
 const THUMBNAIL_PREFETCH_ROWS: u32 = 2;
 /// How long the thumbnail rows shown must stay put before thumbnails are
@@ -729,6 +818,14 @@ pub const DOCUMENT_SIGNATURE_RECENT_REMOVE_CONFIRM_ID: &str =
 pub const DOCUMENT_SNAPSHOT_TOOL_ID: &str = "tool-snapshot";
 pub const DOCUMENT_SIGNATURE_BOX_PROMPT_ID: &str = "document-signature-box-prompt";
 pub const DOCUMENT_SIGNATURE_BOX_CANCEL_ID: &str = "document-signature-box-cancel";
+pub const DOCUMENT_FIND_BAR_ID: &str = "document-find-bar";
+pub const DOCUMENT_FIND_INPUT_ID: &str = "document-find-input";
+pub const DOCUMENT_FIND_COUNT_ID: &str = "document-find-count";
+pub const DOCUMENT_FIND_MATCH_CASE_ID: &str = "document-find-match-case";
+pub const DOCUMENT_FIND_WHOLE_WORD_ID: &str = "document-find-whole-word";
+pub const DOCUMENT_FIND_PREVIOUS_ID: &str = "document-find-previous";
+pub const DOCUMENT_FIND_NEXT_ID: &str = "document-find-next";
+pub const DOCUMENT_FIND_CLOSE_ID: &str = "document-find-close";
 pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
 pub const DOCUMENT_SNAP_CLOSE_ID: &str = "viewer-snap-close";
@@ -777,6 +874,9 @@ pub const DOCUMENT_TEXT_BOX_COMMIT_ERROR_ALERT_ID: &str =
     "document-workspace-text-box-commit-error-alert";
 pub const DOCUMENT_TEXT_BOX_RETURN_FOCUS_ID: &str = "document-workspace-text-box-return-focus";
 pub const DOCUMENT_SELECT_TOOL_ID: &str = "document-workspace-select-tool";
+/// The rail's Rotate Left and Rotate Right, after Select and Hand.
+pub const DOCUMENT_ROTATE_LEFT_ID: &str = "document-workspace-rotate-left";
+pub const DOCUMENT_ROTATE_RIGHT_ID: &str = "document-workspace-rotate-right";
 pub const DOCUMENT_EDIT_PDF_CONTENT_TOOL_ID: &str = "document-workspace-edit-pdf-content-tool";
 pub const DOCUMENT_RECTANGLE_STROKE_ID: &str = "document-workspace-rectangle-stroke";
 pub const DOCUMENT_DIMENSION_PROPERTIES_ID: &str = "document-workspace-dimension-properties";
@@ -856,19 +956,24 @@ fn middle_click_distance(a: gpui::Point<Pixels>, b: gpui::Point<Pixels>) -> f32 
 }
 
 /// Cursor policy for the document viewport. Calibration and marquee gestures
-/// own the crosshair even when Space-pan is armed; otherwise Pan mirrors the
-/// reference viewport's open/closed hand and annotation tools use their
-/// placement crosshair.
+/// own the crosshair even when Space-pan is armed. While text is typed in a
+/// field outside the page, a press only finishes it, so the arrow promises
+/// no gesture. Otherwise Pan mirrors the reference viewport's open/closed
+/// hand and annotation tools use their placement crosshair.
+#[allow(clippy::too_many_arguments)]
 pub fn document_viewport_cursor_style(
     tool: AnnotationTool,
     pan_active: bool,
     pan_drag_active: bool,
     calibration_pick_active: bool,
     selection_marquee_active: bool,
+    click_out_pending: bool,
     select_hover_cursor: Option<CursorStyle>,
 ) -> CursorStyle {
     if calibration_pick_active || selection_marquee_active {
         CursorStyle::Crosshair
+    } else if click_out_pending && !pan_drag_active {
+        CursorStyle::Arrow
     } else if pan_active {
         if pan_drag_active {
             CursorStyle::ClosedHand
@@ -2864,6 +2969,10 @@ fn active_inspector_shell() -> gpui::Stateful<gpui::Div> {
 
 pub struct DocumentWorkspace {
     sessions: Vec<Entity<NativeDocumentSession>>,
+    /// Dark pages or real colours for every document's view. Step 3 of
+    /// Dark pages makes it a setting; until then the review driver
+    /// (`paper dark|real`) and tests set it.
+    paper_appearance: PaperAppearance,
     active_document_id: Option<DocumentId>,
     next_document_id: u64,
     next_generation: u64,
@@ -2941,6 +3050,22 @@ pub struct DocumentWorkspace {
     /// Where the prompt over the page for that box was last drawn: a press
     /// there belongs to the prompt, not the page.
     signature_box_prompt_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Each tab's find bar: its query, options, results and open state.
+    find_bars: HashMap<DocumentId, find_bar::FindBar>,
+    /// Where the find bar was last drawn: a press there is the bar's.
+    find_bar_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// A match to bring into view once its page is laid out.
+    find_reveal: Option<find_bar::PendingFindReveal>,
+    /// The search panel of the left sidebar, made when it first opens.
+    search_panel: Option<search_panel::SearchPanel>,
+    /// The hits of a search panel result opened in this window, painted on
+    /// its document's pages while the find bar is closed.
+    search_marks: Option<search_panel::SearchMarks>,
+    /// A menu command asked for the search panel while no element had the
+    /// focus: it opens on the next frame, which has the window.
+    search_panel_requested: bool,
+    /// The same for the find bar (Edit ▸ Find).
+    find_bar_requested: bool,
     /// Finds the system's signing identities.
     system_identity_source: fn() -> Vec<crate::system_certificates::SystemIdentity>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
@@ -2951,6 +3076,9 @@ pub struct DocumentWorkspace {
     /// The document that was active when the New Tab opened, shown again
     /// when it closes.
     new_tab_return: Option<DocumentId>,
+    /// The loading document that replaced the New Tab. Its tab shows as the
+    /// selected tab until it opens; if it does not open, the New Tab returns.
+    new_tab_opening: Option<DocumentId>,
     new_tab_bounds: Rc<Cell<Bounds<Pixels>>>,
     new_tab_hovered: bool,
     /// Scroll the New Tab into view once it is laid out.
@@ -3170,6 +3298,8 @@ pub struct DocumentWorkspace {
     signature_name_input: Option<Entity<InputState>>,
     recent_documents: Entity<crate::recent_documents::RecentDocuments>,
     recent_documents_subscription: Option<Subscription>,
+    /// Each file's remembered Single Page view pages, kept after its tab closes.
+    page_memory: Entity<crate::page_memory::PageMemory>,
     /// Other apps' copies and the Downloads folder their changes go to.
     save_places: crate::save_places::SavePlaces,
     recent_signature_store: Option<Arc<RecentSignatureStore>>,
@@ -3244,7 +3374,8 @@ pub struct DocumentWorkspace {
     viewer_resizable: Entity<ResizableState>,
     left_sidebar_sizing: crate::sidebar_sizing::SidebarSizing,
     right_sidebar_sizing: crate::sidebar_sizing::SidebarSizing,
-    pages_panel_open: bool,
+    /// The left sidebar's panel, when it is open: Page Thumbnails or Search.
+    left_panel: Option<search_panel::LeftPanel>,
     thumbnail_scroll: UniformListScrollHandle,
     thumbnail_rows_shown: Rc<RefCell<ThumbnailRowsShown>>,
     /// While the thumbnail rows shown keep changing within this, the list
@@ -3320,6 +3451,64 @@ impl DetachedDocument {
     pub fn document_id(&self, cx: &App) -> DocumentId {
         self.session.read(cx).id
     }
+}
+
+/// Merge All Windows: moves each document of `sources` (in the order given,
+/// then in tab order) to the end of `target`'s tabs, with its edits, view and
+/// undo history. The target keeps the tab it shows. A document that cannot
+/// move yet (opening, saving, awaiting a prompt) stays where it is. Returns,
+/// for each source, whether it has no tabs left.
+pub fn merge_document_workspaces(
+    target: &Entity<DocumentWorkspace>,
+    sources: &[Entity<DocumentWorkspace>],
+    cx: &mut App,
+) -> Vec<bool> {
+    let (shown, new_tab_open, new_tab_return) = {
+        let workspace = target.read(cx);
+        (
+            workspace.active_document_id,
+            workspace.new_tab_open,
+            workspace.new_tab_return,
+        )
+    };
+    let mut first_moved = None;
+    let mut emptied = Vec::with_capacity(sources.len());
+    for source in sources {
+        if source.entity_id() == target.entity_id() {
+            emptied.push(false);
+            continue;
+        }
+        for document_id in source.read(cx).session_order(cx) {
+            let Ok(document) = source.update(cx, |workspace, cx| {
+                workspace.detach_document(document_id, cx)
+            }) else {
+                continue;
+            };
+            target.update(cx, |workspace, cx| {
+                let end = workspace.session_count();
+                workspace.attach_document(document, end, cx);
+            });
+            first_moved.get_or_insert(document_id);
+        }
+        emptied.push(source.read(cx).session_count() == 0);
+    }
+    if first_moved.is_some() {
+        target.update(cx, |workspace, cx| match shown {
+            Some(document_id) => {
+                workspace.activate_document(document_id, cx);
+            }
+            None if new_tab_open => {
+                workspace.open_new_tab(cx);
+                workspace.new_tab_return = new_tab_return;
+            }
+            None => {
+                if let Some(document_id) = first_moved {
+                    workspace.activate_document(document_id, cx);
+                }
+            }
+        });
+    }
+    emptied
 }
 
 #[derive(Clone, Copy)]
@@ -4444,8 +4633,8 @@ fn shape_text_box_rich_lines(
                     let color = fragment
                         .run
                         .color()
-                        .and_then(|color| try_parse_color(color).ok())
-                        .or_else(|| try_parse_color(style.color()).ok())
+                        .and_then(|color| parse_markup_colour(color).ok())
+                        .or_else(|| parse_markup_colour(style.color()).ok())
                         .unwrap_or(fallback_color)
                         .opacity(style.opacity() as f32);
                     let run = TextRun {
@@ -4625,7 +4814,32 @@ impl DocumentWorkspace {
         thumbnails_fit: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let expanded = enabled && thumbnails_fit && self.pages_panel_open;
+        use search_panel::LeftPanel;
+        let shown = |panel: LeftPanel| enabled && thumbnails_fit && self.left_panel == Some(panel);
+        let expanded = shown(LeftPanel::Thumbnails) || shown(LeftPanel::Search);
+        // The two panels share the sidebar and its yield rule.
+        let tooltip = |name: &'static str| -> SharedString {
+            if enabled && !thumbnails_fit {
+                format!("{name} — widen the window or close properties").into()
+            } else {
+                name.into()
+            }
+        };
+        let search_key = crate::shortcut_label::shortcut_kbd(
+            search_panel::search_panel_shortcut_label(cfg!(target_os = "macos")),
+        );
+        let search_tooltip = tooltip("Search");
+        let search_button = Button::new(DOCUMENT_LEFT_RAIL_SEARCH_ID)
+            .debug_selector(|| DOCUMENT_LEFT_RAIL_SEARCH_ID.into())
+            .icon(IconName::Search)
+            .ghost()
+            .selected(shown(LeftPanel::Search))
+            .toggled(shown(LeftPanel::Search))
+            .disabled(!enabled || !thumbnails_fit);
+        let search_button = match search_key.filter(|_| enabled && thumbnails_fit) {
+            Some(key) => search_button.tooltip_with_key_binding(search_tooltip, key),
+            None => search_button.tooltip(search_tooltip),
+        };
         v_flex()
             .id("document-left-rail")
             .debug_selector(|| "document-left-rail".into())
@@ -4638,7 +4852,7 @@ impl DocumentWorkspace {
             .pt(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
             .gap(crate::layout_metrics::scaled(crate::layout_metrics::SPACE))
             .bg(cx.theme().background)
-            // With thumbnails collapsed, the viewer's stock resize divider
+            // With the sidebar collapsed, the viewer's stock resize divider
             // already owns this edge. Do not paint a second adjacent line.
             .when(!enabled || expanded, |rail| {
                 rail.child(crate::layout_metrics::inside_line(
@@ -4654,20 +4868,25 @@ impl DocumentWorkspace {
                             .path(crate::application_assets::PAGE_THUMBNAILS_ICON),
                     )
                     .ghost()
-                    .selected(expanded)
-                    .toggled(expanded)
+                    .selected(shown(LeftPanel::Thumbnails))
+                    .toggled(shown(LeftPanel::Thumbnails))
                     .disabled(!enabled || !thumbnails_fit)
-                    .tooltip(if enabled && !thumbnails_fit {
-                        "Page Thumbnails — widen the window or close properties"
-                    } else {
-                        "Page Thumbnails"
-                    })
+                    .tooltip(tooltip("Page Thumbnails"))
                     .on_click(cx.listener(|workspace, _, _, cx| {
-                        workspace.pages_panel_open = !workspace.pages_panel_open;
-                        cx.notify();
+                        workspace.toggle_left_panel(LeftPanel::Thumbnails, cx);
                     })),
                 "Page Thumbnails",
-                expanded,
+                shown(LeftPanel::Thumbnails),
+            ))
+            .child(accessible_disclosure_button(
+                search_button.on_click(cx.listener(|workspace, _, window, cx| {
+                    workspace.toggle_left_panel(LeftPanel::Search, cx);
+                    if workspace.left_panel == Some(LeftPanel::Search) {
+                        workspace.focus_search_query(window, cx);
+                    }
+                })),
+                "Search",
+                shown(LeftPanel::Search),
             ))
     }
 
@@ -4743,6 +4962,7 @@ impl DocumentWorkspace {
         .detach();
         Self {
             sessions: Vec::new(),
+            paper_appearance: PaperAppearance::Real,
             active_document_id: None,
             next_document_id: 1,
             next_generation: 1,
@@ -4793,10 +5013,18 @@ impl DocumentWorkspace {
             system_identity_source: crate::system_certificates::system_identities,
             signature_box: None,
             signature_box_prompt_bounds: Rc::default(),
+            find_bars: HashMap::new(),
+            find_bar_bounds: Rc::default(),
+            find_reveal: None,
+            search_panel: None,
+            search_marks: None,
+            search_panel_requested: false,
+            find_bar_requested: false,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
             new_tab_open: false,
             new_tab_return: None,
+            new_tab_opening: None,
             new_tab_bounds: Rc::new(Cell::new(Bounds::default())),
             new_tab_hovered: false,
             new_tab_reveal: false,
@@ -4918,6 +5146,7 @@ impl DocumentWorkspace {
             signature_name_input: None,
             recent_documents: cx.new(|_| crate::recent_documents::RecentDocuments::default()),
             recent_documents_subscription: None,
+            page_memory: cx.new(|_| crate::page_memory::PageMemory::default()),
             save_places: crate::save_places::SavePlaces::system(),
             recent_signature_store: None,
             recent_signatures: Vec::new(),
@@ -4976,7 +5205,7 @@ impl DocumentWorkspace {
             viewer_resizable,
             left_sidebar_sizing: crate::sidebar_sizing::SidebarSizing::new(0),
             right_sidebar_sizing: crate::sidebar_sizing::SidebarSizing::new(1),
-            pages_panel_open: false,
+            left_panel: None,
             thumbnail_scroll: UniformListScrollHandle::new(),
             thumbnail_rows_shown: Rc::default(),
             thumbnail_scroll_settle: Duration::ZERO,
@@ -5028,6 +5257,73 @@ impl DocumentWorkspace {
         self.recent_documents_subscription = Some(cx.observe(&history, |_, _, cx| cx.notify()));
         self.recent_documents = history;
         cx.notify();
+    }
+
+    /// Shares the application's page memory, so each file's remembered pages
+    /// return when it opens again, in any window.
+    pub fn bind_page_memory(
+        &mut self,
+        memory: Entity<crate::page_memory::PageMemory>,
+        _cx: &mut Context<Self>,
+    ) {
+        self.page_memory = memory;
+    }
+
+    /// Opens a document with the pages its file had remembered when its last
+    /// tab closed, unless a restored view already holds some.
+    fn restore_page_memory(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let path = session.read(cx).path.clone();
+        let remembered = self.page_memory.read(cx).lookup(&path);
+        if remembered.is_empty() {
+            return;
+        }
+        session.update(cx, |session, _| {
+            if session.view_state.remembered_pages().next().is_none() {
+                let page_count = session.page_sizes.len();
+                session
+                    .view_state
+                    .restore_page_views(&remembered, page_count);
+            }
+        });
+    }
+
+    /// A document closes: its file keeps the pages remembered for the next
+    /// time it opens. Another app's copy and a document with no file yet
+    /// keep nothing.
+    fn keep_page_memory(
+        &mut self,
+        session: &Entity<NativeDocumentSession>,
+        cx: &mut Context<Self>,
+    ) {
+        let session = session.read(cx);
+        if !matches!(session.status, NativeDocumentStatus::Ready)
+            || session.save_as_required
+            || session.temporary_source.is_some()
+            || !session.path.is_absolute()
+            || matches!(
+                session.source_place,
+                Some(crate::save_places::SourcePlace::AppCopy(_))
+            )
+        {
+            return;
+        }
+        let path = session.path.clone();
+        let current_page = session.current_page;
+        let page_views = session.view_state.page_views_for_memory(current_page);
+        self.page_memory.update(cx, |memory, cx| {
+            memory.remember(path, current_page, page_views, cx)
+        });
+    }
+
+    /// The application quits: every open tab's file keeps its pages, as it
+    /// would if the tab closed.
+    pub fn keep_all_page_memory(&mut self, cx: &mut Context<Self>) {
+        for session in self.sessions.clone() {
+            self.keep_page_memory(&session, cx);
+        }
     }
 
     /// Where other apps keep their copies, and the Downloads folder, for
@@ -6371,6 +6667,34 @@ impl DocumentWorkspace {
         self.active_document_id
     }
 
+    /// Whether the active document's history has a step to undo and one to
+    /// redo, as Edit ▸ Undo and Redo offer them: never while it saves.
+    pub fn document_history_availability(&self, cx: &App) -> (bool, bool) {
+        let Some(session) = self
+            .active_document_id
+            .and_then(|document_id| self.session(document_id, cx))
+        else {
+            return (false, false);
+        };
+        let session = session.read(cx);
+        if !matches!(session.status, NativeDocumentStatus::Ready)
+            || session.save_status == NativeDocumentSaveStatus::Saving
+        {
+            return (false, false);
+        }
+        let (undo_depth, redo_depth) = session.annotations.history_depths(session.id.value());
+        (undo_depth > 0, redo_depth > 0)
+    }
+
+    /// The toolbar's Undo and Redo, enabled from the document's history
+    /// only: they act on it even when a text field has the focus.
+    fn sync_viewer_toolbar_history(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let (can_undo, can_redo) = self.document_history_availability(cx);
+        let history = crate::viewer_toolbar_strip::HistoryState { can_undo, can_redo };
+        self.viewer_toolbar
+            .update(cx, |toolbar, cx| toolbar.set_history(history, cx));
+    }
+
     pub fn document_edit_capabilities(&self, cx: &App) -> DocumentEditCapabilities {
         let Some(document_id) = self.active_document_id else {
             return DocumentEditCapabilities::default();
@@ -6383,7 +6707,7 @@ impl DocumentWorkspace {
             return DocumentEditCapabilities::default();
         }
         let saving = session.save_status == NativeDocumentSaveStatus::Saving;
-        let (undo_depth, redo_depth) = session.annotations.history_depths(document_id.value());
+        let (can_undo, can_redo) = self.document_history_availability(cx);
         let selected = session
             .annotations
             .selected_annotations_in_document_order(document_id.value());
@@ -6420,8 +6744,8 @@ impl DocumentWorkspace {
         // Copied content pastes on any page of any open PDF.
         let can_paste_content = cx.has_global::<content::CopiedContent>();
         DocumentEditCapabilities {
-            can_undo: undo_depth > 0 && !saving,
-            can_redo: redo_depth > 0 && !saving,
+            can_undo,
+            can_redo,
             can_cut: (has_selection || has_content_selection) && !saving,
             can_copy: has_selection || has_content_selection || has_page_text,
             can_paste: (!markup_clipboard(cx).annotations.is_empty() || can_paste_content)
@@ -6752,6 +7076,8 @@ impl DocumentWorkspace {
         self.viewport_painted_scroll.remove(&document_id);
         self.viewport_painted_layouts.remove(&document_id);
         self.annotation_statuses.remove(&document_id);
+        self.forget_find_bar(document_id, cx);
+        self.forget_search_document(document_id, cx);
         if self.active_document_id == Some(document_id) {
             self.active_document_id = self
                 .sessions
@@ -10238,7 +10564,11 @@ impl DocumentWorkspace {
         );
     }
 
-    fn set_semantic_snap_angle_preset(&mut self, preset: AngleSnapPreset, cx: &mut Context<Self>) {
+    pub fn set_semantic_snap_angle_preset(
+        &mut self,
+        preset: AngleSnapPreset,
+        cx: &mut Context<Self>,
+    ) {
         self.apply_semantic_snap_settings(
             self.semantic_snap_settings.with_angle_snap_preset(preset),
             cx,
@@ -10303,6 +10633,7 @@ impl DocumentWorkspace {
         self.observe_viewer_session(&session, cx);
         self.register_session_tab(document_id, cx);
         self.sessions.push(session);
+        self.replace_new_tab_with_opening(document_id);
         cx.notify();
         OpenDocumentRequest {
             document_id,
@@ -10422,7 +10753,8 @@ impl DocumentWorkspace {
                 } else {
                     Err("no document opener is configured".into())
                 };
-                let restart_view = match entity.update(cx, |workspace, _| {
+                let restart_view = match entity.update(cx, |workspace, cx| {
+                    // A restored session's view wins; else the file's last tab.
                     workspace
                         .pending_session_restore
                         .as_ref()
@@ -10434,14 +10766,20 @@ impl DocumentWorkspace {
                                 .find_map(|(restored_path, view)| {
                                     (normalized_path_key(restored_path)
                                         == normalized_path_key(&path))
-                                    .then_some(*view)
+                                    .then(|| view.clone())
                                 })
+                        })
+                        .or_else(|| {
+                            workspace
+                                .page_memory
+                                .read(cx)
+                                .restart_view(&open_request.path)
                         })
                 }) {
                     Ok(view) => view,
                     Err(_) => return,
                 };
-                let restored_page = match (&result, restart_view) {
+                let restored_page = match (&result, &restart_view) {
                     (Ok(opened), Some(view)) => {
                         let page_index = view
                             .current_page()
@@ -10467,6 +10805,7 @@ impl DocumentWorkspace {
                     workspace.apply_open_result(&open_request, result, cx);
                     if let Some(view) = restart_view {
                         workspace.apply_restart_view(document_id, view, restored_page, cx);
+                        workspace.follow_paper_appearance(document_id, cx);
                     }
                     let outcome = workspace.session(document_id, cx).map(|session| {
                         let session = session.read(cx);
@@ -10626,6 +10965,7 @@ impl DocumentWorkspace {
         self.observe_viewer_session(&session, cx);
         self.register_session_tab(document_id, cx);
         self.sessions.push(session);
+        self.replace_new_tab_with_opening(document_id);
         cx.notify();
 
         OpenDocumentRequest {
@@ -11076,6 +11416,19 @@ impl DocumentWorkspace {
         startup_recovery: Option<RecoveredDocument>,
         cx: &mut Context<Self>,
     ) -> ApplyDisposition {
+        let disposition = self.apply_open_result_to_session(request, result, startup_recovery, cx);
+        self.follow_paper_appearance(request.document_id, cx);
+        self.settle_new_tab_opening(request.document_id, cx);
+        disposition
+    }
+
+    fn apply_open_result_to_session(
+        &mut self,
+        request: &OpenDocumentRequest,
+        result: Result<OpenedNativeDocument, String>,
+        startup_recovery: Option<RecoveredDocument>,
+        cx: &mut Context<Self>,
+    ) -> ApplyDisposition {
         if self.pending_template_document_id == Some(request.document_id) {
             self.finish_template_creation(cx);
         }
@@ -11136,6 +11489,7 @@ impl DocumentWorkspace {
                 }
                 let source_sha256 = opened.source_sha256;
                 let retained_annotation_obstacles = opened.retained_annotation_obstacles.clone();
+                let markup_metadata = opened.markup_metadata.clone();
                 let page_rotations = opened.page_rotations.clone();
                 let page_coordinate_spaces = opened.page_coordinate_spaces.clone();
                 self.next_annotation_sequence = self
@@ -11259,6 +11613,8 @@ impl DocumentWorkspace {
                                 base_raster,
                                 image,
                                 highlight_pixels: 0,
+                                // The opener draws real colours.
+                                paper: PaperAppearance::Real,
                                 rotation: thumbnail_rotations
                                     .get(thumbnail.page_index as usize)
                                     .copied()
@@ -11302,12 +11658,15 @@ impl DocumentWorkspace {
                         ViewerZoomPreset::FitPage => Some((0, ViewerFitPreset::Page)),
                     };
                     session.current_base_raster = Some(current_base_raster);
+                    // The opener draws real colours.
+                    session.current_base_paper = PaperAppearance::Real;
                     session.current_image = Some(page_image);
                     session.current_image_page = Some(session.current_page);
                     session.thumbnails = thumbnails;
                     // Recovered rearranged pages: the worker drew them so.
                     session.adopt_page_arrangement();
                     session.resource = Some(opened.resource);
+                    session.markup_metadata = markup_metadata;
                     session.resource_epoch = session.resource_epoch.saturating_add(1);
                     Self::reset_page_content_snap_geometry(session);
                     session.source_sha256 = source_sha256;
@@ -11322,6 +11681,7 @@ impl DocumentWorkspace {
                 self.new_tab_open = false;
                 self.new_tab_return = None;
                 self.remember_recent_document(request.document_id, cx);
+                self.restore_page_memory(request.document_id, cx);
                 self.check_document_signatures(request.document_id, cx);
                 if let Some(recovered) = startup_recovery {
                     session.update(cx, |session, cx| {
@@ -11771,11 +12131,12 @@ impl DocumentWorkspace {
             session.pending_page_frame = None;
             session
                 .view_state
-                .apply_restart_view(view, session.page_sizes.len());
+                .apply_restart_view(&view, session.page_sizes.len());
             if let Some((surface, image)) = restored_page {
                 session.current_page = page_index;
                 session.requested_page = page_index;
                 session.current_base_raster = Some(surface);
+                session.current_base_paper = PaperAppearance::Real;
                 session.current_image = Some(image);
                 session.current_image_page = Some(page_index);
                 session.viewer.invalidate_layout();
@@ -11983,7 +12344,7 @@ impl DocumentWorkspace {
     }
 
     pub fn document_command_state(&self, cx: &App) -> DocumentCommandState {
-        let Some(document_id) = self.active_document_id else {
+        let Some(document_id) = self.active_document_id.or(self.new_tab_opening_shown()) else {
             return DocumentCommandState::default();
         };
         let Some(session) = self.session(document_id, cx) else {
@@ -12034,13 +12395,29 @@ impl DocumentWorkspace {
         if self.new_tab_open {
             self.close_new_tab(cx);
             self.workspace_focus.focus(window, cx);
-        } else if let Some(document_id) = self.active_document_id {
+        } else if let Some(document_id) = self.active_document_id.or(self.new_tab_opening_shown()) {
             self.request_close_document(document_id, cx);
             // The closed tab's focus handle is removed with its session.
             // Keep command dispatch rooted in the workspace for repeated closes.
             self.workspace_focus.focus(window, cx);
         } else if cfg!(target_os = "macos") && self.sessions.is_empty() {
             window.remove_window();
+        }
+    }
+
+    /// The rail's Rotate Left or Right: the current page, or with Shift held
+    /// every page. A keyboard press carries no modifiers in GPUI, so the
+    /// keyboard turns every page through the Document menu.
+    fn rotate_from_rail(
+        &mut self,
+        direction: PageRotationDirection,
+        event: &gpui::ClickEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if event.modifiers().shift {
+            self.rotate_all_pages_from_action(direction, cx);
+        } else {
+            self.rotate_active_page_from_action(direction, cx);
         }
     }
 
@@ -12331,6 +12708,18 @@ impl DocumentWorkspace {
         if self.begin_view_motion(document_id, view_motion::ViewMotionEnd::Fit(preset), cx) {
             return true;
         }
+        self.apply_fit_preset_now(document_id, &session, preset, cx);
+        true
+    }
+
+    /// Fits the current page as `preset` says at once, framing it.
+    fn apply_fit_preset_now(
+        &mut self,
+        document_id: DocumentId,
+        session: &Entity<NativeDocumentSession>,
+        preset: ViewerFitPreset,
+        cx: &mut Context<Self>,
+    ) {
         session.update(cx, |session, cx| {
             // A plan cancelled by a mode change in the same gesture has no
             // anchor to give; keep the one that change recorded.
@@ -12339,6 +12728,8 @@ impl DocumentWorkspace {
             }
             session.pending_page_frame = Some((session.current_page, preset));
             session.view_state.set_fit_preset(preset);
+            // A fit chosen for the page replaces the view it was left at.
+            session.view_state.forget_page_view(session.current_page);
             if let Some((width, height)) = session.view_state.viewport_size()
                 && let Some(page_size) = session
                     .page_sizes
@@ -12356,7 +12747,43 @@ impl DocumentWorkspace {
         });
         self.replan_viewport_now(document_id, cx);
         cx.notify();
-        true
+    }
+
+    /// The current page's size, to tell whether a rotation turned it.
+    pub(super) fn current_page_size(
+        &self,
+        document_id: DocumentId,
+        cx: &App,
+    ) -> Option<(f32, f32)> {
+        let session = self.session(document_id, cx)?.read(cx);
+        session
+            .page_sizes
+            .get(session.current_page as usize)
+            .copied()
+    }
+
+    /// After a rotation, or its Undo or Redo: with Fit Width or Fit Page
+    /// in force and the current page turned (its size is not
+    /// `size_before`), fits the turned page at once. A free zoom stays.
+    pub(super) fn refit_turned_page(
+        &mut self,
+        document_id: DocumentId,
+        size_before: Option<(f32, f32)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let preset = match session.read(cx).view_state.zoom_preset() {
+            ViewerZoomPreset::FitWidth => ViewerFitPreset::Width,
+            ViewerZoomPreset::FitPage => ViewerFitPreset::Page,
+            ViewerZoomPreset::Manual => return,
+        };
+        if self.current_page_size(document_id, cx) == size_before {
+            return;
+        }
+        self.apply_fit_preset_now(document_id, &session, preset, cx);
+        self.sync_active_viewer_toolbar(cx);
     }
 
     pub fn set_document_wheel_behavior(
@@ -12666,54 +13093,56 @@ impl DocumentWorkspace {
             return false;
         };
         let input_at = cx.background_executor().now();
+        // A wheel zoom still moving goes on from the zoom it is heading for.
+        let wheel_zoom_target = self.wheel_zoom_target(document_id);
         self.observe_viewer_input_at(document_id, input_at, cx);
-        let delta = event.delta.pixel_delta(px(16.));
+        let delta = event.delta.pixel_delta(px(crate::mouse_wheel::WHEEL_LINE));
         let reverse_zoom = cx
             .try_global::<crate::application_shell::ReverseScrollZoom>()
             .is_some_and(|reverse| reverse.0);
-        let outcome = session.update(cx, |session, _| {
-            // A zoomed-in page scrolls until its edge is in view; the wheel
-            // turns the page only from there.
-            if matches!(event.delta, gpui::ScrollDelta::Lines(_))
-                && session
-                    .view_state
-                    .single_page_wheel_scrolls(event.modifiers.control)
-                && session.viewer.page_continues(
-                    session.requested_page as usize,
-                    f32::from(delta.x),
-                    f32::from(delta.y),
-                )
-            {
-                session.view_state.wheel_scrolled_within_page();
-                return WheelOutcome::NativeScroll;
-            }
+        let page_turning = crate::application_shell::PageTurningPreference::current(cx);
+        let zoom_speed = crate::application_shell::ZoomSpeedPreference::current(cx);
+        let (outcome, zoom_before) = session.update(cx, |session, _| {
+            let current_page = session.requested_page as usize;
+            let page_continues =
+                session
+                    .viewer
+                    .page_continues(current_page, f32::from(delta.x), f32::from(delta.y));
+            let zoom_before = session.view_state.zoom_percent();
             if matches!(event.delta, gpui::ScrollDelta::Pixels(_)) {
-                let current_page = session.requested_page as usize;
-                return session.view_state.precise_scroll(PreciseScroll {
+                let outcome = session.view_state.precise_scroll(PreciseScroll {
                     page_count: session.page_sizes.len(),
                     current_page,
                     delta: (f32::from(delta.x), f32::from(delta.y)),
-                    page_continues: session.viewer.page_continues(
-                        current_page,
-                        f32::from(delta.x),
-                        f32::from(delta.y),
-                    ),
+                    page_continues,
                     starts_gesture: event.touch_phase == gpui::TouchPhase::Started,
                     control: event.modifiers.control,
                     reverse_zoom,
                     at: input_at,
                 });
+                return (outcome, zoom_before);
             }
-            // From the page last asked for, so a quick run of notches
-            // keeps going while pages render.
-            session.view_state.wheel(
-                session.page_sizes.len(),
-                session.requested_page as usize,
-                f32::from(delta.x),
-                f32::from(delta.y),
-                event.modifiers.control,
+            if let Some(target) = wheel_zoom_target {
+                session.view_state.set_manual_zoom(target);
+            }
+            // From the page last asked for: a turn never waits for a page
+            // to render, so turns never queue up behind the wheel.
+            let outcome = session.view_state.wheel(DiscreteWheel {
+                page_count: session.page_sizes.len(),
+                current_page,
+                delta: (f32::from(delta.x), f32::from(delta.y)),
+                page_continues,
+                control: event.modifiers.control,
                 reverse_zoom,
-            )
+                at: input_at,
+                page_turning,
+                zoom_speed,
+            });
+            if wheel_zoom_target.is_some() && !matches!(outcome, WheelOutcome::Zoom(_)) {
+                // Not a zoom: the view stays at the zoom it shows.
+                session.view_state.set_manual_zoom(zoom_before);
+            }
+            (outcome, zoom_before)
         });
         match outcome {
             WheelOutcome::NativeScroll => {
@@ -12743,7 +13172,20 @@ impl DocumentWorkspace {
                 true
             }
             WheelOutcome::Zoom(zoom_percent) => {
-                self.apply_anchored_zoom(document_id, event.position, zoom_percent, window, cx);
+                // A discrete wheel zooms over a short motion, unless reduce
+                // motion is set; a trackpad zooms with the fingers.
+                let discrete = matches!(event.delta, gpui::ScrollDelta::Lines(_));
+                if !(discrete
+                    && self.begin_wheel_zoom_motion(
+                        document_id,
+                        event.position,
+                        zoom_before,
+                        zoom_percent,
+                        cx,
+                    ))
+                {
+                    self.apply_anchored_zoom(document_id, event.position, zoom_percent, window, cx);
+                }
                 true
             }
         }
@@ -12991,13 +13433,31 @@ impl DocumentWorkspace {
                     .find(|layout| layout.page == target as usize)
             {
                 let rect = layout.logical_rect;
-                scroll_y = rect.y.max(0.);
-                if session.navigation_from_below.take() == Some(target) {
-                    // Its bottom edge at the bottom of the view, as its top
-                    // edge is at the top going forward.
-                    scroll_y = scroll_y.max(rect.y + rect.height - viewport_height);
+                let remembered = session
+                    .pending_page_view_scroll
+                    .take()
+                    .filter(|(page, _)| *page == target)
+                    .map(|(_, scroll)| scroll);
+                if let Some((remembered_x, remembered_y)) = remembered {
+                    // A page returned to in Single Page view shows where it
+                    // was left.
+                    session.navigation_from_below = None;
+                    // As it was left, panned past its edges too, but with
+                    // part of the page still in view.
+                    let (margin_x, margin_y) = session.viewer.pan_margin();
+                    scroll_x =
+                        remembered_x.clamp(-margin_x, plan.total_width - viewport_width + margin_x);
+                    scroll_y = remembered_y
+                        .clamp(-margin_y, plan.total_height - viewport_height + margin_y);
+                } else {
+                    scroll_y = rect.y.max(0.);
+                    if session.navigation_from_below.take() == Some(target) {
+                        // Its bottom edge at the bottom of the view, as its
+                        // top edge is at the top going forward.
+                        scroll_y = scroll_y.max(rect.y + rect.height - viewport_height);
+                    }
                 }
-                if session.view_state.mode() == PageViewMode::SinglePage {
+                if session.view_state.mode() == PageViewMode::SinglePage && remembered.is_none() {
                     // On the page and its margins, keeping the zoom and the
                     // position across; centred when it fits, as Fit Page
                     // frames it.
@@ -13065,7 +13525,14 @@ impl DocumentWorkspace {
                     now,
                 )?;
             }
+            // A page picked by a click stays current while the view stays
+            // where the click left it; a scroll makes the page in view
+            // current again.
+            session.picked_page_scroll = session
+                .picked_page_scroll
+                .filter(|picked| *picked == (scroll_x, scroll_y));
             if session.view_state.mode() == PageViewMode::Continuous
+                && session.picked_page_scroll.is_none()
                 && let Some(visible_page) = plan.current_page
                 && visible_page != session.current_page as usize
             {
@@ -13078,7 +13545,7 @@ impl DocumentWorkspace {
             Ok::<(), String>(())
         })?;
         let visible_page = session.read(cx).current_page;
-        if self.pages_panel_open
+        if self.left_panel == Some(search_panel::LeftPanel::Thumbnails)
             && self.active_document_id == Some(document_id)
             && visible_page != previous_page
         {
@@ -13200,7 +13667,6 @@ impl DocumentWorkspace {
         let Some(resource) = session.read(cx).resource.clone() else {
             return;
         };
-        #[cfg(not(target_os = "macos"))]
         let (page_sizes, coordinate_spaces, pens) = {
             let session = session.read(cx);
             let pens = session
@@ -13219,11 +13685,8 @@ impl DocumentWorkspace {
         let jobs = session.update(cx, |session, _| session.viewer.claim_jobs());
         for job in jobs {
             let resource = resource.clone();
-            #[cfg(not(target_os = "macos"))]
             let page_sizes = page_sizes.clone();
-            #[cfg(not(target_os = "macos"))]
             let coordinate_spaces = coordinate_spaces.clone();
-            #[cfg(not(target_os = "macos"))]
             let pens = pens.clone();
             let request = job.raster;
             let preview = job.quality == crate::document_viewer::ViewerRenderQuality::Preview;
@@ -13234,31 +13697,32 @@ impl DocumentWorkspace {
                 } else {
                     resource.render_tile(request)?
                 };
-                #[cfg(target_os = "macos")]
-                let highlight_pixels = 0;
-                #[cfg(not(target_os = "macos"))]
-                let (raster, highlight_pixels) = {
-                    let mut raster = raster;
-                    let page_size = *page_sizes
-                        .get(request.page)
-                        .ok_or_else(|| "viewer tile page geometry is unavailable".to_owned())?;
-                    let zoom = f64::from(request.zoom_tenths) / 1_000.;
-                    let device_scale = f64::from(request.device_scale_millis) / 1_000.;
-                    let scale = zoom * device_scale;
-                    let highlight_pixels = raster.precompose_highlights(
-                        u32::try_from(request.page)
-                            .map_err(|_| "viewer tile page index overflowed".to_owned())?,
-                        coordinate_spaces[request.page],
-                        request.crop.x as f64,
-                        request.crop.y as f64,
-                        (
-                            f64::from(page_size.0) * scale,
-                            f64::from(page_size.1) * scale,
-                        ),
-                        &pens,
-                    )?;
-                    (raster, highlight_pixels)
-                };
+                let (raster, highlight_pixels) =
+                    if !crate::document_session::cpu_highlights(request.paper) {
+                        (raster, 0)
+                    } else {
+                        let mut raster = raster;
+                        let page_size = *page_sizes
+                            .get(request.page)
+                            .ok_or_else(|| "viewer tile page geometry is unavailable".to_owned())?;
+                        let zoom = f64::from(request.zoom_tenths) / 1_000.;
+                        let device_scale = f64::from(request.device_scale_millis) / 1_000.;
+                        let scale = zoom * device_scale;
+                        let highlight_pixels = raster.precompose_highlights(
+                            u32::try_from(request.page)
+                                .map_err(|_| "viewer tile page index overflowed".to_owned())?,
+                            coordinate_spaces[request.page],
+                            request.crop.x as f64,
+                            request.crop.y as f64,
+                            (
+                                f64::from(page_size.0) * scale,
+                                f64::from(page_size.1) * scale,
+                            ),
+                            &pens,
+                            request.paper,
+                        )?;
+                        (raster, highlight_pixels)
+                    };
                 let bytes = raster.pixels_bgra().len();
                 let image = raster.into_padded_render_image()?;
                 Ok::<_, String>((image, bytes, highlight_pixels))
@@ -13421,37 +13885,40 @@ impl DocumentWorkspace {
                     continue;
                 }
                 let raster = resource.render_tile(*request)?;
-                #[cfg(target_os = "macos")]
-                let highlight_pixels = 0;
-                #[cfg(not(target_os = "macos"))]
-                let (raster, highlight_pixels) = {
-                    let mut raster = raster;
-                    let page_size = session.page_sizes[request.page];
-                    let coordinate_space = session
-                        .annotation_page_coordinate_space(request.page as u32)
-                        .ok_or_else(|| "viewer tile coordinate space is unavailable".to_owned())?;
-                    let scale = f64::from(request.zoom_tenths) / 1_000.
-                        * f64::from(request.device_scale_millis)
-                        / 1_000.;
-                    let pens = session
-                        .annotations
-                        .snapshot(document_id.value())
-                        .map(|snapshot| snapshot.pens)
-                        .unwrap_or_default();
-                    let highlight_pixels = raster.precompose_highlights(
-                        u32::try_from(request.page)
-                            .map_err(|_| "viewer tile page index overflowed".to_owned())?,
-                        coordinate_space,
-                        request.crop.x as f64,
-                        request.crop.y as f64,
-                        (
-                            f64::from(page_size.0) * scale,
-                            f64::from(page_size.1) * scale,
-                        ),
-                        &pens,
-                    )?;
-                    (raster, highlight_pixels)
-                };
+                let (raster, highlight_pixels) =
+                    if !crate::document_session::cpu_highlights(request.paper) {
+                        (raster, 0)
+                    } else {
+                        let mut raster = raster;
+                        let page_size = session.page_sizes[request.page];
+                        let coordinate_space = session
+                            .annotation_page_coordinate_space(request.page as u32)
+                            .ok_or_else(|| {
+                                "viewer tile coordinate space is unavailable".to_owned()
+                            })?;
+                        let scale = f64::from(request.zoom_tenths) / 1_000.
+                            * f64::from(request.device_scale_millis)
+                            / 1_000.;
+                        let pens = session
+                            .annotations
+                            .snapshot(document_id.value())
+                            .map(|snapshot| snapshot.pens)
+                            .unwrap_or_default();
+                        let highlight_pixels = raster.precompose_highlights(
+                            u32::try_from(request.page)
+                                .map_err(|_| "viewer tile page index overflowed".to_owned())?,
+                            coordinate_space,
+                            request.crop.x as f64,
+                            request.crop.y as f64,
+                            (
+                                f64::from(page_size.0) * scale,
+                                f64::from(page_size.1) * scale,
+                            ),
+                            &pens,
+                            request.paper,
+                        )?;
+                        (raster, highlight_pixels)
+                    };
                 if raster.has_spatial_variation() {
                     non_uniform_tiles += 1;
                 }
@@ -13560,6 +14027,7 @@ impl DocumentWorkspace {
                 .find(|layout| layout.page == page_index as usize)
                 .map(|layout| layout.logical_rect)
         });
+        let size_before = self.current_page_size(document_id, cx);
         let generation = self.next_generation();
         let recovery_store = self.document_recovery_store.clone();
         let target_rotation = session.update(cx, |session, cx| {
@@ -13594,6 +14062,7 @@ impl DocumentWorkspace {
             old_rect,
             cx,
         );
+        self.refit_turned_page(document_id, size_before, cx);
         let (document_revision, resource_epoch) = {
             let session = session.read(cx);
             (
@@ -13638,13 +14107,15 @@ impl DocumentWorkspace {
                 .copied()
                 .ok_or_else(|| "page is outside the document".to_owned())?,
         );
+        let paper = session.paper;
         Ok(PageRotationPresentation {
             current_page: resource
-                .render_page(request.page_index, DEFAULT_PAGE_RENDER_WIDTH)?
+                .render_view_page(request.page_index, DEFAULT_PAGE_RENDER_WIDTH, paper)?
                 .rotated(delta)?,
             thumbnail: resource
-                .render_page(request.page_index, thumbnail)?
+                .render_view_page(request.page_index, thumbnail, paper)?
                 .rotated(delta)?,
+            paper,
         })
     }
 
@@ -13678,13 +14149,16 @@ impl DocumentWorkspace {
         let Ok(request) = self.begin_page_rotation(document_id, page_index, direction, cx) else {
             return;
         };
-        let Some((resource, thumbnail)) = self.session(document_id, cx).and_then(|session| {
-            let session = session.read(cx);
-            Some((
-                session.resource.clone()?,
-                thumbnail_width(*session.source_page_sizes.get(page_index as usize)?),
-            ))
-        }) else {
+        let Some((resource, thumbnail, paper)) =
+            self.session(document_id, cx).and_then(|session| {
+                let session = session.read(cx);
+                Some((
+                    session.resource.clone()?,
+                    thumbnail_width(*session.source_page_sizes.get(page_index as usize)?),
+                    session.paper,
+                ))
+            })
+        else {
             return;
         };
         let task = cx.background_executor().spawn(async move {
@@ -13692,11 +14166,12 @@ impl DocumentWorkspace {
             let result = (|| {
                 Ok(PageRotationPresentation {
                     current_page: resource
-                        .render_page(request.page_index, DEFAULT_PAGE_RENDER_WIDTH)?
+                        .render_view_page(request.page_index, DEFAULT_PAGE_RENDER_WIDTH, paper)?
                         .rotated(delta)?,
                     thumbnail: resource
-                        .render_page(request.page_index, thumbnail)?
+                        .render_view_page(request.page_index, thumbnail, paper)?
                         .rotated(delta)?,
+                    paper,
                 })
             })();
             (request, result)
@@ -13711,6 +14186,8 @@ impl DocumentWorkspace {
                     && go_to_page
                 {
                     workspace.activate_thumbnail_page(request.document_id, request.page_index, cx);
+                    // The page shown now is the one that turned: fit it.
+                    workspace.refit_turned_page(request.document_id, None, cx);
                 }
                 workspace.rotate_next_queued_page(cx);
             });
@@ -13751,6 +14228,7 @@ impl DocumentWorkspace {
                             session.current_page = request.page_index;
                             session.placeholder_page = None;
                             session.current_base_raster = Some(presentation.current_page);
+                            session.current_base_paper = presentation.paper;
                             session.current_image_page = Some(request.page_index);
                             if let Some(previous) = session.current_image.replace(page_image) {
                                 session.retired_images.push(previous);
@@ -13762,6 +14240,7 @@ impl DocumentWorkspace {
                             {
                                 thumbnail.base_raster = presentation.thumbnail;
                                 thumbnail.rotation = request.target_rotation;
+                                thumbnail.paper = presentation.paper;
                                 let previous =
                                     std::mem::replace(&mut thumbnail.image, thumbnail_image);
                                 session.retired_images.push(previous);
@@ -13806,6 +14285,7 @@ impl DocumentWorkspace {
     }
 
     fn navigate_async(&mut self, document_id: DocumentId, page_index: u32, cx: &mut Context<Self>) {
+        self.turn_single_page_view(document_id, page_index, cx);
         // One render at a time, so flicking through pages shows each render
         // as it arrives and ends on the last page asked for, rather than
         // queueing a render per page.
@@ -13842,10 +14322,10 @@ impl DocumentWorkspace {
             self.render_adjacent_pages(document_id, cx);
             return;
         }
-        let Some(resource) = self
-            .session(document_id, cx)
-            .and_then(|session| session.read(cx).resource.clone())
-        else {
+        let Some((resource, paper)) = self.session(document_id, cx).and_then(|session| {
+            let session = session.read(cx);
+            Some((session.resource.clone()?, session.paper))
+        }) else {
             return;
         };
         self.show_navigation_placeholder(document_id, page_index, cx);
@@ -13853,7 +14333,7 @@ impl DocumentWorkspace {
         // the sidebar, after the page.
         let task = cx.background_executor().spawn(async move {
             resource
-                .render_page_image(request.page_index, DEFAULT_PAGE_RENDER_WIDTH)
+                .render_page_image(request.page_index, DEFAULT_PAGE_RENDER_WIDTH, paper)
                 .and_then(|surface| {
                     surface.rotated(request.target_rotation.delta_from(request.source_rotation))
                 })
@@ -13866,6 +14346,13 @@ impl DocumentWorkspace {
                 let Some(session) = workspace.session(document_id, cx).cloned() else {
                     return;
                 };
+                // Drawn for the other paper: the page the user wants is
+                // drawn again with the paper shown now.
+                if session.read(cx).paper != paper {
+                    let page = session.read(cx).requested_page;
+                    workspace.navigate_async(document_id, page, cx);
+                    return;
+                }
                 // A page asked for since and already showing its thumbnail
                 // is not taken back to this one.
                 let superseded = {
@@ -13893,6 +14380,174 @@ impl DocumentWorkspace {
                     }
                 }
                 workspace.pump_thumbnails(document_id, cx);
+                workspace.render_adjacent_pages(document_id, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Single Page view goes from the page shown to `page_index`: the page
+    /// left keeps its zoom and scroll, and the page entered takes the zoom
+    /// it was left at. A page not seen before keeps the zoom in force, fitted
+    /// to its own size when Fit Width or Fit Page is in force, and shows from
+    /// its top or bottom edge.
+    fn turn_single_page_view(
+        &mut self,
+        document_id: DocumentId,
+        page_index: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        session.update(cx, |session, _| {
+            let mode = session.view_state.mode();
+            if mode != PageViewMode::SinglePage
+                || session.view_state.cad_view_active()
+                || session.current_page == page_index
+            {
+                return;
+            }
+            session.remember_shown_page_view();
+            let fit_to = session
+                .view_state
+                .viewport_size()
+                .zip(session.page_sizes.get(page_index as usize).copied());
+            let zoom_before = session.view_state.zoom_percent();
+            session.pending_page_view_scroll = session
+                .view_state
+                .enter_page(page_index, fit_to)
+                .map(|scroll| (page_index, scroll));
+            if session.pending_page_view_scroll.is_some() {
+                // Shown where it was left, not from an edge.
+                session.navigation_from_below = None;
+            }
+            if (session.view_state.zoom_percent() - zoom_before).abs() >= 0.001 {
+                session.pending_zoom_anchor = None;
+                session
+                    .viewer
+                    .configure(mode, session.view_state.zoom_percent());
+            }
+        });
+        self.sync_active_viewer_toolbar(cx);
+    }
+
+    /// The paper every document's view draws pages with.
+    pub fn paper_appearance(&self) -> PaperAppearance {
+        self.paper_appearance
+    }
+
+    /// Turns Dark pages on or off for every open document's view. What is
+    /// on screen stays until the pages are drawn again with `paper`.
+    /// Saves, exports, copies and previews keep real colours: their calls
+    /// take no paper.
+    pub fn set_paper_appearance(&mut self, paper: PaperAppearance, cx: &mut Context<Self>) {
+        if self.paper_appearance == paper {
+            return;
+        }
+        self.paper_appearance = paper;
+        let documents = self
+            .sessions
+            .iter()
+            .map(|session| session.read(cx).id)
+            .collect::<Vec<_>>();
+        for document_id in documents {
+            self.follow_paper_appearance(document_id, cx);
+        }
+        self.redraw_visual_pictures(cx);
+        cx.notify();
+    }
+
+    /// Brings a document's view to the workspace's paper: its tiles,
+    /// thumbnails and adjacent pages through the session, and its page
+    /// image here. Called after a switch and after the opener (which draws
+    /// real colours) gives the session new pages.
+    pub(super) fn follow_paper_appearance(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) {
+        let paper = self.paper_appearance;
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let (changed, redraw) = session.update(cx, |session, cx| {
+            let changed = session.set_paper(paper);
+            if changed {
+                cx.notify();
+            }
+            let redraw =
+                session.current_base_raster.is_some() && session.current_base_paper != paper;
+            (changed, redraw)
+        });
+        if redraw {
+            self.redraw_page_image(document_id, cx);
+        }
+        if changed {
+            self.pump_thumbnails(document_id, cx);
+        }
+    }
+
+    /// Draws the page image under the current page's tiles again with the
+    /// view's paper. The image on screen stays until the new one arrives.
+    fn redraw_page_image(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
+        let next = {
+            let state = session.read(cx);
+            let page = state.current_image_page.filter(|page| {
+                *page == state.current_page
+                    && state.placeholder_page.is_none()
+                    && state.pending_rotation_generation.is_none()
+            });
+            page.and_then(|page| {
+                let source = *state.source_page_rotations.get(page as usize)?;
+                let target = state.page_rotation(page).unwrap_or(source);
+                Some((state.resource.clone()?, page, source, target, state.paper))
+            })
+        };
+        let Some((resource, page, source, target, paper)) = next else {
+            return;
+        };
+        let task = cx.background_executor().spawn(async move {
+            let surface = resource
+                .render_view_page(page, DEFAULT_PAGE_RENDER_WIDTH, paper)
+                .and_then(|surface| surface.rotated(target.delta_from(source)))?;
+            let image = surface.clone().into_render_image()?;
+            Ok::<_, String>((surface, image))
+        });
+        cx.spawn(async move |owner, cx| {
+            let result = task.await;
+            let _ = owner.update(cx, |workspace, cx| {
+                let Some(session) = workspace.session(document_id, cx).cloned() else {
+                    return;
+                };
+                let Ok((surface, image)) = result else {
+                    // The tiles show the page; the old image stays under them.
+                    return;
+                };
+                session.update(cx, |session, cx| {
+                    let still_wanted = session.paper == paper
+                        && session.current_base_paper != paper
+                        && session.current_image_page == Some(page)
+                        && session.current_page == page
+                        && session.placeholder_page.is_none()
+                        && session.page_rotation(page).unwrap_or(source) == target;
+                    if !still_wanted {
+                        session.retired_images.push(image);
+                        return;
+                    }
+                    session.current_base_raster = Some(surface);
+                    session.current_base_paper = paper;
+                    if let Some(previous) = session.current_image.replace(image) {
+                        session.retired_images.push(previous);
+                    }
+                    if let Err(error) = session.present_current_page_highlights() {
+                        session.presentation_error = Some(error);
+                    }
+                    cx.notify();
+                });
                 workspace.render_adjacent_pages(document_id, cx);
             });
         })
@@ -13963,7 +14618,7 @@ impl DocumentWorkspace {
         };
         let task = cx.background_executor().spawn(async move {
             let surface = resource
-                .render_adjacent_page_image(page_index, width)
+                .render_adjacent_page_image(page_index, width, key.paper)
                 .and_then(|surface| surface.rotated(key.rotation.delta_from(source_rotation)))?;
             let image = surface.clone().into_render_image()?;
             Ok::<_, String>((surface, image))
@@ -14016,9 +14671,13 @@ impl DocumentWorkspace {
             let Ok(image) = surface.clone().into_render_image() else {
                 return;
             };
-            if let Err(error) =
-                session.present_thumbnail(page_index, request.target_rotation, surface, image)
-            {
+            if let Err(error) = session.present_thumbnail(
+                page_index,
+                request.target_rotation,
+                session.current_base_paper,
+                surface,
+                image,
+            ) {
                 session.presentation_error = Some(error);
             }
             session.evict_thumbnails(THUMBNAIL_CACHE_BYTES);
@@ -14075,6 +14734,7 @@ impl DocumentWorkspace {
                 // Drawn as the page's own render is: it shows sharp at
                 // once, and the render replaces it unchanged.
                 session.current_base_raster = Some(base_raster);
+                session.current_base_paper = session.paper;
                 session.current_image_page = Some(page_index);
                 if let Some(previous) = session.current_image.replace(image) {
                     session.retired_images.push(previous);
@@ -14221,10 +14881,11 @@ impl DocumentWorkspace {
             let wanted = |page: &u32| {
                 *page < page_count
                     && state.thumbnail(*page).is_none_or(|thumbnail| {
-                        Some(thumbnail.rotation)
-                            != state.page_rotation(*page).or_else(|| {
-                                state.source_page_rotations.get(*page as usize).copied()
-                            })
+                        thumbnail.paper != state.paper
+                            || Some(thumbnail.rotation)
+                                != state.page_rotation(*page).or_else(|| {
+                                    state.source_page_rotations.get(*page as usize).copied()
+                                })
                     })
                     && !state
                         .thumbnail_requests
@@ -14286,6 +14947,7 @@ impl DocumentWorkspace {
                 .document_page_rotation(document_id.value(), page_index)
                 .unwrap_or(source_rotation);
             let epoch = state.resource_epoch;
+            let paper = state.paper;
             let content = state
                 .thumbnail_content_revisions
                 .get(&page_index)
@@ -14297,6 +14959,7 @@ impl DocumentWorkspace {
                 .is_some_and(|request| {
                     request.epoch == epoch
                         && request.rotation == rotation
+                        && request.paper == paper
                         && request.content == content
                         && (request.error.is_none() || !retry)
                 })
@@ -14311,17 +14974,19 @@ impl DocumentWorkspace {
                 epoch,
                 source_rotation,
                 rotation,
+                paper,
                 content,
                 thumbnail_width(source_size),
             )
         };
-        let (resource, epoch, source_rotation, rotation, content, width) = request;
+        let (resource, epoch, source_rotation, rotation, paper, content, width) = request;
         session.update(cx, |state, cx| {
             state.thumbnail_requests.insert(
                 page_index,
                 crate::document_session::ThumbnailRequestState {
                     epoch,
                     rotation,
+                    paper,
                     content,
                     error: None,
                 },
@@ -14331,7 +14996,7 @@ impl DocumentWorkspace {
         // The image is made here too, off the main thread.
         let task = cx.background_executor().spawn(async move {
             let surface = resource
-                .render_thumbnail(page_index, width)
+                .render_thumbnail(page_index, width, paper)
                 .and_then(|surface| surface.rotated(rotation.delta_from(source_rotation)))?;
             let image = surface.clone().into_render_image()?;
             Ok::<_, String>((surface, image))
@@ -14345,11 +15010,13 @@ impl DocumentWorkspace {
                 let this_request = |request: &crate::document_session::ThumbnailRequestState| {
                     request.epoch == epoch
                         && request.rotation == rotation
+                        && request.paper == paper
                         && request.content == content
                 };
                 let current = {
                     let state = session.read(cx);
                     state.resource_epoch == epoch
+                        && state.paper == paper
                         && state
                             .annotations
                             .document_page_rotation(document_id.value(), page_index)
@@ -14377,7 +15044,7 @@ impl DocumentWorkspace {
                         Ok((surface, image)) => {
                             state.thumbnail_requests.remove(&page_index);
                             if let Err(error) =
-                                state.present_thumbnail(page_index, rotation, surface, image)
+                                state.present_thumbnail(page_index, rotation, paper, surface, image)
                             {
                                 state.presentation_error = Some(error);
                             }
@@ -14472,6 +15139,7 @@ impl DocumentWorkspace {
                         session.placeholder_page = None;
                         if !finer_shown {
                             session.current_base_raster = Some(surface);
+                            session.current_base_paper = session.paper;
                             session.current_image_page = Some(request.page_index);
                             if let Some(previous) = session.current_image.replace(image) {
                                 session.retired_images.push(previous);
@@ -14662,7 +15330,20 @@ impl DocumentWorkspace {
         Ok(())
     }
 
+    /// Applies a recovery and draws the recovered page with the view's
+    /// paper.
     pub fn apply_document_recovery_result(
+        &mut self,
+        request: &DocumentRecoveryRequest,
+        result: Result<OpenedNativeDocument, String>,
+        cx: &mut Context<Self>,
+    ) -> ApplyDisposition {
+        let disposition = self.apply_recovered_document(request, result, cx);
+        self.follow_paper_appearance(request.document_id, cx);
+        disposition
+    }
+
+    fn apply_recovered_document(
         &mut self,
         request: &DocumentRecoveryRequest,
         result: Result<OpenedNativeDocument, String>,
@@ -14757,6 +15438,8 @@ impl DocumentWorkspace {
                         base_raster,
                         image,
                         highlight_pixels: 0,
+                        // The opener draws real colours.
+                        paper: PaperAppearance::Real,
                         rotation: thumbnail_rotations
                             .get(thumbnail.page_index as usize)
                             .copied()
@@ -14804,6 +15487,8 @@ impl DocumentWorkspace {
             session.current_image_page = Some(session.current_page);
             let old_thumbnails = std::mem::replace(&mut session.thumbnails, thumbnails);
             session.current_base_raster = Some(current_base_raster);
+            // The opener draws real colours.
+            session.current_base_paper = PaperAppearance::Real;
             session.file_page_coordinate_spaces = opened.page_coordinate_spaces.clone();
             if crate::pdf_page_structure::is_unchanged(
                 &session.arranged_slots,
@@ -14975,7 +15660,19 @@ impl DocumentWorkspace {
         self.begin_save_request(document_id, SaveDestination::OpenedSource, cx)
     }
 
+    /// Applies a save and draws the reloaded page with the view's paper.
     pub fn apply_save_result(
+        &mut self,
+        request: &SaveDocumentRequest,
+        result: Result<SavedNativeDocument, String>,
+        cx: &mut Context<Self>,
+    ) -> ApplyDisposition {
+        let disposition = self.apply_saved_document(request, result, cx);
+        self.follow_paper_appearance(request.document_id, cx);
+        disposition
+    }
+
+    fn apply_saved_document(
         &mut self,
         request: &SaveDocumentRequest,
         result: Result<SavedNativeDocument, String>,
@@ -15133,31 +15830,33 @@ impl DocumentWorkspace {
             }
         };
         let thumbnail_rotations = saved.opened.page_rotations.clone();
-        let thumbnails =
-            saved
-                .opened
-                .thumbnails
-                .drain(..)
-                .filter_map(|thumbnail| {
-                    let base_raster = thumbnail.raster;
-                    base_raster.clone().into_render_image().ok().map(|image| {
-                        ThumbnailPresentation {
-                            page_index: thumbnail.page_index,
-                            base_raster,
-                            image,
-                            highlight_pixels: 0,
-                            rotation: thumbnail_rotations
-                                .get(thumbnail.page_index as usize)
-                                .copied()
-                                .unwrap_or(PageRotation::Degrees0),
-                        }
-                    })
+        let thumbnails = saved
+            .opened
+            .thumbnails
+            .drain(..)
+            .filter_map(|thumbnail| {
+                let base_raster = thumbnail.raster;
+                base_raster.clone().into_render_image().ok().map(|image| {
+                    ThumbnailPresentation {
+                        page_index: thumbnail.page_index,
+                        base_raster,
+                        image,
+                        highlight_pixels: 0,
+                        // The opener draws real colours.
+                        paper: PaperAppearance::Real,
+                        rotation: thumbnail_rotations
+                            .get(thumbnail.page_index as usize)
+                            .copied()
+                            .unwrap_or(PageRotation::Degrees0),
+                    }
                 })
-                .collect();
+            })
+            .collect();
         let source_sha256 = saved.opened.source_sha256;
         let source_page_rotations = saved.opened.page_rotations;
         let source_page_coordinate_spaces = saved.opened.page_coordinate_spaces;
         let new_resource = saved.opened.resource;
+        let saved_markup_metadata = saved.opened.markup_metadata;
         let reopened_generation = self.next_generation();
         let source_place = self.source_place_for(request.target_path());
         // Saved somewhere new because it couldn't go back: say where.
@@ -15165,6 +15864,7 @@ impl DocumentWorkspace {
             .then(|| self.saved_elsewhere_note(request.target_path()));
         let old_resource = session.update(cx, |session, cx| {
             let old_resource = session.resource.replace(new_resource);
+            session.markup_metadata = saved_markup_metadata;
             session.path = request.target_path().to_path_buf();
             session.source_place = source_place;
             session.source_place_asked = false;
@@ -15183,6 +15883,8 @@ impl DocumentWorkspace {
             session.current_page = request.current_page;
             session.requested_page = request.current_page;
             session.current_base_raster = Some(current_base_raster);
+            // The opener draws real colours.
+            session.current_base_paper = PaperAppearance::Real;
             session.current_image = Some(page_image);
             session.current_image_page = Some(session.current_page);
             session.thumbnails = thumbnails;
@@ -16513,6 +17215,16 @@ impl DocumentWorkspace {
         if session.read(cx).save_status == NativeDocumentSaveStatus::Saving {
             return Err("document save is in progress".into());
         }
+        let size_before = self.current_page_size(document_id, cx);
+        // An Undo or Redo that turns pages above the view changes their
+        // height: the view then keeps the page point at its centre.
+        let (rotations_before, anchor) = {
+            let session = session.read(cx);
+            (
+                session.page_rotation_quarter_turns(),
+                session.viewport_centre_anchor(),
+            )
+        };
         let generation = self.next_generation();
         let recovery_store = self.document_recovery_store.clone();
         session.update(cx, |session, cx| {
@@ -16533,9 +17245,15 @@ impl DocumentWorkspace {
             )?;
             session.generation = generation;
             session.pending_rotation_generation = None;
+            if session.pending_zoom_anchor.is_none()
+                && session.page_rotation_quarter_turns() != rotations_before
+            {
+                session.pending_zoom_anchor = anchor;
+            }
             cx.notify();
             Ok::<(), String>(())
         })?;
+        self.refit_turned_page(document_id, size_before, cx);
         cx.notify();
         Ok(())
     }
@@ -18780,6 +19498,11 @@ impl DocumentWorkspace {
         let Some(document_id) = self.active_document_id else {
             return;
         };
+        // In Page Thumbnails, Select All selects the pages.
+        if self.page_thumbnails_focused(window, cx) {
+            self.select_all_pages(document_id, cx);
+            return;
+        }
         let Some(page_index) = self
             .session(document_id, cx)
             .map(|session| session.read(cx).current_page())
@@ -19006,6 +19729,36 @@ impl DocumentWorkspace {
         }
     }
 
+    /// The toolbar's Undo: the document's history, whatever has the focus.
+    fn undo_document_from_toolbar(
+        &mut self,
+        _: &crate::viewer_toolbar_strip::UndoDocument,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(document_id) = self.active_document_id
+            && let Err(error) = self.undo_annotations(document_id, cx)
+        {
+            self.annotation_statuses.insert(document_id, error);
+            cx.notify();
+        }
+    }
+
+    /// The toolbar's Redo: the document's history, whatever has the focus.
+    fn redo_document_from_toolbar(
+        &mut self,
+        _: &crate::viewer_toolbar_strip::RedoDocument,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(document_id) = self.active_document_id
+            && let Err(error) = self.redo_annotations(document_id, cx)
+        {
+            self.annotation_statuses.insert(document_id, error);
+            cx.notify();
+        }
+    }
+
     fn record_page_interaction(
         &mut self,
         document_id: DocumentId,
@@ -19200,11 +19953,13 @@ impl DocumentWorkspace {
         self.pan_drag.take().is_some()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn begin_annotation_pointer(
         &mut self,
         position: gpui::Point<Pixels>,
         modifiers: Modifiers,
         click_count: usize,
+        first_mouse: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -19224,54 +19979,26 @@ impl DocumentWorkspace {
             None
         };
         self.clear_hover_candidate(cx);
-        // This global capture listener runs before the popover's occluding surface.
-        // Let the open signature surface own its press, including outside dismissal.
-        if self.signature_popover_open
-            || self.pending_close_document_id.is_some()
-            || self
-                .active_document_id
-                .and_then(|document_id| self.session(document_id, cx))
-                .is_some_and(|session| session.read(cx).pending_rotation_generation.is_some())
-        {
-            return false;
+        // One positive gate (`decide_press`), judged before focus moves: the
+        // press acts only when the page has the user's attention. A modal
+        // canvas state (this global capture listener runs before the
+        // signature popover's occluding surface), a press outside the page or
+        // in the editor that holds the text, passes the press on.
+        let typing = self.typing_target(window, cx);
+        let gate = self.canvas_press_gate(position, modifiers, first_mouse, typing, cx);
+        if gate != click_out::CanvasPressGate::Pass {
+            // In Continuous view the pressed page becomes the current page,
+            // even when the press only dismisses: picking is not a gesture.
+            self.pick_current_page_at(position, cx);
         }
-        if self.signature_box_prompt_owns(position) {
-            return false;
-        }
-        if self.pending_text_box_editor.is_some() {
-            if self
-                .pending_text_editor_window_bounds(cx)
-                .is_some_and(|bounds| bounds.contains(&position))
-            {
-                return false;
-            }
-            // Clicking away keeps the text: anywhere for a Text Box typed on
-            // the page, and on the document for text edited in the side
-            // panel (a Dimension, Callout or Cloud+ caption), where the page
-            // press would otherwise leave the panel's input focused.
-            let on_document = self
-                .active_document_id
-                .and_then(|document_id| self.viewport_bounds.get(&document_id))
-                .is_some_and(|bounds| bounds.contains(&position));
-            if on_document
-                || matches!(
-                    self.pending_text_box_editor
-                        .as_ref()
-                        .map(|editor| &editor.target),
-                    Some(PendingTextEditorTarget::NewTextBox { .. })
-                )
-            {
-                if let Err(error) = self.commit_pending_text_box(cx) {
-                    self.text_box_commit_error = Some(error);
-                } else {
-                    self.workspace_focus.focus(window, cx);
-                }
-                // A click-out commits the text and does nothing else.
-                self.note_dismissing_press(click_count);
-                cx.notify();
+        match gate {
+            click_out::CanvasPressGate::Pass => return false,
+            click_out::CanvasPressGate::ClickOut(cause) => {
+                // A click-out finishes or dismisses and does nothing else.
+                self.click_out_on_press(cause, click_count, window, cx);
                 return true;
             }
-            return false;
+            click_out::CanvasPressGate::Act => {}
         }
         if self.pan_tool_active {
             let Some(document_id) = self.active_document_id else {
@@ -19290,8 +20017,8 @@ impl DocumentWorkspace {
             // DOM parity: a canvas press moves focus to the workspace body so
             // hold-Space later sees a non-interactive target. This runs in the
             // capture phase, so focusable chrome (buttons, tabs, inputs)
-            // still reclaims focus during bubble. Unreachable while the text
-            // editor owns focus: the guard above already returned. Overlay
+            // still reclaims focus during bubble. Unreachable while text is
+            // typed anywhere: the gate above already returned. Overlay
             // interaction in flight keeps its focus (see
             // `canvas_focus_claim_allowed`).
             if self.canvas_focus_claim_allowed(window, cx) {
@@ -19303,24 +20030,10 @@ impl DocumentWorkspace {
             }));
             return true;
         }
-        let Some(interaction) = self
-            .page_interactions
-            .values()
-            .copied()
-            .find(|interaction| {
-                Some(interaction.document_id) == self.active_document_id
-                    && interaction.bounds.contains(&position)
-                    && self
-                        .viewport_bounds
-                        .get(&interaction.document_id)
-                        .is_some_and(|bounds| bounds.contains(&position))
-            })
-        else {
+        let Some(interaction) = self.page_interaction_at(position) else {
             return false;
         };
-        if self.canvas_focus_claim_allowed(window, cx) {
-            self.workspace_focus.focus(window, cx);
-        }
+        self.claim_canvas_focus(window, cx);
         let Some(point) = Self::interaction_point(interaction, position, true) else {
             return false;
         };
@@ -19339,14 +20052,7 @@ impl DocumentWorkspace {
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
             return false;
         };
-        if !matches!(session.read(cx).status, NativeDocumentStatus::Ready)
-            || session.read(cx).save_status == NativeDocumentSaveStatus::Saving
-            || session.read(cx).recovery_preparation.edit_guard().is_err()
-            || self.pending_save_prompt.is_some_and(|pending| {
-                pending.document_id == interaction.document_id
-                    && pending.document_generation == session.read(cx).generation
-            })
-        {
+        if self.canvas_press_blocked(interaction.document_id, cx) {
             return false;
         }
         self.resolve_dimension_tool(interaction.document_id, interaction.page_index, cx);
@@ -19390,15 +20096,6 @@ impl DocumentWorkspace {
             }
         }
         let box_armed = box_armed || force_box;
-        // A click-out only dismisses: a press that dismisses highlighted text
-        // or selected markups does nothing else, drag and release included.
-        if tool == AnnotationTool::Select
-            && !box_armed
-            && let Some(dismissal) = self.canvas_press_dismissal(&interaction, point, modifiers, cx)
-        {
-            self.dismiss_on_press(dismissal, interaction.document_id, click_count, cx);
-            return true;
-        }
         // A press in the selected markup's text, where the pointer shows the
         // I-beam, edits that text with the caret where it landed.
         if tool == AnnotationTool::Select
@@ -20158,6 +20855,12 @@ impl DocumentWorkspace {
             );
             return true;
         }
+        // While text is typed in a field outside the page, a press only
+        // finishes it: nothing under the pointer, a draft's next point
+        // included, follows it.
+        if self.chrome_typing_click_out() {
+            return self.clear_hover_candidate(cx);
+        }
         let Some(session) = self.session(interaction.document_id, cx).cloned() else {
             return self.clear_hover_candidate(cx);
         };
@@ -20319,12 +21022,10 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> bool {
         let document_id = interaction.document_id;
-        // Where a press would only dismiss something, nothing under the
-        // pointer offers anything else: hover and press share the hit test.
-        if self
-            .canvas_press_dismissal(interaction, point, modifiers, cx)
-            .is_some()
-        {
+        // Where a press would only dismiss or finish something (typed text,
+        // highlighted text, selected markups), nothing under the pointer
+        // offers anything else: hover and press share one gate.
+        if self.hover_click_out(interaction, point, modifiers, cx) {
             return self.clear_hover_candidate(cx);
         }
         let marquee_active = session
@@ -20332,9 +21033,7 @@ impl DocumentWorkspace {
             .annotations
             .active_selection_marquee(document_id.value())
             .is_some();
-        // While text is being typed a press anywhere else only finishes it,
-        // so nothing under the pointer offers anything else.
-        if marquee_active || self.pending_text_box_editor.is_some() {
+        if marquee_active {
             return self.clear_hover_candidate(cx);
         }
         let tolerance = match interaction.transform.tolerance_points(4.) {
@@ -20585,7 +21284,7 @@ impl DocumentWorkspace {
             if (position - press).magnitude() < PLACEMENT_DRAG_THRESHOLD_PX {
                 return false;
             }
-            return self.begin_annotation_pointer(position, modifiers, 1, window, cx);
+            return self.begin_annotation_pointer(position, modifiers, 1, false, window, cx);
         }
         let Some(active) = self.active_annotation_pointer.take() else {
             return false;
@@ -20639,7 +21338,7 @@ impl DocumentWorkspace {
                 .snapshot_pending_rect_to(active.document_id.value(), active.page_index, point)
                 .is_some_and(|rect| rect.width > 2. && rect.height > 2.)
         {
-            let handled = self.begin_annotation_pointer(position, modifiers, 1, window, cx);
+            let handled = self.begin_annotation_pointer(position, modifiers, 1, false, window, cx);
             self.active_annotation_pointer = None;
             return handled;
         }
@@ -20813,6 +21512,7 @@ impl DocumentWorkspace {
     /// are, leaving the active document's tab in place. A New Tab already
     /// open is shown again.
     pub fn open_new_tab(&mut self, cx: &mut Context<Self>) {
+        self.new_tab_opening = None;
         if !self.new_tab_open {
             self.leave_active_document(cx);
             self.new_tab_return = self.active_document_id;
@@ -20857,6 +21557,45 @@ impl DocumentWorkspace {
         self.new_tab_open
     }
 
+    /// A document opened from the New Tab takes the New Tab's place at once:
+    /// its loading tab is the selected tab, as browsers do.
+    fn replace_new_tab_with_opening(&mut self, document_id: DocumentId) {
+        if self.new_tab_open {
+            self.new_tab_open = false;
+            self.new_tab_opening = Some(document_id);
+            self.session_tab_reveal = Some(document_id);
+        }
+    }
+
+    /// The loading tab that replaced the New Tab, while it is the selected
+    /// tab: no document is active and no New Tab is open.
+    pub fn new_tab_opening_shown(&self) -> Option<DocumentId> {
+        self.new_tab_opening
+            .filter(|_| self.active_document_id.is_none() && !self.new_tab_open)
+    }
+
+    /// Ends the replacement when the document that replaced the New Tab
+    /// stops loading or closes. If the document did not open, the New Tab
+    /// returns, as it was before the open.
+    fn settle_new_tab_opening(&mut self, document_id: DocumentId, cx: &mut Context<Self>) {
+        if self.new_tab_opening != Some(document_id) {
+            return;
+        }
+        let status = self
+            .session(document_id, cx)
+            .map(|session| session.read(cx).status.clone());
+        if matches!(status, Some(NativeDocumentStatus::Opening)) {
+            return;
+        }
+        self.new_tab_opening = None;
+        if !matches!(status, Some(NativeDocumentStatus::Ready)) && self.active_document_id.is_none()
+        {
+            self.new_tab_open = true;
+            self.new_tab_reveal = true;
+        }
+        cx.notify();
+    }
+
     /// A double-click on the tab bar's empty space opens a New Tab, as in
     /// browsers; one on a tab is the tab's own.
     fn open_new_tab_from_tab_bar(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -20885,6 +21624,7 @@ impl DocumentWorkspace {
         if !ready {
             return false;
         }
+        self.new_tab_opening = None;
         if self.new_tab_open {
             self.new_tab_open = false;
             self.new_tab_return = None;
@@ -21137,6 +21877,8 @@ impl DocumentWorkspace {
                     .ok_or_else(|| "the document recovery store is unavailable".to_owned())
             })
             .transpose()?;
+        let closing = self.sessions[index].clone();
+        self.keep_page_memory(&closing, cx);
         let images = self.sessions[index].update(cx, |session, _| session.release())?;
         if let (Some(recovery_authority), Some(store)) = (recovery_authority, recovery_store)
             && let Err(error) = store.clear_authority(&recovery_authority)
@@ -21190,8 +21932,11 @@ impl DocumentWorkspace {
         self.viewport_hitboxes.remove(&document_id);
         self.viewport_painted_scroll.remove(&document_id);
         self.viewport_painted_layouts.remove(&document_id);
+        self.forget_find_bar(document_id, cx);
+        self.forget_search_document(document_id, cx);
         drop(session);
         defer_drop_images(images, cx);
+        self.settle_new_tab_opening(document_id, cx);
         if self.active_document_id == Some(document_id) {
             self.active_document_id = self
                 .sessions
@@ -21460,7 +22205,7 @@ fn paint_ellipse_annotations(
         let (start, segments) =
             ellipse_cubic_bezier_points(annotation.rect, annotation.rotation_degrees);
         if let Some(fill_color) = annotation.appearance.fill_color()
-            && let Ok(color) = try_parse_color(fill_color)
+            && let Ok(color) = parse_markup_colour(fill_color)
         {
             let mut builder = PathBuilder::fill();
             builder.move_to(project(start));
@@ -21491,7 +22236,7 @@ fn paint_ellipse_annotations(
         if let Ok(path) = builder.build() {
             window.paint_path(
                 path,
-                try_parse_color(annotation.appearance.stroke_color())
+                parse_markup_colour(annotation.appearance.stroke_color())
                     .unwrap_or(selection_color)
                     .opacity(annotation.appearance.opacity() as f32),
             );
@@ -21595,13 +22340,13 @@ fn paint_cloud_plus_annotation(
     let scale = f32::from(page_bounds.size.width) / page_size.0;
     let cloud = annotation.appearance.cloud();
     let stroke_width = px((cloud.stroke_width_pt() as f32 * scale).max(1.));
-    let stroke_color = try_parse_color(cloud.stroke_color())
+    let stroke_color = parse_markup_colour(cloud.stroke_color())
         .unwrap_or(selection_color)
         .opacity(cloud.opacity() as f32);
     if !annotation.draft
         && annotation.scallop_path.len() >= 3
         && let Some(fill_color) = cloud.fill_color()
-        && let Ok(color) = try_parse_color(fill_color)
+        && let Ok(color) = parse_markup_colour(fill_color)
     {
         let mut fill = PathBuilder::fill();
         fill.move_to(project(annotation.scallop_path[0]));
@@ -21634,7 +22379,7 @@ fn paint_cloud_plus_annotation(
     if let Some(first) = projected_leader.first().copied() {
         let leader_appearance = annotation.appearance.leader();
         let leader_width = px((leader_appearance.stroke_width_pt() as f32 * scale).max(1.));
-        let leader_color = try_parse_color(leader_appearance.stroke_color())
+        let leader_color = parse_markup_colour(leader_appearance.stroke_color())
             .unwrap_or(selection_color)
             .opacity(leader_appearance.opacity() as f32);
         let mut leader = PathBuilder::stroke(leader_width);
@@ -21666,7 +22411,7 @@ fn paint_cloud_plus_annotation(
         text_box_bounds,
         leader_appearance.stroke_width_pt(),
         scale,
-        try_parse_color(leader_appearance.stroke_color())
+        parse_markup_colour(leader_appearance.stroke_color())
             .unwrap_or(selection_color)
             .opacity(leader_appearance.opacity() as f32),
     );
@@ -21687,7 +22432,7 @@ fn paint_cloud_plus_annotation(
             text_height,
         ),
     );
-    let text_color = try_parse_color(text_style.color())
+    let text_color = parse_markup_colour(text_style.color())
         .unwrap_or(selection_color)
         .opacity(text_style.opacity() as f32);
     let align = match text_style.alignment() {
@@ -21879,7 +22624,7 @@ fn paint_dimension_annotation(
     let scale = f32::from(page_bounds.size.width) / page_size.0;
     let line = annotation.appearance.line();
     let stroke_width = px((line.stroke_width_pt() as f32 * scale).max(1.));
-    let stroke_color = try_parse_color(line.stroke_color())
+    let stroke_color = parse_markup_colour(line.stroke_color())
         .unwrap_or(selection_color)
         .opacity(line.opacity() as f32);
     let caption_layout =
@@ -22004,7 +22749,7 @@ fn paint_arc_annotations(
         if let Ok(path) = builder.build() {
             window.paint_path(
                 path,
-                try_parse_color(annotation.appearance.stroke_color())
+                parse_markup_colour(annotation.appearance.stroke_color())
                     .unwrap_or(selection_color)
                     .opacity(annotation.appearance.opacity() as f32),
             );
@@ -22097,14 +22842,14 @@ fn paint_redact_annotations(
             size(px(local.width as f32), px(local.height as f32)),
         );
         if let Some(fill_color) = annotation.appearance.fill_color()
-            && let Ok(color) = try_parse_color(fill_color)
+            && let Ok(color) = parse_markup_colour(fill_color)
         {
             window.paint_quad(fill(
                 annotation_bounds,
                 color.opacity(annotation.appearance.opacity() as f32),
             ));
         }
-        let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+        let stroke_color = parse_markup_colour(annotation.appearance.stroke_color())
             .unwrap_or(selection_color)
             .opacity(annotation.appearance.opacity() as f32);
         let stroke_width = px((annotation.appearance.stroke_width_pt() as f32
@@ -22625,7 +23370,7 @@ fn calibration_label(
             .px_1p5()
             .rounded_sm()
             .bg(color)
-            .text_color(gpui::white())
+            .text_color(chrome_colour(|chrome| chrome.on_selection))
             .text_xs()
             .whitespace_nowrap()
             .child(preview.label.clone())
@@ -22657,7 +23402,7 @@ fn paint_semantic_snap_indicator(
         page_bounds.origin.x + px(local.x as f32),
         page_bounds.origin.y + px(local.y as f32),
     );
-    let color = snap_guide_colour(0x16a34a);
+    let color = snap_guide_colour(crate::paper_chrome::chrome().guide);
     let half = px(5.);
     match decision.role {
         SemanticSnapRole::GridPoint => {
@@ -22727,6 +23472,139 @@ fn paint_semantic_snap_indicator(
     }
 }
 
+/// The dash and gap of the held angle guide, in pixels.
+const ANGLE_GUIDE_DASH_PX: f32 = 6.;
+const ANGLE_GUIDE_GAP_PX: f32 = 4.;
+/// How far the guide runs past the pointer, in pixels, and the least it
+/// runs from its anchor.
+const ANGLE_GUIDE_OVERRUN_PX: f32 = 64.;
+const ANGLE_GUIDE_MIN_PX: f32 = 48.;
+/// The snap guide's green, darker where white text sits on it.
+const ANGLE_LABEL_RGB: u32 = 0x15803d;
+
+/// The page-pixel ends of the guide's line: from the anchor, through and
+/// past the pointer. `transform` turns PDF points to pixels.
+fn angle_guide_ends(
+    guide: &crate::semantic_snapping::AngleSnapGuide,
+    transform: &PageTransform,
+) -> ((f32, f32), (f32, f32)) {
+    let anchor = transform.point_to_local_pixels(guide.anchor);
+    // The pixel direction of the held direction, whatever the page's turn
+    // and zoom: one PDF point along it, projected.
+    let along = transform.point_to_local_pixels(PdfPoint {
+        x: guide.anchor.x + guide.direction.0,
+        y: guide.anchor.y + guide.direction.1,
+    });
+    let (dx, dy) = ((along.x - anchor.x) as f32, (along.y - anchor.y) as f32);
+    let per_point = dx.hypot(dy);
+    if per_point <= f32::EPSILON {
+        let at = (anchor.x as f32, anchor.y as f32);
+        return (at, at);
+    }
+    let (ux, uy) = (dx / per_point, dy / per_point);
+    let length = (guide.reach as f32 * per_point + ANGLE_GUIDE_OVERRUN_PX).max(ANGLE_GUIDE_MIN_PX);
+    (
+        (anchor.x as f32, anchor.y as f32),
+        (anchor.x as f32 + ux * length, anchor.y as f32 + uy * length),
+    )
+}
+
+/// The held angle's dashed guide line, in the snap guides' colour and fade.
+fn paint_angle_snap_guide(
+    guide: &crate::semantic_snapping::AngleSnapGuide,
+    page_bounds: Bounds<Pixels>,
+    transform: &PageTransform,
+    window: &mut Window,
+) {
+    let (start, end) = angle_guide_ends(guide, transform);
+    let (dx, dy) = (end.0 - start.0, end.1 - start.1);
+    let length = dx.hypot(dy);
+    if length <= f32::EPSILON {
+        return;
+    }
+    let (ux, uy) = (dx / length, dy / length);
+    let to_window = |distance: f32| {
+        point(
+            page_bounds.origin.x + px(start.0 + ux * distance),
+            page_bounds.origin.y + px(start.1 + uy * distance),
+        )
+    };
+    let mut path = PathBuilder::stroke(px(1.25));
+    let mut at = 0.;
+    while at < length {
+        let to = (at + ANGLE_GUIDE_DASH_PX).min(length);
+        path.move_to(to_window(at));
+        path.line_to(to_window(to));
+        at = to + ANGLE_GUIDE_GAP_PX;
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, snap_guide_colour(crate::paper_chrome::chrome().guide));
+    }
+}
+
+/// The held angle's label: beside the anchor and away from the guide line,
+/// or past its end for a turn.
+fn angle_snap_label(
+    guide: &crate::semantic_snapping::AngleSnapGuide,
+    page_size: (f32, f32),
+    coordinate_space: PageCoordinateSpace,
+) -> Option<gpui::AnyElement> {
+    if page_size.0 <= 0. || page_size.1 <= 0. {
+        return None;
+    }
+    let transform = PageTransform::from_page_coordinate_space(coordinate_space, 1.).ok()?;
+    let (start, end) = angle_guide_ends(guide, &transform);
+    let (dx, dy) = (end.0 - start.0, end.1 - start.1);
+    let length = dx.hypot(dy).max(f32::EPSILON);
+    let (ux, uy) = (dx / length, dy / length);
+    let at = if guide.label_at_end { end } else { start };
+    let (left, top) = (
+        (at.0 / page_size.0).clamp(0., 1.),
+        (at.1 / page_size.1).clamp(0., 1.),
+    );
+    let mut label = gpui::div()
+        .absolute()
+        .px_1p5()
+        .rounded_sm()
+        .bg(snap_guide_colour(ANGLE_LABEL_RGB))
+        .text_color(gpui::white().opacity(SNAP_GUIDE_FADE.with(std::cell::Cell::get)))
+        .text_xs()
+        .whitespace_nowrap()
+        .child(guide.label());
+    if guide.label_at_end {
+        // Past the end of the line, on the side it heads to.
+        label = if ux > 0.3 {
+            label.left(relative(left)).ml(px(6.))
+        } else if ux < -0.3 {
+            label.right(relative(1. - left)).mr(px(6.))
+        } else {
+            label.left(relative(left)).ml(px(-16.))
+        };
+        label = if uy > 0.3 {
+            label.top(relative(top)).mt(px(6.))
+        } else if uy < -0.3 {
+            label.bottom(relative(1. - top)).mb(px(6.))
+        } else {
+            label.top(relative(top)).mt(px(-9.))
+        };
+    } else {
+        // Beside the anchor, away from the line: left of it when the line
+        // heads right, right when it heads left, and above it unless the
+        // line heads up.
+        label = if ux > 0.3 {
+            label.right(relative(1. - left)).mr(px(8.))
+        } else {
+            label.left(relative(left)).ml(px(8.))
+        };
+        label = if uy < -0.3 {
+            label.top(relative(top)).mt(px(8.))
+        } else {
+            label.bottom(relative(1. - top)).mb(px(8.))
+        };
+    }
+    Some(label.into_any_element())
+}
+
 fn paint_object_snap_tracking_guides(
     tracking: &ObjectSnapTrackingResult,
     page_bounds: Bounds<Pixels>,
@@ -22741,7 +23619,7 @@ fn paint_object_snap_tracking_guides(
         )
     };
     let resolved = to_window(tracking.point);
-    let color = snap_guide_colour(0x16a34a);
+    let color = snap_guide_colour(crate::paper_chrome::chrome().guide);
     for guide in &tracking.guides {
         let origin = to_window(guide.origin);
         let end = match guide.axis {
@@ -22799,7 +23677,7 @@ fn paint_relationship_measurement(
             end.x += px(offset_px);
         }
     }
-    let color = snap_guide_colour(0x16a34a);
+    let color = snap_guide_colour(crate::paper_chrome::chrome().guide);
     let tick = px(4.);
     let mut path = PathBuilder::stroke(px(1.25));
     path.move_to(start);
@@ -22822,7 +23700,13 @@ fn paint_relationship_measurement(
         window.paint_path(path, color);
     }
     let middle = point((start.x + end.x) / 2., (start.y + end.y) / 2.);
-    for (width, color) in [(px(4.25), snap_guide_colour(0xffffff)), (px(1.25), color)] {
+    for (width, color) in [
+        (
+            px(4.25),
+            snap_guide_colour(crate::paper_chrome::chrome().guide_halo),
+        ),
+        (px(1.25), color),
+    ] {
         let mut equals = PathBuilder::stroke(width);
         match axis {
             OrthogonalAxis::Horizontal => {
@@ -23352,6 +24236,7 @@ fn annotation_layer(
     semantic_snap_decision: Option<SemanticSnapDecision>,
     object_snap_tracking_result: Option<ObjectSnapTrackingResult>,
     relationship_snap_guides: Vec<RelationshipSnapGuide>,
+    angle_snap_guide: Option<crate::semantic_snapping::AngleSnapGuide>,
     selection_marquee: Option<SelectionMarquee>,
     interaction_control: Option<WeakEntity<DocumentWorkspace>>,
     painted_viewer: Option<PaintedViewerAuthority>,
@@ -23408,6 +24293,10 @@ fn annotation_layer(
     let painted_calibration = calibration;
     let painted_object_snap_tracking_result = object_snap_tracking_result.clone();
     let painted_relationship_snap_guides = relationship_snap_guides.clone();
+    let angle_snap_label = angle_snap_guide
+        .as_ref()
+        .and_then(|guide| angle_snap_label(guide, page_size, coordinate_space));
+    let painted_angle_snap_guide = angle_snap_guide;
     let painted_construction_grid_spacing_mm = construction_grid_spacing_mm;
     let pending_text_box = pending_text_box
         .filter(|pending| pending.document_id == document_id && pending.page_index == page_index);
@@ -23551,7 +24440,7 @@ fn annotation_layer(
                                     )
                                 });
                                 if let Some(fill_color) = annotation.appearance.fill_color()
-                                    && let Ok(color) = try_parse_color(fill_color)
+                                    && let Ok(color) = parse_markup_colour(fill_color)
                                 {
                                     let mut builder = PathBuilder::fill();
                                     builder.move_to(points[0]);
@@ -23589,7 +24478,7 @@ fn annotation_layer(
                                 }
                                 builder.close();
                                 if let Ok(path) = builder.build() {
-                                    let color = try_parse_color(annotation.appearance.stroke_color())
+                                    let color = parse_markup_colour(annotation.appearance.stroke_color())
                                         .unwrap_or(selection_color)
                                         .opacity(annotation.appearance.opacity() as f32);
                                     window.paint_path(path, color);
@@ -23607,7 +24496,7 @@ fn annotation_layer(
                                 size(px(local.width as f32), px(local.height as f32)),
                             );
                             if let Some(fill_color) = annotation.appearance.fill_color()
-                                && let Ok(color) = try_parse_color(fill_color)
+                                && let Ok(color) = parse_markup_colour(fill_color)
                             {
                                 window.paint_quad(fill(
                                     annotation_bounds,
@@ -23617,7 +24506,7 @@ fn annotation_layer(
                                     ),
                                 ));
                             }
-                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+                            let stroke_color = parse_markup_colour(annotation.appearance.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(annotation.appearance.opacity() as f32);
                             let stroke_width = px((annotation.appearance.stroke_width_pt() as f32
@@ -23704,7 +24593,7 @@ fn annotation_layer(
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
                             let stroke_width =
                                 px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                            let color = try_parse_color(annotation.appearance.stroke_color())
+                            let color = parse_markup_colour(annotation.appearance.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(annotation.appearance.opacity() as f32);
                             let mut builder = PathBuilder::stroke(stroke_width);
@@ -23804,7 +24693,7 @@ fn annotation_layer(
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
                             let stroke_width =
                                 px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+                            let stroke_color = parse_markup_colour(annotation.appearance.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(annotation.appearance.opacity() as f32);
                             let closes = annotation.kind
@@ -23818,7 +24707,7 @@ fn annotation_layer(
                                 }
                                 fill_builder.close();
                                 if let Ok(path) = fill_builder.build() {
-                                    let color = try_parse_color(fill_color)
+                                    let color = parse_markup_colour(fill_color)
                                         .unwrap_or(selection_color)
                                         .opacity(
                                             annotation.appearance.fill_opacity()
@@ -23891,12 +24780,12 @@ fn annotation_layer(
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
                             let stroke_width =
                                 px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+                            let stroke_color = parse_markup_colour(annotation.appearance.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(annotation.appearance.opacity() as f32);
                             let first = project(annotation.scallop_path[0]);
                             if let Some(fill_color) = annotation.appearance.fill_color()
-                                && let Ok(color) = try_parse_color(fill_color)
+                                && let Ok(color) = parse_markup_colour(fill_color)
                                 && annotation.scallop_path.len() >= 3
                             {
                                 let mut fill_builder = PathBuilder::fill();
@@ -24007,7 +24896,7 @@ fn annotation_layer(
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
                             let line = annotation.appearance.line();
                             let stroke_width = px((line.stroke_width_pt() as f32 * scale).max(1.));
-                            let stroke_color = try_parse_color(line.stroke_color())
+                            let stroke_color = parse_markup_colour(line.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(line.opacity() as f32);
                             let projected_leader = annotation
@@ -24080,7 +24969,7 @@ fn annotation_layer(
                                     text_height,
                                 ),
                             );
-                            let text_color = try_parse_color(text_style.color())
+                            let text_color = parse_markup_colour(text_style.color())
                                 .unwrap_or(selection_color)
                                 .opacity(text_style.opacity() as f32);
                             let align = match text_style.alignment() {
@@ -24195,7 +25084,7 @@ fn annotation_layer(
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
                             let stroke_width =
                                 px((annotation.appearance.stroke_width_pt() as f32 * scale).max(1.));
-                            let stroke_color = try_parse_color(annotation.appearance.stroke_color())
+                            let stroke_color = parse_markup_colour(annotation.appearance.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(annotation.appearance.opacity() as f32);
                             let closes =
@@ -24208,7 +25097,7 @@ fn annotation_layer(
                                 }
                                 fill_builder.close();
                                 if let Ok(path) = fill_builder.build() {
-                                    let color = try_parse_color(fill_color)
+                                    let color = parse_markup_colour(fill_color)
                                         .unwrap_or(selection_color)
                                         .opacity(
                                             annotation.appearance.fill_opacity()
@@ -24289,27 +25178,47 @@ fn annotation_layer(
                                 )
                             };
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
-                            let paint_body = cfg!(target_os = "macos") || annotation.tool
-                                != crate::annotation_model::InkTool::Highlight
+                            // macOS draws Real highlights with the GPU's
+                            // Multiply; every other case composes them
+                            // into the page rasters on the CPU.
+                            let gpu_highlights = !crate::document_session::cpu_highlights(
+                                crate::paper_chrome::paint_paper(),
+                            );
+                            let highlight = annotation.tool == crate::annotation_model::InkTool::Highlight;
+                            let paint_body = gpu_highlights
+                                || !highlight
                                 || annotation.draft
                                 || !highlights_precomposed;
                             for points in &annotation.paths {
                                 if !paint_body {
                                     continue;
                                 }
-                                let highlight = annotation.tool == crate::annotation_model::InkTool::Highlight;
-                                let minimum_width = if cfg!(target_os = "macos") && highlight { 0.05 } else { 1. };
+                                let gpu_highlight = gpu_highlights && highlight;
+                                let minimum_width = if gpu_highlight { 0.05 } else { 1. };
                                 let width = px((annotation.appearance.width_pt() as f32 * scale).max(minimum_width));
                                 if let Some(path) = build_ink_scene_path(
-                                    points, annotation.smooth_curves, width, highlight, project,
+                                    points, annotation.smooth_curves, width, gpu_highlight, project,
                                 ) {
-                                    let color = try_parse_color(annotation.appearance.color())
-                                        .unwrap_or(selection_color)
-                                        .opacity(annotation.appearance.opacity() as f32);
+                                    let color = if highlight {
+                                        // A highlight not yet composed: its
+                                        // real colour, or on dark paper its
+                                        // dark colour at 60%.
+                                        gpui_component::try_parse_color(annotation.appearance.color())
+                                            .map(|color| {
+                                                crate::paper_chrome::live_highlight_colour(
+                                                    color.opacity(annotation.appearance.opacity() as f32),
+                                                )
+                                            })
+                                            .unwrap_or(selection_color)
+                                    } else {
+                                        parse_markup_colour(annotation.appearance.color())
+                                            .unwrap_or(selection_color)
+                                            .opacity(annotation.appearance.opacity() as f32)
+                                    };
                                     paint_ink_scene_path(
                                         path,
                                         color,
-                                        highlight,
+                                        gpu_highlight,
                                         page_bounds,
                                         window,
                                     );
@@ -24364,7 +25273,7 @@ fn annotation_layer(
                             let font_size = px(annotation.style.font_size_pt() as f32 * scale);
                             let line_height = px(annotation.style.font_size_pt() as f32 * 1.15 * scale);
                             let inset = px(annotation.style.inset_pt() as f32 * scale);
-                            let base_text_color = try_parse_color(annotation.style.color())
+                            let base_text_color = parse_markup_colour(annotation.style.color())
                                 .unwrap_or(selection_color);
                             let color =
                                 base_text_color.opacity(annotation.style.opacity() as f32);
@@ -24552,7 +25461,7 @@ fn annotation_layer(
                             let end = project(annotation.end);
                             let scale = f32::from(page_bounds.size.width) / page_size.0;
                             let line = annotation.appearance.line();
-                            let color = try_parse_color(line.stroke_color())
+                            let color = parse_markup_colour(line.stroke_color())
                                 .unwrap_or(selection_color)
                                 .opacity(line.opacity() as f32);
                             let caption_layout = crate::annotation_caption::length_caption(
@@ -24883,6 +25792,9 @@ fn annotation_layer(
                     if let Some(tracking) = painted_object_snap_tracking_result.as_ref() {
                         paint_object_snap_tracking_guides(tracking, page_bounds, &transform, window);
                     }
+                    if let Some(guide) = painted_angle_snap_guide.as_ref() {
+                        paint_angle_snap_guide(guide, page_bounds, &transform, window);
+                    }
                     if !painted_relationship_snap_guides.is_empty() {
                         paint_relationship_snap_guides(
                             &painted_relationship_snap_guides,
@@ -24913,6 +25825,7 @@ fn annotation_layer(
             .size_full(),
         )
         .children(calibration_label)
+        .children(angle_snap_label)
         .children(redact_debug_markers)
         .children(snapshot_debug_markers)
         .children(engineering_debug_markers)
@@ -24930,7 +25843,7 @@ fn annotation_layer(
                 // Matches the committed text box, which draws text one inset
                 // in from the top.
                 let vertical_inset = px(pending.style.inset_pt() as f32 * scale);
-                let text_colour = try_parse_color(pending.style.color())
+                let text_colour = parse_markup_colour(pending.style.color())
                     .unwrap_or(gpui::black())
                     .opacity(pending.style.opacity() as f32);
                 layer.child(
@@ -24944,7 +25857,9 @@ fn annotation_layer(
                         .h(bounds.size.height)
                         .min_w(px(24.))
                         .min_h(px(18.))
-                        .when(pending.paper_backed, |editor| editor.bg(gpui::white()))
+                        .when(pending.paper_backed, |editor| {
+                            editor.bg(chrome_colour(|chrome| chrome.paper))
+                        })
                         .overflow_hidden()
                         .occlude()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -25259,6 +26174,45 @@ fn rail_tool_button(id: &'static str, label: &'static str, icon: &'static str) -
     )
 }
 
+/// A rail button for a command that acts at once, such as Rotate Left: it
+/// is never shown selected. Its tooltip shows the command's key binding when
+/// it has one and, as the drawing tools' do, a muted second line: a bold
+/// `modifier` and what a press with it does (`Shift+click:` `all pages`).
+fn rail_command_button(
+    id: &'static str,
+    label: &'static str,
+    icon_path: &'static str,
+    action: &'static dyn gpui::Action,
+    (modifier, with_modifier): (&'static str, &'static str),
+) -> Button {
+    crate::accessible_button::accessible_described_icon_button(
+        Button::new(id)
+            .debug_selector(move || id.into())
+            .icon(gpui_component::Icon::default().path(icon_path))
+            .ghost()
+            .tooltip_builder(label, move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(label)
+                    .key_binding(gpui_component::kbd::Kbd::binding_for_action(
+                        action,
+                        Some(DOCUMENT_WORKSPACE_CONTEXT),
+                        window,
+                    ))
+                    .description_element(move |_, _| {
+                        h_flex()
+                            .gap_1()
+                            .child(gpui::div().font_semibold().child(modifier))
+                            .child(with_modifier)
+                    })
+                    .build(window, cx)
+            }),
+        label,
+        format!("{modifier} {with_modifier}"),
+    )
+}
+
+/// The rail's Rotate buttons' second tooltip line.
+const ROTATE_ALL_HINT: (&str, &str) = ("Shift+click:", "all pages");
+
 // A second click toggles the existing properties surface, without re-arming
 // the tool (or launching a second file picker). Keyboard activation stays a
 // normal single click; popovers retain their own stock trigger behaviour.
@@ -25340,7 +26294,8 @@ fn remove_markups_measure_turned(
 fn page_scale_tooltip_line(tool: AnnotationTool) -> Option<&'static str> {
     Some(match tool {
         AnnotationTool::Rectangle | AnnotationTool::Ellipse => "Width and height measurement",
-        AnnotationTool::Line | AnnotationTool::Arrow => "Length and angle measurement",
+        // An Arrow takes no real-unit size: it has no second line.
+        AnnotationTool::Line => "Length and angle measurement",
         // The measuring shortcuts (Revu's) still work, but the tooltip
         // does not name them.
         AnnotationTool::Dimension => "Length measurement",
@@ -26016,6 +26971,8 @@ fn annotation_tool_group(
     document_id: DocumentId,
     annotation_tool: AnnotationTool,
     save_busy: bool,
+    // Rotate Left and Right are unavailable, as in the Document menu.
+    rotate_disabled: bool,
     pan_active: bool,
     columns: usize,
     signature_popover_open: bool,
@@ -26496,6 +27453,32 @@ fn annotation_tool_group(
                         }
                     }))
                     .into_any_element(),
+                // Commands, not tools: each press turns the current page
+                // once, and neither is ever shown selected.
+                rail_command_button(
+                    DOCUMENT_ROTATE_LEFT_ID,
+                    "Rotate Left",
+                    "icons/thumbnail-rotate-left.svg",
+                    &RotatePageLeft,
+                    ROTATE_ALL_HINT,
+                )
+                .disabled(rotate_disabled)
+                .on_click(cx.listener(|workspace, event: &gpui::ClickEvent, _, cx| {
+                    workspace.rotate_from_rail(PageRotationDirection::Left, event, cx);
+                }))
+                .into_any_element(),
+                rail_command_button(
+                    DOCUMENT_ROTATE_RIGHT_ID,
+                    "Rotate Right",
+                    "icons/thumbnail-rotate-right.svg",
+                    &RotatePageRight,
+                    ROTATE_ALL_HINT,
+                )
+                .disabled(rotate_disabled)
+                .on_click(cx.listener(|workspace, event: &gpui::ClickEvent, _, cx| {
+                    workspace.rotate_from_rail(PageRotationDirection::Right, event, cx);
+                }))
+                .into_any_element(),
             ],
             columns,
             cx,
@@ -27009,13 +27992,20 @@ fn session_tab_close_lane() -> gpui::Div {
 
 impl Render for DocumentWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Markup colours and canvas chrome this frame follow the paper
+        // (Dark pages), never the shell theme.
+        crate::paper_chrome::set_paint_paper(self.paper_appearance);
         // Overlays this draw records are the ones open; a prompt for a tab
         // that has closed is no longer drawn, so it no longer blocks presses.
         crate::overlay_state::begin_overlay_render(cx);
+        // Hover, the cursor and the status bar read the text being typed.
+        self.observe_typing(window, cx);
         self.step_view_motion(window, cx);
         self.step_selection_fade(window, cx);
         self.open_requested_scale_panel(window, cx);
+        self.open_requested_search_panel(window, cx);
         self.sync_viewer_toolbar_scale(cx);
+        self.sync_viewer_toolbar_history(window, cx);
         // Release the GPU textures of tile and thumbnail images that are no
         // longer drawn; the window would otherwise keep every one.
         for session in self.sessions.clone() {
@@ -27105,6 +28095,11 @@ impl Render for DocumentWorkspace {
                     .get(&(editor.document_id, editor.page_index))
                     .cloned()
             });
+        // A match the view went to, brought into view now that its page is
+        // laid out, and the search of a document that changed under it.
+        self.retry_find_reveal(cx);
+        self.poll_find_stale(cx);
+        self.poll_search_stale(cx);
         self.page_interactions.clear();
         let page_scale_control = self.ensure_page_scale_control(window, cx);
         let signature_name_input = self.ensure_signature_name_input(window, cx);
@@ -27191,6 +28186,7 @@ impl Render for DocumentWorkspace {
             semantic_snap_decision,
             object_snap_tracking_result,
             relationship_snap_guides,
+            angle_snap_guide,
             construction_grid_spacing_mm,
             active_selection_marquee,
             _current_highlights_precomposed,
@@ -27494,6 +28490,11 @@ impl Render for DocumentWorkspace {
             } else {
                 Vec::new()
             };
+            let angle_snap_guide = session.annotations.angle_snap_guide().or_else(|| {
+                self.content_drag
+                    .filter(|drag| drag.document_id == document_id && drag.moved)
+                    .and_then(|drag| drag.turn_guide)
+            });
             let construction_grid_spacing_mm = (self
                 .semantic_snap_settings
                 .is_source_enabled(SemanticSnapSource::ConstructionGrid)
@@ -27684,6 +28685,7 @@ impl Render for DocumentWorkspace {
                 semantic_snap_decision,
                 object_snap_tracking_result,
                 relationship_snap_guides,
+                angle_snap_guide,
                 construction_grid_spacing_mm,
                 active_selection_marquee,
                 current_highlights_precomposed,
@@ -27720,18 +28722,23 @@ impl Render for DocumentWorkspace {
             )
         };
         let page_markup_opacity = self.page_markup_opacity(document_id, motion_now, window);
-        let (semantic_snap_decision, object_snap_tracking_result, relationship_snap_guides) = self
-            .fade_snap_guides(
-                document_id,
-                (
-                    semantic_snap_decision,
-                    object_snap_tracking_result,
-                    relationship_snap_guides,
-                ),
-                motion_now,
-                window,
-                cx,
-            );
+        let (
+            semantic_snap_decision,
+            object_snap_tracking_result,
+            relationship_snap_guides,
+            angle_snap_guide,
+        ) = self.fade_snap_guides(
+            document_id,
+            (
+                semantic_snap_decision,
+                object_snap_tracking_result,
+                relationship_snap_guides,
+                angle_snap_guide,
+            ),
+            motion_now,
+            window,
+            cx,
+        );
         SNAP_GUIDE_FADE.with(|fade| fade.set(self.snap_guide_fade));
         let flash = self.step_snapshot_flash(window, cx);
         SNAPSHOT_FLASH.with(|cell| *cell.borrow_mut() = flash);
@@ -27831,12 +28838,15 @@ impl Render for DocumentWorkspace {
         } else {
             self.text_selection_overlays(document_id, cx)
         };
+        let mut page_text_overlays = page_text_overlays;
+        self.merge_find_overlays(document_id, &mut page_text_overlays, cx);
         let viewport_cursor_style = document_viewport_cursor_style(
             annotation_tool,
             self.pan_tool_active || self.middle_pan_active(),
             self.pan_drag.is_some(),
             calibration_pick_active,
             active_selection_marquee.is_some(),
+            self.chrome_typing_click_out(),
             select_hover_cursor,
         );
         self.viewport_cursor = viewport_cursor_style;
@@ -28271,14 +29281,19 @@ impl Render for DocumentWorkspace {
             window.rem_size(),
             cx,
         );
+        let rotate_disabled = {
+            let commands = self.document_command_state(cx);
+            !commands.document_ready || commands.save_busy || commands.rotation_busy
+        };
         let tool_group = annotation_tool_group(
             document_id,
             annotation_tool,
             save_busy,
+            rotate_disabled,
             self.pan_tool_active || self.middle_pan_active(),
             RIGHT_RAIL_COLUMNS,
             self.signature_popover_open,
-            self.signature_box_guidance().is_some(),
+            self.signature_box_for_signature(),
             self.signature_prepare_state.clone(),
             self.drawn_signature.clone(),
             self.signature_input_mode,
@@ -28541,7 +29556,7 @@ impl Render for DocumentWorkspace {
         // the toolbar (never at the default interface size); they return
         // when the window widens.
         let properties_shown = properties_visible && side_panel_room.properties.is_some();
-        let thumbnails_visible = self.pages_panel_open && thumbnails_fit;
+        let thumbnails_visible = self.left_panel.is_some() && thumbnails_fit;
         let sidebar_panel = self.render_thumbnail_sidebar(
             ThumbnailSidebarInputs {
                 document_id,
@@ -28739,6 +29754,7 @@ impl Render for DocumentWorkspace {
                 content_sprite,
                 form_overlays,
                 relationship_snap_guides,
+                angle_snap_guide,
                 selection_color,
                 semantic_snap_decision,
                 calibration_preview: self.calibration_preview(cx),
@@ -28793,7 +29809,8 @@ impl Render for DocumentWorkspace {
                                             .axis(gpui_component::scroll::ScrollbarAxis::Both),
                                     ),
                             )
-                            .children(self.render_signature_box_prompt(cx)),
+                            .children(self.render_signature_box_prompt(cx))
+                            .children(self.render_find_bar(cx)),
                     ),
             ),
         );
@@ -29205,8 +30222,10 @@ mod tests {
             draw_tool_tooltip(AnnotationTool::Dimension),
             ("Dimension", Some("Length measurement"))
         );
-        // Tools a scale does not change have no description.
+        // Tools a scale does not change have no description, Arrow among
+        // them.
         assert_eq!(draw_tool_tooltip(AnnotationTool::Pen), ("Pen", None));
+        assert_eq!(draw_tool_tooltip(AnnotationTool::Arrow), ("Arrow", None));
         // The shortcut shows beside the name as a stock key binding.
         assert!(
             tooltip_tool(AnnotationTool::Area)
@@ -29247,6 +30266,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 None
             ),
             CursorStyle::Arrow,
@@ -29258,31 +30278,65 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 None
             ),
             CursorStyle::Crosshair,
         );
         assert_eq!(
-            document_viewport_cursor_style(AnnotationTool::Select, true, false, false, false, None),
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                true,
+                false,
+                false,
+                false,
+                false,
+                None
+            ),
             CursorStyle::OpenHand,
         );
         assert_eq!(
-            document_viewport_cursor_style(AnnotationTool::Select, true, true, false, false, None),
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                true,
+                true,
+                false,
+                false,
+                false,
+                None
+            ),
             CursorStyle::ClosedHand,
         );
         assert_eq!(
-            document_viewport_cursor_style(AnnotationTool::Select, true, true, true, false, None),
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                true,
+                true,
+                true,
+                false,
+                false,
+                None
+            ),
             CursorStyle::Crosshair,
             "calibration picking owns the pointer before Pan",
         );
         assert_eq!(
-            document_viewport_cursor_style(AnnotationTool::Select, true, true, false, true, None),
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                true,
+                true,
+                false,
+                true,
+                false,
+                None
+            ),
             CursorStyle::Crosshair,
             "a live selection marquee owns the pointer before Pan",
         );
         assert_eq!(
             document_viewport_cursor_style(
                 AnnotationTool::Select,
+                false,
                 false,
                 false,
                 false,
@@ -29298,10 +30352,37 @@ mod tests {
                 true,
                 false,
                 false,
+                false,
                 Some(CursorStyle::ResizeLeftRight),
             ),
             CursorStyle::ClosedHand,
             "an active Pan gesture owns the cursor before Select hover",
+        );
+        assert_eq!(
+            document_viewport_cursor_style(
+                AnnotationTool::Rectangle,
+                false,
+                false,
+                false,
+                false,
+                true,
+                None
+            ),
+            CursorStyle::Arrow,
+            "typed text elsewhere: a press only finishes it, so no crosshair",
+        );
+        assert_eq!(
+            document_viewport_cursor_style(
+                AnnotationTool::Select,
+                true,
+                false,
+                false,
+                false,
+                true,
+                Some(CursorStyle::ResizeLeftRight),
+            ),
+            CursorStyle::Arrow,
+            "typed text elsewhere: no hand and no hover cursor",
         );
     }
 

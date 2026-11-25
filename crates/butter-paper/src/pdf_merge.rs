@@ -67,7 +67,7 @@ pub fn merge_pdfs(sources: &[Vec<u8>]) -> Result<Vec<u8>, String> {
 }
 
 fn load(bytes: &[u8], number: usize) -> Result<Document, String> {
-    let document = Document::load_mem(bytes)
+    let document = crate::pdf_load::load_pdf_mem(bytes)
         .map_err(|error| format!("document {number} cannot be read: {error}"))?;
     // Opened with an empty password or not, a protected file's
     // restrictions do not carry over, so it is not merged.

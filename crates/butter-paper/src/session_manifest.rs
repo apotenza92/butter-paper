@@ -15,7 +15,7 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    native_document_view_state::{RestartView, RestartZoom},
+    native_document_view_state::{RememberedPageView, RestartView, RestartZoom},
     page_view_control::PageViewMode,
 };
 
@@ -292,8 +292,8 @@ impl SessionRestoreDocument {
     }
 
     /// Returns the validated restart view for this document.
-    pub const fn view(&self) -> RestartView {
-        self.view
+    pub fn view(&self) -> RestartView {
+        self.view.clone()
     }
 
     /// Consumes this entry and returns its durable PDF path.
@@ -921,7 +921,7 @@ fn encode_manifest(snapshot: &SessionSnapshot) -> String {
         encoded.push_str("\",\"path\":\"");
         encoded.push_str(&path);
         encoded.push_str("\",\"view\":");
-        encode_restart_view(&mut encoded, snapshot.restart_views[index]);
+        encode_restart_view(&mut encoded, &snapshot.restart_views[index]);
         encoded.push('}');
     }
     encoded.push_str("],\"activeDocument\":");
@@ -983,22 +983,17 @@ fn encode_recovery_marker(snapshot: &SessionRecoverySnapshot) -> String {
     encoded
 }
 
-fn encode_restart_view(encoded: &mut String, view: RestartView) {
-    let mode = match view.mode() {
-        PageViewMode::Continuous => "continuous",
-        PageViewMode::SinglePage => "singlePage",
-    };
-    let (zoom, percent) = match view.zoom() {
+fn encode_zoom(zoom: RestartZoom) -> (&'static str, Option<f32>) {
+    match zoom {
         RestartZoom::FitWidth => ("fitWidth", None),
         RestartZoom::FitPage => ("fitPage", None),
         RestartZoom::Manual(percent) => ("manual", Some(percent)),
-    };
-    let (scroll_x, scroll_y) = view.scroll();
-    encoded.push_str("{\"currentPage\":");
-    encoded.push_str(&view.current_page().to_string());
-    encoded.push_str(",\"mode\":\"");
-    encoded.push_str(mode);
-    encoded.push_str("\",\"zoom\":\"");
+    }
+}
+
+fn push_zoom_and_scroll(encoded: &mut String, zoom: RestartZoom, scroll: (f32, f32)) {
+    let (zoom, percent) = encode_zoom(zoom);
+    encoded.push_str("\"zoom\":\"");
     encoded.push_str(zoom);
     encoded.push_str("\",\"manualPercent\":");
     match percent {
@@ -1006,9 +1001,38 @@ fn encode_restart_view(encoded: &mut String, view: RestartView) {
         None => encoded.push_str("null"),
     }
     encoded.push_str(",\"scrollX\":");
-    encoded.push_str(&scroll_x.to_string());
+    encoded.push_str(&scroll.0.to_string());
     encoded.push_str(",\"scrollY\":");
-    encoded.push_str(&scroll_y.to_string());
+    encoded.push_str(&scroll.1.to_string());
+}
+
+fn encode_restart_view(encoded: &mut String, view: &RestartView) {
+    let mode = match view.mode() {
+        PageViewMode::Continuous => "continuous",
+        PageViewMode::SinglePage => "singlePage",
+    };
+    encoded.push_str("{\"currentPage\":");
+    encoded.push_str(&view.current_page().to_string());
+    encoded.push_str(",\"mode\":\"");
+    encoded.push_str(mode);
+    encoded.push_str("\",");
+    push_zoom_and_scroll(encoded, view.zoom(), view.scroll());
+    // Written only when there are some, so a manifest with none stays as
+    // earlier versions wrote it.
+    if !view.page_views().is_empty() {
+        encoded.push_str(",\"pageViews\":[");
+        for (index, (page, page_view)) in view.page_views().iter().enumerate() {
+            if index > 0 {
+                encoded.push(',');
+            }
+            encoded.push_str("{\"page\":");
+            encoded.push_str(&page.to_string());
+            encoded.push(',');
+            push_zoom_and_scroll(encoded, page_view.zoom(), page_view.scroll());
+            encoded.push('}');
+        }
+        encoded.push(']');
+    }
     encoded.push('}');
 }
 
@@ -1234,31 +1258,9 @@ fn decode_recovery_marker(bytes: &[u8]) -> Result<SessionRecoverySnapshot, Sessi
     Ok(snapshot)
 }
 
-fn decode_restart_view(value: &Value) -> Result<RestartView, SessionManifestError> {
-    let object = value.as_object().ok_or_else(invalid_shape)?;
-    require_exact_fields(
-        object.keys().map(String::as_str),
-        &[
-            "currentPage",
-            "mode",
-            "zoom",
-            "manualPercent",
-            "scrollX",
-            "scrollY",
-        ],
-    )?;
-    let current_page = u32::try_from(
-        object
-            .get("currentPage")
-            .and_then(Value::as_u64)
-            .ok_or_else(invalid_shape)?,
-    )
-    .map_err(|_| invalid_shape())?;
-    let mode = match object.get("mode").and_then(Value::as_str) {
-        Some("continuous") => PageViewMode::Continuous,
-        Some("singlePage") => PageViewMode::SinglePage,
-        _ => return Err(invalid_shape()),
-    };
+fn decode_zoom_and_scroll(
+    object: &serde_json::Map<String, Value>,
+) -> Result<(RestartZoom, f32, f32), SessionManifestError> {
     let manual_percent = match object.get("manualPercent") {
         Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid_shape)? as f32),
@@ -1278,7 +1280,58 @@ fn decode_restart_view(value: &Value) -> Result<RestartView, SessionManifestErro
         .get("scrollY")
         .and_then(Value::as_f64)
         .ok_or_else(invalid_shape)? as f32;
-    let view = RestartView::new(current_page, mode, zoom, scroll_x, scroll_y);
+    Ok((zoom, scroll_x, scroll_y))
+}
+
+fn decode_page_index(value: Option<&Value>) -> Result<u32, SessionManifestError> {
+    u32::try_from(value.and_then(Value::as_u64).ok_or_else(invalid_shape)?)
+        .map_err(|_| invalid_shape())
+}
+
+fn decode_restart_view(value: &Value) -> Result<RestartView, SessionManifestError> {
+    const FIELDS: [&str; 6] = [
+        "currentPage",
+        "mode",
+        "zoom",
+        "manualPercent",
+        "scrollX",
+        "scrollY",
+    ];
+    let object = value.as_object().ok_or_else(invalid_shape)?;
+    let with_page_views = object.contains_key("pageViews");
+    if with_page_views {
+        let mut fields = FIELDS.to_vec();
+        fields.push("pageViews");
+        require_exact_fields(object.keys().map(String::as_str), &fields)?;
+    } else {
+        require_exact_fields(object.keys().map(String::as_str), &FIELDS)?;
+    }
+    let current_page = decode_page_index(object.get("currentPage"))?;
+    let mode = match object.get("mode").and_then(Value::as_str) {
+        Some("continuous") => PageViewMode::Continuous,
+        Some("singlePage") => PageViewMode::SinglePage,
+        _ => return Err(invalid_shape()),
+    };
+    let (zoom, scroll_x, scroll_y) = decode_zoom_and_scroll(object)?;
+    let mut page_views = Vec::new();
+    if with_page_views {
+        for entry in object
+            .get("pageViews")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid_shape)?
+        {
+            let entry = entry.as_object().ok_or_else(invalid_shape)?;
+            require_exact_fields(
+                entry.keys().map(String::as_str),
+                &["page", "zoom", "manualPercent", "scrollX", "scrollY"],
+            )?;
+            let page = decode_page_index(entry.get("page"))?;
+            let (zoom, scroll_x, scroll_y) = decode_zoom_and_scroll(entry)?;
+            page_views.push((page, RememberedPageView::new(zoom, scroll_x, scroll_y)));
+        }
+    }
+    let view =
+        RestartView::new(current_page, mode, zoom, scroll_x, scroll_y).with_page_views(page_views);
     if !view.is_finite() {
         return Err(SessionManifestError::Corruption(
             SessionManifestCorruptionError::InvalidSnapshot(
@@ -1457,6 +1510,76 @@ impl Drop for TemporaryGuard {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
             let _ = fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native_document_view_state::MAX_REMEMBERED_PAGE_VIEWS;
+
+    fn scratch(label: &str) -> PathBuf {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-scratch")
+            .join(format!("session-manifest-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn pdf(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
+    #[test]
+    fn single_page_memory_survives_a_restart_and_older_manifests_still_load() {
+        let root = scratch("page-views");
+        let store = SessionManifestStore::open(root.clone()).unwrap();
+        let remembered =
+            RestartView::new(2, PageViewMode::SinglePage, RestartZoom::FitPage, 0., 0.)
+                .with_page_views(vec![
+                    (
+                        0,
+                        RememberedPageView::new(RestartZoom::Manual(250.5), 120.25, 900.),
+                    ),
+                    (5, RememberedPageView::new(RestartZoom::FitWidth, -8., 40.)),
+                ]);
+        let plain = RestartView::new(0, PageViewMode::Continuous, RestartZoom::FitWidth, 0., 10.);
+        let snapshot = SessionSnapshot::new(vec![pdf("a.pdf"), pdf("b.pdf")], Some(0))
+            .with_restart_views(vec![remembered.clone(), plain.clone()]);
+        store.replace(&snapshot).unwrap();
+        let text = fs::read_to_string(root.join(MANIFEST_NAME)).unwrap();
+        // Written only for the document that remembers pages.
+        assert_eq!(text.matches("pageViews").count(), 1, "{text}");
+        let (documents, _) = store.load().unwrap().into_documents();
+        assert_eq!(documents[0].view(), remembered);
+        assert_eq!(documents[1].view(), plain);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn page_memory_is_bounded_and_rejects_a_bad_entry() {
+        let many = (0..(MAX_REMEMBERED_PAGE_VIEWS as u32 + 20))
+            .map(|page| (page, RememberedPageView::new(RestartZoom::FitPage, 0., 0.)))
+            .collect();
+        let view = RestartView::default().with_page_views(many);
+        assert_eq!(view.page_views().len(), MAX_REMEMBERED_PAGE_VIEWS);
+        assert_eq!(view.page_views()[0].0, 20);
+
+        let mut encoded = String::new();
+        encode_restart_view(&mut encoded, &view);
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decode_restart_view(&value).unwrap(), view);
+
+        for bad in [
+            r#"{"currentPage":0,"mode":"singlePage","zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0,"pageViews":[{"page":1,"zoom":"manual","manualPercent":null,"scrollX":0,"scrollY":0}]}"#,
+            r#"{"currentPage":0,"mode":"singlePage","zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0,"pageViews":[{"page":-1,"zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0}]}"#,
+            r#"{"currentPage":0,"mode":"singlePage","zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0,"pageViews":{}}"#,
+            r#"{"currentPage":0,"mode":"singlePage","zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0,"pageViews":[{"page":1,"zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0,"extra":1}]}"#,
+        ] {
+            let value: Value = serde_json::from_str(bad).unwrap();
+            assert!(decode_restart_view(&value).is_err(), "{bad}");
         }
     }
 }

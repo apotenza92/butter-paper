@@ -119,7 +119,11 @@ fn bench_render() {
     for &page in &sampled {
         let started = Instant::now();
         resource
-            .render_thumbnail(page, thumbnail_width(page_sizes[page as usize]))
+            .render_thumbnail(
+                page,
+                thumbnail_width(page_sizes[page as usize]),
+                butter_paper::paper_appearance::PaperAppearance::Real,
+            )
             .unwrap();
         let elapsed = ms(started.elapsed());
         thumbnail.push(elapsed);
@@ -192,6 +196,7 @@ fn bench_render() {
                 width: 1_024.min(pixel_width - column * 1_024),
                 height: 1_024.min(pixel_height - row * 1_024),
             },
+            paper: Default::default(),
         })
         .collect::<Vec<_>>();
     // The same page again and again: what is left once the page is loaded.
@@ -199,7 +204,11 @@ fn bench_render() {
     for _ in 0..3 {
         let started = Instant::now();
         resource
-            .render_thumbnail(heaviest, thumbnail_width(page_sizes[heaviest as usize]))
+            .render_thumbnail(
+                heaviest,
+                thumbnail_width(page_sizes[heaviest as usize]),
+                butter_paper::paper_appearance::PaperAppearance::Real,
+            )
             .unwrap();
         repeat.push(ms(started.elapsed()));
     }
@@ -246,7 +255,13 @@ fn bench_render() {
             let resource = Arc::clone(&resource_for_backlog);
             let width = thumbnail_width(sizes[page as usize]);
             std::thread::spawn(move || {
-                resource.render_thumbnail(page, width).unwrap();
+                resource
+                    .render_thumbnail(
+                        page,
+                        width,
+                        butter_paper::paper_appearance::PaperAppearance::Real,
+                    )
+                    .unwrap();
                 Instant::now()
             })
         })

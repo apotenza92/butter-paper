@@ -12,10 +12,13 @@ use crate::{
         Annotation, DecodedRgbaAsset, LengthCalibration, PageRotation, PageScale, PageTransform,
         PdfRect, PenAnnotation, RetainedAnnotationObstacle,
     },
-    highlight_compositor::{HighlightRasterMapping, precompose_highlights_multiply_bgra_mapped},
+    highlight_compositor::{
+        HighlightBlend, HighlightRasterMapping, precompose_highlights_bgra_mapped,
+    },
     page_geometry::{
         PageCoordinateSpace, PdfRect as CoordinateRect, Rotation as CoordinateRotation,
     },
+    paper_appearance::PaperAppearance,
     pdf_content_geometry::PageSnapGeometry,
     pdf_engine::PdfPersistenceSession,
     pdf_forms::FormLayer,
@@ -84,6 +87,10 @@ pub struct RasterSurface {
     width: u32,
     height: u32,
     pixels_bgra: Vec<u8>,
+    /// For a page drawn as Dark pages: the part of the surface (in
+    /// thousandths) that pictures cover and that keeps its real colours, as
+    /// the worker reported. `None` when unknown (a Real render, a crop).
+    picture_permille: Option<u16>,
 }
 
 impl RasterSurface {
@@ -102,7 +109,22 @@ impl RasterSurface {
             width,
             height,
             pixels_bgra,
+            picture_permille: None,
         })
+    }
+
+    /// This surface with the picture coverage the worker reported for it.
+    pub fn with_picture_coverage(mut self, coverage: Option<f32>) -> Self {
+        self.picture_permille =
+            coverage.map(|fraction| (fraction.clamp(0., 1.) * 1000.).round() as u16);
+        self
+    }
+
+    /// The fraction (0 to 1) of the surface that pictures cover, for a Dark
+    /// render.
+    pub fn picture_coverage(&self) -> Option<f32> {
+        self.picture_permille
+            .map(|permille| f32::from(permille) / 1000.)
     }
 
     pub const fn width(&self) -> u32 {
@@ -142,7 +164,8 @@ impl RasterSurface {
                 pixels[target..target + 4].copy_from_slice(&self.pixels_bgra[source..source + 4]);
             }
         }
-        Self::new(target_width, target_height, pixels)
+        Ok(Self::new(target_width, target_height, pixels)?
+            .with_picture_coverage(self.picture_coverage()))
     }
 
     pub fn cropped(&self, x: u32, y: u32, width: u32, height: u32) -> Result<Self, String> {
@@ -274,8 +297,11 @@ impl RasterSurface {
         pixels.any(|pixel| pixel != first)
     }
 
-    // Windows and Linux composite highlights into the raster; macOS draws them.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    /// Composes the highlights of `pens` into this raster, drawn with
+    /// `paper`: Multiply on real colours, Screen on Dark pages. Windows and
+    /// Linux always compose highlights here; macOS only for Dark pages
+    /// ([`crate::document_session::cpu_highlights`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn precompose_highlights(
         &mut self,
         page_index: u32,
@@ -284,6 +310,7 @@ impl RasterSurface {
         crop_y_px: f64,
         full_page_pixel_size: (f64, f64),
         pens: &[PenAnnotation],
+        paper: PaperAppearance,
     ) -> Result<usize, String> {
         let display_size = coordinate_space.display_size_points();
         let mapping = HighlightRasterMapping::from_coordinate_space(
@@ -294,12 +321,13 @@ impl RasterSurface {
             crop_x_px,
             crop_y_px,
         )?;
-        precompose_highlights_multiply_bgra_mapped(
+        precompose_highlights_bgra_mapped(
             &mut self.pixels_bgra,
             self.width,
             self.height,
             mapping,
             pens,
+            HighlightBlend::of(paper),
         )
     }
 
@@ -395,16 +423,40 @@ impl ThumbnailSurface {
 
 pub trait NativeDocumentResource: Send + Sync {
     fn worker_pid(&self) -> Option<u32>;
+    /// A page in its real colours. Every path that must give the
+    /// document's own colours (saves, exports, copies, previews, evidence)
+    /// uses this or another call without a paper argument.
     fn render_page(&self, page_index: u32, width: u32) -> Result<RasterSurface, String>;
-    /// A page's thumbnail: drawn as `render_page` draws it, after whatever
-    /// the user is waiting for.
-    fn render_thumbnail(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
+    /// A page as the view shows it: drawn as `render_page` draws it, with
+    /// `paper` (Dark pages or real colours). Only view paths call it.
+    fn render_view_page(
+        &self,
+        page_index: u32,
+        width: u32,
+        paper: PaperAppearance,
+    ) -> Result<RasterSurface, String> {
+        let _ = paper;
         self.render_page(page_index, width)
     }
-    /// The whole-page image of a page navigated to: drawn as `render_page`
-    /// draws it, after the viewer's tiles of that page.
-    fn render_page_image(&self, page_index: u32, width: u32) -> Result<RasterSurface, String> {
-        self.render_page(page_index, width)
+    /// A page's thumbnail: drawn as `render_view_page` draws it, after
+    /// whatever the user is waiting for.
+    fn render_thumbnail(
+        &self,
+        page_index: u32,
+        width: u32,
+        paper: PaperAppearance,
+    ) -> Result<RasterSurface, String> {
+        self.render_view_page(page_index, width, paper)
+    }
+    /// The whole-page image of a page navigated to: drawn as
+    /// `render_view_page` draws it, after the viewer's tiles of that page.
+    fn render_page_image(
+        &self,
+        page_index: u32,
+        width: u32,
+        paper: PaperAppearance,
+    ) -> Result<RasterSurface, String> {
+        self.render_view_page(page_index, width, paper)
     }
     /// The whole-page image of a page beside the one in view, drawn as
     /// `render_page_image` draws it but after everything else asked for.
@@ -412,8 +464,9 @@ pub trait NativeDocumentResource: Send + Sync {
         &self,
         page_index: u32,
         width: u32,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
-        self.render_page_image(page_index, width)
+        self.render_page_image(page_index, width, paper)
     }
     fn render_page_with_pdf_annotations(
         &self,
@@ -466,15 +519,18 @@ pub trait NativeDocumentResource: Send + Sync {
     ) -> Result<RasterSurface, String> {
         Err("vector Snapshots are unavailable for this document".into())
     }
-    /// [`Self::render_region_pdf`], after the viewer's tiles: a picture of
-    /// dragged content, which waits for the page drawn without it.
+    /// [`Self::render_region_pdf`], after the viewer's tiles and with the
+    /// view's `paper`: a picture of dragged content, which waits for the
+    /// page drawn without it.
     fn render_region_pdf_after_tiles(
         &self,
         pdf: &[u8],
         size_pt: (f64, f64),
         pixels_per_point: f64,
         rotation: PageRotation,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
+        let _ = paper;
         self.render_region_pdf(pdf, size_pt, pixels_per_point, rotation)
     }
     /// A box of a page (in its user space) as drawn on it, at
@@ -512,6 +568,30 @@ pub trait NativeDocumentResource: Send + Sync {
             Some(base) => self.page_base_text(page_index, base),
             None => self.page_text(page_index),
         }
+    }
+    /// A page for visual search: its content only (no markups), in its real
+    /// colours whatever paper the view shows, at `pixels_per_point`, turned
+    /// as the page is shown at `rotation`, and drawn after everything else
+    /// the worker is asked for, so that the viewer never waits for it.
+    fn render_search_page(
+        &self,
+        _page_index: u32,
+        _pixels_per_point: f32,
+        _rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        Err("visual search is unavailable for this document".into())
+    }
+    /// [`Self::page_text_with`] for a search, read after everything else
+    /// the worker is asked for. The layer's `objects` stay empty.
+    fn page_search_text(
+        &self,
+        page_index: u32,
+        base: Option<&crate::pdf_page_base::PageBase>,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, String> {
+        let mut layer = self.page_text_with(page_index, base, explodes)?;
+        layer.objects.clear();
+        Ok(layer)
     }
     /// Whether the document carries digital signatures, which changing its
     /// content invalidates.
@@ -558,6 +638,8 @@ pub struct OpenedNativeDocument {
     pub(crate) resource: Arc<dyn NativeDocumentResource>,
     pub(crate) annotations: Vec<Annotation>,
     pub(crate) retained_annotation_obstacles: Vec<RetainedAnnotationObstacle>,
+    /// Every annotation as the file had it, for search.
+    pub(crate) markup_metadata: Arc<Vec<crate::search_markups::MarkupMetadata>>,
     pub(crate) page_scales: Vec<PageScale>,
     pub(crate) page_length_calibrations: Vec<(u32, LengthCalibration)>,
     pub(crate) page_rotations: Vec<PageRotation>,
@@ -612,6 +694,7 @@ impl OpenedNativeDocument {
             resource,
             annotations: Vec::new(),
             retained_annotation_obstacles: Vec::new(),
+            markup_metadata: Arc::default(),
             page_scales: Vec::new(),
             page_length_calibrations: Vec::new(),
             page_rotations,
@@ -632,6 +715,23 @@ impl OpenedNativeDocument {
     ) -> Self {
         self.retained_annotation_obstacles = obstacles;
         self
+    }
+
+    pub fn with_markup_metadata(
+        mut self,
+        metadata: Vec<crate::search_markups::MarkupMetadata>,
+    ) -> Self {
+        self.markup_metadata = Arc::new(metadata);
+        self
+    }
+
+    pub fn markup_metadata(&self) -> &Arc<Vec<crate::search_markups::MarkupMetadata>> {
+        &self.markup_metadata
+    }
+
+    /// The markups the file held, as the editable model reads them.
+    pub fn annotations(&self) -> &[Annotation] {
+        &self.annotations
     }
 
     pub fn with_page_length_calibrations(
@@ -785,6 +885,8 @@ pub struct PageRotationRequest {
 pub struct PageRotationPresentation {
     pub current_page: RasterSurface,
     pub thumbnail: RasterSurface,
+    /// The paper both were drawn with.
+    pub paper: PaperAppearance,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -814,7 +916,9 @@ pub trait NativeDocumentOpener: Send + Sync {
     /// Blocking: call it off the UI thread.
     fn render_first_page(&self, path: &Path, width: u32) -> Result<RasterSurface, String> {
         let opened = self.open(&first_page_preview_request(path))?;
-        let page = opened.resource.render_thumbnail(0, width);
+        let page = opened
+            .resource
+            .render_thumbnail(0, width, PaperAppearance::Real);
         let _ = opened.close();
         page
     }
@@ -873,7 +977,7 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
             &self.surface_root,
             &first_page_preview_request(path),
         )?;
-        let page = resource.render_thumbnail(0, width);
+        let page = resource.render_thumbnail(0, width, PaperAppearance::Real);
         let _ = resource.close();
         page
     }
@@ -894,6 +998,7 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
         let vector_snapshot_ids = persistence.vector_snapshot_ids();
         let mut annotations = persistence.annotations_in_document_order();
         let retained_annotation_obstacles = persistence.retained_annotation_obstacles().to_vec();
+        let markup_metadata = persistence.markup_metadata().to_vec();
         let page_length_calibrations = persistence
             .page_length_calibrations()
             .iter()
@@ -974,6 +1079,7 @@ impl NativeDocumentOpener for PdfiumWorkerBackend {
                 opened
                     .with_annotations(annotations)
                     .with_retained_annotation_obstacles(retained_annotation_obstacles)
+                    .with_markup_metadata(markup_metadata)
                     .with_page_scales(page_scales)
                     .with_page_length_calibrations(page_length_calibrations)
                     .with_page_rotations(page_rotations)
@@ -1068,6 +1174,7 @@ impl PdfiumWorkerResource {
         pixels_per_point: f64,
         rotation: PageRotation,
         priority: RenderPriority,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
         let (width, height) = region_pixel_size(size_pt, pixels_per_point)?;
         let surface_id = SurfaceId(self.next_surface.fetch_add(1, Ordering::Relaxed));
@@ -1104,6 +1211,7 @@ impl PdfiumWorkerResource {
                     0.,
                 ],
                 surface: descriptor,
+                paper,
             })
             .map_err(worker_error)?;
         match response {
@@ -1228,6 +1336,7 @@ impl PdfiumWorkerResource {
         annotation_mode: AnnotationRenderMode,
         priority: RenderPriority,
         draft: bool,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
         let pages = self.shown_pages();
         let (page_width, page_height) = *pages
@@ -1284,19 +1393,24 @@ impl PdfiumWorkerResource {
                     },
                     surface: descriptor,
                     draft,
+                    paper,
                 },
             })
             .map_err(worker_error)?;
-        match response {
+        let picture_coverage = match response {
             WorkerResponse::Rendered {
                 job_id: actual_job,
                 surface_id: actual_surface,
+                picture_coverage,
                 ..
-            } if actual_job == job_id && actual_surface == surface_id => {}
+            } if actual_job == job_id && actual_surface == surface_id => picture_coverage,
             WorkerResponse::Failed { error, .. } => return Err(worker_error(error)),
             response => return Err(unexpected_response("render", response)),
-        }
-        RasterSurface::new(width, height, surface.pixels().to_vec())
+        };
+        Ok(
+            RasterSurface::new(width, height, surface.pixels().to_vec())?
+                .with_picture_coverage(picture_coverage),
+        )
     }
 
     /// Rasterises page `layer_page` of the vector Snapshot layer, whose page
@@ -1348,6 +1462,9 @@ impl PdfiumWorkerResource {
                     },
                     surface: descriptor,
                     draft: false,
+                    // The asset is kept in the markup model and must stay
+                    // the document's own colours.
+                    paper: PaperAppearance::Real,
                 },
             })
             .map_err(worker_error)?;
@@ -1387,6 +1504,7 @@ impl PdfiumWorkerResource {
                     AnnotationRenderMode::RetainedOnly,
                     RenderPriority::Viewer,
                     draft,
+                    request.paper,
                 )?
                 .rotated(delta)?;
             return full.cropped(
@@ -1472,6 +1590,7 @@ impl PdfiumWorkerResource {
                     },
                     surface: descriptor,
                     draft,
+                    paper: request.paper,
                 },
             })
             .map_err(worker_error)?;
@@ -1574,6 +1693,23 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             AnnotationRenderMode::RetainedOnly,
             RenderPriority::Interactive,
             false,
+            PaperAppearance::Real,
+        )
+    }
+
+    fn render_view_page(
+        &self,
+        page_index: u32,
+        desired_width: u32,
+        paper: PaperAppearance,
+    ) -> Result<RasterSurface, String> {
+        self.render_page_with_policy(
+            page_index,
+            desired_width,
+            AnnotationRenderMode::RetainedOnly,
+            RenderPriority::Interactive,
+            false,
+            paper,
         )
     }
 
@@ -1581,6 +1717,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         &self,
         page_index: u32,
         desired_width: u32,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
         // The viewer plans the page's tiles on its next frame; let them
         // queue first, so they are not stuck behind this.
@@ -1591,6 +1728,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             AnnotationRenderMode::RetainedOnly,
             RenderPriority::PageImage,
             false,
+            paper,
         )
     }
 
@@ -1598,6 +1736,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         &self,
         page_index: u32,
         desired_width: u32,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
         self.render_page_with_policy(
             page_index,
@@ -1605,6 +1744,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             AnnotationRenderMode::RetainedOnly,
             RenderPriority::Prefetch,
             false,
+            paper,
         )
     }
 
@@ -1612,6 +1752,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         &self,
         page_index: u32,
         desired_width: u32,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
         // Drawn twice the size with images unsmoothed, then averaged down:
         // as clean as smoothing, and for a page of large images about twice
@@ -1622,8 +1763,41 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             AnnotationRenderMode::RetainedOnly,
             RenderPriority::Thumbnail,
             true,
+            paper,
         )?;
         draft.downscaled_to_edge(draft.width().max(draft.height()) / 2)
+    }
+
+    fn render_search_page(
+        &self,
+        page_index: u32,
+        pixels_per_point: f32,
+        rotation: PageRotation,
+    ) -> Result<RasterSurface, String> {
+        let pages = self.shown_pages();
+        let (&(width, height), &own) = pages
+            .sizes
+            .get(page_index as usize)
+            .zip(pages.rotations.get(page_index as usize))
+            .ok_or_else(|| "PDF page is outside the document".to_owned())?;
+        if !(pixels_per_point.is_finite() && pixels_per_point > 0.) {
+            return Err("the search scale is not a positive number".into());
+        }
+        let pixels = |side: f32| (side * pixels_per_point).ceil();
+        if pixels(width) > 8_192. || pixels(height) > 8_192. {
+            return Err("the page is too large to search at this scale".into());
+        }
+        // As the viewer's turned tiles: drawn as the worker has the page,
+        // then turned to the page as shown. Draft: images unsmoothed.
+        self.render_page_with_policy(
+            page_index,
+            pixels(width).max(1.) as u32,
+            AnnotationRenderMode::None,
+            RenderPriority::Search,
+            true,
+            PaperAppearance::Real,
+        )?
+        .rotated(rotation.delta_from(own))
     }
 
     fn render_page_with_pdf_annotations(
@@ -1637,6 +1811,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             AnnotationRenderMode::All,
             RenderPriority::Interactive,
             false,
+            PaperAppearance::Real,
         )
     }
 
@@ -1651,6 +1826,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             AnnotationRenderMode::None,
             RenderPriority::Interactive,
             false,
+            PaperAppearance::Real,
         )
     }
 
@@ -1783,6 +1959,8 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             pixels_per_point,
             rotation,
             RenderPriority::Interactive,
+            // Snapshot copies and pasted Snapshots: real colours.
+            PaperAppearance::Real,
         )
     }
 
@@ -1792,6 +1970,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
         size_pt: (f64, f64),
         pixels_per_point: f64,
         rotation: PageRotation,
+        paper: PaperAppearance,
     ) -> Result<RasterSurface, String> {
         self.render_region_pdf_with(
             pdf,
@@ -1799,6 +1978,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             pixels_per_point,
             rotation,
             RenderPriority::PageImage,
+            paper,
         )
     }
 
@@ -1870,6 +2050,9 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                     },
                     surface: descriptor,
                     draft: false,
+                    // Real colours: copies, Signature "From the page" and
+                    // content pictures use this box.
+                    paper: PaperAppearance::Real,
                 },
             })
             .map_err(worker_error)?;
@@ -1905,6 +2088,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 page_index,
                 base: None,
                 explodes: Vec::new(),
+                text_only: false,
             })
             .map_err(worker_error)?
         {
@@ -1940,6 +2124,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 page_index,
                 base: Some(base.id.clone()),
                 explodes: Vec::new(),
+                text_only: false,
             })
             .map_err(worker_error)?
         {
@@ -1985,6 +2170,7 @@ impl NativeDocumentResource for PdfiumWorkerResource {
                 page_index,
                 base: base.map(|base| base.id.clone()),
                 explodes: explodes.to_vec(),
+                text_only: false,
             })
             .map_err(worker_error)?
         {
@@ -1993,6 +2179,49 @@ impl NativeDocumentResource for PdfiumWorkerResource {
             } if session_id == self.session_id && layer.page_index == page_index => Ok(layer),
             WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
             response => Err(unexpected_response("page text", response)),
+        }
+    }
+
+    fn page_search_text(
+        &self,
+        page_index: u32,
+        base: Option<&crate::pdf_page_base::PageBase>,
+        explodes: &[crate::pdf_content_moves::ContentExplode],
+    ) -> Result<PageTextLayer, String> {
+        if page_index as usize >= self.shown_pages().sizes.len() {
+            return Err("PDF page is outside the document".to_owned());
+        }
+        // After every other request, so that no search makes the viewer wait.
+        let _turn = self.gate.enter(RenderPriority::Search);
+        let mut guard = self
+            .client
+            .lock()
+            .map_err(|_| "PDF worker client lock was poisoned".to_owned())?;
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "PDF worker resource is released".to_owned())?;
+        if let Some(base) = base {
+            self.send_page_bases(client, std::slice::from_ref(base))?;
+        }
+        if !explodes.is_empty() {
+            self.send_pasted_clips(client, explodes)?;
+        }
+        match client
+            .exchange(&WorkerRequest::PageText {
+                request_id: self.request_id(),
+                session_id: self.session_id,
+                page_index,
+                base: base.map(|base| base.id.clone()),
+                explodes: explodes.to_vec(),
+                text_only: true,
+            })
+            .map_err(worker_error)?
+        {
+            WorkerResponse::PageText {
+                session_id, layer, ..
+            } if session_id == self.session_id && layer.page_index == page_index => Ok(layer),
+            WorkerResponse::Failed { error, .. } => Err(worker_error(error)),
+            response => Err(unexpected_response("page search text", response)),
         }
     }
 
@@ -2308,6 +2537,109 @@ mod raster_colour_tests {
 
     use super::*;
     use crate::annotation_model::{MarkupId, PdfPoint, PenAppearance};
+    /// A Revu-style vector Snapshot whose Form draws an inner Form that
+    /// lopdf cannot parse (a stray `#` in a name of its dictionary). The
+    /// worker's Snapshot layer keeps the inner Form, so the canvas picture
+    /// shows its red square.
+    #[test]
+    #[ignore = "requires the checksum-pinned development PDFium library and the worker binary"]
+    fn a_vector_snapshot_keeps_a_form_lopdf_cannot_parse() {
+        use lopdf::{Document, Object, Stream, dictionary};
+        let mut document = Document::with_version("1.7");
+        let pages = document.new_object_id();
+        let inner = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form", "Note" => "PLACEHOLDE",
+                "BBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            },
+            b"1 0 0 rg 0 0 100 100 re f".to_vec(),
+        ));
+        let form = document.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "Inner" => inner },
+                },
+            },
+            b"/Inner Do".to_vec(),
+        ));
+        let page = document.new_object_id();
+        let stamp = document.add_object(dictionary! {
+            "Type" => "Annot", "Subtype" => "Stamp", "IT" => "StampSnapshot",
+            "NM" => Object::string_literal("vector-snapshot"), "P" => page,
+            "Rect" => vec![100.into(), 100.into(), 200.into(), 200.into()],
+            "AP" => dictionary! { "N" => form },
+        });
+        document.objects.insert(
+            page,
+            Object::Dictionary(dictionary! {
+                "Type" => "Page", "Parent" => pages,
+                "MediaBox" => vec![0.into(), 0.into(), 300.into(), 300.into()],
+                "Annots" => vec![stamp.into()],
+            }),
+        );
+        document.objects.insert(
+            pages,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1,
+            }),
+        );
+        let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        document.trailer.set("Root", catalog);
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        let at = bytes
+            .windows(b"/PLACEHOLDE".len())
+            .position(|window| window == b"/PLACEHOLDE")
+            .unwrap();
+        bytes[at..at + b"/PLACEHOLDE".len()].copy_from_slice(b"/#PLACEHOLD");
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-scratch")
+            .join(format!("vector-snapshot-unparsed-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("surfaces")).unwrap();
+        let path = root.join("snapshot.pdf");
+        std::fs::write(&path, &bytes).unwrap();
+        let worker = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .and_then(|deps| deps.parent())
+            .unwrap()
+            .join(if cfg!(windows) {
+                "butter-paper-pdf-worker.exe"
+            } else {
+                "butter-paper-pdf-worker"
+            });
+        let library = std::path::PathBuf::from(
+            std::env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY names libpdfium"),
+        );
+        let backend = PdfiumWorkerBackend::new(worker, library, root.join("surfaces"));
+        let opened = backend
+            .open(&OpenDocumentRequest {
+                document_id: DocumentId::new(1),
+                generation: 1,
+                path,
+            })
+            .unwrap();
+        let snapshot = opened
+            .annotations
+            .iter()
+            .find_map(|annotation| match annotation {
+                Annotation::Snapshot(snapshot) => Some(snapshot.clone()),
+                _ => None,
+            })
+            .expect("the vector Snapshot imports as a Snapshot");
+        let red = snapshot
+            .asset()
+            .rgba()
+            .chunks_exact(4)
+            .filter(|pixel| pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] > 200)
+            .count();
+        assert!(red > 100, "the inner Form is drawn: {red} red pixels");
+        opened.resource.close().unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn bgra_highlights_and_snapshot_preserve_asymmetric_colour_and_alpha() {
@@ -2331,7 +2663,15 @@ mod raster_colour_tests {
             .unwrap();
             assert!(
                 raster
-                    .precompose_highlights(0, space, 0., 0., (20., 20.), &[highlight])
+                    .precompose_highlights(
+                        0,
+                        space,
+                        0.,
+                        0.,
+                        (20., 20.),
+                        &[highlight],
+                        PaperAppearance::Real,
+                    )
                     .unwrap()
                     > 0
             );

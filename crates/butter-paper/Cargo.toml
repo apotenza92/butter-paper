@@ -82,7 +82,7 @@ futures-lite = "2.6.1"
 # at run time from the build machine's path, so a debug build cross-built for
 # a Windows test machine draws no checkmarks or chevrons.
 rust-embed = { version = "8.12.0", features = ["debug-embed"] }
-windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_IO", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 embed-resource = "3.0.11"

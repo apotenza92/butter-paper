@@ -124,6 +124,14 @@ pub(super) struct PageTextOverlay {
     /// The edited paragraph, a quad per line.
     pub frame: Vec<Quad>,
     pub selection: Vec<Quad>,
+    /// Find's matches in page text, and the current one, as boxes round the
+    /// text.
+    pub search_matches: Vec<Quad>,
+    pub search_current: Vec<Quad>,
+    /// Find's matches in markups: an outline round each, with no fill, so
+    /// the markup stays readable.
+    pub search_outlines: Vec<Quad>,
+    pub search_outline_current: Vec<Quad>,
     pub caret: Option<[(f64, f64); 2]>,
     /// Underlines under text an input method is composing.
     pub marked: Vec<[(f64, f64); 2]>,
@@ -2988,6 +2996,70 @@ pub(super) fn page_text_overlay_element(
                         window,
                     );
                 }
+                // Find's matches, yellow on the paper's own set so that they
+                // read on dark pages too, under the text selection's blue.
+                {
+                    let chrome = crate::paper_chrome::chrome();
+                    let fill_of = |rgb: u32, alpha: f32| -> gpui::Hsla {
+                        gpui::Hsla::from(gpui::rgb(rgb)).opacity(alpha)
+                    };
+                    // A box tight round the quad: the match, not a frame
+                    // off the content.
+                    let tight_bounds = |quad: &Quad| {
+                        let corners = quad.map(project);
+                        let min_x = corners.iter().map(|c| c.x).fold(px(f32::MAX), Pixels::min);
+                        let max_x = corners.iter().map(|c| c.x).fold(px(f32::MIN), Pixels::max);
+                        let min_y = corners.iter().map(|c| c.y).fold(px(f32::MAX), Pixels::min);
+                        let max_y = corners.iter().map(|c| c.y).fold(px(f32::MIN), Pixels::max);
+                        gpui::Bounds::from_corners(point(min_x, min_y), point(max_x, max_y))
+                    };
+                    let ring = |quad: &Quad, window: &mut Window| {
+                        window.paint_quad(gpui::quad(
+                            tight_bounds(quad),
+                            px(1.),
+                            gpui::transparent_black(),
+                            px(1.5),
+                            fill_of(chrome.search_current_edge, 1.),
+                            gpui::BorderStyle::Solid,
+                        ));
+                    };
+                    let match_fill = fill_of(
+                        chrome.search_match,
+                        f32::from(chrome.search_match_percent) / 100.,
+                    );
+                    let current_fill = fill_of(
+                        chrome.search_current,
+                        f32::from(chrome.search_current_percent) / 100.,
+                    );
+                    for quad in &painted.search_matches {
+                        fill_quad(quad, match_fill, window);
+                    }
+                    for quad in &painted.search_current {
+                        fill_quad(quad, current_fill, window);
+                        ring(quad, window);
+                    }
+                    for quad in &painted.search_outlines {
+                        window.paint_quad(gpui::quad(
+                            tight_bounds(quad),
+                            px(1.),
+                            gpui::transparent_black(),
+                            px(1.5),
+                            fill_of(chrome.search_outline, 1.),
+                            gpui::BorderStyle::Solid,
+                        ));
+                    }
+                    for quad in &painted.search_outline_current {
+                        window.paint_quad(gpui::quad(
+                            tight_bounds(quad),
+                            px(1.),
+                            gpui::transparent_black(),
+                            px(2.5),
+                            fill_of(chrome.search_current, 1.),
+                            gpui::BorderStyle::Solid,
+                        ));
+                        ring(quad, window);
+                    }
+                }
                 for quad in &painted.selection {
                     fill_quad(quad, accent.opacity(0.3), window);
                 }
@@ -3018,7 +3090,10 @@ pub(super) fn page_text_overlay_element(
                     builder.move_to(project(*start));
                     builder.line_to(project(*end));
                     if let Ok(path) = builder.build() {
-                        window.paint_path(path, gpui::black());
+                        window.paint_path(
+                            path,
+                            crate::paper_chrome::chrome_colour(|chrome| chrome.ink),
+                        );
                     }
                 }
                 if let Some([bottom, top]) = painted.caret {
@@ -3027,7 +3102,10 @@ pub(super) fn page_text_overlay_element(
                     builder.line_to(project(top));
                     if let Ok(path) = builder.build() {
                         // Paper-relative: the caret is drawn on the page.
-                        window.paint_path(path, gpui::black());
+                        window.paint_path(
+                            path,
+                            crate::paper_chrome::chrome_colour(|chrome| chrome.ink),
+                        );
                     }
                 }
                 if let Some((input, _)) = &painted.input {

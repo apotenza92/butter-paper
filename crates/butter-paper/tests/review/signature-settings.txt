@@ -7,11 +7,11 @@ place 0 40 40 1300 900
 wait 2000
 settings
 wait 1500
-# The rail's third category, Signatures.
-settings-click 31 100
+# The rail's fifth category, Signatures.
+settings-click 31 214
 wait 1000
 shot signatures
-settings-click 420 110
+settings-click 420 150
 wait 500
 settings-type timestamp.digicert.com
 settings-key enter

@@ -522,6 +522,10 @@ pub struct PropertyInspectorHeader {
     title: SharedString,
     trailing: Option<AnyElement>,
     lock: Option<AnyElement>,
+    /// The trailing lane's width, for trailing controls wider than one X:
+    /// the title is then centred between the lanes, a little left of the
+    /// header's centre, so that it keeps its whole name in a narrow panel.
+    trailing_lane: Option<gpui::Rems>,
 }
 
 impl PropertyInspectorHeader {
@@ -531,7 +535,14 @@ impl PropertyInspectorHeader {
             title: title.into(),
             trailing: None,
             lock: None,
+            trailing_lane: None,
         }
+    }
+
+    /// Widens the trailing lane to `width`, for several trailing controls.
+    pub fn trailing_lane(mut self, width: gpui::Rems) -> Self {
+        self.trailing_lane = Some(width);
+        self
     }
 
     pub fn trailing(mut self, trailing: impl IntoElement) -> Self {
@@ -550,6 +561,7 @@ impl RenderOnce for PropertyInspectorHeader {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let trailing = self.trailing;
         let lock = self.lock;
+        let trailing_lane = self.trailing_lane;
         // A lock widens both lanes alike, keeping the title centred; the X,
         // whether placed here or over the lane, takes its end.
         let lane = |lane: gpui::Div| {
@@ -585,10 +597,13 @@ impl RenderOnce for PropertyInspectorHeader {
                     .text_center()
                     .text_sm()
                     .font_semibold()
+                    // Cut short rather than run under a lane's controls.
+                    .truncate()
                     .child(self.title),
             )
             .child(
                 lane(h_flex())
+                    .when_some(trailing_lane, |lane, width| lane.w(width))
                     .flex_none()
                     .items_center()
                     .children(lock)

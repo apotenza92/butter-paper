@@ -15,6 +15,10 @@ pub const CLICK_OUT_TEXT_STATUS: &str =
 pub const CLICK_OUT_MARKUP_STATUS: &str =
     "Click another markup to select it · Click away to deselect · Shift-click to add or remove";
 
+/// The status bar while text is typed in a field outside the page or in a
+/// form field: a click on the page only finishes the typing.
+pub const CLICK_OUT_TYPING_STATUS: &str = "Click away to finish typing";
+
 /// How long a status message replaces the status bar's guidance.
 const STATUS_MESSAGE_SHOWN: std::time::Duration = std::time::Duration::from_secs(6);
 
@@ -84,6 +88,17 @@ impl DocumentWorkspace {
         })
     }
 
+    /// The status line for a mostly-picture page on dark paper, from the
+    /// worker's report for the page image on screen.
+    pub fn pictures_keep_colours_note(&self, cx: &gpui::App) -> Option<&'static str> {
+        let session = self.session(self.active_document_id?, cx)?.read(cx);
+        crate::paper_appearance::pictures_keep_colours_note(
+            self.paper_appearance,
+            session.current_base_paper,
+            session.current_base_raster.as_ref()?.picture_coverage(),
+        )
+    }
+
     pub(super) fn render_status_bar(
         &self,
         window: &Window,
@@ -105,6 +120,8 @@ impl DocumentWorkspace {
             CALIBRATE_STATUS.to_owned()
         } else if self.pending_text_box_editor.is_some() {
             "Text Box · Click away to finish".to_owned()
+        } else if let Some(status) = self.typing_click_out_status() {
+            status.to_owned()
         } else if let Some(guidance) = self.signature_box_guidance() {
             guidance.to_owned()
         } else if let Some(redaction) = self.redaction_status_context(tool, cx) {
@@ -169,6 +186,12 @@ impl DocumentWorkspace {
             format!("{} · {help}", tool.label())
         } else {
             "Open a PDF or create a document to start".to_owned()
+        };
+        // A page that is mostly pictures (a scan) keeps its real colours on
+        // dark pages: say so first, where the bar's truncation keeps it.
+        let context = match self.pictures_keep_colours_note(cx) {
+            Some(note) => format!("{note} · {context}"),
+            None => context,
         };
         let wide = window.viewport_size().width >= window.rem_size() * 65.;
         let navigation = if !wide {

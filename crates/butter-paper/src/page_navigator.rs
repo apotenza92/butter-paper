@@ -26,8 +26,10 @@ pub const PAGE_NEXT_ID: &str = "viewer-page-next";
 pub const PAGE_LAST_ID: &str = "viewer-page-last";
 /// The "3 / 12" button that becomes the page field when clicked.
 pub const PAGE_INDICATOR_ID: &str = "viewer-page-indicator";
-/// The field a page number is typed into.
+/// The page indicator while it is open for typing: the field and "/ 12".
 pub const PAGE_INPUT_ID: &str = "viewer-page-input";
+/// The field a page number is typed into.
+pub const PAGE_INPUT_FIELD_ID: &str = "viewer-page-input-field";
 
 /// How much of the navigator the toolbar has room for. A compact toolbar
 /// drops the page buttons; the page field always shows (Home, End and the
@@ -42,10 +44,37 @@ pub enum PageNavigatorFit {
     Current,
 }
 
+/// The room one digit takes in the page field, in rems: a little wider than
+/// the widest digit at the field's text size.
+const PAGE_DIGIT_REMS: f32 = 0.5625;
+/// The page field's frame, in rems: its 8px padding each side, its 1px
+/// border each side and 2px for the caret.
+const PAGE_INPUT_FRAME_REMS: f32 = 1.25;
+/// The room each side of the page field, in rems: the 3px focus ring and a
+/// pixel more, so the group's frame does not cut the ring.
+const PAGE_INPUT_RING_REMS: f32 = 0.25;
+/// The gap between the page field and "/ 12", in rems: its focus ring and
+/// a clear 5px.
+const PAGE_INPUT_GAP_REMS: f32 = 0.5;
+
+/// The page field's width, in rems, for a page count of `digits` digits:
+/// room for that many digits (two at least) inside its padding, so a page
+/// number typed or selected is never cut.
+pub const fn page_input_rems(digits: u32) -> f32 {
+    let digits = if digits < 2 { 2 } else { digits };
+    PAGE_INPUT_FRAME_REMS + PAGE_DIGIT_REMS * digits as f32
+}
+
+/// The room "/ 12" takes beside the page field, in rems: the slash and
+/// space, then the digits.
+const fn page_count_text_rems(digits: u32) -> f32 {
+    1.25 + PAGE_DIGIT_REMS * digits as f32
+}
+
 /// The current-page-alone field's least width, in rems, for a page count of
-/// `digits` digits.
+/// `digits` digits: the page field and room for its focus ring.
 pub const fn current_indicator_min_rems(digits: u32) -> f32 {
-    1.5 + 0.625 * digits as f32
+    page_input_rems(digits) + 2. * PAGE_INPUT_RING_REMS
 }
 
 /// A page the navigator asks for. Pages are counted from 0.
@@ -68,10 +97,15 @@ pub fn parse_page_entry(entry: &str, page_count: u32) -> Option<u32> {
     Some((number.clamp(1, u64::from(page_count)) - 1) as u32)
 }
 
-/// The page field's least width, in rems, for a page count of `digits`
-/// digits: room for its widest label, so it keeps its width as pages turn.
+/// The page indicator's least width, in rems, for a page count of `digits`
+/// digits: room for its widest label, and for the page field with its focus
+/// ring and "/ 12" when clicked, so it keeps its width as pages turn and
+/// as it opens for typing.
 pub const fn indicator_min_rems(digits: u32) -> f32 {
-    2.5 + digits as f32
+    2. * PAGE_INPUT_RING_REMS
+        + page_input_rems(digits)
+        + PAGE_INPUT_GAP_REMS
+        + page_count_text_rems(digits)
 }
 
 /// The toolbar room the page field takes, with the gap before it.
@@ -359,14 +393,20 @@ impl Render for PageNavigator {
                 .debug_selector(|| PAGE_INPUT_ID.into())
                 .min_w(indicator_width)
                 .justify_center()
-                .gap_1()
+                // Room for the field's focus ring inside the group's frame,
+                // which clips.
+                .px(rems(PAGE_INPUT_RING_REMS))
+                .gap(rems(PAGE_INPUT_GAP_REMS))
                 .on_action(cx.listener(|this, _: &Escape, window, cx| {
                     this.cancel_entry(window, cx);
                 }))
                 .child(
                     div()
-                        .w(rems(0.8 + digits as f32 * 0.6))
-                        .child(Input::new(&entry.input).small()),
+                        .id(PAGE_INPUT_FIELD_ID)
+                        .debug_selector(|| PAGE_INPUT_FIELD_ID.into())
+                        .flex_shrink_0()
+                        .w(rems(page_input_rems(digits)))
+                        .child(Input::new(&entry.input).small().text_center()),
                 )
                 .when(!current_alone, |entry| {
                     entry.child(

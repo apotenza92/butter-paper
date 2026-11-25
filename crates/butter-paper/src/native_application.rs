@@ -3,18 +3,22 @@ use std::path::PathBuf;
 use gpui::{App, Entity, Menu, MenuItem};
 use gpui_component::{GlobalState, menu::AppMenuBar};
 
+use crate::paper_appearance::PageAppearance;
+
 use crate::{
     application_close_workspace::{RequestApplicationClose, RequestApplicationQuit},
     application_shell::{
-        AboutButterPaper, MinimiseWindow, MoveDocumentToNewWindow, NewWindow, OpenSettings,
-        SetAsDefaultPdfApp, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+        AboutButterPaper, MergeAllWindows, MinimiseWindow, MoveDocumentToNewWindow, NewWindow,
+        OpenSettings, SetAsDefaultPdfApp, SetPageAppearanceDark, SetPageAppearanceLight,
+        SetPageAppearanceMatchSystem, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
         ToggleReverseScrollZoom, ZoomWindow,
     },
     document_workspace::{
         ActualSize, CloseDocument, ContinuousView, ConvertToWord, DocumentOpenBatchRequest,
-        DocumentOpenOrigin, ExplodeBlock, FitPage, FitWidth, MergeDocuments, NavigateNextPage,
-        NavigatePreviousPage, NewFromTemplate, OpenPdf, RotatePageLeft, RotatePageRight, Save,
-        SaveAs, SaveDocumentAsTemplate, SignWithCertificate, SinglePageView, ZoomIn, ZoomOut,
+        DocumentOpenOrigin, ExplodeBlock, FindInDocument, FindInDocuments, FitPage, FitWidth,
+        MergeDocuments, NavigateNextPage, NavigatePreviousPage, NewFromTemplate, OpenPdf,
+        RotateAllPagesLeft, RotateAllPagesRight, RotatePageLeft, RotatePageRight, Save, SaveAs,
+        SaveDocumentAsTemplate, SignWithCertificate, SinglePageView, ZoomIn, ZoomOut,
     },
 };
 
@@ -44,6 +48,8 @@ pub struct NativeApplicationMenuState {
     pub continuous_view_checked: bool,
     pub single_page_view_checked: bool,
     pub can_move_document_to_new_window: bool,
+    /// More than one document window is open.
+    pub can_merge_all_windows: bool,
 }
 
 pub fn build_native_application_menus(state: NativeApplicationMenuState) -> Vec<Menu> {
@@ -55,6 +61,8 @@ pub struct ApplicationMenuShellState {
     pub menu_bar_visible: bool,
     pub menu_bar_visibility_supported: bool,
     pub reverse_scroll_zoom: bool,
+    /// The Page Appearance setting: the checked item of the submenu.
+    pub page_appearance: PageAppearance,
     pub updates: UpdateMenuState,
 }
 
@@ -85,6 +93,7 @@ impl Default for ApplicationMenuShellState {
             menu_bar_visible: true,
             menu_bar_visibility_supported: false,
             reverse_scroll_zoom: false,
+            page_appearance: PageAppearance::Light,
             updates: UpdateMenuState::default(),
         }
     }
@@ -102,6 +111,7 @@ fn build_native_application_menus_with_optional_shell(
     shell: Option<ApplicationMenuShellState>,
 ) -> Vec<Menu> {
     let save_disabled = !state.has_active_document || !state.document_ready || state.save_busy;
+    let rotate_disabled = !state.document_ready || state.save_busy || state.rotation_busy;
     vec![
         build_product_menu(),
         build_file_menu(save_disabled, true, &state),
@@ -112,16 +122,17 @@ fn build_native_application_menus_with_optional_shell(
             MenuItem::action("Next Page", NavigateNextPage)
                 .disabled(!state.document_ready || !state.can_next_page),
             MenuItem::separator(),
-            MenuItem::action("Rotate Left", RotatePageLeft)
-                .disabled(!state.document_ready || state.save_busy || state.rotation_busy),
-            MenuItem::action("Rotate Right", RotatePageRight)
-                .disabled(!state.document_ready || state.save_busy || state.rotation_busy),
+            MenuItem::action("Rotate Left", RotatePageLeft).disabled(rotate_disabled),
+            MenuItem::action("Rotate Right", RotatePageRight).disabled(rotate_disabled),
+            MenuItem::action("Rotate All Pages Left", RotateAllPagesLeft).disabled(rotate_disabled),
+            MenuItem::action("Rotate All Pages Right", RotateAllPagesRight)
+                .disabled(rotate_disabled),
             MenuItem::separator(),
             MenuItem::action("Move Document to New Window", MoveDocumentToNewWindow)
                 .disabled(!state.can_move_document_to_new_window),
         ]),
         build_native_view_menu(state, shell),
-        build_window_menu(),
+        build_window_menu(state),
     ]
 }
 
@@ -134,19 +145,22 @@ pub fn build_in_window_application_menus(
         build_product_menu(),
         build_file_menu(save_disabled, false, &state),
         build_edit_menu(state, false),
-        build_in_window_view_menu(shell),
+        build_in_window_view_menu(state, shell),
     ]
 }
 
 /// On macOS the menu named "Window" is AppKit's windows menu: it lists open
-/// windows and, because document windows share a tabbing identifier, gains
-/// Merge All Windows, Move Tab to New Window and the tab commands.
-fn build_window_menu() -> Menu {
+/// windows. Document windows have no tabbing identifier, so AppKit adds no
+/// window-tab commands; Merge All Windows is Butter Paper's own and moves
+/// every document into the front window's tab strip.
+fn build_window_menu(state: NativeApplicationMenuState) -> Menu {
     let mut items = Vec::new();
     if cfg!(target_os = "macos") {
         items.extend([
             MenuItem::action("Minimise", MinimiseWindow),
             MenuItem::action("Zoom", ZoomWindow),
+            MenuItem::separator(),
+            merge_all_windows_item(state),
             MenuItem::separator(),
         ]);
     }
@@ -230,14 +244,28 @@ fn build_edit_menu(state: NativeApplicationMenuState, include_delete: bool) -> M
         MenuItem::action("Select All", gpui_component::input::SelectAll)
             .disabled(!state.has_focused_input && !state.can_select_all),
     ]);
+    // Find opens the bar over the page; Find in Documents, the search panel.
+    items.extend([
+        MenuItem::separator(),
+        MenuItem::action("Find", FindInDocument).disabled(!state.document_ready),
+        MenuItem::action("Find in Documents", FindInDocuments).disabled(!state.document_ready),
+    ]);
     Menu::new("Edit").items(items)
+}
+
+/// Merge All Windows: in the Window menu on macOS, in the View menu
+/// elsewhere.
+fn merge_all_windows_item(state: NativeApplicationMenuState) -> MenuItem {
+    MenuItem::action("Merge All Windows", MergeAllWindows).disabled(!state.can_merge_all_windows)
 }
 
 fn build_native_view_menu(
     state: NativeApplicationMenuState,
     shell: Option<ApplicationMenuShellState>,
 ) -> Menu {
-    let mut items = shell.map(build_in_window_view_items).unwrap_or_default();
+    let mut items = shell
+        .map(|shell| build_in_window_view_items(state, shell))
+        .unwrap_or_default();
     if !items.is_empty() {
         items.push(MenuItem::separator());
     }
@@ -266,11 +294,17 @@ fn build_native_view_menu(
     Menu::new("View").items(items)
 }
 
-fn build_in_window_view_menu(shell: ApplicationMenuShellState) -> Menu {
-    Menu::new("View").items(build_in_window_view_items(shell))
+fn build_in_window_view_menu(
+    state: NativeApplicationMenuState,
+    shell: ApplicationMenuShellState,
+) -> Menu {
+    Menu::new("View").items(build_in_window_view_items(state, shell))
 }
 
-fn build_in_window_view_items(shell: ApplicationMenuShellState) -> Vec<MenuItem> {
+fn build_in_window_view_items(
+    state: NativeApplicationMenuState,
+    shell: ApplicationMenuShellState,
+) -> Vec<MenuItem> {
     let mut items = Vec::new();
     if shell.menu_bar_visibility_supported {
         items.push(
@@ -283,9 +317,37 @@ fn build_in_window_view_items(shell: ApplicationMenuShellState) -> Vec<MenuItem>
         MenuItem::action("Reverse Scroll Zoom", ToggleReverseScrollZoom)
             .checked(shell.reverse_scroll_zoom),
         MenuItem::separator(),
+        page_appearance_submenu(shell.page_appearance),
+        MenuItem::separator(),
         MenuItem::action("Toggle Full Screen", ToggleApplicationFullScreen),
     ]);
+    if !cfg!(target_os = "macos") {
+        items.extend([MenuItem::separator(), merge_all_windows_item(state)]);
+    }
     items
+}
+
+/// View ▸ Page Appearance: Light, Dark and Match System, the current
+/// setting checked (the title-case names of the native menu bar).
+pub fn page_appearance_submenu(current: PageAppearance) -> MenuItem {
+    let item = |appearance: PageAppearance, item: MenuItem| item.checked(current == appearance);
+    MenuItem::submenu(Menu::new("Page Appearance").items([
+        item(
+            PageAppearance::Light,
+            MenuItem::action(PageAppearance::Light.menu_label(), SetPageAppearanceLight),
+        ),
+        item(
+            PageAppearance::Dark,
+            MenuItem::action(PageAppearance::Dark.menu_label(), SetPageAppearanceDark),
+        ),
+        item(
+            PageAppearance::MatchSystem,
+            MenuItem::action(
+                PageAppearance::MatchSystem.menu_label(),
+                SetPageAppearanceMatchSystem,
+            ),
+        ),
+    ]))
 }
 
 pub fn install_native_application_menus(

@@ -42,6 +42,8 @@ pub(super) struct ViewportInputs {
     pub content_sprite: Option<super::content::SpritePaint>,
     pub form_overlays: Vec<FormOverlay>,
     pub relationship_snap_guides: Vec<RelationshipSnapGuide>,
+    /// The direction held at an angle snap increment.
+    pub angle_snap_guide: Option<crate::semantic_snapping::AngleSnapGuide>,
     pub selection_color: Hsla,
     pub semantic_snap_decision: Option<SemanticSnapDecision>,
     /// The calibration line of the Page Scale dialog.
@@ -87,6 +89,7 @@ impl DocumentWorkspace {
             content_sprite,
             form_overlays,
             relationship_snap_guides,
+            angle_snap_guide,
             selection_color,
             semantic_snap_decision,
             calibration_preview,
@@ -361,7 +364,20 @@ impl DocumentWorkspace {
                                                         .w(px(layout.logical_rect.width))
                                                         .h(px(layout.logical_rect.height))
                                                         .when(turning.is_none(), |page| {
-                                                            page.bg(gpui::rgb(0xffffff))
+                                                            // The paper, light or dark.
+                                                            page.bg(crate::paper_chrome::chrome_colour(|chrome| chrome.paper))
+                                                        })
+                                                        // A ring outside the page (never a border, which
+                                                        // would inset the image): a dark page stands
+                                                        // apart from the dark viewport.
+                                                        .when_some(crate::paper_chrome::page_edge(), |page, edge| {
+                                                            page.shadow(vec![gpui::BoxShadow {
+                                                                color: edge,
+                                                                offset: gpui::point(px(0.), px(0.)),
+                                                                blur_radius: px(0.),
+                                                                spread_radius: px(1.),
+                                                                inset: false,
+                                                            }])
                                                         })
                                                         .when(
                                                             page_index == current_page
@@ -445,6 +461,9 @@ impl DocumentWorkspace {
                                                             } else {
                                                                 Vec::new()
                                                             },
+                                                            (page_index == current_page)
+                                                                .then_some(angle_snap_guide)
+                                                                .flatten(),
                                                             active_selection_marquee
                                                                 .as_ref()
                                                                 .filter(|(active_page, _)| {

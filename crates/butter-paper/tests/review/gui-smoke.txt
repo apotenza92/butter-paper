@@ -140,7 +140,7 @@ key 0 escape
 wait 600
 expect-hidden 0 viewer-snap-popover
 
-# Page scale: the toolbar's Page Scale menu opens the panel. Calibrate
+# Page scale: the toolbar's Page Scale caret opens the panel. Calibrate
 # shows its banner over the page; Escape returns to the panel, and Cancel
 # closes it.
 os-click-id 0 viewer-scale-menu
@@ -157,6 +157,51 @@ shot page-scale
 os-click-id 0 page-scale-cancel
 wait 600
 expect-hidden 0 page-scale-dialog
+
+# Find: Ctrl+F (Cmd+F on macOS) opens the bar at the top right of the page;
+# typing finds as it goes (the page names "steps" three times), Enter steps
+# and wraps, and Escape closes the bar and its highlights.
+key 0 v
+wait 400
+os-click-id 0 document-status-bar
+key 0 secondary-f
+wait 800
+expect-shown 0 document-find-bar
+type 0 steps
+wait 1500
+expect-find 0 1 of 3
+shot find-bar
+key 0 enter
+wait 500
+expect-find 0 2 of 3
+key 0 enter
+wait 500
+key 0 enter
+wait 500
+expect-find 0 1 of 3
+key 0 escape
+wait 600
+expect-hidden 0 document-find-bar
+expect-tool 0 Select
+
+# Search panel: Ctrl+Shift+F (Cmd+Shift+F on macOS) opens it in the left
+# sidebar with the focus in its field; typing searches every open document,
+# and a click on a result goes to it. The rail button closes the panel.
+key 0 secondary-shift-f
+wait 800
+expect-shown 0 document-search-panel
+type 0 steps
+wait 2000
+expect-search 0 3 results in 1 document
+shot search-panel
+os-click-id 0 document-search-row-2
+wait 600
+expect-shown 0 document-search-panel
+key 0 escape
+wait 400
+os-click-id 0 document-left-rail-search
+wait 600
+expect-hidden 0 document-search-panel
 
 # A click-out only dismisses: with page text highlighted, a click on empty
 # page clears the highlight and starts no selection box; the next click on
@@ -184,5 +229,50 @@ expect-box 0 armed
 key 0 escape
 wait 600
 expect-box 0 none
+
+# A click-out only dismisses: with the page field open, a click on empty
+# page closes the field and starts no selection box; the next click on
+# empty page starts one, and Escape ends it.
+key 0 v
+wait 400
+os-click-id 0 viewer-page-indicator
+wait 600
+expect-shown 0 viewer-page-input
+type 0 1
+wait 300
+page-click 0 1 300 462
+wait 600
+expect-hidden 0 viewer-page-input
+expect-box 0 none
+shot page-field-click-out
+page-click 0 1 300 462
+wait 600
+expect-box 0 armed
+key 0 escape
+wait 600
+expect-box 0 none
+
+# Dark pages: the shortcut (Ctrl+Shift+D, Cmd+Shift+D on macOS) turns the
+# pages dark and the same keys turn them back. View ▸ Page Appearance sends
+# the same actions as `page-appearance`; a menu cannot be driven by name.
+os-click-id 0 document-status-bar
+expect-paper 0 real
+key 0 secondary-shift-d
+expect-paper 0 dark
+shot dark-pages
+key 0 secondary-shift-d
+expect-paper 0 real
+page-appearance dark
+expect-paper 0 dark
+page-appearance light
+expect-paper 0 real
+
+# A PDF dropped on the page opens as a new tab in the window it is dropped
+# on, not elsewhere. The page is under window point 600, 450.
+expect-tabs 0 1
+drop-files 0 600 450 @document
+wait 2000
+expect-tabs 0 2
+shot dropped-on-page
 
 quit

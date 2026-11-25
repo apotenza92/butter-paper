@@ -51,6 +51,8 @@ pub struct ContentDrag {
     pub moved: bool,
     /// Arrow keys move it, not the pointer: it ends once they are let go.
     pub keyboard: bool,
+    /// The guide of a turn held at an angle snap increment.
+    pub turn_guide: Option<crate::semantic_snapping::AngleSnapGuide>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1018,6 +1020,7 @@ impl DocumentWorkspace {
                 mode,
                 moved: false,
                 keyboard: false,
+                turn_guide: None,
             });
             return true;
         }
@@ -1230,6 +1233,7 @@ impl DocumentWorkspace {
             mode: DragMode::Move,
             moved: false,
             keyboard: false,
+            turn_guide: None,
         });
     }
 
@@ -1497,14 +1501,21 @@ impl DocumentWorkspace {
                 pivot,
                 from,
                 rotation,
-            } => rotate_change(
-                pivot,
-                from,
-                rotation,
-                (point.x, point.y),
-                self.semantic_snap_settings
-                    .angle_snap_step_degrees(modifiers.shift),
-            ),
+            } => {
+                let step = self
+                    .semantic_snap_settings
+                    .angle_snap_step_degrees(modifiers.shift);
+                let change = rotate_change(pivot, from, rotation, (point.x, point.y), step);
+                drag.turn_guide = content_turn_guide(
+                    pivot,
+                    from,
+                    rotation,
+                    (point.x, point.y),
+                    &change,
+                    step.is_some(),
+                );
+                change
+            }
         };
         if !drag.moved {
             self.take_content_sprite(drag.document_id, drag.page_index, cx);
@@ -1785,6 +1796,9 @@ impl DocumentWorkspace {
         let rotation = session
             .page_rotation(page_index)
             .unwrap_or(PageRotation::Degrees0);
+        // The picture stands in for content drawn on the page: with the
+        // view's paper.
+        let paper = session.paper;
         let device_scale = session
             .viewer
             .visible_tiles(page_index as usize)
@@ -1854,6 +1868,7 @@ impl DocumentWorkspace {
                         size,
                         pixels_per_point.min(fitted),
                         rotation,
+                        paper,
                     )?;
                     Ok::<_, String>((from, surface.into_render_image()?))
                 })
@@ -2571,6 +2586,7 @@ impl DocumentWorkspace {
                     mode: DragMode::Move,
                     moved: true,
                     keyboard: true,
+                    turn_guide: None,
                 });
                 self.take_content_sprite(document_id, page_index, cx);
             }
@@ -3361,6 +3377,36 @@ fn rotatable(selection: &ContentSelection) -> Option<((f64, f64), f64)> {
 /// The angle of `point` about `pivot`, in degrees anticlockwise.
 fn angle_about(pivot: (f64, f64), point: (f64, f64)) -> f64 {
     (point.1 - pivot.1).atan2(point.0 - pivot.0).to_degrees()
+}
+
+/// The guide of a content turn held at an angle snap increment: from the
+/// pivot along the pointer's held direction, labelled with the new
+/// rotation. `None` while the turn is free.
+fn content_turn_guide(
+    pivot: (f64, f64),
+    from: f64,
+    rotation: f64,
+    point: (f64, f64),
+    change: &ContentChange,
+    snapped: bool,
+) -> Option<crate::semantic_snapping::AngleSnapGuide> {
+    let ContentChange::Rotate { degrees, .. } = change else {
+        return None;
+    };
+    if !snapped {
+        return None;
+    }
+    let held = (from + degrees).rem_euclid(360.).to_radians();
+    Some(crate::semantic_snapping::AngleSnapGuide {
+        anchor: PdfPoint {
+            x: pivot.0,
+            y: pivot.1,
+        },
+        direction: (held.cos(), held.sin()),
+        reach: (point.0 - pivot.0).hypot(point.1 - pivot.1),
+        label_degrees: (rotation + degrees).rem_euclid(360.),
+        label_at_end: true,
+    })
 }
 
 /// The turn that takes the knob, pressed at angle `from` about `pivot` on
@@ -4223,7 +4269,7 @@ mod tests {
             unreachable!("the knob turns");
         };
         assert!((10. + degrees - -30.).abs() < 1e-9, "{degrees}");
-        // The default 90-degree step turns it to a whole quarter.
+        // A 90-degree step turns it to a whole quarter.
         let ContentChange::Rotate { degrees, .. } =
             rotate_change(pivot, from, 10., near, Some(90.))
         else {
@@ -4232,8 +4278,34 @@ mod tests {
         assert!((10. + degrees).abs() < 1e-9, "{degrees}");
         // The step follows the setting, and Shift inverts it.
         let settings = crate::semantic_snapping::SemanticSnapSettings::default();
-        assert_eq!(settings.angle_snap_step_degrees(false), Some(90.));
+        assert_eq!(settings.angle_snap_step_degrees(false), Some(15.));
         assert_eq!(settings.angle_snap_step_degrees(true), None);
+    }
+
+    #[test]
+    fn a_content_turn_held_at_the_step_has_a_guide_with_the_new_rotation() {
+        let pivot = (100., 100.);
+        // Pressed straight above the pivot (90 degrees) on content turned
+        // 10 degrees; the pointer is now near 120 degrees.
+        let from = 90.;
+        let point = (
+            100. + 50. * 118f64.to_radians().cos(),
+            100. + 50. * 118f64.to_radians().sin(),
+        );
+        let change = rotate_change(pivot, from, 10., point, Some(15.));
+        let guide = content_turn_guide(pivot, from, 10., point, &change, true).unwrap();
+        // 10 + 28 = 38 turns to 45; the pointer is held 35 degrees on.
+        assert_eq!(guide.label(), "45°");
+        assert_eq!(guide.anchor, PdfPoint { x: 100., y: 100. });
+        let held = guide.direction.1.atan2(guide.direction.0).to_degrees();
+        assert!((held - 125.).abs() < 1e-9, "{held}");
+        assert!((guide.reach - 50.).abs() < 1e-9);
+        // A free turn has none.
+        let free = rotate_change(pivot, from, 10., point, None);
+        assert_eq!(
+            content_turn_guide(pivot, from, 10., point, &free, false),
+            None
+        );
     }
 
     #[test]
