@@ -21,11 +21,7 @@ use std::{
 use gpui::{
     AnyWindowHandle, FontWeight, HighlightStyle, ListAlignment, ListState, StyledText, Task,
 };
-use gpui_component::{
-    Icon, IndexPath,
-    button::ButtonGroup,
-    select::{SelectEvent, SelectState},
-};
+use gpui_component::{Icon, button::ButtonGroup};
 
 use super::*;
 use crate::{
@@ -44,13 +40,15 @@ mod visual;
 pub use visual::{
     DOCUMENT_SEARCH_MODE_TEXT_ID, DOCUMENT_SEARCH_MODE_VISUAL_ID, DOCUMENT_SEARCH_TRY_VISUAL_ID,
     DOCUMENT_VISUAL_ACTIONS_ID, DOCUMENT_VISUAL_CLEAR_ID, DOCUMENT_VISUAL_DRAW_BOX_ID,
-    DOCUMENT_VISUAL_ERROR_ID, DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_OPTIONS_ID,
+    DOCUMENT_VISUAL_ERROR_ID, DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_OPTIONS_BODY_ID,
+    DOCUMENT_VISUAL_OPTIONS_ID, DOCUMENT_VISUAL_OPTIONS_SECTION_ID,
+    DOCUMENT_VISUAL_OPTIONS_SUMMARY_ID, DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID,
     DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_PREVIEW_ID, DOCUMENT_VISUAL_PROGRESS_ID,
     DOCUMENT_VISUAL_RESULTS_ID, DOCUMENT_VISUAL_SIMILARITY_ID, DOCUMENT_VISUAL_SIMILARITY_INPUT_ID,
     DOCUMENT_VISUAL_SIMILARITY_ROW_ID, DOCUMENT_VISUAL_SIZES_ID, DOCUMENT_VISUAL_STOP_ID,
     DOCUMENT_VISUAL_SUMMARY_ID, DOCUMENT_VISUAL_TEMPLATE_ID, DOCUMENT_VISUAL_TURNS_ID, SearchMode,
-    TemplateOrigin, VisualPanelRow, VisualPanelSummary, VisualTileView, visual_row_id,
-    visual_tile_id,
+    TemplateOrigin, VisualPanelRow, VisualPanelSummary, VisualTileView, visual_options_summary,
+    visual_row_id, visual_tile_id,
 };
 
 pub const DOCUMENT_LEFT_RAIL_SEARCH_ID: &str = "document-left-rail-search";
@@ -65,8 +63,18 @@ pub const DOCUMENT_SEARCH_HEADER_ID: &str = "document-search-header";
 pub const DOCUMENT_SEARCH_CLOSE_ID: &str = "document-search-close";
 pub const DOCUMENT_SEARCH_CONTROLS_ID: &str = "document-search-controls";
 pub const DOCUMENT_SEARCH_TOGGLES_ID: &str = "document-search-toggles";
-/// The scope: a stock Select, This document first.
+/// The scope: a row of two tabs above Text and Visual, This document first.
 pub const DOCUMENT_SEARCH_SCOPE_ID: &str = "document-search-scope";
+pub const DOCUMENT_SEARCH_SCOPE_THIS_ID: &str = "document-search-scope-this";
+pub const DOCUMENT_SEARCH_SCOPE_ALL_ID: &str = "document-search-scope-all";
+
+/// The id of the tab that chooses `scope`.
+pub const fn search_scope_button_id(scope: SearchScope) -> &'static str {
+    match scope {
+        SearchScope::ThisDocument => DOCUMENT_SEARCH_SCOPE_THIS_ID,
+        SearchScope::AllOpenDocuments => DOCUMENT_SEARCH_SCOPE_ALL_ID,
+    }
+}
 pub const DOCUMENT_SEARCH_SUMMARY_ID: &str = "document-search-summary";
 pub const DOCUMENT_SEARCH_EXPLANATION_ID: &str = "document-search-explanation";
 pub const DOCUMENT_SEARCH_RESULTS_ID: &str = "document-search-results";
@@ -356,9 +364,9 @@ pub(super) struct SearchPanel {
     scope: SearchScope,
     /// The scroll position of the controls over the list, in a short window.
     controls_scroll: gpui::ScrollHandle,
-    /// The scope's menu, in `SearchScope::ALL` order.
-    scope_select: Entity<SelectState<Vec<SharedString>>>,
-    _scope_events: Subscription,
+    /// Whether the Visual tab's Options section is open: closed at first,
+    /// then as it was left for the panel's lifetime.
+    options_open: bool,
     /// The query of the search that runs or ran.
     query: Option<Arc<SearchQuery>>,
     query_text: String,
@@ -678,29 +686,6 @@ impl DocumentWorkspace {
                 },
             );
         let scope = SearchScope::default();
-        let scope_select = cx.new(|cx| {
-            SelectState::new(
-                SearchScope::ALL
-                    .map(|scope| SharedString::from(scope.label()))
-                    .to_vec(),
-                SearchScope::ALL
-                    .iter()
-                    .position(|other| *other == scope)
-                    .map(IndexPath::new),
-                window,
-                cx,
-            )
-        });
-        let scope_events = cx.subscribe(
-            &scope_select,
-            |workspace, _, event: &SelectEvent<Vec<SharedString>>, cx| {
-                if let SelectEvent::Confirm(Some(label)) = event
-                    && let Some(scope) = SearchScope::from_label(label)
-                {
-                    workspace.set_search_scope(scope, cx);
-                }
-            },
-        );
         let visual = visual::VisualPanel::new(window, cx);
         self.search_panel = Some(SearchPanel {
             input,
@@ -715,8 +700,7 @@ impl DocumentWorkspace {
             sort: SearchSort::DocumentOrder,
             scope,
             controls_scroll: gpui::ScrollHandle::new(),
-            scope_select,
-            _scope_events: scope_events,
+            options_open: false,
             query: None,
             query_text: String::new(),
             ran_with: (false, scope, None),
@@ -783,6 +767,11 @@ impl DocumentWorkspace {
         if self.active_document_id.is_none() {
             return;
         }
+        // With the find bar open and a term in it, the shortcut takes that
+        // search to the panel.
+        if self.open_find_in_search_panel(window, cx) {
+            return;
+        }
         let seed = self.active_document_id.and_then(|document_id| {
             self.selected_page_text(document_id, cx)
                 .as_deref()
@@ -801,6 +790,51 @@ impl DocumentWorkspace {
             self.restart_search(cx);
         }
         self.focus_search_query(window, cx);
+    }
+
+    /// The find bar's button, and the panel's shortcut while the bar is open
+    /// with a term in it: the Search panel opens in the Text mode with the
+    /// bar's text, Match case and Match whole word, runs the search, and the
+    /// find bar closes. The panel has no whole-word switch, so that goes into
+    /// the query as a `/regex/`. The panel keeps its own scope. Where the left
+    /// sidebar cannot show (a narrow window, Properties open), the bar stays
+    /// open and the focus where it was. Returns whether the find bar had a
+    /// term to take (so the shortcut does no more); an empty bar opens the
+    /// panel as the shortcut always did.
+    pub(super) fn open_find_in_search_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(document_id) = self.active_document_id else {
+            return false;
+        };
+        let Some(bar) = self.find_bars.get(&document_id).filter(|bar| bar.open) else {
+            return false;
+        };
+        let text = bar.input.read(cx).value().to_string();
+        if text.trim().is_empty() {
+            return false;
+        }
+        if !self.left_sidebar_fits {
+            return true;
+        }
+        let options = bar.options;
+        self.close_find_bar(window, cx);
+        self.left_panel = Some(LeftPanel::Search);
+        self.ensure_search_panel(window, cx);
+        self.set_search_mode(SearchMode::Text, cx);
+        let query = crate::search_query::panel_query_for_literal(&text, options);
+        if let Some(panel) = self.search_panel.as_mut() {
+            panel.match_case = options.match_case;
+            panel.input.update(cx, |input, cx| {
+                input.set_value(query, window, cx);
+            });
+        }
+        self.restart_search(cx);
+        self.focus_search_query(window, cx);
+        cx.notify();
+        true
     }
 
     /// A menu command for the panel or the find bar arrived with no focus in
@@ -1622,21 +1656,48 @@ impl DocumentWorkspace {
             .into_any_element()
     }
 
-    /// Where the search looks, as a property row: This document or All open
-    /// documents. Both modes share it.
-    fn render_search_scope(&self, panel: &SearchPanel) -> gpui::AnyElement {
-        // Beside its label while the menu shows "All open documents" whole;
-        // below it, at full width, in a narrower panel.
-        crate::property_controls::property_row(
-            "Look in",
-            gpui::div()
-                .id(DOCUMENT_SEARCH_SCOPE_ID)
-                .debug_selector(|| DOCUMENT_SEARCH_SCOPE_ID.into())
-                .w_full()
-                .child(gpui_component::select::Select::new(&panel.scope_select)),
-        )
-        .stack_when_narrow()
-        .into_any_element()
+    /// Where the search looks, as a row of tabs above Text and Visual: This
+    /// document or All open documents. Both modes share it.
+    fn render_search_scope(&self, panel: &SearchPanel, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let scope_button = |scope: SearchScope, cx: &mut Context<Self>| {
+            let id = search_scope_button_id(scope);
+            // The tabs read at the small text size, so both labels show whole
+            // in the sidebar's width.
+            crate::accessible_button::accessible_icon_button(
+                Button::new(id)
+                    .debug_selector(move || id.into())
+                    .accessibility_id(id)
+                    .compact()
+                    .child(
+                        gpui::div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .child(scope.label()),
+                    )
+                    // Each tab takes the room its label needs, and the rest
+                    // is shared, so "All open documents" is not cut while
+                    // "This document" has room to spare.
+                    .flex_auto()
+                    .min_w_0()
+                    .selected(panel.scope == scope)
+                    .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
+                        workspace.set_search_scope(scope, cx)
+                    })),
+                scope.label(),
+            )
+        };
+        gpui::div()
+            .id(DOCUMENT_SEARCH_SCOPE_ID)
+            .debug_selector(|| DOCUMENT_SEARCH_SCOPE_ID.into())
+            .w_full()
+            .child(
+                ButtonGroup::new("document-search-scope-tabs")
+                    .w_full()
+                    .outline()
+                    .children(SearchScope::ALL.map(|scope| scope_button(scope, cx))),
+            )
+            .into_any_element()
     }
 
     /// The panel, in the left sidebar: the header, then the controls with
@@ -1673,7 +1734,7 @@ impl DocumentWorkspace {
             )
             .child(self.render_search_header(cx));
         let mode = self.render_search_mode(panel, cx);
-        let scope = self.render_search_scope(panel);
+        let scope = self.render_search_scope(panel, cx);
         if panel.mode == SearchMode::Visual {
             let body = self.render_visual_search_body(panel, mode, scope, cx);
             return column
@@ -1819,6 +1880,7 @@ impl DocumentWorkspace {
         let controls = crate::property_controls::property_body()
             .id(DOCUMENT_SEARCH_CONTROLS_ID)
             .debug_selector(|| DOCUMENT_SEARCH_CONTROLS_ID.into())
+            .child(scope)
             .child(mode)
             .child(
                 v_flex()
@@ -1838,8 +1900,7 @@ impl DocumentWorkspace {
                                 .text_color(theme.foreground)
                                 .child(explanation),
                         )
-                    })
-                    .child(scope),
+                    }),
             );
         column
             .child(search_controls_region(controls, &panel.controls_scroll))

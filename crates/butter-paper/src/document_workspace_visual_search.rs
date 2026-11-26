@@ -37,6 +37,12 @@ pub const DOCUMENT_VISUAL_CLEAR_ID: &str = "document-visual-clear";
 pub const DOCUMENT_VISUAL_PREVIEW_ID: &str = "document-visual-preview";
 pub const DOCUMENT_VISUAL_ACTIONS_ID: &str = "document-visual-actions";
 pub const DOCUMENT_VISUAL_OPTIONS_ID: &str = "document-visual-options";
+/// The Options section: its heading (which opens and closes it), the muted
+/// summary in the closed heading, and the section as a whole.
+pub const DOCUMENT_VISUAL_OPTIONS_BODY_ID: &str = "document-visual-options-body";
+pub const DOCUMENT_VISUAL_OPTIONS_SECTION_ID: &str = "document-visual-options-section";
+pub const DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID: &str = "document-visual-options-toggle";
+pub const DOCUMENT_VISUAL_OPTIONS_SUMMARY_ID: &str = "document-visual-options-summary";
 /// The similarity slider's track.
 pub const DOCUMENT_VISUAL_SIMILARITY_ID: &str = "document-visual-similarity";
 /// The similarity row: the slider and its number.
@@ -176,6 +182,10 @@ pub struct VisualPanelSummary {
     /// Why there is no picture, or no search.
     pub error: Option<String>,
     pub similarity: u8,
+    /// The closed Options heading's summary: "80 % · turned · sizes".
+    pub options_summary: String,
+    /// Whether the Options section is open.
+    pub options_open: bool,
     pub turns: bool,
     pub sizes: bool,
     pub mirrored: bool,
@@ -261,6 +271,19 @@ struct VisualTarget {
 
 fn percent(value: f32) -> u8 {
     (value * 100.).round().clamp(0., 100.) as u8
+}
+
+/// What the closed Options heading says: the similarity, then each option
+/// that is on ("80 % · turned · sizes · mirrored"); an option that is off
+/// is left out.
+pub fn visual_options_summary(similarity: u8, turns: bool, sizes: bool, mirrored: bool) -> String {
+    let mut parts = vec![format!("{similarity} %")];
+    for (on, word) in [(turns, "turned"), (sizes, "sizes"), (mirrored, "mirrored")] {
+        if on {
+            parts.push(word.to_owned());
+        }
+    }
+    parts.join(" · ")
 }
 
 /// A typed similarity, such as "85" or "85 %", rounded to a whole percent
@@ -724,6 +747,17 @@ impl DocumentWorkspace {
     }
 
     /// The Text and Visual switch.
+    /// The Options section's heading: opens or closes it, and the panel
+    /// remembers which while it lives.
+    pub fn set_visual_options_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if let Some(panel) = self.search_panel.as_mut()
+            && panel.options_open != open
+        {
+            panel.options_open = open;
+            cx.notify();
+        }
+    }
+
     pub fn set_search_mode(&mut self, mode: SearchMode, cx: &mut Context<Self>) {
         let Some(panel) = self.search_panel.as_mut() else {
             return;
@@ -1774,8 +1808,33 @@ impl DocumentWorkspace {
                 "",
                 visual.mirrored,
                 cx,
-            ))
-            .child(scope);
+            ));
+        // The options are one collapsible section, closed at first, so the
+        // results get the height; its closed heading says what is set.
+        let options_summary = visual_options_summary(
+            percent(visual.threshold),
+            visual.turns,
+            visual.sizes,
+            visual.mirrored,
+        );
+        let options_owner = cx.entity().downgrade();
+        let options = crate::property_controls::PropertyDisclosureSection::new(
+            crate::property_controls::PropertyDisclosureIds {
+                root: DOCUMENT_VISUAL_OPTIONS_SECTION_ID,
+                toggle: DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID,
+                summary: DOCUMENT_VISUAL_OPTIONS_SUMMARY_ID,
+                body: DOCUMENT_VISUAL_OPTIONS_BODY_ID,
+            },
+            "Options",
+            panel.options_open,
+        )
+        .summary(options_summary)
+        .on_open_change(move |open, _, cx| {
+            let _ = options_owner.update(cx, |workspace, cx| {
+                workspace.set_visual_options_open(open, cx)
+            });
+        })
+        .body(options);
         let progress_text = summary
             .as_ref()
             .map(|summary| summary.progress.clone())
@@ -1837,6 +1896,7 @@ impl DocumentWorkspace {
         let controls = crate::property_controls::property_body()
             .id(super::DOCUMENT_SEARCH_CONTROLS_ID)
             .debug_selector(|| super::DOCUMENT_SEARCH_CONTROLS_ID.into())
+            .child(scope)
             .child(mode)
             .child(template_card)
             .child(options)
@@ -1983,6 +2043,13 @@ impl DocumentWorkspace {
             template_text,
             error: visual.error.clone(),
             similarity: percent(threshold),
+            options_summary: visual_options_summary(
+                percent(threshold),
+                visual.turns,
+                visual.sizes,
+                visual.mirrored,
+            ),
+            options_open: panel.options_open,
             turns: visual.turns,
             sizes: visual.sizes,
             mirrored: visual.mirrored,
@@ -2325,6 +2392,19 @@ fn visual_row_element(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_options_heading_summarises_the_values_and_leaves_out_the_off_ones() {
+        assert_eq!(
+            visual_options_summary(80, true, true, true),
+            "80 % · turned · sizes · mirrored"
+        );
+        assert_eq!(
+            visual_options_summary(85, false, true, false),
+            "85 % · sizes"
+        );
+        assert_eq!(visual_options_summary(70, false, false, false), "70 %");
+    }
 
     /// With dark pages on, a hit picture's paper and ink take the dark
     /// paper colours; in real colours they stay as they are.

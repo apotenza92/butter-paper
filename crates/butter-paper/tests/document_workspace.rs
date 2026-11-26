@@ -3563,6 +3563,18 @@ fn rendered_engineering_pointer_point(
             "cloud.vertex.0" => annotation.points[0],
             "cloud.vertex.1" => annotation.points[1],
             "cloud.vertex.2" => *annotation.points.last().unwrap(),
+            resize if resize.starts_with("cloud.resize.") => {
+                let handle = RectangleResizeHandle::ALL
+                    .into_iter()
+                    .find(|handle| {
+                        butter_paper::annotation_adapter::cloud_resize_handle_id(*handle) == resize
+                    })
+                    .unwrap_or_else(|| panic!("unknown Cloud resize selector {resize}"));
+                handle.point(
+                    butter_paper::annotation_model::cloud_rectangle(&annotation.points)
+                        .expect("a Cloud with resize handles is a rectangle"),
+                )
+            }
             "cloud.body" => annotation
                 .scallop_path
                 .iter()
@@ -31563,13 +31575,16 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
         workspace.select_annotation(request.document_id, &cloud_id, cx)
     }));
     cx.update(|window, cx| window.draw(cx).clear(cx));
+    // A drawn Cloud is a rectangle: it shows the Rectangle's eight handles,
+    // not vertex handles.
+    assert!(cx.debug_bounds("cloud.vertex.1").is_none());
     let vertex = cx
-        .debug_bounds("cloud.vertex.1")
-        .expect("selected Cloud must expose its rendered second vertex handle");
+        .debug_bounds("cloud.resize.e")
+        .expect("selected Cloud must expose its rendered east edge handle");
     let current_layer = cx.debug_bounds(layer_id).unwrap();
     let current_scale = (f32::from(current_layer.size.width) / 612.)
         .min(f32::from(current_layer.size.height) / 792.);
-    let vertex_pdf = created.clouds[0].points()[1];
+    let vertex_pdf = RectangleResizeHandle::East.point(created.clouds[0].rectangle().unwrap());
     let vertex_center = point(
         current_layer.left()
             + px((f32::from(current_layer.size.width) - 612. * current_scale) / 2.)
@@ -31615,9 +31630,9 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
         &workspace,
         request.document_id,
         &[
-            "cloud.vertex.0",
-            "cloud.vertex.1",
-            "cloud.vertex.2",
+            "cloud.resize.nw",
+            "cloud.resize.e",
+            "cloud.resize.s",
             "cloud.body",
         ],
     );
@@ -31625,7 +31640,7 @@ fn cloud_workspace_engineering_pointer_renders_real_component_tool_and_retains_s
         cx,
         &workspace,
         request.document_id,
-        "cloud.vertex.0",
+        "cloud.resize.nw",
     );
 }
 
@@ -33273,7 +33288,9 @@ fn real_cloud_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext
         .unwrap();
     let moved_vertex = PdfPoint::new(288., 378.).unwrap();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx.debug_bounds("cloud.vertex.1").is_some());
+    // The four clicks drew a rectangle: its (264, 360) corner is the
+    // south-east resize handle, which moves two sides.
+    assert!(cx.debug_bounds("cloud.resize.se").is_some());
     cx.simulate_mouse_down(to_view(264., 360.), MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(
         to_view(moved_vertex.x, moved_vertex.y),
@@ -34022,6 +34039,27 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
     assert_eq!(edited_cloud_plus.cloud_points()[1], moved_vertex);
     assert_eq!(edited_cloud_plus.leader_points().len(), 3);
     assert_eq!(edited_cloud_plus.border_effect_intensity(), next_intensity);
+    // The Intensity changes the bumps: the outline is made again from the
+    // control points, as a Cloud's is.
+    let generated_bumps = |intensity: f64| {
+        butter_paper::annotation_model::CloudAnnotation::new(
+            cloud_plus_id.clone(),
+            0,
+            edited_cloud_plus.cloud_points().to_vec(),
+            intensity,
+            edited_cloud_plus.appearance.cloud().clone(),
+        )
+        .unwrap()
+        .scallop_path()
+    };
+    assert_eq!(
+        edited_cloud_plus.scallop_path(),
+        generated_bumps(next_intensity)
+    );
+    assert_ne!(
+        edited_cloud_plus.scallop_path(),
+        generated_bumps(current.border_effect_intensity())
+    );
     assert_eq!(
         edited_cloud_plus.appearance.cloud().fill_color(),
         Some("#fde68a")
@@ -34138,6 +34176,20 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         .find(|cloud_plus| cloud_plus.id == cloud_plus_id)
         .expect("a fresh workspace must reopen one logical Cloud+");
     assert!(fresh_cloud_plus.same_persisted_state_as(edited_cloud_plus));
+    // The new bumps are what was saved: the reopened outline is the one the
+    // new Intensity makes.
+    assert_eq!(fresh_cloud_plus.border_effect_intensity(), next_intensity);
+    let saved_bumps = fresh_cloud_plus.scallop_path();
+    let wanted_bumps = edited_cloud_plus.scallop_path();
+    assert_eq!(saved_bumps.len(), wanted_bumps.len());
+    assert!(
+        saved_bumps
+            .iter()
+            .zip(&wanted_bumps)
+            .all(|(saved, wanted)| (saved.x - wanted.x).abs() < 1e-2
+                && (saved.y - wanted.y).abs() < 1e-2),
+        "the saved appearance stream has the new bumps"
+    );
     for (reopened, dragged) in fresh_cloud_plus.leader_points().iter().zip(&dragged_leader) {
         assert!(
             (reopened.x - dragged.x).abs() < 1e-3 && (reopened.y - dragged.y).abs() < 1e-3,
@@ -52111,7 +52163,7 @@ fn a_selected_cloud_plus_properties_change_its_intensity_line_and_text(cx: &mut 
     place_caption_markup(&workspace, document_id, cx, "k");
     assert!(
         cx.debug_bounds(CAPTION_INSPECTOR_INTENSITY_ID).is_some(),
-        "a Cloud+ shows its cloud intensity"
+        "a Cloud+ shows its bump size"
     );
     let inspector = workspace
         .read_with(cx, |workspace, _| workspace.caption_property_inspector())
@@ -53022,7 +53074,10 @@ fn a_cloud_plus_leader_tip_and_knee_drag_with_the_point_cursor(cx: &mut TestAppC
     let scene = workspace.read_with(cx, |workspace, cx| {
         workspace.annotation_scene(document_id, 0, cx)
     });
-    let leader_start = cloud_plus.cloud_points().len() + 8;
+    // A rectangular cloud has the Rectangle's eight handles, then the text
+    // box's eight, then the leader's.
+    assert!(cloud_plus.cloud_rectangle().is_some());
+    let leader_start = 8 + 8;
     for index in leader_start..leader_start + 2 {
         assert_eq!(
             annotation_resize_cursor_style(&scene, &cloud_plus.id, index),
@@ -53252,4 +53307,309 @@ fn the_cloud_plus_landing_comes_from_its_tool_default_and_its_properties(cx: &mu
         })
         .unwrap();
     assert_eq!(after.undo_depth, before.undo_depth + 2);
+}
+
+/// Presses at `from`, drags to `to` and lets go, as one drag.
+fn press_drag_release(cx: &mut gpui::VisualTestContext, from: Point<Pixels>, to: Point<Pixels>) {
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+}
+
+fn snapshot_of(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+) -> butter_paper::annotation_model::AnnotationSnapshot {
+    workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+}
+
+/// Draws a Cloud+ and opens its text for editing in place, with " typed"
+/// added; the Cloud+ is selected.
+fn edit_cloud_plus_text(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+) -> CloudPlusAnnotation {
+    let cloud_plus = draw_test_cloud_plus(workspace, document_id, cx);
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &cloud_plus.id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let project = page_projection(cx, document_id);
+    let text_box = cloud_plus.text_box;
+    double_click_at(
+        cx,
+        project(
+            (text_box.x + text_box.width / 2.) as f32,
+            (text_box.y + text_box.height / 2.) as f32,
+        ),
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some(),
+        "the Cloud+'s text is open for editing"
+    );
+    cx.simulate_keystrokes("end");
+    cx.simulate_keystrokes("x y");
+    cloud_plus
+}
+
+/// While a Cloud+'s text is edited in place, a drag on its cloud commits the
+/// text and moves the Cloud+ in the same press.
+#[gpui::test]
+fn dragging_a_cloud_plus_body_during_text_edit_commits_the_text_and_moves_it(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    let cloud_plus = edit_cloud_plus_text(&workspace, document_id, cx);
+    let revision = snapshot_of(&workspace, document_id, cx).revision;
+    let project = page_projection(cx, document_id);
+    let outline = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(document_id, 0, cx).cloud_pluses[0].scallop_path[2]
+    });
+    let from = project(outline.x as f32, outline.y as f32);
+    let to = point(from.x + px(40.), from.y + px(25.));
+    press_drag_release(cx, from, to);
+
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None,
+        "the press ended the text editing"
+    );
+    let after = snapshot_of(&workspace, document_id, cx);
+    let moved = &after.cloud_pluses[0];
+    assert!(moved.content().ends_with("xy"), "{:?}", moved.content());
+    assert!(
+        moved.cloud_points()[0].x > cloud_plus.cloud_points()[0].x + 10.,
+        "the same press moved the Cloud+"
+    );
+    // The text and the move are one undo step each.
+    assert_eq!(after.revision, revision + 2);
+    cx.simulate_keystrokes("secondary-z");
+    let undone = snapshot_of(&workspace, document_id, cx);
+    assert_eq!(
+        undone.cloud_pluses[0].cloud_points(),
+        cloud_plus.cloud_points()
+    );
+    assert!(undone.cloud_pluses[0].content().ends_with("xy"));
+}
+
+/// A press on a Cloud+'s resize handle during text editing commits the text
+/// and resizes; a press in the editor keeps the caret; a press on empty page
+/// only ends the editing.
+#[gpui::test]
+fn a_cloud_plus_handle_resizes_during_text_edit_and_editor_and_empty_page_keep_their_rules(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    let cloud_plus = edit_cloud_plus_text(&workspace, document_id, cx);
+    let project = page_projection(cx, document_id);
+
+    // A press inside the editor puts the caret there and changes nothing.
+    let history = snapshot_of(&workspace, document_id, cx).revision;
+    let text_box = cloud_plus.text_box;
+    cx.simulate_click(
+        project(
+            (text_box.x + text_box.width / 2.) as f32,
+            (text_box.y + text_box.height / 2.) as f32,
+        ),
+        Modifiers::default(),
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some(),
+        "a press in the editor keeps editing"
+    );
+    assert_eq!(snapshot_of(&workspace, document_id, cx).revision, history);
+
+    // The cloud's south-east corner resizes it, with the text committed.
+    let rect = cloud_plus.cloud_rectangle().unwrap();
+    let corner = butter_paper::annotation_model::RectangleResizeHandle::SouthEast.point(rect);
+    let from = project(corner.x as f32, corner.y as f32);
+    press_drag_release(cx, from, point(from.x + px(30.), from.y + px(20.)));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None
+    );
+    let after = snapshot_of(&workspace, document_id, cx);
+    let resized = after.cloud_pluses[0].cloud_rectangle().unwrap();
+    assert!(resized.width > rect.width + 10., "{resized:?} {rect:?}");
+    assert!(after.cloud_pluses[0].content().ends_with("xy"));
+
+    // Editing again, a press on empty page only ends it.
+    let text_box = after.cloud_pluses[0].text_box;
+    let project = page_projection(cx, document_id);
+    double_click_at(
+        cx,
+        project(
+            (text_box.x + text_box.width / 2.) as f32,
+            (text_box.y + text_box.height / 2.) as f32,
+        ),
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some()
+    );
+    cx.simulate_keystrokes("end");
+    cx.simulate_keystrokes("z");
+    let before_empty = snapshot_of(&workspace, document_id, cx);
+    press_drag_release(cx, project(500., 150.), project(560., 200.));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None
+    );
+    let after_empty = snapshot_of(&workspace, document_id, cx);
+    assert_eq!(after_empty.cloud_pluses.len(), 1);
+    assert_eq!(
+        after_empty.cloud_pluses[0].cloud_points(),
+        before_empty.cloud_pluses[0].cloud_points(),
+        "the press on empty page started no move or resize"
+    );
+    assert!(after_empty.cloud_pluses[0].content().ends_with('z'));
+    assert!(after_empty.rectangles.is_empty() && after_empty.cloud_pluses.len() == 1);
+}
+
+/// The same holds for a Callout: its leader's knee drags while its text is
+/// edited, committing the text first.
+#[gpui::test]
+fn dragging_a_callout_knee_or_leader_during_text_edit_commits_the_text_and_drags(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    cx.simulate_keystrokes("q");
+    let project = page_projection(cx, document_id);
+    cx.simulate_click(project(120., 420.), Modifiers::default());
+    cx.simulate_click(project(260., 520.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let callout = snapshot_of(&workspace, document_id, cx).callouts[0].clone();
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &callout.id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let project = page_projection(cx, document_id);
+    let text_box = callout.text_box;
+    double_click_at(
+        cx,
+        project(
+            (text_box.x + text_box.width / 2.) as f32,
+            (text_box.y + text_box.height / 2.) as f32,
+        ),
+    );
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some()
+    );
+    cx.simulate_keystrokes("end");
+    cx.simulate_keystrokes("x y");
+
+    let knee = callout.leader_points()[1];
+    let from = project(knee.x as f32, knee.y as f32);
+    press_drag_release(cx, from, point(from.x + px(5.), from.y + px(40.)));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None,
+        "the press ended the text editing"
+    );
+    let after = snapshot_of(&workspace, document_id, cx).callouts[0].clone();
+    assert!(after.content().ends_with("xy"), "{:?}", after.content());
+    assert!(
+        (after.leader_points()[1].y - knee.y).abs() > 10.,
+        "the same press dragged the knee: {:?} -> {:?}",
+        knee,
+        after.leader_points()[1]
+    );
+
+    // The leader's body, with the text edited again, moves the Callout.
+    let project = page_projection(cx, document_id);
+    let text_box = after.text_box;
+    double_click_at(
+        cx,
+        project(
+            (text_box.x + text_box.width / 2.) as f32,
+            (text_box.y + text_box.height / 2.) as f32,
+        ),
+    );
+    cx.simulate_keystrokes("z");
+    let tip = after.leader_points()[0];
+    let knee = after.leader_points()[1];
+    let middle = project(
+        ((tip.x + knee.x) / 2.) as f32,
+        ((tip.y + knee.y) / 2.) as f32,
+    );
+    press_drag_release(cx, middle, point(middle.x + px(30.), middle.y));
+    let moved = snapshot_of(&workspace, document_id, cx).callouts[0].clone();
+    assert!(moved.content().ends_with('z'));
+    assert!(moved.leader_points()[0].x > tip.x + 10.);
+    assert!(moved.text_box.x > after.text_box.x + 10.);
+}
+
+/// A Text Box edited in place resizes from its edge handle in the press that
+/// commits its text; a press in the text keeps the caret.
+#[gpui::test]
+fn dragging_a_text_box_handle_during_text_edit_commits_the_text_and_resizes(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    let id = create_test_text_box(&workspace, document_id, cx);
+    let project = page_projection(cx, document_id);
+    double_click_at(cx, project(330., 352.));
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some()
+    );
+    cx.simulate_keystrokes("end");
+    cx.simulate_keystrokes("x y");
+    // A press in the text keeps editing.
+    cx.simulate_click(project(330., 352.), Modifiers::default());
+    assert!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx))
+            .is_some()
+    );
+
+    // Just outside the east edge's middle handle (the box is 300..460).
+    let from = project(463., 330.);
+    press_drag_release(cx, from, point(from.x + px(30.), from.y));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None
+    );
+    let after = snapshot_of(&workspace, document_id, cx);
+    let text_box = after
+        .text_boxes
+        .iter()
+        .find(|text_box| text_box.id == id)
+        .unwrap();
+    assert!(
+        text_box.content().ends_with("xy"),
+        "{:?}",
+        text_box.content()
+    );
+    assert!(
+        text_box.layout_rect.width > 160. + 10.,
+        "{:?}",
+        text_box.layout_rect
+    );
 }

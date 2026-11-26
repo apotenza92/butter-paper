@@ -612,11 +612,11 @@ impl Render for EngineeringVisualPropertyInspector {
                         ),
                 ))
                 .row(property_row(
-                    "Intensity",
+                    "Bump size",
                     property_number(
                         PropertyNumericInput::new(
                             ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
-                            "Intensity",
+                            "Bump size",
                             &self.intensity,
                         )
                         .disabled(disabled),

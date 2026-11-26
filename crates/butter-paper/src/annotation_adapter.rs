@@ -29,8 +29,9 @@ use crate::annotation_model::{
     SceneLength, SceneMeasurementPath, SceneRectangle, SceneRedact, SceneSnapshot,
     SceneStraightLine, SceneVertexPath, SnapshotAnnotation, SpatialQueryWork,
     StraightLineAnnotation, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
-    TextBoxStyle, VertexPathAnnotation, VertexPathKind, box_outline_resize_handle,
-    ellipse_move_zone_contains, ellipse_outline_resize_handle,
+    TextBoxStyle, VertexPathAnnotation, VertexPathKind, box_outline_resize_handle, cloud_rectangle,
+    cloud_rectangle_handle_points, cloud_rectangle_resized, ellipse_move_zone_contains,
+    ellipse_outline_resize_handle,
 };
 use crate::cloud_plus_routing::{
     CLOUD_PLUS_LANDING_PT, CLOUD_PLUS_TEXT_GAP_PT, CloudPlusObstacle, CloudPlusRoutingContext,
@@ -99,6 +100,19 @@ pub const fn redact_resize_handle_id(handle: RectangleResizeHandle) -> &'static 
         RectangleResizeHandle::South => "redact.resize.s",
         RectangleResizeHandle::SouthWest => "redact.resize.sw",
         RectangleResizeHandle::West => "redact.resize.w",
+    }
+}
+
+pub const fn cloud_resize_handle_id(handle: RectangleResizeHandle) -> &'static str {
+    match handle {
+        RectangleResizeHandle::NorthWest => "cloud.resize.nw",
+        RectangleResizeHandle::North => "cloud.resize.n",
+        RectangleResizeHandle::NorthEast => "cloud.resize.ne",
+        RectangleResizeHandle::East => "cloud.resize.e",
+        RectangleResizeHandle::SouthEast => "cloud.resize.se",
+        RectangleResizeHandle::South => "cloud.resize.s",
+        RectangleResizeHandle::SouthWest => "cloud.resize.sw",
+        RectangleResizeHandle::West => "cloud.resize.w",
     }
 }
 
@@ -1027,6 +1041,8 @@ enum CalloutPointerEditKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CloudPlusPointerEditKind {
     CloudVertex(usize),
+    /// A handle of a rectangular cloud, which resizes as a Rectangle does.
+    CloudResize(RectangleResizeHandle),
     TextBoxResize(RectangleResizeHandle),
     LeaderPoint(usize),
     TextBox,
@@ -1036,6 +1052,8 @@ enum CloudPlusPointerEditKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CloudPointerEditKind {
     Vertex(usize),
+    /// A handle of a rectangular cloud, which resizes as a Rectangle does.
+    Resize(RectangleResizeHandle),
     Body,
 }
 
@@ -3886,8 +3904,18 @@ impl AnnotationAdapter {
                 id,
                 kind:
                     CloudPlusPointerEditKind::CloudVertex(_)
+                    | CloudPlusPointerEditKind::CloudResize(_)
                     | CloudPlusPointerEditKind::TextBoxResize(_)
                     | CloudPlusPointerEditKind::LeaderPoint(_),
+                ..
+            }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
+                Some(id.clone())
+            }
+            Some(ActivePointer::CloudEdit {
+                document_id: active_document_id,
+                page_index: active_page_index,
+                id,
+                kind: CloudPointerEditKind::Resize(_),
                 ..
             }) if (*active_document_id, *active_page_index) == (document_id, page_index) => {
                 Some(id.clone())
@@ -4277,6 +4305,40 @@ impl AnnotationAdapter {
                 original_rect: original.text_box,
                 geometry: EqualSizeResizeGeometry::Rectangle,
             }),
+            Some(ActivePointer::CloudEdit {
+                document_id,
+                page_index,
+                id,
+                kind: CloudPointerEditKind::Resize(handle),
+                original,
+                ..
+            }) => original
+                .rectangle()
+                .map(|original_rect| EqualSizeResizeTarget {
+                    document_id: *document_id,
+                    page_index: *page_index,
+                    id: id.clone(),
+                    handle: *handle,
+                    original_rect,
+                    geometry: EqualSizeResizeGeometry::Rectangle,
+                }),
+            Some(ActivePointer::CloudPlusEdit {
+                document_id,
+                page_index,
+                id,
+                kind: CloudPlusPointerEditKind::CloudResize(handle),
+                original,
+                ..
+            }) => original
+                .cloud_rectangle()
+                .map(|original_rect| EqualSizeResizeTarget {
+                    document_id: *document_id,
+                    page_index: *page_index,
+                    id: id.clone(),
+                    handle: *handle,
+                    original_rect,
+                    geometry: EqualSizeResizeGeometry::Rectangle,
+                }),
             Some(ActivePointer::CloudPlusEdit {
                 document_id,
                 page_index,
@@ -7305,8 +7367,7 @@ impl AnnotationAdapter {
                 / self.observed_pixels_per_point.0.max(f64::EPSILON),
         );
         let to_hit = |annotation: &CloudAnnotation| {
-            annotation
-                .points()
+            cloud_handle_points(annotation.points())
                 .iter()
                 .enumerate()
                 .rev()
@@ -8420,7 +8481,9 @@ impl AnnotationAdapter {
                     }
                     let snap_anchor_points = match kind {
                         CloudPointerEditKind::Body => original.points().to_vec(),
-                        CloudPointerEditKind::Vertex(_) => Vec::new(),
+                        CloudPointerEditKind::Vertex(_) | CloudPointerEditKind::Resize(_) => {
+                            Vec::new()
+                        }
                     };
                     self.active = Some(ActivePointer::CloudEdit {
                         document_id,
@@ -11104,6 +11167,12 @@ impl AnnotationAdapter {
                             leader_points: preview.leader_points().to_vec(),
                         }
                     }
+                    CloudPlusPointerEditKind::CloudResize(_) => {
+                        AnnotationEdit::SetCloudPlusCloudOutline {
+                            points: preview.cloud_points().to_vec(),
+                            leader_points: preview.leader_points().to_vec(),
+                        }
+                    }
                     CloudPlusPointerEditKind::TextBoxResize(_)
                     | CloudPlusPointerEditKind::TextBox => AnnotationEdit::SetCloudPlusTextBox {
                         text_box: preview.text_box,
@@ -11156,6 +11225,16 @@ impl AnnotationAdapter {
                         vertex_index,
                         point,
                     },
+                    CloudPointerEditKind::Resize(handle) => AnnotationEdit::SetCloudOutline(
+                        cloud_rectangle_resized(original.points(), handle, point).ok_or_else(
+                            || {
+                                AnnotationError::InvalidGeometry(
+                                    "a cloud resizes from rectangle handles only as a rectangle"
+                                        .into(),
+                                )
+                            },
+                        )?,
+                    ),
                     CloudPointerEditKind::Body => AnnotationEdit::TranslateCloud {
                         delta_x: point.x - start.x,
                         delta_y: point.y - start.y,
@@ -13894,6 +13973,7 @@ impl AnnotationAdapter {
                 scene.cloud_pluses.push(SceneCloudPlus {
                     id: id.clone(),
                     cloud_points,
+                    rectangular: false,
                     scallop_path: visible_path,
                     border_effect_intensity: properties.cloud_intensity,
                     leader_points: placement.leader.points,
@@ -13970,6 +14050,7 @@ impl AnnotationAdapter {
                     id: draft.id.clone(),
                     scallop_path: cloud.scallop_path(),
                     points,
+                    rectangular: false,
                     border_effect_intensity: properties.cloud_intensity,
                     appearance,
                     selected: true,
@@ -14034,6 +14115,7 @@ impl AnnotationAdapter {
             scene.clouds.push(SceneCloud {
                 id: draft.id.clone(),
                 points,
+                rectangular: false,
                 scallop_path,
                 border_effect_intensity: properties.cloud_intensity,
                 appearance,
@@ -14578,8 +14660,8 @@ impl AnnotationAdapter {
                     }
                 }
                 CalloutPointerEditKind::LeaderPoint(index) => {
-                    if let Some(point) = leader_points.get_mut(*index) {
-                        *point = *current;
+                    if let Ok(dragged) = original.with_leader_point(*index, *current) {
+                        leader_points = dragged.leader_points().to_vec();
                     }
                 }
                 CalloutPointerEditKind::TextBox => {
@@ -14674,10 +14756,19 @@ impl AnnotationAdapter {
                         active_handle: *index,
                     }
                 }
+                CloudPlusPointerEditKind::CloudResize(handle) => {
+                    SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: RectangleResizeHandle::ALL
+                            .iter()
+                            .position(|candidate| candidate == handle)
+                            .expect("a Cloud+ cloud resize handle must use the shared order"),
+                    }
+                }
                 CloudPlusPointerEditKind::TextBoxResize(handle) => {
                     SceneInteractionFeedback::Transform {
                         chrome_visible,
-                        active_handle: original.cloud_points().len()
+                        active_handle: cloud_handle_count(original.cloud_points())
                             + RectangleResizeHandle::ALL
                                 .iter()
                                 .position(|candidate| candidate == handle)
@@ -14687,7 +14778,7 @@ impl AnnotationAdapter {
                 CloudPlusPointerEditKind::LeaderPoint(index) => {
                     SceneInteractionFeedback::Transform {
                         chrome_visible,
-                        active_handle: original.cloud_points().len()
+                        active_handle: cloud_handle_count(original.cloud_points())
                             + RectangleResizeHandle::ALL.len()
                             + *index,
                     }
@@ -14720,6 +14811,11 @@ impl AnnotationAdapter {
                         *point = *current;
                     }
                 }
+                CloudPointerEditKind::Resize(handle) => {
+                    if let Some(resized) = cloud_rectangle_resized(&points, *handle, *current) {
+                        points = resized;
+                    }
+                }
                 CloudPointerEditKind::Body => {
                     let delta_x = current.x - start.x;
                     let delta_y = current.y - start.y;
@@ -14743,6 +14839,13 @@ impl AnnotationAdapter {
                     CloudPointerEditKind::Vertex(index) => SceneInteractionFeedback::Transform {
                         chrome_visible,
                         active_handle: *index,
+                    },
+                    CloudPointerEditKind::Resize(handle) => SceneInteractionFeedback::Transform {
+                        chrome_visible,
+                        active_handle: RectangleResizeHandle::ALL
+                            .iter()
+                            .position(|candidate| candidate == handle)
+                            .expect("a cloud resize handle must use the shared order"),
                     },
                     CloudPointerEditKind::Body => SceneInteractionFeedback::Move { chrome_visible },
                 };
@@ -16496,10 +16599,14 @@ fn hit_selected_cloud_plus_control(
     if let Some(index) =
         hit_cloud_plus_handle(annotation, point, tolerance, observed_pixels_per_point)
     {
-        let cloud_count = annotation.cloud_points().len();
+        let cloud_count = cloud_handle_count(annotation.cloud_points());
         let resize_end = cloud_count + RectangleResizeHandle::ALL.len();
         let kind = if index < cloud_count {
-            CloudPlusPointerEditKind::CloudVertex(index)
+            if annotation.cloud_rectangle().is_some() {
+                CloudPlusPointerEditKind::CloudResize(RectangleResizeHandle::ALL[index])
+            } else {
+                CloudPlusPointerEditKind::CloudVertex(index)
+            }
         } else if index < resize_end {
             CloudPlusPointerEditKind::TextBoxResize(RectangleResizeHandle::ALL[index - cloud_count])
         } else {
@@ -16524,7 +16631,7 @@ fn hit_cloud_plus_handle(
         crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
             / observed_pixels_per_point.max(f64::EPSILON),
     );
-    let cloud_count = annotation.cloud_points().len();
+    let cloud_count = cloud_handle_count(annotation.cloud_points());
     let resize_end = cloud_count + RectangleResizeHandle::ALL.len();
     // The tip and the knee have handles. The connection follows the text
     // box, so the box's own side handle is there instead.
@@ -16549,13 +16656,29 @@ fn hit_cloud_plus_handle(
             .position(|candidate| *candidate == handle)
             .map(|index| cloud_count + index);
     }
-    annotation
-        .cloud_points()
+    cloud_handle_points(annotation.cloud_points())
         .iter()
         .enumerate()
         .rev()
         .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
         .map(|(index, _)| index)
+}
+
+/// How many handles a cloud's outline shows: the eight of a rectangle, or one
+/// at each vertex of any other outline.
+fn cloud_handle_count(points: &[PdfPoint]) -> usize {
+    if cloud_rectangle(points).is_some() {
+        RectangleResizeHandle::ALL.len()
+    } else {
+        points.len()
+    }
+}
+
+/// The places of a cloud's outline handles: the eight of a rectangle, in
+/// [`RectangleResizeHandle::ALL`]'s order, or its vertices.
+fn cloud_handle_points(points: &[PdfPoint]) -> Vec<PdfPoint> {
+    cloud_rectangle_handle_points(points)
+        .map_or_else(|| points.to_vec(), |handles| handles.to_vec())
 }
 
 fn hit_callout_handle(
@@ -16606,13 +16729,17 @@ fn hit_selected_cloud_control(
         crate::annotation_model::RESIZE_HANDLE_GRAB_CSS_PX
             / observed_pixels_per_point.max(f64::EPSILON),
     );
-    if let Some((index, _)) = annotation
-        .points()
+    if let Some((index, _)) = cloud_handle_points(annotation.points())
         .iter()
         .enumerate()
         .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
     {
-        return Some((annotation.id.clone(), CloudPointerEditKind::Vertex(index)));
+        let kind = if annotation.rectangle().is_some() {
+            CloudPointerEditKind::Resize(RectangleResizeHandle::ALL[index])
+        } else {
+            CloudPointerEditKind::Vertex(index)
+        };
+        return Some((annotation.id.clone(), kind));
     }
     cloud_hit(annotation, point, tolerance)
         .then(|| (annotation.id.clone(), CloudPointerEditKind::Body))
@@ -16776,6 +16903,24 @@ fn resolve_cloud_plus_pointer_edit(
             )?
             .points;
         }
+        CloudPlusPointerEditKind::CloudResize(handle) => {
+            cloud_points =
+                cloud_rectangle_resized(&cloud_points, handle, current).ok_or_else(|| {
+                    AnnotationError::InvalidGeometry(
+                        "a Cloud+ resizes from rectangle handles only as a rectangle".into(),
+                    )
+                })?;
+            let visible_path =
+                cloud_visible_path(&cloud_points, original.border_effect_intensity())?;
+            leader_points = reroute_cloud_plus_leader(
+                &cloud_points,
+                &visible_path,
+                text_box,
+                &leader_points,
+                routing_context,
+            )?
+            .points;
+        }
         CloudPlusPointerEditKind::TextBoxResize(handle) => {
             text_box = original.text_box.rotated_resize_from_handle(
                 0.,
@@ -16848,7 +16993,7 @@ fn resolve_cloud_plus_pointer_edit(
         }
     }
     let cloud_appearance_path = match kind {
-        CloudPlusPointerEditKind::CloudVertex(_) => None,
+        CloudPlusPointerEditKind::CloudVertex(_) | CloudPlusPointerEditKind::CloudResize(_) => None,
         CloudPlusPointerEditKind::Body => {
             original.translated_cloud_appearance_path(current.x - start.x, current.y - start.y)?
         }
@@ -18615,7 +18760,9 @@ mod tests {
         // With no landing, the knee's handle is where the text meets it.
         assert_eq!(
             hit_cloud_plus_handle(&restyled, connection, 0.5, 1.),
-            Some(restyled.cloud_points().len() + RectangleResizeHandle::ALL.len() + 1)
+            Some(
+                cloud_handle_count(restyled.cloud_points()) + RectangleResizeHandle::ALL.len() + 1
+            )
         );
         adapter
             .set_cloud_plus_style_with_routing_supplement(
@@ -18630,9 +18777,8 @@ mod tests {
         let restyled = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
         let handle = hit_cloud_plus_handle(&restyled, restyled.leader_points()[2], 0.5, 1.);
         assert!(
-            handle
-                .is_none_or(|index| index
-                    < restyled.cloud_points().len() + RectangleResizeHandle::ALL.len()),
+            handle.is_none_or(|index| index
+                < cloud_handle_count(restyled.cloud_points()) + RectangleResizeHandle::ALL.len()),
             "the connection is the text box's side handle, not a leader handle: {handle:?}"
         );
     }
@@ -19541,9 +19687,10 @@ mod tests {
         assert_ne!(preview.scallop_path, original.scallop_path());
         assert_eq!(
             preview.feedback,
+            // The south-west corner of a rectangular cloud.
             SceneInteractionFeedback::Transform {
                 chrome_visible: true,
-                active_handle: 0,
+                active_handle: 6,
             }
         );
         assert_eq!(adapter.snapshot(7).unwrap(), before);
@@ -19591,6 +19738,678 @@ mod tests {
             original.border_effect_intensity()
         );
         assert_eq!(moved.clouds[0].appearance, original.appearance);
+    }
+
+    fn seed_skewed_cloud(adapter: &mut AnnotationAdapter, points: Vec<PdfPoint>) -> MarkupId {
+        let id = MarkupId::new("cloud:skewed").unwrap();
+        let annotation = CloudAnnotation::new(
+            id.clone(),
+            0,
+            points,
+            3.,
+            RectangleAppearance::new("#ff0000", 2., None::<String>, 0.8).unwrap(),
+        )
+        .unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::Cloud(
+                annotation,
+            )))
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn a_rectangular_cloud_shows_eight_rectangle_handles_and_no_vertex_handles() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_cloud(&mut adapter);
+        let scene = adapter.document_scene(7, 0);
+        assert!(scene.clouds[0].rectangular);
+        // The eight handles of the Rectangle, in its order: corners and
+        // edge middles of the 20..100 by 20..80 outline.
+        let places = [
+            point(20., 80.),
+            point(60., 80.),
+            point(100., 80.),
+            point(100., 50.),
+            point(100., 20.),
+            point(60., 20.),
+            point(20., 20.),
+            point(20., 50.),
+        ];
+        for (index, place) in places.into_iter().enumerate() {
+            assert_eq!(
+                adapter.hover_cloud_handle(7, 0, place, 1.).unwrap(),
+                Some((id.clone(), index)),
+                "handle {index}"
+            );
+        }
+        assert_eq!(
+            cloud_rectangle_handle_points(adapter.snapshot(7).unwrap().clouds[0].points()),
+            Some(places)
+        );
+    }
+
+    #[test]
+    fn a_rectangle_cloud_edge_drag_moves_only_that_side_and_undoes_in_one_step() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_cloud(&mut adapter);
+        let before = adapter.snapshot(7).unwrap();
+        let history = adapter.history_depths(7);
+
+        // The middle of the east edge: the whole side follows the pointer,
+        // and only along x.
+        adapter.pointer_down(7, 0, 1, point(100., 50.), 4.).unwrap();
+        adapter.pointer_move(1, point(140., 66.)).unwrap();
+        let preview = adapter.document_scene(7, 0).clouds.remove(0);
+        assert_eq!(
+            preview.points,
+            vec![
+                point(20., 20.),
+                point(140., 20.),
+                point(140., 80.),
+                point(20., 80.)
+            ]
+        );
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: true,
+                active_handle: 3,
+            }
+        );
+        assert_eq!(
+            adapter.snapshot(7).unwrap(),
+            before,
+            "the preview is not history"
+        );
+        assert_eq!(
+            adapter.pointer_up(1, point(140., 66.)).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id)
+        );
+        let resized = adapter.snapshot(7).unwrap();
+        let cloud = &resized.clouds[0];
+        assert_eq!(
+            cloud.points(),
+            &[
+                point(20., 20.),
+                point(140., 20.),
+                point(140., 80.),
+                point(20., 80.)
+            ]
+        );
+        // The bumps are made again for the new size, as on creation.
+        assert_eq!(
+            cloud.scallop_path(),
+            CloudAnnotation::new(
+                cloud.id.clone(),
+                0,
+                cloud.points().to_vec(),
+                cloud.border_effect_intensity(),
+                cloud.appearance.clone(),
+            )
+            .unwrap()
+            .scallop_path()
+        );
+        assert_ne!(cloud.scallop_path(), before.clouds[0].scallop_path());
+        assert_eq!(adapter.history_depths(7), (history.0 + 1, 0));
+        adapter.undo(7).unwrap();
+        assert_eq!(adapter.snapshot(7).unwrap().clouds, before.clouds);
+    }
+
+    #[test]
+    fn a_rectangle_cloud_corner_drag_moves_two_sides_and_keeps_the_minimum_size() {
+        let mut adapter = AnnotationAdapter::default();
+        seed_cloud(&mut adapter);
+        // The north-west corner moves the west and north sides.
+        adapter.pointer_down(7, 0, 1, point(20., 80.), 4.).unwrap();
+        adapter.pointer_move(1, point(10., 100.)).unwrap();
+        adapter.pointer_up(1, point(10., 100.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().clouds[0].points(),
+            &[
+                point(10., 20.),
+                point(100., 20.),
+                point(100., 100.),
+                point(10., 100.)
+            ]
+        );
+        // Dragged past the opposite side, a side stops at the Rectangle's
+        // minimum size.
+        adapter.pointer_down(7, 0, 2, point(100., 60.), 4.).unwrap();
+        adapter.pointer_move(2, point(-50., 60.)).unwrap();
+        adapter.pointer_up(2, point(-50., 60.)).unwrap();
+        let cloud = adapter.snapshot(7).unwrap().clouds[0].clone();
+        assert_eq!(
+            cloud.rectangle().unwrap().width,
+            crate::annotation_model::MIN_RECT_CREATE_SIZE_PT
+        );
+        assert_eq!(cloud.rectangle().unwrap().x, 10.);
+        assert_eq!(cloud.rectangle().unwrap().height, 80.);
+    }
+
+    #[test]
+    fn a_cloud_that_is_not_an_upright_rectangle_keeps_its_vertex_handles() {
+        for (label, points) in [
+            (
+                "five vertices",
+                vec![
+                    point(20., 20.),
+                    point(100., 20.),
+                    point(100., 80.),
+                    point(60., 95.),
+                    point(20., 80.),
+                ],
+            ),
+            (
+                "skewed",
+                vec![
+                    point(20., 20.),
+                    point(100., 25.),
+                    point(100., 80.),
+                    point(20., 80.),
+                ],
+            ),
+            (
+                "turned",
+                vec![
+                    point(60., 20.),
+                    point(100., 50.),
+                    point(60., 80.),
+                    point(20., 50.),
+                ],
+            ),
+        ] {
+            let mut adapter = AnnotationAdapter::default();
+            let id = seed_skewed_cloud(&mut adapter, points.clone());
+            let scene = adapter.document_scene(7, 0);
+            assert!(!scene.clouds[0].rectangular, "{label}");
+            for (index, vertex) in points.iter().enumerate() {
+                assert_eq!(
+                    adapter.hover_cloud_handle(7, 0, *vertex, 1.).unwrap(),
+                    Some((id.clone(), index)),
+                    "{label}: vertex {index}"
+                );
+            }
+            // A vertex drag moves that vertex alone.
+            adapter.pointer_down(7, 0, 1, points[0], 4.).unwrap();
+            adapter.pointer_move(1, point(12., 10.)).unwrap();
+            adapter.pointer_up(1, point(12., 10.)).unwrap();
+            let moved = adapter.snapshot(7).unwrap().clouds[0].clone();
+            assert_eq!(moved.points()[0], point(12., 10.), "{label}");
+            assert_eq!(moved.points()[1..], points[1..], "{label}");
+        }
+    }
+
+    #[test]
+    fn cloud_rectangles_are_found_within_a_small_tolerance_whatever_the_start_and_direction() {
+        let rectangle = [
+            point(20., 20.),
+            point(100.001, 19.999),
+            point(100., 80.),
+            point(20.002, 80.),
+        ];
+        let reversed = [rectangle[3], rectangle[2], rectangle[1], rectangle[0]];
+        let rotated = [rectangle[2], rectangle[3], rectangle[0], rectangle[1]];
+        for points in [rectangle, reversed, rotated] {
+            let rect = cloud_rectangle(&points).expect("a Revu-style rectangle");
+            assert!((rect.x - 20.).abs() < 0.01 && (rect.width - 80.).abs() < 0.01);
+            // The vertices keep their order and start through a resize.
+            let resized =
+                cloud_rectangle_resized(&points, RectangleResizeHandle::East, point(120., 0.))
+                    .unwrap();
+            for (before, after) in points.iter().zip(&resized) {
+                assert_eq!(after.y.round(), before.y.round());
+                if before.x > 50. {
+                    assert_eq!(after.x, 120.);
+                } else {
+                    assert_eq!(after.x, 20.);
+                }
+            }
+        }
+        assert_eq!(cloud_rectangle(&rectangle[..3]), None);
+        let off = [
+            point(20., 20.),
+            point(100., 20.),
+            point(100.2, 80.),
+            point(20., 80.),
+        ];
+        assert_eq!(cloud_rectangle(&off), None);
+        let bow_tie = [
+            point(20., 20.),
+            point(100., 80.),
+            point(100., 20.),
+            point(20., 80.),
+        ];
+        assert_eq!(cloud_rectangle(&bow_tie), None);
+        let flat = [
+            point(20., 20.),
+            point(100., 20.),
+            point(100., 20.01),
+            point(20., 20.01),
+        ];
+        assert_eq!(cloud_rectangle(&flat), None);
+    }
+
+    #[test]
+    fn a_rectangular_cloud_plus_shows_eight_cloud_handles_before_its_text_box_handles() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_cloud_plus(&mut adapter);
+        assert!(adapter.document_scene(7, 0).cloud_pluses[0].rectangular);
+        let annotation = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        // Cloud: 10..50 by 10..50. The east edge's middle is its fourth handle.
+        assert_eq!(
+            hit_cloud_plus_handle(&annotation, point(50., 20.), 0.5, 1.),
+            None,
+            "a vertex is no handle of a rectangle's own"
+        );
+        assert_eq!(
+            hit_cloud_plus_handle(&annotation, point(10., 50.), 0.5, 1.),
+            Some(0)
+        );
+        assert_eq!(
+            hit_cloud_plus_handle(&annotation, point(30., 50.), 0.5, 1.),
+            Some(1)
+        );
+        assert_eq!(
+            adapter
+                .hover_cloud_plus_handle(7, 0, point(30., 10.), 1.)
+                .unwrap(),
+            Some((id, 5))
+        );
+        // The text box's handles follow the cloud's eight, then the leader's.
+        let first_text_handle = RectangleResizeHandle::ALL[0]
+            .inset_point(annotation.text_box, annotation.text_box_border_inset_pt());
+        assert_eq!(
+            hit_cloud_plus_handle(&annotation, first_text_handle, 0.5, 1.),
+            Some(RectangleResizeHandle::ALL.len())
+        );
+    }
+
+    #[test]
+    fn a_rectangle_cloud_plus_resizes_from_a_corner_and_its_leader_stays_on_the_cloud() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        adapter
+            .pointer_down(7, 0, 1, point(120., 420.), 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(260., 520.)).unwrap();
+        adapter.pointer_up(1, point(260., 520.)).unwrap();
+        let before = adapter.snapshot(7).unwrap();
+        let created = before.cloud_pluses[0].clone();
+        let id = created.id.clone();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&id));
+        assert!(created.cloud_rectangle().is_some());
+        let history = adapter.history_depths(7);
+        let rect = created.cloud_rectangle().unwrap();
+        let corner = RectangleResizeHandle::SouthEast.point(rect);
+        let to = point(corner.x + 12., corner.y - 9.);
+
+        adapter.pointer_down(7, 0, 2, corner, 4.).unwrap();
+        adapter.pointer_move(2, to).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert!(preview.draft);
+        assert_eq!(
+            preview.feedback,
+            SceneInteractionFeedback::Transform {
+                chrome_visible: true,
+                active_handle: 4,
+            }
+        );
+        assert_eq!(
+            adapter.snapshot(7).unwrap(),
+            before,
+            "the preview is not history"
+        );
+        assert_eq!(
+            adapter.pointer_up(2, to).unwrap(),
+            PointerPhaseOutcome::AnnotationEdited(id)
+        );
+
+        let after = adapter.snapshot(7).unwrap();
+        let resized = &after.cloud_pluses[0];
+        // Two sides moved and two stayed.
+        let grown = resized.cloud_rectangle().unwrap();
+        assert_eq!(grown.x, rect.x);
+        assert_eq!(grown.y, rect.y - 9.);
+        assert_eq!(grown.width, rect.width + 12.);
+        assert_eq!(grown.height, rect.height + 9.);
+        assert_eq!(resized.text_box, created.text_box);
+        // The tip is on the cloud, the landing keeps its length and stays
+        // level, and the leader still meets the text box.
+        let tip = resized.leader_points()[0];
+        let nearest = resized
+            .scallop_path()
+            .windows(2)
+            .map(|segment| point_segment_distance(tip, segment[0], segment[1]))
+            .fold(f64::INFINITY, f64::min);
+        assert!(nearest < 0.5, "the tip is {nearest} pt from the cloud");
+        let kept = cloud_plus_landing_pt(resized.leader_points()).unwrap();
+        assert!(
+            (kept - CLOUD_PLUS_LANDING_PT).abs() < 1e-9,
+            "the landing is {kept} pt"
+        );
+        let [_, knee, connection] = resized.leader_points() else {
+            panic!("a Cloud+ keeps a tip, a knee and a connection");
+        };
+        assert_eq!(knee.y, connection.y);
+        assert_eq!(*connection, created.leader_points()[2]);
+        assert_eq!(adapter.history_depths(7), (history.0 + 1, 0));
+
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().cloud_pluses,
+            before.cloud_pluses
+        );
+    }
+
+    #[test]
+    fn a_cloud_plus_that_is_not_a_rectangle_keeps_its_vertex_handles() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = MarkupId::new("cloud-plus:five").unwrap();
+        adapter
+            .documents
+            .entry(7)
+            .or_default()
+            .apply_command(AnnotationCommand::CreateAnnotation(Annotation::CloudPlus(
+                CloudPlusAnnotation::new(
+                    id.clone(),
+                    0,
+                    vec![
+                        point(10., 10.),
+                        point(50., 10.),
+                        point(50., 50.),
+                        point(30., 62.),
+                        point(10., 50.),
+                    ],
+                    2.,
+                    vec![point(50., 30.), point(75., 30.), point(100., 30.)],
+                    PdfRect::new(100., 20., 40., 20.).unwrap(),
+                    "Cloud+",
+                    default_cloud_plus_appearance().unwrap(),
+                )
+                .unwrap(),
+            )))
+            .unwrap();
+        assert!(!adapter.document_scene(7, 0).cloud_pluses[0].rectangular);
+        let annotation = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        for (index, vertex) in annotation.cloud_points().iter().enumerate() {
+            assert_eq!(
+                hit_cloud_plus_handle(&annotation, *vertex, 0.5, 1.),
+                Some(index)
+            );
+        }
+        assert_eq!(
+            hit_cloud_plus_handle(&annotation, point(30., 10.), 0.5, 1.),
+            None,
+            "no edge-middle handle on a polygon"
+        );
+    }
+
+    #[test]
+    fn dragging_a_cloud_plus_knee_across_its_text_moves_the_leader_side_and_it_stays() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_cloud_plus(&mut adapter);
+        let before = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let history = adapter.history_depths(7);
+        // Text box 100..140: its centre line is x = 120, the landing meets
+        // its left side.
+        let [_, knee, connection] = *before.leader_points() else {
+            panic!("a Cloud+ leader");
+        };
+        assert!(connection.x < 120.);
+
+        adapter.pointer_down(7, 0, 1, knee, 4.).unwrap();
+        adapter.pointer_move(1, point(130., 44.)).unwrap();
+        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+        assert_eq!(preview.leader_points[2], point(140., 30.));
+        adapter.pointer_up(1, point(130., 44.)).unwrap();
+        let flipped = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let [_, knee, connection] = *flipped.leader_points() else {
+            panic!("a Cloud+ leader");
+        };
+        assert_eq!(connection, point(140., 30.), "the right side of the text");
+        assert_eq!(knee.y, connection.y, "the landing is level");
+        assert!(knee.x > connection.x, "and runs out from the right side");
+        assert_eq!(adapter.history_depths(7), (history.0 + 1, 0));
+
+        // Moving the text box to the left of the cloud, resizing the cloud,
+        // refitting the text and restyling never flip the side.
+        adapter
+            .translate_selected_cloud_plus_text_box(7, -150., 0.)
+            .unwrap();
+        let moved = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(moved.text_box.x, before.text_box.x - 150.);
+        assert_eq!(
+            moved.leader_points()[2].x,
+            moved.text_box.x + moved.text_box.width
+        );
+        let rect = moved.cloud_rectangle().unwrap();
+        let corner = RectangleResizeHandle::SouthWest.point(rect);
+        drag_with(&mut adapter, 2, corner, point(corner.x - 6., corner.y - 6.));
+        let resized = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(
+            resized.leader_points()[2].x,
+            resized.text_box.x + resized.text_box.width
+        );
+        adapter
+            .replace_cloud_plus_text_with_routing_supplement(
+                7,
+                &id,
+                "A much longer caption for the cloud",
+                &AnnotationSelectionSupplement::new(),
+            )
+            .unwrap();
+        let refitted = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(
+            refitted.leader_points()[2].x,
+            refitted.text_box.x + refitted.text_box.width
+        );
+        adapter
+            .set_cloud_plus_style_with_routing_supplement(
+                7,
+                &id,
+                refitted.appearance.clone(),
+                refitted.border_effect_intensity(),
+                30.,
+                &AnnotationSelectionSupplement::new(),
+            )
+            .unwrap();
+        let restyled = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(
+            restyled.leader_points()[2].x,
+            restyled.text_box.x + restyled.text_box.width
+        );
+        // The landing is at most the length asked for: it stops short of
+        // the cloud it now faces.
+        assert!(cloud_plus_landing_pt(restyled.leader_points()).unwrap() <= 30.);
+    }
+
+    fn drag_with(adapter: &mut AnnotationAdapter, pointer: u64, from: PdfPoint, to: PdfPoint) {
+        adapter.pointer_down(7, 0, pointer, from, 4.).unwrap();
+        adapter.pointer_move(pointer, to).unwrap();
+        adapter.pointer_up(pointer, to).unwrap();
+    }
+
+    #[test]
+    fn a_new_cloud_plus_still_picks_its_leader_side_itself() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        drag_with(&mut adapter, 1, point(120., 420.), point(260., 520.));
+        let created = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        // The text goes beside the cloud and its left side meets the leader.
+        assert!(created.text_box.x > 260.);
+        assert_eq!(created.leader_points()[2].x, created.text_box.x);
+    }
+
+    #[test]
+    fn dragging_a_callout_knee_across_its_text_moves_the_leader_side_and_it_stays() {
+        let mut adapter = AnnotationAdapter::default();
+        let id = seed_callout(&mut adapter);
+        adapter
+            .set_semantic_snap_settings(
+                SemanticSnapSettings::default().with_angle_snap_enabled(false),
+            )
+            .unwrap();
+        let before = adapter.snapshot(7).unwrap().callouts[0].clone();
+        let history = adapter.history_depths(7);
+        // Text box 100..180: centre line x = 140, the leader meets its left.
+        assert_eq!(before.leader_points()[2], point(100., 40.));
+
+        // Across the centre line: the connection moves to the right side
+        // at the box's vertical middle; the knee stays where it is put.
+        adapter
+            .pointer_down(7, 0, 1, before.leader_points()[1], 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(150., 70.)).unwrap();
+        let preview = adapter.document_scene(7, 0).callouts.remove(0);
+        assert_eq!(preview.leader_points[2], point(180., 40.));
+        adapter.pointer_up(1, point(150., 70.)).unwrap();
+        let flipped = adapter.snapshot(7).unwrap().callouts[0].clone();
+        assert_eq!(
+            flipped.leader_points(),
+            &[point(20., 20.), point(150., 70.), point(180., 40.)]
+        );
+        assert_eq!(adapter.history_depths(7), (history.0 + 1, 0));
+
+        // A knee dragged within its half leaves the side alone.
+        adapter
+            .pointer_down(7, 0, 2, flipped.leader_points()[1], 4.)
+            .unwrap();
+        adapter.pointer_move(2, point(170., 90.)).unwrap();
+        adapter.pointer_up(2, point(170., 90.)).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().callouts[0].leader_points()[2],
+            point(180., 40.)
+        );
+
+        // Moving the text box, resizing it and refitting its text keep the
+        // side.
+        adapter
+            .translate_selected_callout_text_box(7, -150., 10.)
+            .unwrap();
+        let moved = adapter.snapshot(7).unwrap().callouts[0].clone();
+        assert_eq!(moved.leader_points()[2], point(30., 50.));
+        adapter
+            .replace_callout_text(7, &id, "A longer note than before")
+            .unwrap();
+        let refitted = adapter.snapshot(7).unwrap().callouts[0].clone();
+        assert!(
+            (refitted.leader_points()[2].x - (refitted.text_box.x + refitted.text_box.width)).abs()
+                < 1e-4
+        );
+        // Undo restores each step.
+        adapter.undo(7).unwrap();
+        adapter.undo(7).unwrap();
+        adapter.undo(7).unwrap();
+        assert_eq!(
+            adapter.snapshot(7).unwrap().callouts[0].leader_points()[2],
+            point(180., 40.)
+        );
+    }
+
+    #[test]
+    fn changing_a_cloud_plus_intensity_makes_its_bumps_again_and_an_untouched_path_stays() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        drag_with(&mut adapter, 1, point(120., 420.), point(260., 520.));
+        let created = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let id = created.id.clone();
+        let generated = |intensity: f64| {
+            CloudAnnotation::new(
+                id.clone(),
+                0,
+                created.cloud_points().to_vec(),
+                intensity,
+                RectangleAppearance::new("#ff0000", 1., None::<String>, 1.).unwrap(),
+            )
+            .unwrap()
+            .scallop_path()
+        };
+        let mut paths = Vec::new();
+        for intensity in [0.5, 2., 4.] {
+            adapter
+                .set_cloud_plus_style_with_routing_supplement(
+                    7,
+                    &id,
+                    created.appearance.clone(),
+                    intensity,
+                    CLOUD_PLUS_LANDING_PT,
+                    &AnnotationSelectionSupplement::new(),
+                )
+                .unwrap();
+            let restyled = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+            assert_eq!(restyled.border_effect_intensity(), intensity);
+            assert_eq!(restyled.scallop_path(), generated(intensity));
+            paths.push(restyled.scallop_path());
+        }
+        assert!(paths[0].len() > paths[1].len() && paths[1].len() > paths[2].len());
+
+        // A stored appearance path (from another app) stays while the
+        // Intensity does not change, and goes when it does.
+        let custom = vec![
+            crate::annotation_model::CloudAppearancePathCommand::MoveTo(point(120., 420.)),
+            crate::annotation_model::CloudAppearancePathCommand::LineTo(point(260., 420.)),
+            crate::annotation_model::CloudAppearancePathCommand::LineTo(point(260., 520.)),
+            crate::annotation_model::CloudAppearancePathCommand::Close,
+        ];
+        let stored = adapter.snapshot(7).unwrap().cloud_pluses[0]
+            .clone()
+            .with_cloud_appearance_path(Some(custom.clone()))
+            .unwrap();
+        adapter
+            .load_imported_annotations(7, vec![Annotation::CloudPlus(stored.clone())])
+            .unwrap();
+        adapter.documents.get_mut(&7).unwrap().select(&id);
+        adapter
+            .set_cloud_plus_style_with_routing_supplement(
+                7,
+                &id,
+                stored.appearance.clone(),
+                stored.border_effect_intensity(),
+                CLOUD_PLUS_LANDING_PT,
+                &AnnotationSelectionSupplement::new(),
+            )
+            .unwrap();
+        let same = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(same.cloud_appearance_path(), Some(custom.as_slice()));
+        adapter
+            .set_cloud_plus_style_with_routing_supplement(
+                7,
+                &id,
+                stored.appearance.clone(),
+                3.,
+                CLOUD_PLUS_LANDING_PT,
+                &AnnotationSelectionSupplement::new(),
+            )
+            .unwrap();
+        let changed = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(changed.cloud_appearance_path(), None);
+        assert_eq!(changed.scallop_path(), generated(3.));
+
+        // Resizing the cloud makes the bumps again too.
+        adapter
+            .load_imported_annotations(7, vec![Annotation::CloudPlus(stored.clone())])
+            .unwrap();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        adapter.documents.get_mut(&7).unwrap().select(&id);
+        let rect = stored.cloud_rectangle().unwrap();
+        let corner = RectangleResizeHandle::SouthWest.point(rect);
+        drag_with(
+            &mut adapter,
+            3,
+            corner,
+            point(corner.x - 20., corner.y - 20.),
+        );
+        let resized = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(resized.cloud_appearance_path(), None);
+        assert_ne!(resized.scallop_path(), stored.scallop_path());
     }
 
     #[test]
@@ -25760,7 +26579,8 @@ mod tests {
             adapter
                 .hover_cloud_plus_handle(7, 0, point(50., 10.), 1.)
                 .unwrap(),
-            Some((id.clone(), 1))
+            // The south-east corner: a rectangular cloud has eight handles.
+            Some((id.clone(), 4))
         );
         assert_eq!(adapter.snapshot(7).unwrap(), before_hover);
         adapter.set_tool(AnnotationTool::Rectangle).unwrap();
@@ -25793,7 +26613,8 @@ mod tests {
             preview.feedback,
             SceneInteractionFeedback::Transform {
                 chrome_visible: true,
-                active_handle: 1,
+                // The south-east corner.
+                active_handle: 4,
             }
         );
         assert_eq!(adapter.history_depths(7), history_before);
@@ -25838,8 +26659,9 @@ mod tests {
         assert_eq!(adapter.history_depths(7), (history_before.0 + 2, 0));
 
         let before_group = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
-        adapter.pointer_down(7, 0, 5, point(30., 10.), 1.).unwrap();
-        adapter.pointer_move(5, point(40., 16.)).unwrap();
+        // Off the south edge's middle, which is a resize handle.
+        adapter.pointer_down(7, 0, 5, point(20., 10.), 1.).unwrap();
+        adapter.pointer_move(5, point(30., 16.)).unwrap();
         let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
         assert_eq!(preview.cloud_points[0], point(20., 16.));
         assert_eq!(
@@ -25856,7 +26678,7 @@ mod tests {
             preview.leader_points[1],
             point(next_knee.x + 10., next_knee.y + 6.)
         );
-        adapter.pointer_up(5, point(40., 16.)).unwrap();
+        adapter.pointer_up(5, point(30., 16.)).unwrap();
         assert!(
             adapter.snapshot(7).unwrap().cloud_pluses[0].same_persisted_state_as(
                 &CloudPlusAnnotation::new(
@@ -25902,7 +26724,7 @@ mod tests {
                 .unwrap(),
             Some((
                 id.clone(),
-                before_connection.cloud_points().len()
+                cloud_handle_count(before_connection.cloud_points())
                     + RectangleResizeHandle::ALL
                         .iter()
                         .position(|handle| *handle == side_handle)

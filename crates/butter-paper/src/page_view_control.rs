@@ -1,6 +1,6 @@
 use gpui::{
     ClickEvent, Context, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, Window,
+    Render, Styled as _, Window, prelude::FluentBuilder as _,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _,
@@ -236,6 +236,7 @@ impl Render for PageViewControl {
         h_flex()
             .id(probe_id)
             .debug_selector(move || split_id.into())
+            .relative()
             .child(
                 DropdownButton::new(split_id)
                     .outline()
@@ -292,5 +293,10 @@ impl Render for PageViewControl {
                             )
                     }),
             )
+            // Both halves are selected, so the divider between them is
+            // drawn in a visible colour, over the buttons.
+            .when(selected, |split| {
+                split.child(crate::toolbar_group::selected_seam(cx))
+            })
     }
 }

@@ -366,18 +366,15 @@ impl Fixture<'_> {
         self.search(text)
     }
 
-    /// Chooses a scope in the stock Select by keyboard, as a person does:
-    /// it opens on the current scope, and the arrows move to the other.
+    /// Chooses a scope with its tab, as a person does.
     fn choose_scope(&mut self, scope: SearchScope) {
         let current = self.summary().map(|summary| summary.scope).unwrap();
         if current == scope {
             return;
         }
-        self.click(DOCUMENT_SEARCH_SCOPE_ID);
-        let from = SearchScope::ALL.iter().position(|other| *other == current);
-        let to = SearchScope::ALL.iter().position(|other| *other == scope);
-        let step = if to > from { "down" } else { "up" };
-        self.cx.simulate_keystrokes(&format!("{step} enter"));
+        self.click(butter_paper::document_workspace::search_scope_button_id(
+            scope,
+        ));
         self.draw();
         assert_eq!(self.summary().unwrap().scope, scope);
     }
@@ -491,6 +488,118 @@ fn the_shortcut_leaves_the_keyboard_on_the_page_while_the_sidebar_yields(cx: &mu
     );
 }
 
+impl Fixture<'_> {
+    /// Opens the find bar with its shortcut and types `text` in it.
+    fn find_in_bar(&mut self, text: &str) {
+        self.cx
+            .simulate_keystrokes(butter_paper::document_workspace::find_shortcut(cfg!(
+                target_os = "macos"
+            )));
+        self.draw();
+        self.type_text(text);
+    }
+
+    fn bar_open(&mut self) -> bool {
+        let plan = self.plan;
+        self.workspace
+            .read_with(self.cx, |workspace, cx| {
+                workspace.find_bar_summary(plan, cx)
+            })
+            .is_some_and(|bar| bar.open)
+    }
+}
+
+/// The find bar's button opens the same search in the Search panel, in the
+/// Text mode, with the bar's text, Match case and Match whole word (the
+/// panel has no whole-word switch, so that is a `/regex/`), runs it, and
+/// closes the bar. The panel keeps its own scope.
+#[gpui::test]
+fn the_find_bars_button_takes_its_search_to_the_panel_with_its_options(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{
+        DOCUMENT_FIND_MATCH_CASE_ID, DOCUMENT_FIND_OPEN_IN_PANEL_ID, DOCUMENT_FIND_WHOLE_WORD_ID,
+    };
+    let mut f = setup(cx);
+    f.find_in_bar("fire door");
+    assert!(f.bar_open());
+    f.click(DOCUMENT_FIND_MATCH_CASE_ID);
+    f.click(DOCUMENT_FIND_OPEN_IN_PANEL_ID);
+    let summary = f.wait_for("the panel's search", |summary| {
+        summary.finished && summary.text == "\"fire door\"" && !summary.summary.is_empty()
+    });
+    assert_eq!(f.left_panel(), Some(LeftPanel::Search));
+    assert!(summary.match_case, "Match case carried over");
+    assert_eq!(summary.scope, SearchScope::ThisDocument);
+    assert!(summary.hits > 0, "{summary:?}");
+    assert!(!f.bar_open(), "the find bar closed");
+
+    // Match whole word goes in as the panel's regex.
+    f.find_in_bar("door");
+    f.click(DOCUMENT_FIND_WHOLE_WORD_ID);
+    f.click(DOCUMENT_FIND_OPEN_IN_PANEL_ID);
+    let summary = f.wait_for("the whole-word search", |summary| {
+        summary.finished && summary.text == "/\\bdoor\\b/" && !summary.summary.is_empty()
+    });
+    assert!(!f.bar_open());
+    assert!(summary.hits > 0, "{summary:?}");
+}
+
+/// The panel's shortcut with the find bar open and a term in it does the
+/// same; with an empty bar it opens the panel as it always did.
+#[gpui::test]
+fn the_panel_shortcut_with_a_term_in_the_find_bar_takes_it_to_the_panel(cx: &mut TestAppContext) {
+    let mut f = setup(cx);
+    // An empty bar: the panel opens, and the bar stays.
+    f.cx.simulate_keystrokes(butter_paper::document_workspace::find_shortcut(cfg!(
+        target_os = "macos"
+    )));
+    f.draw();
+    f.open_panel();
+    assert_eq!(f.left_panel(), Some(LeftPanel::Search));
+    assert!(f.bar_open(), "an empty bar stays open");
+    assert_eq!(f.summary().unwrap().text, "");
+
+    // With a term, the shortcut carries it over and closes the bar.
+    f.cx.update(|window, cx| {
+        let focus = f.workspace.read(cx).focus_handle();
+        window.focus(&focus, cx);
+    });
+    f.find_in_bar("fire door");
+    f.open_panel();
+    let summary = f.wait_for("the panel's search", |summary| {
+        summary.finished && summary.text == "\"fire door\"" && !summary.summary.is_empty()
+    });
+    assert!(!summary.match_case);
+    assert!(!f.bar_open(), "the find bar closed");
+}
+
+/// Where the left sidebar cannot show (here, properties open in a narrow
+/// window), the find bar stays open and the focus stays in its field.
+#[gpui::test]
+fn the_find_bar_stays_open_where_the_sidebar_yields(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::DOCUMENT_FIND_OPEN_IN_PANEL_ID;
+    let mut f = setup(cx);
+    f.cx.simulate_resize(gpui::size(gpui::px(1024.), gpui::px(700.)));
+    f.draw();
+    f.click("document-workspace-rail-actions");
+    f.draw();
+    f.find_in_bar("door");
+    f.click(DOCUMENT_FIND_OPEN_IN_PANEL_ID);
+    f.open_panel();
+    assert!(f.bar_open(), "the bar stays open");
+    assert!(
+        f.cx.debug_bounds(DOCUMENT_SEARCH_PANEL_ID).is_none(),
+        "the sidebar yields to properties"
+    );
+    // The field still has the keyboard: typing goes on there.
+    f.type_text("s");
+    let plan = f.plan;
+    let bar = f
+        .workspace
+        .read_with(f.cx, |workspace, cx| workspace.find_bar_summary(plan, cx))
+        .unwrap();
+    assert_eq!(bar.text, "doors");
+}
+
 #[gpui::test]
 fn the_rail_buttons_open_close_and_switch_the_sidebar(cx: &mut TestAppContext) {
     let mut f = setup(cx);
@@ -595,13 +704,27 @@ fn a_markup_row_shows_subject_author_text_and_replies(cx: &mut TestAppContext) {
     assert_eq!(reply, Some((Some(0), "Agreed".to_owned())));
 }
 
-/// The scope is a stock Select: This document first, and the panel starts
-/// there; All open documents is second.
+/// The scope is a row of two tabs at the top of the panel, above Text and
+/// Visual: This document first, and the panel starts there; All open
+/// documents is second. Choosing one searches again.
 #[gpui::test]
 fn the_scope_starts_at_this_document_and_switches_to_all_and_back(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{
+        DOCUMENT_SEARCH_MODE_TEXT_ID, DOCUMENT_SEARCH_SCOPE_ALL_ID, DOCUMENT_SEARCH_SCOPE_THIS_ID,
+    };
     let mut f = setup(cx);
     let summary = f.search("\"fire door\"");
     assert_eq!(summary.scope, SearchScope::ThisDocument);
+    // The tabs, This document first, above Text | Visual and the query.
+    f.draw();
+    let this = f.cx.debug_bounds(DOCUMENT_SEARCH_SCOPE_THIS_ID).unwrap();
+    let all = f.cx.debug_bounds(DOCUMENT_SEARCH_SCOPE_ALL_ID).unwrap();
+    let group = f.cx.debug_bounds(DOCUMENT_SEARCH_SCOPE_ID).unwrap();
+    let mode = f.cx.debug_bounds(DOCUMENT_SEARCH_MODE_TEXT_ID).unwrap();
+    assert!(this.right() <= all.left(), "This document comes first");
+    assert!(this.top() == all.top() && this.size.height == all.size.height);
+    assert!(group.bottom() <= mode.top(), "above Text | Visual");
+    assert!(f.cx.debug_bounds(DOCUMENT_SEARCH_INPUT_ID).unwrap().top() > mode.bottom());
     // plan.pdf is the tab in view.
     assert_eq!(document_rows(&summary), [("plan.pdf".to_owned(), 1)]);
     assert_eq!(summary.summary, "1 result in 1 document");

@@ -536,6 +536,44 @@ pub struct SearchQuery {
     problems: Vec<QueryProblem>,
 }
 
+/// The text of a panel field that finds `text` literally, as the find bar
+/// does, with the find bar's `options`. A word or phrase with nothing the
+/// query language reads (operators, quotes, brackets, filters) goes as it
+/// is, or in quotes; Match whole word, which the panel has no switch for,
+/// goes as a `/regex/` with boundaries where the term's edge is a letter or
+/// digit, as the find bar puts them. Match case is the panel's own switch.
+pub fn panel_query_for_literal(text: &str, options: SearchOptions) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    if !options.whole_word && !text.contains('"') {
+        let plain_word = text.chars().all(is_word_character)
+            && !text.eq_ignore_ascii_case("or")
+            && !text.eq_ignore_ascii_case("and");
+        return if plain_word {
+            text.to_owned()
+        } else {
+            format!("\"{text}\"")
+        };
+    }
+    let expanded = crate::search_text::expand_ligatures(text);
+    let mut pattern = expanded
+        .split_whitespace()
+        .map(|word| regex::escape(word).replace('/', "\\/"))
+        .collect::<Vec<_>>()
+        .join(r"[^\S\n]+");
+    if options.whole_word {
+        if expanded.chars().next().is_some_and(is_word_character) {
+            pattern.insert_str(0, r"\b");
+        }
+        if expanded.chars().next_back().is_some_and(is_word_character) {
+            pattern.push_str(r"\b");
+        }
+    }
+    format!("/{pattern}/")
+}
+
 impl SearchQuery {
     /// The query a panel field holds.
     pub fn parse(text: &str, options: SearchOptions) -> Self {
@@ -817,6 +855,53 @@ fn explain_node(node: &QueryNode, top: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_find_bars_text_goes_to_the_panel_as_the_same_search() {
+        let plain = SearchOptions::default();
+        let whole = SearchOptions {
+            whole_word: true,
+            ..SearchOptions::default()
+        };
+        assert_eq!(panel_query_for_literal("door", plain), "door");
+        assert_eq!(
+            panel_query_for_literal("  fire door ", plain),
+            "\"fire door\""
+        );
+        // An operator is a word to the find bar: quote it.
+        assert_eq!(panel_query_for_literal("OR", plain), "\"OR\"");
+        assert_eq!(panel_query_for_literal("-door", plain), "\"-door\"");
+        assert_eq!(panel_query_for_literal("a (b)", plain), "\"a (b)\"");
+        // A quote cannot go in a phrase: the regex form.
+        assert_eq!(
+            panel_query_for_literal("say \"hi\"", plain),
+            "/say[^\\S\\n]+\"hi\"/"
+        );
+        assert_eq!(panel_query_for_literal("door", whole), "/\\bdoor\\b/");
+        assert_eq!(panel_query_for_literal("C++", whole), "/\\bC\\+\\+/");
+        assert_eq!(panel_query_for_literal("a/b", whole), "/\\ba\\/b\\b/");
+        assert_eq!(panel_query_for_literal("   ", whole), "");
+        // What the panel reads from each is what the find bar finds.
+        for (text, options) in [("fire door", plain), ("door", whole), ("a/b", whole)] {
+            let panel = SearchQuery::parse(
+                &panel_query_for_literal(text, options),
+                SearchOptions::default(),
+            );
+            let bar = SearchQuery::literal(text, options);
+            for sample in [
+                "The fire door is open",
+                "Fire doors",
+                "a/b and a/bc",
+                "a door",
+            ] {
+                assert_eq!(
+                    panel.match_page(CONTEXT, sample),
+                    bar.match_page(CONTEXT, sample),
+                    "{text:?} {options:?} in {sample:?}"
+                );
+            }
+        }
+    }
 
     fn term(text: &str) -> QueryNode {
         QueryNode::Term(word(text.to_owned()))

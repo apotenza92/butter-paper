@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
-    button::{Button, ButtonGroup},
+    button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
     input::{InputEvent, InputState, NumberInput},
     popover::Popover,
@@ -305,7 +305,7 @@ impl Render for CadViewControl {
 
         let primary = accessible_icon_button(
             Button::new(CAD_VIEW_PRIMARY_ID)
-                .outline()
+                .ghost()
                 .debug_selector(|| CAD_VIEW_PRIMARY_ID.into())
                 .accessibility_id(CAD_VIEW_PRIMARY_ID)
                 .icon(IconName::LayoutDashboard)
@@ -319,7 +319,7 @@ impl Render for CadViewControl {
 
         let settings = accessible_icon_button(
             Button::new(CAD_VIEW_SETTINGS_ID)
-                .outline()
+                .ghost()
                 .debug_selector(|| CAD_VIEW_SETTINGS_ID.into())
                 .accessibility_id(CAD_VIEW_SETTINGS_ID)
                 .icon(IconName::ChevronDown)
@@ -468,11 +468,16 @@ impl Render for CadViewControl {
                 .into_any_element()
         };
 
-        h_flex()
+        // One framed group with a divider between its two buttons, as the
+        // page navigator and the zoom control are.
+        crate::toolbar_group::toolbar_group(cx)
             .id(CAD_VIEW_GROUP_ID)
             .debug_selector(|| CAD_VIEW_GROUP_ID.into())
             .flex_shrink_0()
-            .child(primary)
-            .child(settings)
+            .children(crate::toolbar_group::divided(
+                CAD_VIEW_GROUP_ID,
+                vec![primary.into_any_element(), settings],
+                cx,
+            ))
     }
 }

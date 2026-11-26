@@ -1,13 +1,16 @@
 //! The page navigator in the view toolbar, as in Revu's navigation bar:
 //! First page, Previous page, the current page of the total ("3 / 12"),
-//! Next page and Last page. Clicking the page number makes it a field to
-//! type a page into: Enter goes there, Escape or leaving the field keeps the
-//! page shown.
+//! Next page and Last page. The page number is a stock input at rest and
+//! while typed in: only a read-only state, the focus ring, the caret and the
+//! selection tell them apart, so nothing moves or changes size when it opens.
+//! Clicking it (or tabbing to it) selects the number to type over: Enter
+//! goes there, Escape or leaving the field keeps the page shown.
 
 use gpui::{
     AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, rems,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
@@ -24,9 +27,11 @@ pub const PAGE_FIRST_ID: &str = "viewer-page-first";
 pub const PAGE_PREVIOUS_ID: &str = "viewer-page-previous";
 pub const PAGE_NEXT_ID: &str = "viewer-page-next";
 pub const PAGE_LAST_ID: &str = "viewer-page-last";
-/// The "3 / 12" button that becomes the page field when clicked.
+/// The page field and "/ 12" at rest: the field is a stock input holding the
+/// page number, read-only until clicked.
 pub const PAGE_INDICATOR_ID: &str = "viewer-page-indicator";
-/// The page indicator while it is open for typing: the field and "/ 12".
+/// The same field and "/ 12" while it is open for typing; it has the
+/// bounds of the page indicator.
 pub const PAGE_INPUT_ID: &str = "viewer-page-input";
 /// The field a page number is typed into.
 pub const PAGE_INPUT_FIELD_ID: &str = "viewer-page-input-field";
@@ -115,8 +120,9 @@ pub const fn indicator_room_rems(digits: u32) -> f32 {
 
 /// The most page-count digits the toolbar's least width is planned for.
 pub const PAGE_NAVIGATOR_MAX_DIGITS: u32 = 4;
-/// The room Previous and Next page take, and again First and Last page.
-pub const PAGE_NAVIGATOR_BUTTON_PAIR_REMS: f32 = 4.;
+/// The room Previous and Next page take, and again First and Last page, each
+/// with the divider between it and the next member.
+pub const PAGE_NAVIGATOR_BUTTON_PAIR_REMS: f32 = 4.125;
 
 /// The digits of a page count, for sizing the page field.
 pub fn page_count_digits(page_count: u32) -> u32 {
@@ -132,10 +138,10 @@ pub fn format_page_indicator(current: u32, page_count: u32) -> String {
     }
 }
 
-struct PageEntry {
+/// The page field's input, kept for the navigator's life so the page shows in
+/// the very control that is typed in.
+struct PageField {
     input: Entity<InputState>,
-    /// Where focus returns when the entry ends.
-    restore_focus: Option<FocusHandle>,
     _subscription: Subscription,
 }
 
@@ -146,7 +152,11 @@ pub struct PageNavigator {
     page_count: u32,
     disabled: bool,
     fit: PageNavigatorFit,
-    entry: Option<PageEntry>,
+    field: Option<PageField>,
+    /// The field is open for typing.
+    editing: bool,
+    /// Where focus returns when the entry ends.
+    restore_focus: Option<FocusHandle>,
 }
 
 impl PageNavigator {
@@ -156,7 +166,9 @@ impl PageNavigator {
             page_count: 0,
             disabled: true,
             fit: PageNavigatorFit::Full,
-            entry: None,
+            field: None,
+            editing: false,
+            restore_focus: None,
         }
     }
 
@@ -175,7 +187,47 @@ impl PageNavigator {
 
     /// Whether the page field is open for typing.
     pub fn is_editing(&self) -> bool {
-        self.entry.is_some()
+        self.editing
+    }
+
+    /// The field's input once the navigator has been drawn: the page at rest,
+    /// and what is typed while it is open.
+    pub fn page_input(&self) -> Option<Entity<InputState>> {
+        self.field.as_ref().map(|field| field.input.clone())
+    }
+
+    /// The page the field holds at rest: the page shown, counted from 1.
+    fn field_text(&self) -> String {
+        if self.page_count == 0 {
+            "–".to_owned()
+        } else {
+            (self.current + 1).to_string()
+        }
+    }
+
+    /// The field's input, made on first use.
+    fn field_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some(field) = &self.field {
+            return field.input.clone();
+        }
+        let page = self.field_text();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(page));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |navigator, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => navigator.commit_entry(window, cx),
+                InputEvent::Blur => navigator.cancel_entry(window, cx),
+                // Tabbing to the field opens it, as a click does.
+                InputEvent::Focus => navigator.begin_entry(window, cx),
+                _ => {}
+            },
+        );
+        self.field = Some(PageField {
+            input: input.clone(),
+            _subscription: subscription,
+        });
+        input
     }
 
     pub fn indicator_label(&self) -> String {
@@ -217,7 +269,8 @@ impl PageNavigator {
         // A field left open would take typing for a document no longer
         // there.
         if disabled {
-            self.entry = None;
+            self.editing = false;
+            self.restore_focus = None;
         }
         cx.notify();
     }
@@ -241,39 +294,33 @@ impl PageNavigator {
 
     /// Opens the page field with the page shown, selected, for typing over.
     pub fn begin_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled || self.page_count == 0 || self.entry.is_some() {
+        if self.disabled || self.page_count == 0 || self.editing {
             return;
         }
-        let restore_focus = window.focused(cx);
-        let page = (self.current + 1).to_string();
-        let input = cx.new(|cx| InputState::new(window, cx).default_value(page));
-        let subscription = cx.subscribe_in(
-            &input,
-            window,
-            |navigator, _, event: &InputEvent, window, cx| match event {
-                InputEvent::PressEnter { .. } => navigator.commit_entry(window, cx),
-                InputEvent::Blur => navigator.cancel_entry(window, cx),
-                _ => {}
-            },
-        );
+        let input = self.field_input(window, cx);
+        let focus = input.focus_handle(cx);
+        self.restore_focus = window.focused(cx).filter(|focused| *focused != focus);
+        self.editing = true;
+        let page = self.field_text();
         input.update(cx, |input, cx| {
+            if input.value().as_ref() != page.as_str() {
+                input.set_value(page, window, cx);
+            }
             input.focus(window, cx);
             input.select_all(window, cx);
-        });
-        self.entry = Some(PageEntry {
-            input,
-            restore_focus,
-            _subscription: subscription,
         });
         cx.notify();
     }
 
     /// Goes to the page typed, if it is one, and closes the field.
     pub fn commit_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.entry.as_ref() else {
+        if !self.editing {
+            return;
+        }
+        let Some(field) = self.field.as_ref() else {
             return;
         };
-        let typed = entry.input.read(cx).value();
+        let typed = field.input.read(cx).value();
         let page = parse_page_entry(&typed, self.page_count);
         self.end_entry(window, cx);
         if let Some(page) = page {
@@ -287,15 +334,29 @@ impl PageNavigator {
     }
 
     fn end_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.entry.take() else {
+        if !self.editing {
             return;
-        };
-        // Back to the document (or wherever focus was), so tool and page
-        // shortcuts work again, unless focus already moved on elsewhere.
-        if entry.input.focus_handle(cx).is_focused(window)
-            && let Some(focus) = entry.restore_focus
-        {
-            focus.focus(window, cx);
+        }
+        self.editing = false;
+        let restore_focus = self.restore_focus.take();
+        // The field shows the page again: what was typed is dropped.
+        let page = self.field_text();
+        if let Some(field) = &self.field {
+            let input = field.input.clone();
+            let focused = input.focus_handle(cx).is_focused(window);
+            input.update(cx, |input, cx| {
+                if input.value().as_ref() != page.as_str() {
+                    input.set_value(page, window, cx);
+                }
+            });
+            // Back to the document (or wherever focus was), so tool and page
+            // shortcuts work again, unless focus already moved on elsewhere.
+            if focused {
+                match restore_focus {
+                    Some(focus) => focus.focus(window, cx),
+                    None => window.blur(),
+                }
+            }
         }
         cx.notify();
     }
@@ -310,7 +371,7 @@ impl Default for PageNavigator {
 impl EventEmitter<PageNavigatorEvent> for PageNavigator {}
 
 impl Render for PageNavigator {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled_colour = cx.theme().button_foreground;
         let muted_colour = cx.theme().muted_foreground;
         let disabled_colour = muted_colour.opacity(0.5);
@@ -377,9 +438,8 @@ impl Render for PageNavigator {
             cx,
         );
 
-        let label: SharedString = self.indicator_label().into();
         // Room for the longest label this document can show, so the
-        // buttons beside it stay put as pages turn.
+        // buttons beside it stay put as pages turn and as the field opens.
         let digits = page_count_digits(self.page_count);
         let current_alone = self.fit == PageNavigatorFit::Current;
         let indicator_width = rems(if current_alone {
@@ -387,59 +447,91 @@ impl Render for PageNavigator {
         } else {
             indicator_min_rems(digits)
         });
-        let indicator = match &self.entry {
-            Some(entry) => h_flex()
-                .id(PAGE_INPUT_ID)
-                .debug_selector(|| PAGE_INPUT_ID.into())
-                .min_w(indicator_width)
-                .justify_center()
-                // Room for the field's focus ring inside the group's frame,
-                // which clips.
-                .px(rems(PAGE_INPUT_RING_REMS))
-                .gap(rems(PAGE_INPUT_GAP_REMS))
-                .on_action(cx.listener(|this, _: &Escape, window, cx| {
+        // The same input, group and "/ 12" at rest and while typed in; the
+        // page shown follows the document at rest.
+        let input = self.field_input(window, cx);
+        let editing = self.editing;
+        if !editing {
+            let page = self.field_text();
+            if input.read(cx).value().as_ref() != page.as_str() {
+                input.update(cx, |input, cx| input.set_value(page, window, cx));
+            }
+        }
+        let unavailable = self.disabled || self.page_count == 0;
+        let tooltip = if self.page_count == 0 {
+            "Page".to_owned()
+        } else {
+            format!(
+                "Page {} of {}. Click to type a page to go to.",
+                self.current + 1,
+                self.page_count
+            )
+        };
+        let id = if editing {
+            PAGE_INPUT_ID
+        } else {
+            PAGE_INDICATOR_ID
+        };
+        let indicator = h_flex()
+            .id(id)
+            .debug_selector(move || id.into())
+            .min_w(indicator_width)
+            .justify_center()
+            // Room for the field's focus ring inside the group's frame,
+            // which clips.
+            .px(rems(PAGE_INPUT_RING_REMS))
+            .gap(rems(PAGE_INPUT_GAP_REMS))
+            .when(editing, |group| {
+                group.on_action(cx.listener(|this, _: &Escape, window, cx| {
                     this.cancel_entry(window, cx);
                 }))
-                .child(
+            })
+            // A press anywhere on the group opens the field, with the page
+            // selected, before the input can place a caret.
+            .when(!editing && !unavailable, |group| {
+                group
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                    })
+                    .capture_any_mouse_down(cx.listener(
+                        |this, event: &MouseDownEvent, window, cx| {
+                            if event.button == MouseButton::Left {
+                                this.begin_entry(window, cx);
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
+            })
+            .child(
+                div()
+                    .id(PAGE_INPUT_FIELD_ID)
+                    .debug_selector(|| PAGE_INPUT_FIELD_ID.into())
+                    .flex_shrink_0()
+                    .w(rems(page_input_rems(digits)))
+                    .child(
+                        Input::new(&input)
+                            .accessibility_id(PAGE_INDICATOR_ID)
+                            .aria_label("Page")
+                            .small()
+                            .text_center()
+                            .readonly(!editing)
+                            .disabled(unavailable),
+                    ),
+            )
+            .when(!current_alone, |group| {
+                group.child(
                     div()
-                        .id(PAGE_INPUT_FIELD_ID)
-                        .debug_selector(|| PAGE_INPUT_FIELD_ID.into())
-                        .flex_shrink_0()
-                        .w(rems(page_input_rems(digits)))
-                        .child(Input::new(&entry.input).small().text_center()),
+                        .text_sm()
+                        .text_color(muted_colour)
+                        .whitespace_nowrap()
+                        .child(if self.page_count == 0 {
+                            "/ –".to_owned()
+                        } else {
+                            format!("/ {}", self.page_count)
+                        }),
                 )
-                .when(!current_alone, |entry| {
-                    entry.child(
-                        div()
-                            .text_sm()
-                            .text_color(muted_colour)
-                            .whitespace_nowrap()
-                            .child(format!("/ {}", self.page_count)),
-                    )
-                })
-                .into_any_element(),
-            None => Button::new(PAGE_INDICATOR_ID)
-                .ghost()
-                .compact()
-                .min_w(indicator_width)
-                .debug_selector(|| PAGE_INDICATOR_ID.into())
-                .accessibility_id(PAGE_INDICATOR_ID)
-                .label(label.clone())
-                .tooltip(if self.page_count == 0 {
-                    "Page".to_owned()
-                } else {
-                    format!(
-                        "Page {} of {}. Click to type a page to go to.",
-                        self.current + 1,
-                        self.page_count
-                    )
-                })
-                .disabled(self.disabled || self.page_count == 0)
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.begin_entry(window, cx);
-                }))
-                .into_any_element(),
-        };
+            })
+            .into_any_element();
 
         let buttons = self.fit == PageNavigatorFit::Full;
         h_flex()
@@ -448,11 +540,21 @@ impl Render for PageNavigator {
             .tab_group()
             .flex_shrink_0()
             .items_center()
-            .when(buttons, |navigator| navigator.child(first))
-            .when(buttons, |navigator| navigator.child(previous))
-            .child(indicator)
-            .when(buttons, |navigator| navigator.child(next))
-            .when(buttons, |navigator| navigator.child(last))
+            .children(crate::toolbar_group::divided(
+                PAGE_NAVIGATOR_ID,
+                if buttons {
+                    vec![
+                        first.into_any_element(),
+                        previous.into_any_element(),
+                        indicator,
+                        next.into_any_element(),
+                        last.into_any_element(),
+                    ]
+                } else {
+                    vec![indicator]
+                },
+                cx,
+            ))
     }
 }
 

@@ -533,3 +533,34 @@ fn every_dialog_has_a_dismissal_contract_test() {
         }
     }
 }
+
+/// The cloud bump size is "Bump size" wherever it shows (the Cloud and Cloud+
+/// properties, the engineering visual inspector and the tool defaults); the
+/// PDF's own name for it, `/BE /I` "intensity", stays in storage and code.
+#[test]
+fn the_cloud_bump_size_is_never_labelled_intensity() {
+    let intensity_text = Regex::new("\"[^\"]*[Ii]ntensity[^\"]*\"").unwrap();
+    for file in [
+        "caption_property_inspector.rs",
+        "engineering_visual_property_inspector.rs",
+        "tool_defaults_panel.rs",
+        "tool_properties.rs",
+    ] {
+        for line in source(file)
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+        {
+            for literal in intensity_text.find_iter(line) {
+                // Element ids keep the word: they are not shown.
+                assert!(
+                    literal.as_str().contains("-intensity"),
+                    "{file} shows an Intensity label: {}",
+                    literal.as_str()
+                );
+            }
+        }
+    }
+    assert!(source("caption_property_inspector.rs").contains("\"Bump size\""));
+    assert!(source("engineering_visual_property_inspector.rs").contains("\"Bump size\""));
+    assert!(source("tool_defaults_panel.rs").contains("\"Bump size\""));
+}

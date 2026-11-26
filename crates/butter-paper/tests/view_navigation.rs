@@ -1943,6 +1943,107 @@ fn the_page_navigator_turns_jumps_and_takes_a_typed_page(cx: &mut TestAppContext
     );
 }
 
+/// The page selector is one stock input at rest and open: opening it moves
+/// and resizes nothing, selects the number, and Enter and Escape end it.
+#[gpui::test]
+fn the_page_field_opens_in_place_with_the_number_selected(cx: &mut TestAppContext) {
+    use butter_paper::page_navigator::{
+        PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_INPUT_FIELD_ID, PAGE_INPUT_ID, PAGE_LAST_ID,
+        PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
+    };
+    // A four-digit page count: the widest field.
+    for pages in [&UNIFORM_PAGES[..], &PAGES_1000[..]] {
+        let mut h = setup(cx, pages);
+        h.action(SinglePageView);
+        let neighbours = [PAGE_FIRST_ID, PAGE_PREVIOUS_ID, PAGE_NEXT_ID, PAGE_LAST_ID];
+        let rest_group = h.cx.debug_bounds(PAGE_INDICATOR_ID).unwrap();
+        let rest_field = h.cx.debug_bounds(PAGE_INPUT_FIELD_ID).unwrap();
+        let rest_neighbours = neighbours.map(|id| h.cx.debug_bounds(id).unwrap());
+        let input = h
+            .workspace
+            .read_with(h.cx, |workspace, cx| {
+                workspace.page_navigator().read(cx).page_input()
+            })
+            .expect("the page field is a stock input at rest");
+        // At rest it holds the page shown, read-only.
+        assert_eq!(
+            input.read_with(h.cx, |input, _| input.value().to_string()),
+            "1"
+        );
+        assert!(h.cx.debug_bounds(PAGE_INPUT_ID).is_none());
+
+        h.click(PAGE_INDICATOR_ID);
+        // Open: the same bounds, the same neighbours, the number selected.
+        assert_eq!(h.cx.debug_bounds(PAGE_INPUT_ID), Some(rest_group));
+        assert_eq!(h.cx.debug_bounds(PAGE_INPUT_FIELD_ID), Some(rest_field));
+        assert_eq!(
+            neighbours.map(|id| h.cx.debug_bounds(id).unwrap()),
+            rest_neighbours
+        );
+        assert!(h.cx.debug_bounds(PAGE_INDICATOR_ID).is_none());
+        assert_eq!(
+            input.read_with(h.cx, |input, _| input.selected_range()),
+            0..1,
+            "the number is selected, so typing replaces it"
+        );
+
+        // Escape closes it as it was.
+        h.cx.simulate_input("3");
+        h.cx.simulate_keystrokes("escape");
+        h.settle();
+        assert_eq!(h.cx.debug_bounds(PAGE_INDICATOR_ID), Some(rest_group));
+        assert_eq!(
+            input.read_with(h.cx, |input, _| input.value().to_string()),
+            "1"
+        );
+        assert_eq!(h.frame().current_page, 0);
+
+        // Enter goes to the typed page; the field then shows it.
+        h.click(PAGE_INDICATOR_ID);
+        h.cx.simulate_input("2");
+        h.cx.simulate_keystrokes("enter");
+        h.settle();
+        assert_eq!(h.frame().current_page, 1);
+        assert_eq!(h.cx.debug_bounds(PAGE_INDICATOR_ID), Some(rest_group));
+        assert_eq!(
+            input.read_with(h.cx, |input, _| input.value().to_string()),
+            "2"
+        );
+    }
+}
+
+/// Focus reaching the page field by the keyboard opens it as a click does,
+/// and leaving it keeps the page shown.
+#[gpui::test]
+fn tabbing_into_the_page_field_opens_it_with_the_number_selected(cx: &mut TestAppContext) {
+    use butter_paper::page_navigator::{PAGE_INDICATOR_ID, PAGE_INPUT_ID};
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(SinglePageView);
+    let rest = h.cx.debug_bounds(PAGE_INDICATOR_ID).unwrap();
+    let input = h
+        .workspace
+        .read_with(h.cx, |workspace, cx| {
+            workspace.page_navigator().read(cx).page_input()
+        })
+        .unwrap();
+    h.cx.update(|window, cx| input.update(cx, |input, cx| input.focus(window, cx)));
+    h.settle();
+    assert_eq!(h.cx.debug_bounds(PAGE_INPUT_ID), Some(rest));
+    assert_eq!(
+        input.read_with(h.cx, |input, _| input.selected_range()),
+        0..1
+    );
+    h.cx.simulate_input("4");
+    h.cx.update(|window, _| window.blur());
+    h.settle();
+    assert_eq!(h.cx.debug_bounds(PAGE_INDICATOR_ID), Some(rest));
+    assert_eq!(
+        h.frame().current_page,
+        0,
+        "leaving the field keeps the page"
+    );
+}
+
 #[gpui::test]
 fn a_narrow_toolbar_keeps_the_page_field_and_drops_the_page_buttons(cx: &mut TestAppContext) {
     use butter_paper::page_navigator::{

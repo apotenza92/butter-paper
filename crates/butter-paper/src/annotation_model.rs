@@ -1782,6 +1782,109 @@ pub struct VertexPathAnnotation {
 /// Revu's nominal cloud curl spacing at intensity 2; it scales with intensity.
 pub const DEFAULT_CLOUD_SCALLOP_RADIUS_PT: f64 = 14.093;
 
+/// How far a cloud's vertex may lie from its bounding box's corner, in points,
+/// for the cloud to count as a rectangle (Revu stores 4 vertices to about
+/// 0.001 pt).
+const CLOUD_RECTANGLE_TOLERANCE_PT: f64 = 0.05;
+
+/// The box of a cloud outline of exactly four vertices that run round an
+/// upright rectangle, within [`CLOUD_RECTANGLE_TOLERANCE_PT`]. Any other
+/// outline (another count, a skewed, turned, crossed or flat one) is `None`
+/// and keeps its vertex handles.
+pub fn cloud_rectangle(points: &[PdfPoint]) -> Option<PdfRect> {
+    cloud_rectangle_corners(points).map(|(rect, _)| rect)
+}
+
+/// The box of a rectangular cloud outline, with each vertex's corner as
+/// (`east`, `north`) flags, in the outline's own order.
+fn cloud_rectangle_corners(points: &[PdfPoint]) -> Option<(PdfRect, [(bool, bool); 4])> {
+    let [a, b, c, d] = points else {
+        return None;
+    };
+    let vertices = [*a, *b, *c, *d];
+    let min_x = vertices
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = vertices
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = vertices
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = vertices
+        .iter()
+        .map(|point| point.y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if max_x - min_x <= CLOUD_RECTANGLE_TOLERANCE_PT * 2.
+        || max_y - min_y <= CLOUD_RECTANGLE_TOLERANCE_PT * 2.
+    {
+        return None;
+    }
+    let side = |value: f64, low: f64, high: f64| -> Option<bool> {
+        if (value - low).abs() <= CLOUD_RECTANGLE_TOLERANCE_PT {
+            Some(false)
+        } else if (value - high).abs() <= CLOUD_RECTANGLE_TOLERANCE_PT {
+            Some(true)
+        } else {
+            None
+        }
+    };
+    let mut corners = [(false, false); 4];
+    for (corner, vertex) in corners.iter_mut().zip(vertices) {
+        *corner = (side(vertex.x, min_x, max_x)?, side(vertex.y, min_y, max_y)?);
+    }
+    // Four different corners, each side of the outline running along one
+    // edge (not across the box), so the outline is not a bow tie.
+    for index in 0..4 {
+        let (this, next) = (corners[index], corners[(index + 1) % 4]);
+        if (this.0 != next.0) == (this.1 != next.1) {
+            return None;
+        }
+    }
+    let rect = PdfRect::new(min_x, min_y, max_x - min_x, max_y - min_y).ok()?;
+    Some((rect, corners))
+}
+
+/// The eight resize handles of a rectangular cloud outline, in
+/// [`RectangleResizeHandle::ALL`]'s order.
+pub fn cloud_rectangle_handle_points(points: &[PdfPoint]) -> Option<[PdfPoint; 8]> {
+    let rect = cloud_rectangle(points)?;
+    Some(RectangleResizeHandle::ALL.map(|handle| handle.point(rect)))
+}
+
+/// A rectangular cloud outline with `handle` moved to `to`, as a Rectangle
+/// resizes: the grabbed side or sides follow the pointer, the others stay,
+/// and the box keeps at least [`MIN_RECT_CREATE_SIZE_PT`]. The vertices keep
+/// their order and start. `None` when the outline is not a rectangle.
+pub fn cloud_rectangle_resized(
+    points: &[PdfPoint],
+    handle: RectangleResizeHandle,
+    to: PdfPoint,
+) -> Option<Vec<PdfPoint>> {
+    let (rect, corners) = cloud_rectangle_corners(points)?;
+    let resized = rect.resized_from_handle(handle, to);
+    Some(
+        corners
+            .into_iter()
+            .map(|(east, north)| PdfPoint {
+                x: canonical_float(if east {
+                    resized.x + resized.width
+                } else {
+                    resized.x
+                }),
+                y: canonical_float(if north {
+                    resized.y + resized.height
+                } else {
+                    resized.y
+                }),
+            })
+            .collect(),
+    )
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CloudAnnotation {
@@ -1805,7 +1908,7 @@ impl CloudAnnotation {
         require_finite("cloud.border_effect_intensity", border_effect_intensity)?;
         if !(0.0..=4.0).contains(&border_effect_intensity) {
             return Err(AnnotationError::InvalidAppearance(
-                "cloud intensity must be between 0 and 4".into(),
+                "cloud bump size must be between 0 and 4".into(),
             ));
         }
         Ok(Self {
@@ -1820,6 +1923,12 @@ impl CloudAnnotation {
 
     pub fn points(&self) -> &[PdfPoint] {
         &self.points
+    }
+
+    /// The box of this cloud when its outline is a rectangle; it then
+    /// resizes from rectangle handles rather than vertex handles.
+    pub fn rectangle(&self) -> Option<PdfRect> {
+        cloud_rectangle(&self.points)
     }
 
     pub fn border_effect_intensity(&self) -> f64 {
@@ -2698,7 +2807,7 @@ impl CloudPlusAnnotation {
         )?;
         if !(0.0..=4.0).contains(&border_effect_intensity) {
             return Err(AnnotationError::InvalidAppearance(
-                "Cloud+ intensity must be between 0 and 4".into(),
+                "Cloud+ bump size must be between 0 and 4".into(),
             ));
         }
         validate_cloud_plus_leader_points(&leader_points)?;
@@ -2721,6 +2830,11 @@ impl CloudPlusAnnotation {
 
     pub fn cloud_points(&self) -> &[PdfPoint] {
         &self.cloud_points
+    }
+
+    /// The box of this Cloud+'s cloud when its outline is a rectangle.
+    pub fn cloud_rectangle(&self) -> Option<PdfRect> {
+        cloud_rectangle(&self.cloud_points)
     }
 
     pub fn border_effect_intensity(&self) -> f64 {
@@ -3072,6 +3186,54 @@ impl CalloutAnnotation {
 
     pub fn content(&self) -> &str {
         &self.content
+    }
+
+    /// This Callout with leader point `index` moved to `point`. Dragging the
+    /// knee (the point before the connection) across the text box's vertical
+    /// centre line, from the side the leader meets, moves the connection to
+    /// the other side of the text box, at its vertical middle; the leader
+    /// then keeps that side (moving, resizing or refitting the text box never
+    /// changes it). The knee itself stays where it is put.
+    pub fn with_leader_point(
+        &self,
+        index: usize,
+        point: PdfPoint,
+    ) -> Result<Self, AnnotationError> {
+        let mut leader_points = self.leader_points.clone();
+        *leader_points.get_mut(index).ok_or_else(|| {
+            AnnotationError::InvalidGeometry("callout leader point index is out of range".into())
+        })? = point;
+        let last = self.leader_points.len() - 1;
+        if self.leader_points.len() >= 3 && index == last - 1 {
+            let centre_x = self.text_box.x + self.text_box.width * 0.5;
+            let connection = self.leader_points[last];
+            let side_of_centre = |x: f64| x >= centre_x;
+            let meets_right = side_of_centre(connection.x);
+            // Only a knee that lay on the leader's side, dragged to the
+            // other, switches the side.
+            if side_of_centre(self.leader_points[index].x) == meets_right
+                && side_of_centre(point.x) != meets_right
+            {
+                leader_points[last] = PdfPoint::new(
+                    if meets_right {
+                        self.text_box.x
+                    } else {
+                        self.text_box.x + self.text_box.width
+                    },
+                    self.text_box.y + self.text_box.height * 0.5,
+                )?;
+            }
+        }
+        let mut replacement = Self::new(
+            self.id.clone(),
+            self.page_index,
+            leader_points,
+            self.text_box,
+            self.content.clone(),
+            self.appearance.clone(),
+        )?;
+        replacement.locked = self.locked;
+        Ok(replacement)
     }
 
     pub fn resized_text_box(&self, text_box: PdfRect) -> Result<Self, AnnotationError> {
@@ -5239,6 +5401,8 @@ pub enum AnnotationEdit {
         vertex_index: usize,
         point: PdfPoint,
     },
+    /// A rectangular cloud's whole outline, from a handle drag.
+    SetCloudOutline(Vec<PdfPoint>),
     TranslateCloud {
         delta_x: f64,
         delta_y: f64,
@@ -5248,6 +5412,12 @@ pub enum AnnotationEdit {
     SetCloudPlusCloudPoint {
         vertex_index: usize,
         point: PdfPoint,
+        leader_points: Vec<PdfPoint>,
+    },
+    /// A rectangular Cloud+ cloud's whole outline, from a handle drag, with
+    /// its leader routed again.
+    SetCloudPlusCloudOutline {
+        points: Vec<PdfPoint>,
         leader_points: Vec<PdfPoint>,
     },
     SetCloudPlusLeaderPoints(Vec<PdfPoint>),
@@ -6020,6 +6190,9 @@ pub struct SceneVertexPath {
 pub struct SceneCloud {
     pub id: MarkupId,
     pub points: Vec<PdfPoint>,
+    /// The outline is a rectangle: it shows eight resize handles (see
+    /// [`cloud_rectangle_handle_points`]) in place of its vertex handles.
+    pub rectangular: bool,
     pub scallop_path: Vec<PdfPoint>,
     pub border_effect_intensity: f64,
     pub appearance: RectangleAppearance,
@@ -6033,6 +6206,8 @@ pub struct SceneCloud {
 pub struct SceneCloudPlus {
     pub id: MarkupId,
     pub cloud_points: Vec<PdfPoint>,
+    /// The cloud's outline is a rectangle, as for [`SceneCloud`].
+    pub rectangular: bool,
     pub scallop_path: Vec<PdfPoint>,
     pub border_effect_intensity: f64,
     pub leader_points: Vec<PdfPoint>,
@@ -12554,6 +12729,30 @@ impl AnnotationDocument {
                 });
                 Ok((AnnotationKind::Cloud, true))
             }
+            AnnotationEdit::SetCloudOutline(points) => {
+                for point in &points {
+                    require_finite("cloud.point.x", point.x)?;
+                    require_finite("cloud.point.y", point.y)?;
+                }
+                let annotation = self.cloud(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.points == points {
+                    return Ok((AnnotationKind::Cloud, false));
+                }
+                validate_vertex_path(&points, VertexPathKind::Polygon)?;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    state
+                        .clouds
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated cloud outline edit must retain its target")
+                        .points = points;
+                });
+                Ok((AnnotationKind::Cloud, true))
+            }
             AnnotationEdit::TranslateCloud { delta_x, delta_y } => {
                 require_finite("cloud.delta_x", delta_x)?;
                 require_finite("cloud.delta_y", delta_y)?;
@@ -12675,6 +12874,43 @@ impl AnnotationDocument {
                         .iter_mut()
                         .find(|annotation| annotation.id == id)
                         .expect("a validated Cloud+ cloud edit must retain its target") =
+                        replacement;
+                });
+                Ok((AnnotationKind::CloudPlus, true))
+            }
+            AnnotationEdit::SetCloudPlusCloudOutline {
+                points,
+                leader_points,
+            } => {
+                for point in &points {
+                    require_finite("cloud_plus.point.x", point.x)?;
+                    require_finite("cloud_plus.point.y", point.y)?;
+                }
+                let annotation = self.cloud_plus(id).ok_or(AnnotationError::NoSelection)?;
+                if annotation.locked {
+                    return Err(AnnotationError::LockedMarkup(id.clone()));
+                }
+                if annotation.cloud_points == points && annotation.leader_points == leader_points {
+                    return Ok((AnnotationKind::CloudPlus, false));
+                }
+                let mut replacement = CloudPlusAnnotation::new(
+                    annotation.id.clone(),
+                    annotation.page_index,
+                    points,
+                    annotation.border_effect_intensity,
+                    leader_points,
+                    annotation.text_box,
+                    annotation.content.clone(),
+                    annotation.appearance.clone(),
+                )?;
+                replacement.locked = annotation.locked;
+                let id = id.clone();
+                self.commit_state_change(move |state| {
+                    *state
+                        .cloud_pluses
+                        .iter_mut()
+                        .find(|annotation| annotation.id == id)
+                        .expect("a validated Cloud+ outline edit must retain its target") =
                         replacement;
                 });
                 Ok((AnnotationKind::CloudPlus, true))
@@ -12944,18 +13180,7 @@ impl AnnotationDocument {
                 if annotation.leader_points[point_index] == point {
                     return Ok((AnnotationKind::Callout, false));
                 }
-                let mut replacement = annotation.clone();
-                replacement.leader_points[point_index] = point;
-                let locked = replacement.locked;
-                replacement = CalloutAnnotation::new(
-                    replacement.id.clone(),
-                    replacement.page_index,
-                    replacement.leader_points.clone(),
-                    replacement.text_box,
-                    replacement.content.clone(),
-                    replacement.appearance.clone(),
-                )?;
-                replacement.locked = locked;
+                let replacement = annotation.with_leader_point(point_index, point)?;
                 let id = id.clone();
                 self.commit_state_change(move |state| {
                     *state
@@ -13442,6 +13667,7 @@ impl AnnotationDocument {
             .map(|annotation| SceneCloud {
                 id: annotation.id.clone(),
                 points: annotation.points.clone(),
+                rectangular: annotation.rectangle().is_some(),
                 scallop_path: annotation.scallop_path(),
                 border_effect_intensity: annotation.border_effect_intensity,
                 appearance: annotation.appearance.clone(),
@@ -13461,6 +13687,7 @@ impl AnnotationDocument {
             .map(|annotation| SceneCloudPlus {
                 id: annotation.id.clone(),
                 cloud_points: annotation.cloud_points.clone(),
+                rectangular: annotation.cloud_rectangle().is_some(),
                 scallop_path: annotation.scallop_path(),
                 border_effect_intensity: annotation.border_effect_intensity,
                 leader_points: annotation.leader_points.clone(),

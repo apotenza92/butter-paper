@@ -1950,3 +1950,259 @@ fn the_page_field_fits_its_digits_and_focus_ring_for_one_to_four_digits(cx: &mut
         );
     }
 }
+
+/// Every joined group of toolbar controls shows a 1 px divider between each
+/// pair of adjacent members, in every form of the toolbar. A group of other
+/// controls (the page navigator, the zoom, the CAD view) draws it with the
+/// shared `toolbar_divider`; a stock button group (Undo and Redo, Fit Width
+/// and Fit Page, the Page Scale split) draws it with its buttons' borders,
+/// so its members meet edge to edge.
+fn assert_dividers_between_members(
+    cx: &mut gpui::VisualTestContext,
+    width: f32,
+    group: &'static str,
+    members: &[&'static str],
+) {
+    use butter_paper::toolbar_group::toolbar_divider_id;
+    let present: Vec<_> = members
+        .iter()
+        .filter_map(|id| cx.debug_bounds(id).map(|bounds| (*id, bounds)))
+        .collect();
+    for (index, pair) in present.windows(2).enumerate() {
+        let ((left_id, left), (right_id, right)) = (pair[0], pair[1]);
+        let divider_id: &'static str = Box::leak(toolbar_divider_id(group, index).into_boxed_str());
+        let divider = cx.debug_bounds(divider_id).unwrap_or_else(|| {
+            panic!("no divider between {left_id} and {right_id} in {group} at {width}")
+        });
+        assert_eq!(divider.size.width, px(1.), "{divider_id} at {width}");
+        assert!(
+            left.right() <= divider.left() && divider.right() <= right.left(),
+            "{divider_id} lies between {left_id} and {right_id} at {width}: \
+             {left:?} {divider:?} {right:?}"
+        );
+        // Edge to edge: the members and the divider leave no gap.
+        assert!(
+            (divider.left() - left.right()).abs() <= px(0.5)
+                && (right.left() - divider.right()).abs() <= px(0.5),
+            "{divider_id} is flush with its members at {width}"
+        );
+        // The full height of the members, as a stock group's lines are.
+        assert!(
+            divider.top() <= left.top() + px(1.) && divider.bottom() >= left.bottom() - px(1.),
+            "{divider_id} spans the members' height at {width}: {divider:?} {left:?}"
+        );
+    }
+}
+
+fn assert_stock_group_members_meet(
+    cx: &mut gpui::VisualTestContext,
+    width: f32,
+    members: &[&'static str],
+) {
+    let present: Vec<_> = members
+        .iter()
+        .filter_map(|id| cx.debug_bounds(id).map(|bounds| (*id, bounds)))
+        .collect();
+    for pair in present.windows(2) {
+        let ((left_id, left), (right_id, right)) = (pair[0], pair[1]);
+        assert!(
+            (right.left() - left.right()).abs() <= px(0.5),
+            "{left_id} and {right_id} are one stock button group, joined by its \
+             buttons' borders, at {width}: {left:?} {right:?}"
+        );
+    }
+}
+
+#[gpui::test]
+fn every_joined_toolbar_group_has_a_divider_between_adjacent_members_in_every_form(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::page_navigator::{
+        PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_LAST_ID, PAGE_NAVIGATOR_ID, PAGE_NEXT_ID,
+        PAGE_PREVIOUS_ID,
+    };
+    use butter_paper::viewer_toolbar_strip::{
+        VIEWER_REDO_ID, VIEWER_SCALE_MENU_ID, VIEWER_SCALE_TOGGLE_ID, VIEWER_UNDO_ID,
+    };
+    let (cx, entities) = worst_case_toolbar(cx, false);
+    let narrowest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Narrowest, false, 4);
+    let mut forms_seen = std::collections::BTreeSet::new();
+    let mut widths: Vec<f32> = ViewerToolbarFit::ALL
+        .into_iter()
+        .map(|fit| 16. * viewer_toolbar_rems(fit, false, 4))
+        .collect();
+    let mut width = narrowest;
+    while width <= 1400. {
+        widths.push(width);
+        width += 23.;
+    }
+    for width in widths {
+        lay_out_at(cx, &entities, width);
+        forms_seen.insert(form_shown(cx));
+        assert_dividers_between_members(
+            cx,
+            width,
+            PAGE_NAVIGATOR_ID,
+            &[
+                PAGE_FIRST_ID,
+                PAGE_PREVIOUS_ID,
+                PAGE_INDICATOR_ID,
+                PAGE_NEXT_ID,
+                PAGE_LAST_ID,
+            ],
+        );
+        assert_dividers_between_members(
+            cx,
+            width,
+            ZOOM_GROUP_ID,
+            &[ZOOM_OUT_ID, ZOOM_IN_ID, ZOOM_MENU_ID],
+        );
+        assert_stock_group_members_meet(cx, width, &[VIEWER_UNDO_ID, VIEWER_REDO_ID]);
+        assert_stock_group_members_meet(cx, width, &[FIT_WIDTH_ID, FIT_PAGE_ID]);
+        assert_stock_group_members_meet(cx, width, &[VIEWER_SCALE_TOGGLE_ID, VIEWER_SCALE_MENU_ID]);
+    }
+    assert_eq!(
+        forms_seen.len(),
+        ViewerToolbarFit::ALL.len(),
+        "every form was walked: {forms_seen:?}"
+    );
+}
+
+#[gpui::test]
+fn the_cad_view_buttons_have_a_divider_between_them(cx: &mut TestAppContext) {
+    let (cx, _entities) = open_cad_harness(cx);
+    assert_dividers_between_members(
+        cx,
+        NORMAL_WIDTH,
+        CAD_VIEW_GROUP_ID,
+        &[CAD_VIEW_PRIMARY_ID, CAD_VIEW_SETTINGS_ID],
+    );
+    assert!(cx.debug_bounds(CAD_VIEW_PRIMARY_ID).is_some());
+}
+
+/// The page field opens in place in every form of the toolbar, and at the
+/// least window's toolbar, for a short and a four-digit document: the idle
+/// and the open field have the same bounds, the group beside it does not
+/// move, nothing is clipped (the toolbar's content is no wider than the
+/// toolbar, the field with its focus ring is inside the page group, and the
+/// widest page number fits the field).
+#[gpui::test]
+fn the_page_field_opens_in_place_in_every_toolbar_form_and_at_the_least_window(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::page_navigator::{
+        PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_INPUT_FIELD_ID, PAGE_INPUT_ID, PAGE_LAST_ID,
+        PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
+    };
+    use butter_paper::viewer_toolbar_strip::{
+        VIEWER_PAGES_GROUP_ID, VIEWER_TOOLBAR_MIN_REMS, VIEWER_ZOOM_GROUP_ID,
+    };
+    for signed in [false, true] {
+        for page_count in [4_u32, 1_234] {
+            let digits = butter_paper::page_navigator::page_count_digits(page_count);
+            let mut widths: Vec<(String, f32)> = ViewerToolbarFit::ALL
+                .into_iter()
+                .map(|fit| {
+                    (
+                        format!("{fit:?}"),
+                        16. * viewer_toolbar_rems(fit, signed, digits),
+                    )
+                })
+                .collect();
+            // The toolbar of the least window: 918 points less its rails.
+            widths.push(("least window".to_owned(), 16. * VIEWER_TOOLBAR_MIN_REMS));
+            for (form, width) in widths {
+                let mut app = cx.clone();
+                let (cx, entities) = worst_case_toolbar(&mut app, signed);
+                let navigator = cx.new(|_| butter_paper::page_navigator::PageNavigator::new());
+                entities.toolbar.update(cx, |toolbar, cx| {
+                    toolbar.set_page_navigator(navigator.clone(), cx);
+                    toolbar.sync_pages(0, page_count, cx);
+                });
+                lay_out_at(cx, &entities, width);
+                let case = format!("{page_count} pages, {form}, {width} px, signed {signed}");
+                let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
+                let content = bounds(cx, VIEWER_TOOLBAR_CONTENT_ID);
+                assert_eq!(content.size.width, toolbar.size.width, "{case}: scrolls");
+
+                let others: Vec<_> = [
+                    PAGE_FIRST_ID,
+                    PAGE_PREVIOUS_ID,
+                    PAGE_NEXT_ID,
+                    PAGE_LAST_ID,
+                    VIEWER_ZOOM_GROUP_ID,
+                    VIEWER_TOOLBAR_CONTROLS_ID,
+                ]
+                .into_iter()
+                .filter_map(|id| cx.debug_bounds(id).map(|bounds| (id, bounds)))
+                .collect();
+                let rest_group = bounds(cx, PAGE_INDICATOR_ID);
+                let rest_field = bounds(cx, PAGE_INPUT_FIELD_ID);
+                let page_group = bounds(cx, VIEWER_PAGES_GROUP_ID);
+                assert!(
+                    page_group.left() >= toolbar.left() && page_group.right() <= toolbar.right(),
+                    "{case}: the page group is cut by the toolbar"
+                );
+
+                click_target(cx, PAGE_INDICATOR_ID);
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                assert!(
+                    navigator.read_with(cx, |navigator, _| navigator.is_editing()),
+                    "{case}"
+                );
+                // Idle and open are the same box, and nothing beside it moved.
+                assert_eq!(cx.debug_bounds(PAGE_INPUT_ID), Some(rest_group), "{case}");
+                assert_eq!(
+                    cx.debug_bounds(PAGE_INPUT_FIELD_ID),
+                    Some(rest_field),
+                    "{case}"
+                );
+                for (id, before) in &others {
+                    assert_eq!(cx.debug_bounds(id), Some(*before), "{case}: {id} moved");
+                }
+                assert_eq!(bounds(cx, VIEWER_PAGES_GROUP_ID), page_group, "{case}");
+                // The focus ring is inside the page group's frame.
+                let ring = rest_field.dilate(px(3.));
+                assert!(
+                    ring.left() > page_group.left()
+                        && ring.right() < page_group.right()
+                        && ring.top() > page_group.top()
+                        && ring.bottom() < page_group.bottom(),
+                    "{case}: ring {ring:?} cut by {page_group:?}"
+                );
+                // The widest page number fits the field's padding and border.
+                let widest = "8".repeat(digits.max(2) as usize);
+                let text = cx.update(|window, _| {
+                    let run = gpui::TextRun {
+                        len: widest.len(),
+                        font: window.text_style().font(),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    window
+                        .text_system()
+                        .shape_line(
+                            widest.clone().into(),
+                            window.rem_size() * 0.875,
+                            &[run],
+                            None,
+                        )
+                        .width
+                });
+                assert!(
+                    text + px(2.) <= rest_field.size.width - px(18.),
+                    "{case}: {widest} is {text:?} wide in a {rest_field:?} field"
+                );
+                cx.simulate_keystrokes("escape");
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+                assert_eq!(
+                    cx.debug_bounds(PAGE_INDICATOR_ID),
+                    Some(rest_group),
+                    "{case}"
+                );
+            }
+        }
+    }
+}

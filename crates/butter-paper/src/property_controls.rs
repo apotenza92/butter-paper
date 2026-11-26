@@ -399,6 +399,140 @@ impl RenderOnce for PropertyOptionalSection {
     }
 }
 
+/// The ids a disclosure section answers to.
+#[derive(Clone, Copy, Debug)]
+pub struct PropertyDisclosureIds {
+    /// The whole section.
+    pub root: &'static str,
+    /// The heading, which opens and closes the section.
+    pub toggle: &'static str,
+    /// The muted summary in the closed heading.
+    pub summary: &'static str,
+    /// The fields, drawn while the section is open.
+    pub body: &'static str,
+}
+
+/// A collapsible group of settings with no checkbox, such as the Visual
+/// search's Options: the section's heading is one control that opens and
+/// closes it (the optional section's heading and chevron, without the
+/// checkbox). While it is closed the heading shows a short muted summary of
+/// the values inside, cut to the room there is. The owner keeps the open
+/// state and updates it from `on_open_change`.
+#[derive(IntoElement)]
+pub struct PropertyDisclosureSection {
+    ids: PropertyDisclosureIds,
+    title: SharedString,
+    summary: SharedString,
+    open: bool,
+    on_open_change: Option<std::rc::Rc<dyn Fn(bool, &mut Window, &mut App)>>,
+    body: Option<AnyElement>,
+}
+
+impl PropertyDisclosureSection {
+    pub fn new(ids: PropertyDisclosureIds, title: impl Into<SharedString>, open: bool) -> Self {
+        Self {
+            ids,
+            title: title.into(),
+            summary: SharedString::default(),
+            open,
+            on_open_change: None,
+            body: None,
+        }
+    }
+
+    /// The summary shown in the closed heading.
+    pub fn summary(mut self, summary: impl Into<SharedString>) -> Self {
+        self.summary = summary.into();
+        self
+    }
+
+    /// Called with the new open state when the heading is activated.
+    pub fn on_open_change(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_open_change = Some(std::rc::Rc::new(handler));
+        self
+    }
+
+    /// The fields, drawn while the section is open.
+    pub fn body(mut self, body: impl IntoElement) -> Self {
+        self.body = Some(body.into_any_element());
+        self
+    }
+}
+
+impl RenderOnce for PropertyDisclosureSection {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let ids = self.ids;
+        let open = self.open;
+        let muted = cx.theme().muted_foreground;
+        let title = self.title;
+        let summary = self.summary;
+        let heading = crate::accessible_button::accessible_disclosure_button(
+            Button::new(ids.toggle)
+                .debug_selector(move || ids.toggle.into())
+                .ghost()
+                .w_full()
+                .tooltip(if open {
+                    format!("Collapse {title}")
+                } else {
+                    format!("Expand {title}")
+                })
+                .when_some(self.on_open_change, |button, handler| {
+                    button.on_click(move |_, window, cx| handler(!open, window, cx))
+                })
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_none().child(title.clone()))
+                        .child(
+                            div()
+                                .id(ids.summary)
+                                .debug_selector(move || ids.summary.into())
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(muted)
+                                .when(open, |summary| summary.hidden())
+                                .child(summary),
+                        )
+                        .child(Icon::new(if open {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })),
+                ),
+            title.clone(),
+            open,
+        );
+        div()
+            .id(ids.root)
+            .debug_selector(move || ids.root.into())
+            .w_full()
+            .min_w_0()
+            .child(
+                Collapsible::new()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .open(open)
+                    .child(heading)
+                    .content(
+                        div()
+                            .id(ids.body)
+                            .debug_selector(move || ids.body.into())
+                            .w_full()
+                            .min_w_0()
+                            .children(self.body),
+                    ),
+            )
+    }
+}
+
 /// A properties panel's content: its groups, a group's space apart, inside
 /// the grid's margins.
 pub fn property_body() -> gpui::Div {

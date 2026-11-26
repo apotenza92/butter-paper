@@ -83,9 +83,9 @@ const SCALE_LABEL_REMS: f32 = 6.625;
 pub const TOOLBAR_ICON_SLOT_REMS: f32 = 2.5;
 /// The zoom, fit and page-view controls other than the page navigator, with
 /// the frames of the zoom and page groups and the gap before the zoom.
-const VIEW_CONTROLS_REMS: f32 = 26.5;
+const VIEW_CONTROLS_REMS: f32 = 26.625;
 /// The room Zoom Out and Zoom In take as buttons, in rems.
-const ZOOM_STEPS_REMS: f32 = 4.5;
+const ZOOM_STEPS_REMS: f32 = 4.625;
 /// The room the Fit Width and Fit Page group takes, with its gap, in rems.
 const FIT_GROUP_REMS: f32 = 5.1875;
 /// The room merging the two page-view controls into one menu button gives
@@ -1294,7 +1294,7 @@ impl Render for ViewerToolbarStrip {
                                     .py_1()
                                     .when_some(self.page_navigator.clone(), |toolbar, navigator| {
                                         toolbar.child(
-                                            toolbar_group(cx)
+                                            crate::toolbar_group::toolbar_group(cx)
                                                 .id(VIEWER_PAGES_GROUP_ID)
                                                 .debug_selector(|| VIEWER_PAGES_GROUP_ID.into())
                                                 .flex_shrink_0()
@@ -1303,7 +1303,7 @@ impl Render for ViewerToolbarStrip {
                                     })
                                     .when_some(self.zoom_control.clone(), |toolbar, control| {
                                         toolbar.child(
-                                            toolbar_group(cx)
+                                            crate::toolbar_group::toolbar_group(cx)
                                                 .id(VIEWER_ZOOM_GROUP_ID)
                                                 .debug_selector(|| VIEWER_ZOOM_GROUP_ID.into())
                                                 .flex_shrink_0()
@@ -1386,18 +1386,4 @@ impl Render for ViewerToolbarStrip {
                     ),
             )
     }
-}
-
-/// A group of toolbar controls in one frame, as the fit and page-view
-/// buttons are. Its buttons reach the frame: the end ones' hover and press
-/// fill it to its rounded edge, as a stock button group's do.
-fn toolbar_group(cx: &App) -> gpui::Div {
-    let theme = cx.theme();
-    h_flex()
-        .h_8()
-        .items_center()
-        .border_1()
-        .border_color(theme.border)
-        .rounded(theme.radius)
-        .overflow_hidden()
 }

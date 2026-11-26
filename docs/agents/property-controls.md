@@ -37,6 +37,11 @@ checkbox, then the title, then a chevron at the far end.
 - A locked markup or a save in progress disables the checkbox and the fields.
   The chevron stays active, because it changes no document.
 
+A collapsible group with no checkbox, such as the Visual search's Options, uses
+`PropertyDisclosureSection`: its heading is one control that opens and closes the
+section, with a short muted summary of the values inside while it is closed.
+The owner keeps the open state.
+
 A setting that depends on another setting in the same section sits indented
 under that setting. Mark it with `PropertyRow::dependent`. Disable it while
 the setting that it depends on is off.

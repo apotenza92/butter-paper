@@ -125,6 +125,7 @@ pub mod template_manager;
 pub mod template_preview;
 pub mod text_box_property_inspector;
 pub mod tool_defaults_panel;
+pub mod toolbar_group;
 pub mod vertex_path_property_inspector;
 pub mod viewer;
 mod viewer_icons;

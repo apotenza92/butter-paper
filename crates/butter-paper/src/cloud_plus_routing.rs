@@ -92,7 +92,10 @@ pub fn reroute_cloud_plus_leader(
 /// vertical middle, as a Callout's does. The tip is the point of the drawn
 /// cloud nearest the knee. The side is the one that does not cross the
 /// cloud, the text box or other markups, does not turn back over the
-/// landing, and points towards the cloud.
+/// landing, and points towards the cloud. The side is chosen only for a
+/// leader that has none yet (a new Cloud+): a leader that is routed again
+/// keeps the side its `previous_leader` meets, which the user chose by
+/// dragging the knee (see [`drag_cloud_plus_knee`]).
 pub fn route_cloud_plus_leader(
     control_path: &[PdfPoint],
     visible_path: &[PdfPoint],
@@ -114,19 +117,12 @@ pub fn route_cloud_plus_leader(
 
     let cloud_bounds = points_bounds(control_path)?;
     let outline = closed_outline(visible_path);
-    let previous_side = infer_leader_side(previous_leader, text_box);
+    let kept_side = previous_leader_side(previous_leader, text_box);
     [CloudPlusLeaderSide::Left, CloudPlusLeaderSide::Right]
         .into_iter()
+        .filter(|side| kept_side.is_none_or(|kept| kept == *side))
         .map(|side| {
-            build_route_candidate(
-                &outline,
-                text_box,
-                cloud_bounds,
-                side,
-                previous_side,
-                landing_pt,
-                context,
-            )
+            build_route_candidate(&outline, text_box, cloud_bounds, side, landing_pt, context)
         })
         .min_by(|left, right| left.score.total_cmp(&right.score))
         .ok_or_else(|| AnnotationError::InvalidGeometry("Cloud+ route has no candidate".into()))
@@ -135,7 +131,10 @@ pub fn route_cloud_plus_leader(
 /// The leader with its knee dragged to `pointer`. The landing stays level on
 /// the side of the text it meets, and takes the pointer's distance out from
 /// that side as its length (0 at the side or inside the box). It stops short
-/// of the cloud. The tip stays, unless the leader then crosses the cloud or
+/// of the cloud. A pointer across the text box's vertical centre line moves
+/// the landing to the other side of the text, which then stays (see
+/// [`route_cloud_plus_leader`]); the landing keeps its length until the
+/// pointer is farther out from that side. The tip stays, unless the leader then crosses the cloud or
 /// the text or turns back over the landing: then it moves to the point of
 /// the cloud nearest the knee.
 pub fn drag_cloud_plus_knee(
@@ -150,18 +149,30 @@ pub fn drag_cloud_plus_knee(
             "Cloud+ knee target must be finite".into(),
         ));
     }
-    let [tip, _, connection] = *leader else {
+    let [tip, old_knee, connection] = *leader else {
         return Ok(leader.to_vec());
     };
-    let side = infer_leader_side(leader, text_box).unwrap_or(CloudPlusLeaderSide::Left);
+    let kept_side = previous_leader_side(leader, text_box).unwrap_or(CloudPlusLeaderSide::Left);
+    let side = if pointer.x < rect_center(text_box).x {
+        CloudPlusLeaderSide::Left
+    } else {
+        CloudPlusLeaderSide::Right
+    };
     let direction = side.outward();
+    let connection_before = connection;
+    let connection = if side == kept_side {
+        connection
+    } else {
+        connection_point(text_box, side)
+    };
+    let pointer_landing = ((pointer.x - connection.x) * direction).max(0.);
+    let landing_pt = if side == kept_side {
+        pointer_landing
+    } else {
+        pointer_landing.max((old_knee.x - connection_before.x).abs())
+    };
     let outline = closed_outline(visible_path);
-    let landing = fit_landing(
-        connection,
-        direction,
-        ((pointer.x - connection.x) * direction).max(0.),
-        &outline,
-    );
+    let landing = fit_landing(connection, direction, landing_pt, &outline);
     let knee = point(connection.x + direction * landing, connection.y);
     let kept = [tip, knee, connection];
     if !leader_is_clear(&kept, &outline, text_box, direction) {
@@ -288,7 +299,6 @@ const EPSILON: f64 = 0.000_001;
 /// The least room a landing leaves between its knee and the cloud when the
 /// cloud is in its way.
 const LANDING_CLEARANCE_PT: f64 = 6.;
-const SIDE_SWITCH_PENALTY: f64 = 24.;
 const WRONG_FACING_PENALTY: f64 = 20_000.;
 const DOUBLE_BACK_PENALTY: f64 = 500_000.;
 const TEXT_CROSSING_PENALTY: f64 = 1_000_000.;
@@ -321,7 +331,6 @@ fn build_route_candidate(
     text_box: PdfRect,
     cloud_bounds: PdfRect,
     side: CloudPlusLeaderSide,
-    previous_side: Option<CloudPlusLeaderSide>,
     landing_pt: f64,
     context: &CloudPlusRoutingContext,
 ) -> CloudPlusLeaderRoute {
@@ -357,9 +366,6 @@ fn build_route_candidate(
             .map(|point| point_outside_distance(*point, bounds))
             .sum::<f64>()
             * 5_000.;
-    }
-    if previous_side.is_some_and(|previous| previous != side) {
-        score += SIDE_SWITCH_PENALTY;
     }
     CloudPlusLeaderRoute {
         points,
@@ -477,6 +483,23 @@ fn infer_leader_side(points: &[PdfPoint], text_box: PdfRect) -> Option<CloudPlus
     } else {
         CloudPlusLeaderSide::Right
     })
+}
+
+/// The side of its text box that a leader's landing meets. The landing runs
+/// outward from that side, so the knee shows it even where the text box has
+/// moved since; a landing of zero length has only the connection to go by,
+/// which is nearest that side of the box.
+fn previous_leader_side(points: &[PdfPoint], text_box: PdfRect) -> Option<CloudPlusLeaderSide> {
+    if let [_, knee, connection] = points
+        && (knee.x - connection.x).abs() > EPSILON
+    {
+        return Some(if knee.x > connection.x {
+            CloudPlusLeaderSide::Right
+        } else {
+            CloudPlusLeaderSide::Left
+        });
+    }
+    infer_leader_side(points, text_box)
 }
 
 fn connection_point(text_box: PdfRect, side: CloudPlusLeaderSide) -> PdfPoint {
@@ -1192,7 +1215,9 @@ mod tests {
             &CloudPlusRoutingContext::default(),
         )
         .unwrap();
-        assert_eq!(moved.side, Some(CloudPlusLeaderSide::Right));
+        // The text box moved to the other side of the cloud, and the
+        // landing still meets its left side: the side is the user's.
+        assert_eq!(moved.side, Some(CloudPlusLeaderSide::Left));
         assert!((cloud_plus_landing_pt(&moved.points).unwrap() - 37.5).abs() < 1e-9);
         // A Cloud+ with no leader takes the default landing.
         let fresh = reroute_cloud_plus_leader(
@@ -1255,6 +1280,104 @@ mod tests {
         let blocked =
             drag_cloud_plus_knee(&visible, level, &route.points, point(250., 275.)).unwrap();
         assert_eq!(blocked[1].x, 300. + LANDING_CLEARANCE_PT);
+    }
+
+    #[test]
+    fn dragging_the_knee_across_the_text_centre_moves_the_landing_to_the_other_side() {
+        let (control, visible) = square_cloud(200., 200., 100.);
+        let text_box = rect(380., 340., 60., 30.);
+        let route = route_cloud_plus_leader(
+            &control,
+            &visible,
+            text_box,
+            &[],
+            CLOUD_PLUS_LANDING_PT,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        assert_eq!(route.side, Some(CloudPlusLeaderSide::Left));
+
+        // Over the text's right half: the landing leaves its right side,
+        // level, at its first length.
+        let across =
+            drag_cloud_plus_knee(&visible, text_box, &route.points, point(425., 380.)).unwrap();
+        assert_eq!(across[2], point(440., 355.));
+        assert_eq!(across[1], point(440. + CLOUD_PLUS_LANDING_PT, 355.));
+        // Out from that side, it takes the pointer's distance as before.
+        let out =
+            drag_cloud_plus_knee(&visible, text_box, &route.points, point(500., 380.)).unwrap();
+        assert_eq!(out[2], point(440., 355.));
+        assert_eq!(out[1], point(500., 355.));
+        // Back over the left half: the first side again.
+        let back =
+            drag_cloud_plus_knee(&visible, text_box, &route.points, point(300., 380.)).unwrap();
+        assert_eq!(back[2], route.points[2]);
+
+        // From there the side stays whatever moves: the text box moves to the
+        // left of the cloud, and the leader keeps meeting its right side.
+        let moved_box = rect(60., 120., 60., 30.);
+        for text_box in [
+            moved_box,
+            rect(380., 340., 90., 30.),
+            rect(380., 500., 60., 30.),
+        ] {
+            let rerouted = reroute_cloud_plus_leader(
+                &control,
+                &visible,
+                text_box,
+                &out,
+                &CloudPlusRoutingContext::default(),
+            )
+            .unwrap();
+            assert_eq!(rerouted.side, Some(CloudPlusLeaderSide::Right));
+            assert_eq!(rerouted.points[2].x, text_box.x + text_box.width);
+            assert_eq!(rerouted.points[1].x, rerouted.points[2].x + 60.);
+        }
+    }
+
+    #[test]
+    fn a_new_cloud_plus_still_chooses_its_side_and_a_leader_without_a_landing_keeps_it() {
+        let (control, visible) = square_cloud(200., 200., 100.);
+        // No previous leader: the side that faces the cloud.
+        let right_of = route_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(380., 240., 60., 30.),
+            &[],
+            CLOUD_PLUS_LANDING_PT,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        assert_eq!(right_of.side, Some(CloudPlusLeaderSide::Left));
+        let left_of = route_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(60., 240., 60., 30.),
+            &[],
+            CLOUD_PLUS_LANDING_PT,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        assert_eq!(left_of.side, Some(CloudPlusLeaderSide::Right));
+        // A landing of zero has only its connection to show the side.
+        let flat = route_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(60., 240., 60., 30.),
+            &[],
+            0.,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        let again = reroute_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(60., 240., 60., 30.),
+            &flat.points,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        assert_eq!(again.side, flat.side);
     }
 
     #[test]

@@ -142,7 +142,7 @@ Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /
 
 - [x] Clouds use Revu's (Adobe's) cloudy border, measured from Revu 21
   streams: curls are circles centred on the outline at equal perimeter
-  spacing from the first vertex (nominal 7.05 pt × intensity, rounded to a
+  spacing from the first vertex (nominal 7.05 pt × `/BE /I`, shown in the app as Bump size, rounded to a
   whole number of curls), radius 0.6 × spacing; each curl is an outward arc
   between its neighbours' meeting points that runs 21.2° past the next one and
   hooks back (handles 0.1034 r). `/Rect` is the outline grown by 1.789 r.

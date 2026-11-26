@@ -26,17 +26,20 @@ pub use search_panel::{
     DOCUMENT_SEARCH_FOOTER_ID, DOCUMENT_SEARCH_HEADER_ID, DOCUMENT_SEARCH_INPUT_ID,
     DOCUMENT_SEARCH_MATCH_CASE_ID, DOCUMENT_SEARCH_MODE_TEXT_ID, DOCUMENT_SEARCH_MODE_VISUAL_ID,
     DOCUMENT_SEARCH_MORE_CONTEXT_ID, DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_RESULTS_ID,
-    DOCUMENT_SEARCH_SCOPE_ID, DOCUMENT_SEARCH_SORT_ID, DOCUMENT_SEARCH_SUMMARY_ID,
-    DOCUMENT_SEARCH_TOGGLES_ID, DOCUMENT_SEARCH_TRY_VISUAL_ID, DOCUMENT_VISUAL_ACTIONS_ID,
-    DOCUMENT_VISUAL_CLEAR_ID, DOCUMENT_VISUAL_DRAW_BOX_ID, DOCUMENT_VISUAL_ERROR_ID,
-    DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_OPTIONS_ID, DOCUMENT_VISUAL_PASTE_ID,
-    DOCUMENT_VISUAL_PREVIEW_ID, DOCUMENT_VISUAL_PROGRESS_ID, DOCUMENT_VISUAL_RESULTS_ID,
-    DOCUMENT_VISUAL_SIMILARITY_ID, DOCUMENT_VISUAL_SIMILARITY_INPUT_ID,
-    DOCUMENT_VISUAL_SIMILARITY_ROW_ID, DOCUMENT_VISUAL_SIZES_ID, DOCUMENT_VISUAL_STOP_ID,
-    DOCUMENT_VISUAL_SUMMARY_ID, DOCUMENT_VISUAL_TEMPLATE_ID, DOCUMENT_VISUAL_TURNS_ID, LeftPanel,
-    SearchMode, SearchPanelRow, SearchPanelSummary, TemplateOrigin, VisualPanelRow,
-    VisualPanelSummary, VisualTileView, search_panel_row_id, search_panel_shortcut, visual_row_id,
-    visual_tile_id,
+    DOCUMENT_SEARCH_SCOPE_ALL_ID, DOCUMENT_SEARCH_SCOPE_ID, DOCUMENT_SEARCH_SCOPE_THIS_ID,
+    DOCUMENT_SEARCH_SORT_ID, DOCUMENT_SEARCH_SUMMARY_ID, DOCUMENT_SEARCH_TOGGLES_ID,
+    DOCUMENT_SEARCH_TRY_VISUAL_ID, DOCUMENT_VISUAL_ACTIONS_ID, DOCUMENT_VISUAL_CLEAR_ID,
+    DOCUMENT_VISUAL_DRAW_BOX_ID, DOCUMENT_VISUAL_ERROR_ID, DOCUMENT_VISUAL_MIRRORED_ID,
+    DOCUMENT_VISUAL_OPTIONS_BODY_ID, DOCUMENT_VISUAL_OPTIONS_ID,
+    DOCUMENT_VISUAL_OPTIONS_SECTION_ID, DOCUMENT_VISUAL_OPTIONS_SUMMARY_ID,
+    DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID, DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_PREVIEW_ID,
+    DOCUMENT_VISUAL_PROGRESS_ID, DOCUMENT_VISUAL_RESULTS_ID, DOCUMENT_VISUAL_SIMILARITY_ID,
+    DOCUMENT_VISUAL_SIMILARITY_INPUT_ID, DOCUMENT_VISUAL_SIMILARITY_ROW_ID,
+    DOCUMENT_VISUAL_SIZES_ID, DOCUMENT_VISUAL_STOP_ID, DOCUMENT_VISUAL_SUMMARY_ID,
+    DOCUMENT_VISUAL_TEMPLATE_ID, DOCUMENT_VISUAL_TURNS_ID, LeftPanel, SearchMode, SearchPanelRow,
+    SearchPanelSummary, TemplateOrigin, VisualPanelRow, VisualPanelSummary, VisualTileView,
+    search_panel_row_id, search_panel_shortcut, search_scope_button_id, visual_options_summary,
+    visual_row_id, visual_tile_id,
 };
 #[path = "document_workspace_image_drop.rs"]
 mod image_drop;
@@ -825,6 +828,8 @@ pub const DOCUMENT_FIND_WHOLE_WORD_ID: &str = "document-find-whole-word";
 pub const DOCUMENT_FIND_PREVIOUS_ID: &str = "document-find-previous";
 pub const DOCUMENT_FIND_NEXT_ID: &str = "document-find-next";
 pub const DOCUMENT_FIND_CLOSE_ID: &str = "document-find-close";
+/// The find bar's button that opens its search in the Search panel.
+pub const DOCUMENT_FIND_OPEN_IN_PANEL_ID: &str = "document-find-open-in-panel";
 pub const DOCUMENT_SNAP_SETTINGS_ID: &str = "viewer-snap-target-menu";
 pub const DOCUMENT_SNAP_POPOVER_ID: &str = "viewer-snap-popover";
 pub const DOCUMENT_SNAP_CLOSE_ID: &str = "viewer-snap-close";
@@ -1079,10 +1084,30 @@ pub fn annotation_resize_cursor_style(
     {
         // Cloud points, then the caption box's eight handles, then the
         // leader's points. A Cloud+ has no rotation knob.
+        // A rectangular cloud's eight handles resize it, as a Rectangle's do.
+        if annotation.rectangular
+            && let Some(handle) = RectangleResizeHandle::ALL.get(index).copied()
+        {
+            return Some(rectangle_resize_cursor_style(handle, 0.));
+        }
+        let cloud_handles = if annotation.rectangular {
+            RectangleResizeHandle::ALL.len()
+        } else {
+            annotation.cloud_points.len()
+        };
         let Some(handle) = index
-            .checked_sub(annotation.cloud_points.len())
+            .checked_sub(cloud_handles)
             .and_then(|resize_index| RectangleResizeHandle::ALL.get(resize_index).copied())
         else {
+            return Some(CursorStyle::Crosshair);
+        };
+        (Some(handle), 0.)
+    } else if let Some(annotation) = scene.clouds.iter().find(|annotation| &annotation.id == id)
+        && annotation.rectangular
+    {
+        // A rectangular Cloud resizes from the Rectangle's eight handles;
+        // any other Cloud has vertex handles, which take the crosshair.
+        let Some(handle) = RectangleResizeHandle::ALL.get(index).copied() else {
             return Some(CursorStyle::Crosshair);
         };
         (Some(handle), 0.)
@@ -20021,6 +20046,15 @@ impl DocumentWorkspace {
                 return true;
             }
             click_out::CanvasPressGate::Act => {}
+            // The press is on the edited markup's own handle or body: the
+            // text is committed, and the press goes on to move or resize it.
+            click_out::CanvasPressGate::CommitThenAct => {
+                if let Err(error) = self.commit_pending_text_box(cx) {
+                    self.text_box_commit_error = Some(error);
+                    return true;
+                }
+                self.release_search_query_focus();
+            }
         }
         if self.pan_tool_active {
             let Some(document_id) = self.active_document_id else {
@@ -22517,8 +22551,17 @@ fn paint_cloud_plus_annotation(
             annotation_candidate,
         )
     {
-        let projected_cloud = annotation
-            .cloud_points
+        // A rectangular cloud shows the Rectangle's eight handles.
+        let cloud_handle_points = if annotation.rectangular {
+            crate::annotation_model::cloud_rectangle_handle_points(&annotation.cloud_points)
+                .map_or_else(
+                    || annotation.cloud_points.clone(),
+                    |handles| handles.to_vec(),
+                )
+        } else {
+            annotation.cloud_points.clone()
+        };
+        let projected_cloud = cloud_handle_points
             .iter()
             .copied()
             .map(project)
@@ -23293,14 +23336,31 @@ fn selected_engineering_debug_markers(
         }
     }
     if let Some(annotation) = scene.clouds.iter().find(|annotation| annotation.selected) {
-        markers.extend(annotation.points.iter().enumerate().map(|(index, point)| {
-            pointer_debug_marker(
-                format!("cloud.vertex.{index}"),
-                *point,
-                transform,
-                page_size,
-            )
-        }));
+        if let Some(handles) = annotation
+            .rectangular
+            .then(|| crate::annotation_model::cloud_rectangle_handle_points(&annotation.points))
+            .flatten()
+        {
+            markers.extend(RectangleResizeHandle::ALL.into_iter().zip(handles).map(
+                |(handle, point)| {
+                    pointer_debug_marker(
+                        crate::annotation_adapter::cloud_resize_handle_id(handle),
+                        point,
+                        transform,
+                        page_size,
+                    )
+                },
+            ));
+        } else {
+            markers.extend(annotation.points.iter().enumerate().map(|(index, point)| {
+                pointer_debug_marker(
+                    format!("cloud.vertex.{index}"),
+                    *point,
+                    transform,
+                    page_size,
+                )
+            }));
+        }
         if let Some(point) = annotation.scallop_path.iter().copied().find(|candidate| {
             annotation
                 .points
@@ -24861,8 +24921,19 @@ fn annotation_layer(
                             {
                                 let state = interaction_chrome::handle_state(state, annotation.locked);
                                 {
+                                    let handle_points = if annotation.rectangular {
+                                        crate::annotation_model::cloud_rectangle_handle_points(
+                                            &annotation.points,
+                                        )
+                                        .map_or_else(
+                                            || annotation.points.clone(),
+                                            |handles| handles.to_vec(),
+                                        )
+                                    } else {
+                                        annotation.points.clone()
+                                    };
                                     for (index, center) in
-                                        annotation.points.into_iter().map(project).enumerate()
+                                        handle_points.into_iter().map(project).enumerate()
                                     {
                                         if !annotation.selected
                                             || hover_controls_visible

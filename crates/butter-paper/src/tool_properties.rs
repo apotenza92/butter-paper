@@ -239,7 +239,7 @@ impl ToolProperties {
             ("fill opacity", self.fill_opacity),
             ("opacity", self.opacity),
             ("font size", self.font_size_pt),
-            ("cloud intensity", self.cloud_intensity),
+            ("bump size", self.cloud_intensity),
             ("landing", self.landing_pt),
         ] {
             if !value.is_finite() {
@@ -342,7 +342,7 @@ impl ToolPropertyField {
             Self::FontFamily => "font family",
             Self::SmoothCurves => "smooth curves",
             Self::CloudStyle => "cloud style",
-            Self::CloudIntensity => "cloud intensity",
+            Self::CloudIntensity => "bump size",
             Self::LandingPt => "landing",
         }
     }

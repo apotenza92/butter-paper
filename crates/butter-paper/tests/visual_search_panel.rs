@@ -28,6 +28,7 @@ use butter_paper::document_workspace::{
     DOCUMENT_SEARCH_MODE_VISUAL_ID, DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_SCOPE_ID,
     DOCUMENT_SEARCH_TRY_VISUAL_ID, DOCUMENT_VISUAL_ACTIONS_ID, DOCUMENT_VISUAL_CLEAR_ID,
     DOCUMENT_VISUAL_DRAW_BOX_ID, DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_OPTIONS_ID,
+    DOCUMENT_VISUAL_OPTIONS_SUMMARY_ID, DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID,
     DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_PREVIEW_ID, DOCUMENT_VISUAL_SIMILARITY_ID,
     DOCUMENT_VISUAL_SIMILARITY_INPUT_ID, DOCUMENT_VISUAL_SIZES_ID, DOCUMENT_VISUAL_STOP_ID,
     DOCUMENT_VISUAL_TEMPLATE_ID, DOCUMENT_VISUAL_TURNS_ID, DocumentId, DocumentWorkspace,
@@ -392,6 +393,14 @@ impl Fixture<'_> {
         self.draw();
     }
 
+    /// Opens the Options section, which starts closed.
+    fn open_options(&mut self) {
+        if !self.summary().options_open {
+            self.click(DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID);
+        }
+        assert!(self.summary().options_open);
+    }
+
     fn click_tile(&mut self, index: usize) {
         let id: &'static str = Box::leak(visual_tile_id(index).into_boxed_str());
         self.click(id);
@@ -415,18 +424,15 @@ impl Fixture<'_> {
             .scope
     }
 
-    /// Chooses a scope in the stock Select by keyboard: it opens on the
-    /// current scope, and the arrows move to the other.
+    /// Chooses a scope with its tab, as a person does.
     fn choose_scope(&mut self, scope: SearchScope) {
         let current = self.scope();
         if current == scope {
             return;
         }
-        self.click(DOCUMENT_SEARCH_SCOPE_ID);
-        let from = SearchScope::ALL.iter().position(|other| *other == current);
-        let to = SearchScope::ALL.iter().position(|other| *other == scope);
-        let step = if to > from { "down" } else { "up" };
-        self.cx.simulate_keystrokes(&format!("{step} enter"));
+        self.click(butter_paper::document_workspace::search_scope_button_id(
+            scope,
+        ));
         self.draw();
         assert_eq!(self.scope(), scope);
     }
@@ -491,6 +497,33 @@ fn visual_mode_starts_with_no_picture_and_its_controls(cx: &mut TestAppContext) 
     assert!(summary.rows.is_empty());
     assert_eq!(summary.similarity, 80);
     assert!(summary.turns && summary.sizes && summary.mirrored);
+    // The options are one section, closed at first, whose heading says what
+    // is set; nothing of them is drawn until it opens.
+    assert!(!summary.options_open);
+    assert_eq!(summary.options_summary, "80 % · turned · sizes · mirrored");
+    for id in [
+        DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID,
+        DOCUMENT_VISUAL_OPTIONS_SUMMARY_ID,
+    ] {
+        assert!(f.cx.debug_bounds(id).is_some(), "{id} is drawn");
+    }
+    for id in [
+        DOCUMENT_VISUAL_SIMILARITY_ID,
+        DOCUMENT_VISUAL_TURNS_ID,
+        DOCUMENT_VISUAL_SIZES_ID,
+        DOCUMENT_VISUAL_MIRRORED_ID,
+    ] {
+        assert!(f.cx.debug_bounds(id).is_none(), "{id} is closed away");
+    }
+    // The scope tabs come first, above Text and Visual.
+    let scope = f.cx.debug_bounds(DOCUMENT_SEARCH_SCOPE_ID).unwrap();
+    let mode = f.cx.debug_bounds(DOCUMENT_SEARCH_MODE_TEXT_ID).unwrap();
+    assert!(scope.bottom() <= mode.top());
+    f.open_options();
+    // Remembered while the panel lives: the other mode and back.
+    f.click(DOCUMENT_SEARCH_MODE_TEXT_ID);
+    f.click(DOCUMENT_SEARCH_MODE_VISUAL_ID);
+    assert!(f.summary().options_open);
     for id in [
         DOCUMENT_SEARCH_PANEL_ID,
         DOCUMENT_VISUAL_TEMPLATE_ID,
@@ -560,6 +593,23 @@ fn visual_mode_starts_with_no_picture_and_its_controls(cx: &mut TestAppContext) 
     f.cx.simulate_keystrokes("enter");
     f.draw();
     assert_eq!(f.summary().similarity, 70, "the slider's least");
+    // The closed heading's summary follows the values, leaving out the off
+    // ones.
+    assert_eq!(
+        f.summary().options_summary,
+        "70 % · turned · sizes · mirrored"
+    );
+    f.click(DOCUMENT_VISUAL_TURNS_ID);
+    f.click(DOCUMENT_VISUAL_SIZES_ID);
+    assert_eq!(f.summary().options_summary, "70 % · mirrored");
+    f.click(DOCUMENT_VISUAL_MIRRORED_ID);
+    assert_eq!(f.summary().options_summary, "70 %");
+    f.click(DOCUMENT_VISUAL_OPTIONS_TOGGLE_ID);
+    assert!(!f.summary().options_open);
+    let closed =
+        f.cx.debug_bounds(DOCUMENT_VISUAL_OPTIONS_SUMMARY_ID)
+            .unwrap();
+    assert!(closed.size.width > gpui::px(0.), "the summary shows closed");
     // Nothing is drawn for a search without a picture.
     assert!(f.plan_calls.lock().unwrap().search.is_empty());
     // The Text switch goes back.
@@ -811,6 +861,7 @@ fn an_option_runs_the_search_again(cx: &mut TestAppContext) {
         |summary: &VisualPanelSummary| summary.shown.iter().filter(|tile| tile.score >= 90).count();
     let summary = f.search_by_box();
     let with_mirrored = strong(&summary);
+    f.open_options();
     f.click(DOCUMENT_VISUAL_MIRRORED_ID);
     let summary = f.wait_for("the new search", |summary| {
         !summary.mirrored && summary.finished

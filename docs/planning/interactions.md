@@ -270,6 +270,19 @@ tooltip expands the instructions when the window truncates them.
   the line width outside the stroke: the stroke scales into the new box and
   keeps its line width. A stroke flat along one axis has no handles across
   it.
+- A Cloud, or the cloud of a Cloud+, whose outline is exactly four vertices
+  round an upright rectangle (to 0.05 pt, so a Revu cloud counts) resizes as
+  a rectangle. It shows the Rectangle's eight handles (corners and edge
+  middles) in place of vertex handles, with the same resize arrows, minimum
+  size and snapping (including equal size). Dragging an edge handle moves
+  that whole side; a corner moves two sides. Shift does not change it, as
+  for a Rectangle. The bumps are made again for the new size, as on
+  creation, and a Cloud+'s leader is routed again at once (its landing
+  keeps its length, and its tip stays on the cloud). One drag is one undo
+  step. A cloud with any other outline (another vertex count, or skewed or
+  turned) keeps a handle on each vertex. A Cloud+'s leader tip on an edge
+  middle takes that press before the edge's handle. No PDF key changes: the
+  outline is still `/Vertices`, so the shape is found again on reopen.
 - A markup is hit on its strokes, its fill and its text or image. The empty
   inside of an unfilled shape is not part of it: a press there reaches what
   is underneath, selected or not.
@@ -290,7 +303,16 @@ tooltip expands the instructions when the window truncates them.
   a form field, or a field outside the page such as the page number or a
   property, each as a click elsewhere finishes it); clears highlighted page
   text; or clears a markup or Edit PDF selection. This applies to every
-  tool, Pan included. A click away from a property field keeps the markup
+  tool, Pan included. One exception: while a markup's text is edited in
+  place (a Text Box, a Callout's or Cloud+'s caption, a Dimension's
+  caption), a press on that markup's own handles (resize, leader, knee,
+  vertex), or on its body outside the editor, finishes the text (one undo
+  step for the text, as Enter or a click away does) and starts the move,
+  resize or handle drag in the same press, with no extra click; the pointer
+  shows that markup's usual cursor there. A press inside the editor still
+  puts the caret there, and a press on empty page or on another markup only
+  finishes the text, as above. A new Text Box being drawn is no markup yet,
+  so any press finishes it. A click away from a property field keeps the markup
   selected; the next press deselects it. Focus on a button, tab or
   thumbnail holds no typed text: the next press on the page acts. A double
   or triple click that begins with such a press counts from the click after
@@ -334,16 +356,28 @@ tooltip expands the instructions when the window truncates them.
 - A Callout or Cloud+ caption box fits its text and stays against its
   leader; a new Callout's box sits beyond the drag end, away from the arrow
   tip.
+- A Callout's leader meets its text box on the side where it was placed, at
+  the box's vertical middle, and moving, resizing or refitting the text box
+  never changes the side. Dragging the knee from the leader's side of the
+  box across the text box's vertical centre line moves the connection to the
+  other side, at its middle; the knee stays where it is put and the tip
+  stays. The side is not stored on its own: it is the side of the text box
+  that `/CL`'s connection lies on, so other apps read it and it reopens from
+  there.
 - A Cloud+ leader runs from the cloud to a level landing. The landing meets
   the left or right side of the text box at the box's vertical middle, as a
   Callout's does. A new Cloud+ puts its text beside the cloud, clear of
   other markups and the page edge, with the landing length of the Cloud+
   tool's Landing property (19.8 pt by default, as Revu draws it).
-- When the text box or the cloud moves or changes size, the leader is routed
-  again. It keeps its landing length and takes the side whose landing points
-  at the cloud. It takes a side where it does not cross the cloud or the
-  text box or turn back over the landing, and then a side clear of other
-  markups. Its tip is the cloud point nearest the knee. When the cloud lies level with the landing and too near for its
+- When the text box or the cloud moves or changes size, or the text is
+  refitted or the style changes, the leader is routed again. It keeps its
+  landing length and the side of the text box it meets: the side is the
+  user's choice (below) and routing never changes it. Only a new Cloud+
+  chooses its side itself, as the one whose landing points at the cloud
+  without crossing the cloud or the text box, turning back over the landing,
+  or crossing other markups. Its tip is the cloud point nearest the knee.
+  Where the text box then lies so that the leader must cross it, the leader
+  crosses it; dragging the knee to the other side (below) clears it. When the cloud lies level with the landing and too near for its
   length, the landing stops 6 pt short of the cloud (halfway, when the gap is
   less than 12 pt).
 - A selected Cloud+ has handles on its leader's tip and knee, with the point
@@ -351,11 +385,24 @@ tooltip expands the instructions when the window truncates them.
   the leader meets the text. Dragging the tip slides it along the cloud.
   Dragging the knee sets the landing length: the landing stays level on its
   side of the text and takes the pointer's distance out from that side (0
-  at the side or inside the box). The tip stays, unless the leader would then
-  cross the cloud or the text or turn back. The Landing field in the
+  at the side or inside the box). Dragging the knee across the text box's
+  vertical centre line moves the landing to the other side of the text,
+  level from the middle of that side with its length kept (a pointer farther
+  out sets the length again); the leader keeps that side from then on. The
+  tip stays, unless the leader would then cross the cloud or the text or turn
+  back. The Landing field in the
   Cloud+'s properties sets the same length (0 to 720 pt); 0 gives no landing.
   The length is the knee's place in the `/CL` callout line, so other apps
   read it and it reopens from there.
+- A Cloud+'s Bump size (0 to 4, default 2; stored as `/BE /I`, the PDF's
+  border-effect intensity; the same property as a Cloud's) sets the size of
+  its bumps. Every Bump size field (the Cloud and Cloud+ properties and the
+  Cloud, Cloud+ and Polygon cloud tool defaults) controls only this; no
+  other "Intensity" exists in the app. Changing it makes the cloud outline again from
+  the control points, as a Cloud's is made, and drops any outline another app
+  stored; the canvas, hit testing and the saved appearance all use the new
+  bumps. A Bump size left as it is keeps a stored outline unchanged. Moving
+  or resizing the cloud's rectangle handles also makes the bumps again.
 - Escape or a click away finishes the text and keeps it, for every markup
   with text; an empty new Text Box is discarded.
 - Double-clicking a markup's text (a Text Box, or the caption of a Callout,
@@ -367,7 +414,7 @@ tooltip expands the instructions when the window truncates them.
   a Text field in its properties, kept in step with the page. The field
   commits when it is left or on Cmd/Ctrl+Enter, as one undoable change. A
   Callout's and Cloud+'s properties also set its line, font, opacity and
-  (Cloud+) fill, cloud intensity and landing length; a new style refits the
+  (Cloud+) fill, bump size and landing length; a new style refits the
   caption box.
 - Select All works on the current page. Locked markups cannot be moved,
   resized or deleted.
@@ -406,13 +453,24 @@ query language.
   query. Each tab has its own bar, query, options and current match.
 - The bar floats at the top right of the canvas, 8 px from the top and the
   right edge, over the page. Nothing on the page moves. It holds the app's
-  medium (32 px) controls, as the toolbar does: a 48 px bar, 480 px wide,
+  medium (32 px) controls, as the toolbar does: a 48 px bar, 520 px wide,
   with 8 px margins. From left to right: the field (search icon,
   placeholder "Find in document"), the count, Match case and Match whole
   word, Previous match and Next match (each pair 4 px apart, the groups
-  8 px apart) and a top-right X ("Close find bar", the app's one close
-  size). The bar is at most as
+  8 px apart), "Open in Search panel" (a ghost icon button) and a top-right
+  X ("Close find bar", the app's one close size). The bar is at most as
   wide as the canvas less 16 px: the count shortens first, then the field.
+- "Open in Search panel", or Cmd+Shift+F (Ctrl+Shift+F) while the bar is
+  open with text in it, takes the search to the Search panel: the panel opens
+  in the Text tab with the bar's text, Match case and Match whole word, runs
+  the search, takes the keyboard, and the find bar closes. The panel keeps
+  its own scope (This document at first). The panel has no whole-word
+  switch, so Match whole word goes into the query as a `/regex/` with word
+  boundaries; text with an operator or a quote goes in quotes or as a regex,
+  so the panel finds what the bar found. With an empty bar the shortcut opens
+  the panel as it always did, and the bar stays. Where the left sidebar
+  cannot show (a narrow window, Properties open), the bar stays open and the
+  focus stays in its field.
 - The query is literal text. Runs of white space match any run of white
   space, and a line break between two lines. The search covers page text,
   as Copy reads it with edits included, and the text of markups (Text Box,
@@ -471,14 +529,14 @@ query language.
   "Search" with a top-right X ("Close search"), which closes the sidebar
   as the rail button does and gives the keyboard back to the page; then
   the controls, at the medium (32 px) size, with the 8 px grid's margins;
-  then the summary and the results. From the top: the Text and Visual
-  switch, the query field (search icon, clear button), the toggles Match
-  case, Explain search, Collapse results, More context and the Sort menu,
-  then the scope as a property row, "Look in", with a menu: This document
-  (the tab in view, first and the default) or All open documents (every
-  tab in every window). The panel keeps a chosen scope while its window is
-  open; a new window starts at This document. The two modes share the
-  scope.
+  then the summary and the results. From the top: the scope, as a row of
+  two tabs (the stock segmented control, as Text | Visual is): This
+  document (the tab in view, first and the default) or All open documents
+  (every tab in every window); then the Text and Visual switch, the query
+  field (search icon, clear button) and the toggles Match case, Explain
+  search, Collapse results, More context and the Sort menu. Choosing a
+  scope searches again. The panel keeps a chosen scope while its window is
+  open; a new window starts at This document. Both modes share the scope.
 - The query language: words (all must match, in any order), "a phrase",
   `OR`, `-` to exclude, `( )` to group, `/regex/`, `match-case:` and
   `ignore-case:`, and the filters `text:` (or `content:`), `markup:`,
@@ -526,16 +584,23 @@ query language.
 ### Visual search
 
 - The Visual mode of the search panel finds more of a symbol by its look.
-  From the top, under the Text and Visual switch: the picture to find (a
-  64 px preview on the page's own paper, where it came from and its size
-  in points, and an X that clears it), then Draw box and Paste picture
-  side by side; then the options as property rows: Similarity (a slider
-  from 70 % to 99 %, 80 % at first, with its number, which takes a typed
-  value on Enter or when it loses the focus), Turned (90°, 180°, 270°),
-  Sizes (85 % to 118 %, or 50 % to 200 % for a pasted picture) and
-  Mirrored, switches that are all on at first, and Look in; then the
-  progress line, the summary ("23 matches on 9 pages in 2 documents") and
-  the results.
+  From the top: the scope tabs and the Text and Visual switch, then the
+  picture to find (a 64 px preview on the page's own paper, where it came
+  from and its size in points, and an X that clears it), then Draw box and
+  Paste picture side by side; then one collapsible Options section, closed
+  at first (it has the heading of the optional sections, without a
+  checkbox), then the progress line, the summary ("23 matches on 9 pages
+  in 2 documents") and the results. The Options heading, while it is
+  closed, shows a short muted summary of the values inside, such as
+  "80 % · turned · sizes · mirrored" (an option that is off is left out;
+  it is cut to the room there is). Opening it shows the options as
+  property rows: Similarity (a slider from 70 % to 99 %, 80 % at first,
+  with its number, which takes a typed value on Enter or when it loses the
+  focus), Turned (90°, 180°, 270°), Sizes (85 % to 118 %, or 50 % to 200 %
+  for a pasted picture) and Include mirrored, switches that are all on at
+  first. The panel keeps the section open or closed for its life. The
+  results take the height the closed section leaves, and keep at least
+  their least height.
 - Draw box arms the Snapshot tool for the page in view and gives it the
   keys. The prompt over the page and the status bar say "Drag a box around
   what to find". The box leaves no markup and copies nothing; the tool goes
@@ -1344,17 +1409,31 @@ with it.
   - Thumbnails follow the setting.
 - The page navigator in the centre of the view toolbar shows the page in
   view of the total ("3 / 12") between First and Previous page, and Next
-  and Last page, which are disabled at either end. Clicking the page number
-  makes it a field with the number selected: a page typed and Enter goes
+  and Last page, which are disabled at either end. The page number is a
+  stock input (small, centred) with the muted "/ 12" beside it, at rest and
+  open alike: only the focus ring, the caret and the selection appear when it
+  opens, so its size, border, background, text and position never change, and
+  nothing beside it moves. Hovering it changes nothing, as for other
+  inputs. Clicking the page number (or tabbing to it) selects the number: a page typed and Enter goes
   there (a number past the end goes to the last page; anything else stays
   put), Escape or clicking elsewhere keeps the page shown, and focus
   returns to where it was. A click on the page only closes the field: it
   selects and draws nothing. The field is as wide as the page count's digits
   (two at least) with its padding, its number centred, and its focus ring
   inside the navigator's frame, so a number typed or selected is never
-  cut; opening it moves nothing beside it. Letters typed there never
+  cut. Letters typed there never
   switch tools. Previous and Next count from the page last asked for, so
   quick presses keep going while pages render.
+- Every joined group of controls in the view toolbar (Undo | Redo; First |
+  Previous | the page number | Next | Last; Zoom Out | Zoom In | the zoom
+  menu; Fit Width | Fit Page; the page-view and Page Scale splits; the CAD
+  view and its settings) shows a 1 px divider between every pair of adjacent
+  members, the group's full height, in the outline buttons' border colour,
+  in every form of the toolbar. A stock button group draws it with its
+  buttons' borders; the groups of other controls draw it with the shared
+  `toolbar_divider` (`toolbar_group.rs`). A selected page-view button, whose
+  two halves fill with the divider's colour, shows its seam in a slightly
+  stronger line.
 - Undo and Redo, at the toolbar's left, do what the Edit menu's Undo and
   Redo do, and are enabled as they are.
 - A press on anything drawn over the page (a menu of the in-window menu

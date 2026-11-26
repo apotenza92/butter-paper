@@ -827,15 +827,15 @@ impl ToolDefaultsPanel {
                     ),
             ));
         }
-        // A polygon's cloud intensity applies only once it has a cloud
+        // A polygon's cloud bump size applies only once it has a cloud
         // outline. The row shows either way, indented under Cloud and
         // disabled until Cloud is on, so the panel keeps its rows.
         if applies(ToolPropertyField::CloudIntensity) {
             let depends_on_cloud = applies(ToolPropertyField::CloudStyle);
             let intensity = property_slider_row(
-                "Intensity",
+                "Bump size",
                 PropertySliderInput::new(
-                    "Cloud intensity",
+                    "Cloud bump size",
                     &self.controls.cloud_intensity_slider,
                     &self.controls.cloud_intensity,
                 )

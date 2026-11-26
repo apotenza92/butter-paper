@@ -1,7 +1,7 @@
 //! Retained presentation state for one exact selected Callout or Cloud+.
 //!
 //! The panel shows the markup's text, line, font, (for a Cloud+) fill,
-//! cloud intensity and landing length, and opacity, laid out as the Dimension and Text Box
+//! cloud bump size and landing length, and opacity, laid out as the Dimension and Text Box
 //! panels are. The workspace owns document authority, annotation identity,
 //! revision validation, and history.
 
@@ -810,8 +810,8 @@ impl Render for CaptionPropertyInspector {
         }
         if snapshot.values.intensity().is_some() {
             rows = rows.row(property_slider_row(
-                "Intensity",
-                PropertySliderInput::new("Cloud intensity", &self.intensity, &self.intensity_input)
+                "Bump size",
+                PropertySliderInput::new("Cloud bump size", &self.intensity, &self.intensity_input)
                     .row_id(CAPTION_INSPECTOR_INTENSITY_ID)
                     .slider_id(CAPTION_INSPECTOR_INTENSITY_SLIDER_ID)
                     .input_id(CAPTION_INSPECTOR_INTENSITY_INPUT_ID)

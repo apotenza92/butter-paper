@@ -47,8 +47,8 @@ const FIND_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
 /// The longest query a selection seeds, in characters.
 const FIND_SEED_CHARACTERS: usize = 256;
 /// The bar's width, when the canvas has room: the field, the count and
-/// five medium buttons, on the grid.
-const FIND_BAR_WIDTH: f32 = 480.;
+/// six medium buttons, on the grid.
+const FIND_BAR_WIDTH: f32 = 520.;
 /// The count's width: room for "1,234 of 5,678".
 const FIND_COUNT_WIDTH: f32 = 80.;
 /// The field's least width before the bar shortens it no more.
@@ -1170,6 +1170,21 @@ impl DocumentWorkspace {
             "Enter",
         )
         .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| workspace.step_find(true, cx)));
+        // Opens the same search in the Search panel, with its options.
+        let open_in_panel = with_key(
+            Button::new(DOCUMENT_FIND_OPEN_IN_PANEL_ID)
+                .debug_selector(|| DOCUMENT_FIND_OPEN_IN_PANEL_ID.into())
+                .accessibility_id(DOCUMENT_FIND_OPEN_IN_PANEL_ID)
+                .ghost()
+                .icon(IconName::PanelLeftOpen),
+            "Open in Search panel",
+            if macos { "Cmd+Shift+F" } else { "Ctrl+Shift+F" },
+        )
+        .on_click(cx.listener(|workspace, _: &ClickEvent, window, cx| {
+            workspace.open_find_in_search_panel(window, cx);
+        }));
+        let open_in_panel =
+            crate::accessible_button::accessible_icon_button(open_in_panel, "Open in Search panel");
         // The app's one X size (`close_icon_button`), as in every header.
         let close =
             crate::accessible_button::close_icon_button(DOCUMENT_FIND_CLOSE_ID, "Close find bar")
@@ -1269,6 +1284,7 @@ impl DocumentWorkspace {
                                 .child(previous)
                                 .child(next),
                         )
+                        .child(open_in_panel)
                         .child(close),
                 )
                 .into_any_element(),

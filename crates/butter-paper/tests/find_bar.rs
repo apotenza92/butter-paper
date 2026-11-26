@@ -382,13 +382,14 @@ fn the_bar_uses_medium_controls_on_the_grid(cx: &mut TestAppContext) {
     let bar = f.cx.debug_bounds(DOCUMENT_FIND_BAR_ID).unwrap();
     // Its border is inside the bar's 48 px.
     assert!((bar.size.height - px(48.)).abs() < px(0.5), "{bar:?}");
-    assert!((bar.size.width - px(480.)).abs() < px(0.5), "{bar:?}");
+    assert!((bar.size.width - px(520.)).abs() < px(0.5), "{bar:?}");
     for id in [
         DOCUMENT_FIND_INPUT_ID,
         DOCUMENT_FIND_MATCH_CASE_ID,
         DOCUMENT_FIND_WHOLE_WORD_ID,
         DOCUMENT_FIND_PREVIOUS_ID,
         DOCUMENT_FIND_NEXT_ID,
+        butter_paper::document_workspace::DOCUMENT_FIND_OPEN_IN_PANEL_ID,
     ] {
         let control = f.cx.debug_bounds(id).unwrap();
         assert_eq!(control.size.height, px(32.), "{id} is medium");
@@ -432,7 +433,19 @@ fn the_bar_uses_medium_controls_on_the_grid(cx: &mut TestAppContext) {
         px(8.)
     );
     assert_eq!(
-        gap(DOCUMENT_FIND_STEPS_ID, DOCUMENT_FIND_CLOSE_ID, &mut f),
+        gap(
+            DOCUMENT_FIND_STEPS_ID,
+            butter_paper::document_workspace::DOCUMENT_FIND_OPEN_IN_PANEL_ID,
+            &mut f
+        ),
+        px(8.)
+    );
+    assert_eq!(
+        gap(
+            butter_paper::document_workspace::DOCUMENT_FIND_OPEN_IN_PANEL_ID,
+            DOCUMENT_FIND_CLOSE_ID,
+            &mut f
+        ),
         px(8.)
     );
 }

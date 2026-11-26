@@ -30,6 +30,11 @@ pub(super) enum CanvasPressGate {
     ClickOut(ClickOut),
     /// The press may start the gesture that the tool and the target give.
     Act,
+    /// The press lands on a handle or the body of the markup whose text is
+    /// being edited in place, outside the editor: the text is committed (one
+    /// undo step for the text) and the press then acts as `Act` does, so a
+    /// move, resize or handle drag starts with no extra click.
+    CommitThenAct,
 }
 
 /// Why a press only dismisses or finishes.
@@ -76,6 +81,9 @@ pub(super) struct PressFacts {
     pub inside_typing_target: bool,
     /// The press lands on a form field (no markup above it).
     pub on_form_field: bool,
+    /// The press lands on a handle, or on the body outside the editor, of the
+    /// markup whose text is edited in place.
+    pub on_edited_markup: bool,
     pub canvas_dismissal: Option<CanvasDismissal>,
 }
 
@@ -92,6 +100,9 @@ pub(super) fn decide_press(facts: &PressFacts) -> CanvasPressGate {
     }
     if facts.first_mouse {
         return CanvasPressGate::ClickOut(ClickOut::WindowActivation);
+    }
+    if facts.typing == Some(TypingTarget::CanvasText) && facts.on_edited_markup {
+        return CanvasPressGate::CommitThenAct;
     }
     match facts.typing {
         Some(TypingTarget::CanvasText) => return CanvasPressGate::ClickOut(ClickOut::CanvasText),
@@ -252,6 +263,8 @@ impl DocumentWorkspace {
             facts.on_form_field = typing == Some(TypingTarget::FormField)
                 && !self.markup_under_point(&interaction, point, cx)
                 && self.form_widget_hit(&interaction, point, cx).is_some();
+            facts.on_edited_markup = typing == Some(TypingTarget::CanvasText)
+                && self.press_on_edited_markup(&interaction, point, cx);
             facts.canvas_dismissal =
                 self.select_press_dismissal(&interaction, point, modifiers, cx);
         }
@@ -344,10 +357,63 @@ impl DocumentWorkspace {
             on_form_field: typing == Some(TypingTarget::FormField)
                 && !self.markup_under_point(interaction, point, cx)
                 && self.form_widget_hit(interaction, point, cx).is_some(),
+            on_edited_markup: typing == Some(TypingTarget::CanvasText)
+                && self.press_on_edited_markup(interaction, point, cx),
             canvas_dismissal: self.select_press_dismissal(interaction, point, modifiers, cx),
             ..PressFacts::default()
         };
-        decide_press(&facts) != CanvasPressGate::Act
+        !matches!(
+            decide_press(&facts),
+            CanvasPressGate::Act | CanvasPressGate::CommitThenAct
+        )
+    }
+
+    /// Whether `point` is on a handle, or on the body, of the markup whose
+    /// text is being edited in place (a Text Box, Callout, Cloud+ or
+    /// Dimension). A press there finishes the text and starts its move or
+    /// resize at once. A new Text Box being drawn is no markup yet; empty
+    /// page and other markups are not the edited markup's.
+    pub(super) fn press_on_edited_markup(
+        &self,
+        interaction: &PageInteraction,
+        point: PdfPoint,
+        cx: &App,
+    ) -> bool {
+        let Some(editor) = self.pending_text_box_editor.as_ref() else {
+            return false;
+        };
+        if editor.document_id != interaction.document_id
+            || editor.page_index != interaction.page_index
+            || matches!(editor.target, PendingTextEditorTarget::NewTextBox { .. })
+        {
+            return false;
+        }
+        let text_system = gpui::WindowTextSystem::new(cx.text_system().clone());
+        let Some((Some(edited), _, _)) = self.pending_text_editor_layout(&text_system, cx) else {
+            return false;
+        };
+        let Some(session) = self.session(interaction.document_id, cx) else {
+            return false;
+        };
+        let Ok(tolerance) = interaction.transform.tolerance_points(4.) else {
+            return false;
+        };
+        let annotations = &session.read(cx).annotations;
+        let document = interaction.document_id.value();
+        if annotations.tool() != AnnotationTool::Select {
+            return false;
+        }
+        let handle = annotations
+            .hover_transform_handle(document, interaction.page_index, point, tolerance)
+            .ok()
+            .flatten()
+            .is_some_and(|(id, _)| id == edited);
+        handle
+            || annotations
+                .hover_markup_id(document, interaction.page_index, point, tolerance)
+                .ok()
+                .flatten()
+                .is_some_and(|id| id == edited)
     }
 
     /// Whether a press anywhere on the page only finishes text typed in a
@@ -561,6 +627,7 @@ mod tests {
         typing: None,
         inside_typing_target: false,
         on_form_field: false,
+        on_edited_markup: false,
         canvas_dismissal: None,
     };
 
@@ -569,7 +636,7 @@ mod tests {
     /// (middle button, wheel, overlays); GPUI tests cover them.
     #[test]
     fn one_gate_decides_every_left_press_on_the_page() {
-        use CanvasPressGate::{Act, ClickOut as Out, Pass};
+        use CanvasPressGate::{Act, ClickOut as Out, CommitThenAct, Pass};
         use TypingTarget::{CanvasText, ChromeText, FormField};
         let typing = |target| PressFacts {
             typing: Some(target),
@@ -624,6 +691,40 @@ mod tests {
                 "17 Text Box editor, outside",
                 typing(CanvasText),
                 Out(ClickOut::CanvasText),
+            ),
+            (
+                "17a edited markup's handle or body, outside the editor",
+                PressFacts {
+                    on_edited_markup: true,
+                    ..typing(CanvasText)
+                },
+                CommitThenAct,
+            ),
+            (
+                "17b the edited markup's own press inside the editor",
+                PressFacts {
+                    on_edited_markup: true,
+                    inside_typing_target: true,
+                    ..typing(CanvasText)
+                },
+                Pass,
+            ),
+            (
+                "17c window activation still only activates",
+                PressFacts {
+                    on_edited_markup: true,
+                    first_mouse: true,
+                    ..typing(CanvasText)
+                },
+                Out(ClickOut::WindowActivation),
+            ),
+            (
+                "17d a property field is typed in: the press only finishes it",
+                PressFacts {
+                    on_edited_markup: true,
+                    ..typing(ChromeText)
+                },
+                Out(ClickOut::ChromeText),
             ),
             (
                 "18 Text Box editor, inside",
