@@ -17,6 +17,13 @@ alone do not establish these behaviours.
 - Settings window behind the main window on macOS: after a change from
   the View menu, it showed the old Page Appearance until it came to the
   front. Check whether an inactive Settings window repaints.
+- Delete on a locked markup right after a click on its lock button
+  showed no toast three times on Windows, then always did. Check whether
+  the lock button keeps the keyboard.
+- The Cloud+ text box shows no border at line width 1 but shows one at 2
+  or more (seen on Windows). Check the border rule.
+- A properties slider's accessibility Increment and Decrement change the
+  value without saving it.
 - Find in Documents after a click on the search panel's Visual mode
   button: in the test harness the shortcut did nothing until the page got
   focus. Check whether the real app has the same dead shortcut.

@@ -4,6 +4,38 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.6.3]
+
+### Clouds
+
+- A Cloud or Cloud+ drawn as a rectangle has corner and edge handles, so
+  a drag on an edge moves that whole side. A cloud drawn point by point
+  keeps its point handles.
+- The side where a Cloud+ or Callout leader meets its text is yours:
+  drag the knee across the text to move it. Moving the text or the cloud
+  no longer flips it.
+- Intensity is now called Bump size.
+
+### Editing
+
+- While you edit a markup's text, or type in a properties field, a press
+  on the selected markup's handles or body moves or resizes it at once.
+- Properties change the markup while you drag a slider, type a value or
+  scroll over it. Each change is one undo step.
+- Colour and size have their own rows. Sizes have - and + buttons.
+- A scroll over a number or slider changes it; Shift gives ten steps.
+- Routine actions, such as a delete, no longer show a notification.
+  Refusals and failures still do.
+
+### Toolbar and search
+
+- The page selector looks the same at rest and while you type.
+- Every group of joined toolbar buttons has dividers between them.
+- The search panel has This document and All open documents tabs at the
+  top. Visual search options are in a collapsed Options section.
+- The find bar has a button that opens its search in the search panel.
+  Cmd+Shift+F (Ctrl+Shift+F) does the same while the find bar has text.
+
 ## [0.6.2]
 
 ### Cloud+
