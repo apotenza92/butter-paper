@@ -53655,7 +53655,12 @@ fn rectangle_with_a_typed_field(
         .debug_bounds(RECTANGLE_INSPECTOR_STROKE_WIDTH_ID)
         .unwrap();
     click_on_page(cx, field.center());
-    cx.simulate_keystrokes("ctrl-a");
+    // Select-all is Cmd+A on macOS, where Ctrl+A only moves to the start.
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
     cx.simulate_input("7");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_eq!(
