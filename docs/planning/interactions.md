@@ -1264,14 +1264,24 @@ with it.
   follow the fingers and ignore Zoom speed. The page groups Reverse scroll
   zoom and Zoom speed under the heading Zoom. Reverse scroll zoom is also in
   the View menu.
+- App Appearance sets the theme of the app: Light, Dark or Match System
+  (default). The View menu has an App Appearance submenu and, next to it,
+  a Page Appearance submenu, each with a check mark on the current choice.
+  The native menu bar on macOS and the in-app menu on Windows and Linux
+  stay in step. Settings ▸ Appearance has two dropdowns, App and Pages, with
+  the same choices. The change shows at once in every open window and
+  applies to new windows. Light and Dark ignore the system. Match System
+  follows the system while the app runs. Neither setting has a shortcut.
+  On macOS the native chrome follows the system, as GPUI cannot set it.
 - Dark pages draw the pages dark. The View menu has Page Appearance with
-  Light (default), Dark and Match System, and Settings ▸ View has the same
-  three choices. The setting is for all documents and windows, and the app
-  keeps it across launches. Match System follows the system appearance while
-  the app runs. There is no toolbar button.
-  - Ctrl+Shift+D (Cmd+Shift+D on macOS) sets Light or Dark, the opposite of
-    the pages on screen. From Match System it also sets the opposite of the
-    current look. It does not act while a text field has focus.
+  Original (default, the PDF as it is), Force Dark and Match App, and
+  Settings ▸ Appearance ▸ Pages has the same three choices. The setting is
+  for all documents and windows, and the app keeps it across launches.
+  Match App shows dark pages while the app is dark and original pages while
+  it is light. It follows the theme in force, so with App Appearance on
+  Match System it follows the system through the app. Original and Force
+  Dark do not change with the app theme. There is no toolbar button and no
+  shortcut.
   - The setting changes the view only. Saves, exports, copies, previews and
     recovery files keep the real colours of the document.
   - Ink and paper go dark and keep their hue. Dark colours become lighter

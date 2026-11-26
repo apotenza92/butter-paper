@@ -4,6 +4,16 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Appearance
+
+- Settings > Appearance has two settings: App (Light, Dark, Match
+  System) and Pages (Original, Force Dark, Match App). The View menu has
+  App Appearance and Page Appearance.
+- Match App shows dark pages while the app is dark.
+- On macOS, a Light or Dark app also sets the window frames and menus.
+- Page Appearance has no keyboard shortcut now. Dark is now Force Dark,
+  Light is Original, and Match System is Match App.
+
 ## [0.6.0]
 
 ### Search

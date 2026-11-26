@@ -228,10 +228,10 @@ pub fn open_update_settings(window: &mut Window, cx: &mut App) {
     open_settings_category(SettingsCategory::Updates, window, cx);
 }
 
-/// Settings ▸ View, which a review script opens.
+/// Settings ▸ Appearance, which a review script opens.
 #[cfg(feature = "review-driver")]
-pub fn open_view_settings(window: &mut Window, cx: &mut App) {
-    open_settings_category(SettingsCategory::View, window, cx);
+pub fn open_appearance_settings(window: &mut Window, cx: &mut App) {
+    open_settings_category(SettingsCategory::Appearance, window, cx);
 }
 
 /// Settings ▸ Signatures, where the timestamp server is set.
@@ -308,7 +308,9 @@ pub const SETTINGS_TIMESTAMP_SERVER_ID: &str = "settings-timestamp-server";
 pub const SETTINGS_LOCK_IMAGE_PROPORTIONS_ID: &str = "settings-lock-image-proportions";
 /// The Settings choice of where PDFs opened from outside the app go.
 pub const SETTINGS_OPEN_DOCUMENTS_IN_ID: &str = "settings-open-documents-in";
-/// Settings ▸ View: the Page appearance choice.
+/// Settings ▸ Appearance: the App choice (a dropdown).
+pub const SETTINGS_APP_APPEARANCE_ID: &str = "settings-app-appearance";
+/// Settings ▸ Appearance: the Pages choice (a dropdown).
 pub const SETTINGS_PAGE_APPEARANCE_ID: &str = "settings-page-appearance";
 /// Settings ▸ Mouse wheel: how much a notch zooms.
 pub const SETTINGS_ZOOM_SPEED_ID: &str = "settings-zoom-speed";
@@ -323,10 +325,17 @@ enum SettingsCategory {
     #[cfg_attr(not(test), allow(dead_code))]
     Documents,
     #[cfg_attr(not(test), allow(dead_code))]
-    View,
+    Appearance,
     #[cfg_attr(not(test), allow(dead_code))]
     MouseWheel,
     Signatures,
+}
+
+/// The two dropdowns of Settings ▸ Appearance.
+#[derive(Clone)]
+struct AppearanceSelects {
+    app: gpui::Entity<gpui_component::select::SelectState<Vec<gpui::SharedString>>>,
+    page: gpui::Entity<gpui_component::select::SelectState<Vec<gpui::SharedString>>>,
 }
 
 struct SettingsView {
@@ -339,7 +348,10 @@ struct SettingsView {
     _markups: Subscription,
     _documents: Subscription,
     _mouse_wheel: [Subscription; 3],
-    _page_appearance: Subscription,
+    _appearance: [Subscription; 2],
+    /// Appearance: the App and Pages dropdowns, made on first render.
+    appearance_selects: Option<AppearanceSelects>,
+    _appearance_choices: Vec<Subscription>,
     focus: gpui::FocusHandle,
     /// Signatures: the timestamp server field, made on first render.
     timestamp_server: Option<gpui::Entity<gpui_component::input::InputState>>,
@@ -370,10 +382,16 @@ impl SettingsView {
                     cx.notify()
                 }),
             ],
-            _page_appearance: cx
-                .observe_global::<crate::application_shell::PageAppearancePreference>(|_, cx| {
+            _appearance: [
+                cx.observe_global::<crate::application_shell::PageAppearancePreference>(|_, cx| {
                     cx.notify()
                 }),
+                cx.observe_global::<crate::app_appearance::AppAppearancePreference>(|_, cx| {
+                    cx.notify()
+                }),
+            ],
+            appearance_selects: None,
+            _appearance_choices: Vec::new(),
             focus: cx.focus_handle(),
             timestamp_server: None,
             timestamp_server_error: None,
@@ -518,67 +536,141 @@ impl SettingsView {
         vec![("Open documents in", opening)]
     }
 
-    /// View: whether pages draw dark.
-    fn render_view_sections(&self, cx: &mut Context<Self>) -> Vec<(&'static str, AnyElement)> {
+    /// Appearance: the theme of the app and how the pages draw. Each is a
+    /// stock dropdown. They are independent: Match App ties the pages to the
+    /// app's theme, nothing else does.
+    fn render_appearance_sections(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<(&'static str, AnyElement)> {
+        use crate::app_appearance::{AppAppearance, AppAppearancePreference};
         use crate::application_shell::{PageAppearancePreference, page_appearance_action};
         use crate::paper_appearance::PageAppearance;
-        let muted = cx.theme().muted_foreground;
-        let current = PageAppearancePreference::current(cx);
-        let choice = |id: &'static str, appearance: PageAppearance| {
-            gpui_component::radio::Radio::new(id)
-                .label(appearance.label())
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(muted)
-                        .child(appearance.description()),
-                )
+        use gpui_component::IndexPath;
+        use gpui_component::select::{Select, SelectEvent, SelectState};
+        let selects = match &self.appearance_selects {
+            Some(selects) => selects.clone(),
+            None => {
+                let items = |labels: [&'static str; 3]| {
+                    labels
+                        .into_iter()
+                        .map(gpui::SharedString::from)
+                        .collect::<Vec<_>>()
+                };
+                let app = cx.new(|cx| {
+                    SelectState::new(
+                        items(AppAppearance::ALL.map(AppAppearance::label)),
+                        None,
+                        window,
+                        cx,
+                    )
+                });
+                let page = cx.new(|cx| {
+                    SelectState::new(
+                        items(PageAppearance::ALL.map(PageAppearance::label)),
+                        None,
+                        window,
+                        cx,
+                    )
+                });
+                // A choice sends the action the View menu sends, so the
+                // menu, this page and the window all take it from one path.
+                let app_choice = cx.subscribe_in(
+                    &app,
+                    window,
+                    |_, _, event: &SelectEvent<Vec<gpui::SharedString>>, window, cx| {
+                        let SelectEvent::Confirm(Some(title)) = event else {
+                            return;
+                        };
+                        if let Some(appearance) = AppAppearance::ALL
+                            .into_iter()
+                            .find(|appearance| appearance.label() == title.as_ref())
+                            && AppAppearancePreference::current(cx) != appearance
+                        {
+                            window.dispatch_action(
+                                crate::application_shell::app_appearance_action(appearance),
+                                cx,
+                            );
+                        }
+                    },
+                );
+                let page_choice = cx.subscribe_in(
+                    &page,
+                    window,
+                    |_, _, event: &SelectEvent<Vec<gpui::SharedString>>, window, cx| {
+                        let SelectEvent::Confirm(Some(title)) = event else {
+                            return;
+                        };
+                        if let Some(appearance) = PageAppearance::ALL
+                            .into_iter()
+                            .find(|appearance| appearance.label() == title.as_ref())
+                            && PageAppearancePreference::current(cx) != appearance
+                        {
+                            window.dispatch_action(page_appearance_action(appearance), cx);
+                        }
+                    },
+                );
+                self._appearance_choices = vec![app_choice, page_choice];
+                let selects = AppearanceSelects { app, page };
+                self.appearance_selects = Some(selects.clone());
+                selects
+            }
         };
-        let appearance = v_flex()
+        // The menus can change a setting while this page is open: show the
+        // choice in force.
+        let app_current = AppAppearancePreference::current(cx);
+        let page_current = PageAppearancePreference::current(cx);
+        let app_index = AppAppearance::ALL
+            .iter()
+            .position(|item| *item == app_current);
+        let page_index = PageAppearance::ALL
+            .iter()
+            .position(|item| *item == page_current);
+        for (select, index) in [(&selects.app, app_index), (&selects.page, page_index)] {
+            let index = index.map(IndexPath::new);
+            if select.read(cx).selected_index(cx) != index {
+                select.update(cx, |select, cx| {
+                    select.set_selected_index(index, window, cx)
+                });
+            }
+        }
+        let muted = cx.theme().muted_foreground;
+        let app = v_flex()
+            .id("settings-app-appearance-section")
+            .debug_selector(|| "settings-app-appearance-section".into())
+            .gap_2()
+            .child(
+                div()
+                    .id(SETTINGS_APP_APPEARANCE_ID)
+                    .debug_selector(|| SETTINGS_APP_APPEARANCE_ID.into())
+                    .w(px(240.))
+                    .child(Select::new(&selects.app)),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(app_current.description()),
+            )
+            .into_any_element();
+        let pages = v_flex()
             .id("settings-page-appearance-section")
             .debug_selector(|| "settings-page-appearance-section".into())
-            .gap_3()
+            .gap_2()
             .child(
                 div()
                     .id(SETTINGS_PAGE_APPEARANCE_ID)
                     .debug_selector(|| SETTINGS_PAGE_APPEARANCE_ID.into())
-                    .child(
-                        gpui_component::radio::RadioGroup::vertical(
-                            "settings-page-appearance-group",
-                        )
-                        .children(PageAppearance::ALL.map(|appearance| {
-                            choice(
-                                match appearance {
-                                    PageAppearance::Light => "settings-page-appearance-light",
-                                    PageAppearance::Dark => "settings-page-appearance-dark",
-                                    PageAppearance::MatchSystem => {
-                                        "settings-page-appearance-match-system"
-                                    }
-                                },
-                                appearance,
-                            )
-                        }))
-                        .selected_index(
-                            PageAppearance::ALL.iter().position(|item| *item == current),
-                        )
-                        .on_click(|index, window, cx| {
-                            if let Some(appearance) = PageAppearance::ALL.get(*index) {
-                                window.dispatch_action(page_appearance_action(*appearance), cx);
-                            }
-                        }),
-                    ),
+                    .w(px(240.))
+                    .child(Select::new(&selects.page)),
             )
             .child(div().text_sm().text_color(muted).child(format!(
-                "The pages only. Saved files, exports and copies keep the document’s own \
-                 colours. {} switches between Light and Dark.",
-                crate::shortcut_label::shortcut_label(if cfg!(target_os = "macos") {
-                    "Cmd+Shift+D"
-                } else {
-                    "Ctrl+Shift+D"
-                }),
+                "{} Saved files, exports and copies always keep the document’s colours.",
+                page_current.description()
             )))
             .into_any_element();
-        vec![("Page appearance", appearance)]
+        vec![("App", app), ("Pages", pages)]
     }
 
     /// Mouse wheel: how far a notch zooms, and how the wheel turns pages in
@@ -904,9 +996,9 @@ impl Render for SettingsView {
                 self.render_document_sections(cx),
             ),
             page(
-                "View",
+                "Appearance",
                 Icon::default().path("icons/eye.svg"),
-                self.render_view_sections(cx),
+                self.render_appearance_sections(window, cx),
             ),
             page(
                 "Mouse wheel",
@@ -927,7 +1019,7 @@ impl Render for SettingsView {
         let page_ix = match self.category {
             SettingsCategory::Updates => 0,
             SettingsCategory::Documents => 1,
-            SettingsCategory::View => 2,
+            SettingsCategory::Appearance => 2,
             SettingsCategory::MouseWheel => 3,
             // Markups, page 4, opens from the Settings sidebar.
             SettingsCategory::Signatures => 5,
@@ -1165,78 +1257,154 @@ mod tests {
         );
     }
 
-    /// Settings ▸ View chooses Light, Dark or Match system with the stock
-    /// radio buttons, shows the choice in force and names the shortcut.
+    /// Settings ▸ Appearance has two stock dropdowns, App and Pages. A choice
+    /// sends the action the View menu sends. Each dropdown shows the choice
+    /// in force, also when a menu changed it. There is no View page.
     #[gpui::test]
-    fn the_view_page_chooses_the_page_appearance(cx: &mut TestAppContext) {
+    fn the_appearance_page_chooses_the_app_and_page_appearance(cx: &mut TestAppContext) {
+        use crate::app_appearance::{AppAppearance, AppAppearancePreference};
         use crate::application_shell::{
-            PageAppearancePreference, SetPageAppearanceDark, SetPageAppearanceLight,
-            SetPageAppearanceMatchSystem,
+            PageAppearancePreference, SetAppAppearanceDark, SetAppAppearanceLight,
+            SetAppAppearanceMatchSystem, SetPageAppearanceForceDark, SetPageAppearanceMatchApp,
+            SetPageAppearanceOriginal,
         };
         use crate::paper_appearance::PageAppearance;
+        use gpui_component::select::SelectEvent;
         cx.update(gpui_component::init);
-        let chosen = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let chosen_app = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let chosen_page = Rc::new(std::cell::RefCell::new(Vec::new()));
         cx.update(|cx| {
             for (appearance, record) in [
-                (PageAppearance::Light, 0),
-                (PageAppearance::Dark, 1),
-                (PageAppearance::MatchSystem, 2),
+                (AppAppearance::Light, 0),
+                (AppAppearance::Dark, 1),
+                (AppAppearance::MatchSystem, 2),
             ] {
-                let chosen = chosen.clone();
+                let chosen = chosen_app.clone();
+                let set = move |cx: &mut App| {
+                    chosen.borrow_mut().push(appearance);
+                    cx.set_global(AppAppearancePreference(appearance));
+                };
+                match record {
+                    0 => {
+                        cx.on_action(move |_: &SetAppAppearanceLight, cx| set(cx));
+                    }
+                    1 => {
+                        cx.on_action(move |_: &SetAppAppearanceDark, cx| set(cx));
+                    }
+                    _ => {
+                        cx.on_action(move |_: &SetAppAppearanceMatchSystem, cx| set(cx));
+                    }
+                }
+            }
+            for (appearance, record) in [
+                (PageAppearance::Original, 0),
+                (PageAppearance::ForceDark, 1),
+                (PageAppearance::MatchApp, 2),
+            ] {
+                let chosen = chosen_page.clone();
                 let set = move |cx: &mut App| {
                     chosen.borrow_mut().push(appearance);
                     cx.set_global(PageAppearancePreference(appearance));
                 };
                 match record {
                     0 => {
-                        cx.on_action(move |_: &SetPageAppearanceLight, cx| set(cx));
+                        cx.on_action(move |_: &SetPageAppearanceOriginal, cx| set(cx));
                     }
                     1 => {
-                        cx.on_action(move |_: &SetPageAppearanceDark, cx| set(cx));
+                        cx.on_action(move |_: &SetPageAppearanceForceDark, cx| set(cx));
                     }
                     _ => {
-                        cx.on_action(move |_: &SetPageAppearanceMatchSystem, cx| set(cx));
+                        cx.on_action(move |_: &SetPageAppearanceMatchApp, cx| set(cx));
                     }
                 }
             }
         });
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| SettingsView::new(SettingsCategory::View, cx));
-            gpui_component::Root::new(view, window, cx)
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let slot = slot.clone();
+            move |window, cx| {
+                let view = cx.new(|cx| SettingsView::new(SettingsCategory::Appearance, cx));
+                slot.replace(Some(view.clone()));
+                gpui_component::Root::new(view, window, cx)
+            }
         });
+        let view = slot.borrow_mut().take().unwrap();
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        let choice = cx
-            .debug_bounds(SETTINGS_PAGE_APPEARANCE_ID)
-            .expect("the View page shows the choice");
-        if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+        for id in [SETTINGS_APP_APPEARANCE_ID, SETTINGS_PAGE_APPEARANCE_ID] {
             assert!(
-                tree.contains("Light") && tree.contains("Dark") && tree.contains("Match system")
+                cx.debug_bounds(id).is_some(),
+                "the Appearance page shows the {id} dropdown"
             );
         }
-        // The rows are stacked: Light, Dark, Match system.
-        let row = |index: usize| {
-            let height = choice.size.height / 3.;
-            gpui::point(
-                choice.left() + px(8.),
-                choice.top() + height * (index as f32 + 0.5),
-            )
+        // The stock navigation has an Appearance page and no View page.
+        if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+            assert!(tree.contains("Appearance"));
+            assert!(!tree.contains("\"View\""));
+        }
+        let selects = view.read_with(cx, |view, _| view.appearance_selects.clone().unwrap());
+        // The defaults show: Match System for the app, Original for the pages.
+        let shown = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| {
+                (
+                    selects.app.read(cx).selected_index(cx).map(|ix| ix.row),
+                    selects.page.read(cx).selected_index(cx).map(|ix| ix.row),
+                )
+            })
         };
-        for index in [1, 2, 0] {
-            cx.simulate_click(row(index), Modifiers::default());
+        assert_eq!(shown(cx), (Some(2), Some(0)));
+
+        // A choice in a dropdown sends the menu's action. The same choice
+        // again sends nothing.
+        for (title, app) in [("Dark", true), ("Light", true), ("Match System", true)] {
+            assert!(app);
+            selects.app.update(cx, |_, cx| {
+                cx.emit(SelectEvent::<Vec<gpui::SharedString>>::Confirm(Some(
+                    title.into(),
+                )))
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        selects.app.update(cx, |_, cx| {
+            cx.emit(SelectEvent::<Vec<gpui::SharedString>>::Confirm(Some(
+                "Match System".into(),
+            )))
+        });
+        cx.run_until_parked();
+        for title in ["Force Dark", "Match App", "Original"] {
+            selects.page.update(cx, |_, cx| {
+                cx.emit(SelectEvent::<Vec<gpui::SharedString>>::Confirm(Some(
+                    title.into(),
+                )))
+            });
             cx.run_until_parked();
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
         assert_eq!(
-            *chosen.borrow(),
+            *chosen_app.borrow(),
             [
-                PageAppearance::Dark,
-                PageAppearance::MatchSystem,
-                PageAppearance::Light
+                AppAppearance::Dark,
+                AppAppearance::Light,
+                AppAppearance::MatchSystem
             ]
         );
+        assert_eq!(
+            *chosen_page.borrow(),
+            [
+                PageAppearance::ForceDark,
+                PageAppearance::MatchApp,
+                PageAppearance::Original
+            ]
+        );
+
+        // A menu changes a setting: the dropdowns show it.
         cx.update(|_, cx| {
-            assert_eq!(PageAppearancePreference::current(cx), PageAppearance::Light);
+            cx.set_global(AppAppearancePreference(AppAppearance::Dark));
+            cx.set_global(PageAppearancePreference(PageAppearance::MatchApp));
         });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(shown(cx), (Some(1), Some(2)));
     }
 
     /// Settings ▸ Mouse wheel chooses the Zoom speed and the Page turning

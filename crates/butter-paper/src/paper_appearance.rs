@@ -34,71 +34,69 @@ pub enum PaperAppearance {
     Dark,
 }
 
-/// The Page Appearance setting: View ▸ Page Appearance and Settings ▸ View.
-/// One global choice, kept across launches. Light is the default.
+/// The Page Appearance setting: View ▸ Page Appearance and Settings ▸
+/// Appearance. One global choice, kept across launches. Original is the
+/// default. It shows the PDF as it is, so it is not a light mode.
+///
+/// It is independent of the app theme (App Appearance) except for Match App,
+/// which follows the theme the app shows now.
+///
+/// Profiles from 0.6.0 stored `light`, `dark` and `match_system`: they load
+/// as Original, Force Dark and Match App.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PageAppearance {
     /// The document's own colours.
     #[default]
-    Light,
-    /// Dark pages.
-    Dark,
-    /// Dark pages while the operating system's appearance is dark.
-    MatchSystem,
+    #[serde(alias = "light")]
+    Original,
+    /// Dark pages, whatever the app shows.
+    #[serde(alias = "dark")]
+    ForceDark,
+    /// Dark pages while the app is dark, original pages while it is light.
+    #[serde(alias = "match_system", alias = "system")]
+    MatchApp,
 }
 
 impl PageAppearance {
-    pub const ALL: [Self; 3] = [Self::Light, Self::Dark, Self::MatchSystem];
+    pub const ALL: [Self; 3] = [Self::Original, Self::ForceDark, Self::MatchApp];
 
-    /// The name in the native menu bar (title case).
-    pub const fn menu_label(self) -> &'static str {
-        match self {
-            Self::Light => "Light",
-            Self::Dark => "Dark",
-            Self::MatchSystem => "Match System",
-        }
-    }
-
-    /// The name in Settings (sentence case).
+    /// The name in the menus and in Settings.
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Light => "Light",
-            Self::Dark => "Dark",
-            Self::MatchSystem => "Match system",
+            Self::Original => "Original",
+            Self::ForceDark => "Force Dark",
+            Self::MatchApp => "Match App",
         }
     }
 
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Light => "Pages show the document’s own colours.",
-            Self::Dark => "Pages show dark paper and light ink. Pictures keep their colours.",
-            Self::MatchSystem => "Pages are dark while the system appearance is dark.",
+            Self::Original => "Pages show the PDF as it is.",
+            Self::ForceDark => {
+                "Pages always show dark paper and light ink. Pictures keep their colours."
+            }
+            Self::MatchApp => {
+                "Pages are dark while the app is dark, and show the PDF as it is while the \
+                 app is light."
+            }
         }
     }
 
-    /// The paper a view draws for this setting, given the appearance of the
-    /// window (the system's, which Match System follows).
-    pub const fn resolve(self, system_is_dark: bool) -> PaperAppearance {
+    /// The paper a view draws for this setting, given whether the app theme
+    /// is dark now (App Appearance, which follows the system for Match
+    /// System).
+    pub const fn resolve(self, app_is_dark: bool) -> PaperAppearance {
         match self {
-            Self::Light => PaperAppearance::Real,
-            Self::Dark => PaperAppearance::Dark,
-            Self::MatchSystem => {
-                if system_is_dark {
+            Self::Original => PaperAppearance::Real,
+            Self::ForceDark => PaperAppearance::Dark,
+            Self::MatchApp => {
+                if app_is_dark {
                     PaperAppearance::Dark
                 } else {
                     PaperAppearance::Real
                 }
             }
-        }
-    }
-
-    /// What the shortcut sets: Light or Dark, the opposite of the paper
-    /// that shows now. From Match System too.
-    pub const fn toggled(self, system_is_dark: bool) -> Self {
-        match self.resolve(system_is_dark) {
-            PaperAppearance::Real => Self::Dark,
-            PaperAppearance::Dark => Self::Light,
         }
     }
 }
@@ -478,45 +476,27 @@ mod tests {
 
     #[test]
     fn page_appearance_resolves_to_the_paper_each_setting_shows() {
-        use PageAppearance::{Dark, Light, MatchSystem};
-        for system_is_dark in [false, true] {
-            assert_eq!(Light.resolve(system_is_dark), PaperAppearance::Real);
-            assert_eq!(Dark.resolve(system_is_dark), PaperAppearance::Dark);
+        use PageAppearance::{ForceDark, MatchApp, Original};
+        for app_is_dark in [false, true] {
+            assert_eq!(Original.resolve(app_is_dark), PaperAppearance::Real);
+            assert_eq!(ForceDark.resolve(app_is_dark), PaperAppearance::Dark);
         }
-        // Match System follows the system's appearance, both ways.
-        assert_eq!(MatchSystem.resolve(false), PaperAppearance::Real);
-        assert_eq!(MatchSystem.resolve(true), PaperAppearance::Dark);
-        assert_eq!(PageAppearance::default(), Light, "Light until it is set");
-    }
-
-    /// The shortcut sets Light or Dark, whatever shows now; from Match System
-    /// it goes to the opposite of the current look.
-    #[test]
-    fn the_shortcut_goes_to_the_opposite_of_what_shows() {
-        use PageAppearance::{Dark, Light, MatchSystem};
-        for system_is_dark in [false, true] {
-            assert_eq!(Light.toggled(system_is_dark), Dark);
-            assert_eq!(Dark.toggled(system_is_dark), Light);
-        }
-        assert_eq!(MatchSystem.toggled(false), Dark, "light now, so Dark");
-        assert_eq!(MatchSystem.toggled(true), Light, "dark now, so Light");
-        // Pressed twice from Match System, it ends on the first look again.
-        for system_is_dark in [false, true] {
-            let first = MatchSystem.resolve(system_is_dark);
-            let twice = MatchSystem
-                .toggled(system_is_dark)
-                .toggled(system_is_dark)
-                .resolve(system_is_dark);
-            assert_eq!(twice, first);
-        }
+        // Match App follows the app's theme, both ways.
+        assert_eq!(MatchApp.resolve(false), PaperAppearance::Real);
+        assert_eq!(MatchApp.resolve(true), PaperAppearance::Dark);
+        assert_eq!(
+            PageAppearance::default(),
+            Original,
+            "Original until it is set"
+        );
     }
 
     #[test]
     fn page_appearance_is_stored_as_snake_case_words() {
         for (setting, text) in [
-            (PageAppearance::Light, "\"light\""),
-            (PageAppearance::Dark, "\"dark\""),
-            (PageAppearance::MatchSystem, "\"match_system\""),
+            (PageAppearance::Original, "\"original\""),
+            (PageAppearance::ForceDark, "\"force_dark\""),
+            (PageAppearance::MatchApp, "\"match_app\""),
         ] {
             assert_eq!(serde_json::to_string(&setting).unwrap(), text);
             assert_eq!(
@@ -524,9 +504,24 @@ mod tests {
                 setting
             );
         }
-        // Names: title case in the native menu bar, sentence case in the app.
-        assert_eq!(PageAppearance::MatchSystem.menu_label(), "Match System");
-        assert_eq!(PageAppearance::MatchSystem.label(), "Match system");
+        // A profile from 0.6.0 stored the choices under their old names.
+        for (old, setting) in [
+            ("light", PageAppearance::Original),
+            ("dark", PageAppearance::ForceDark),
+            ("match_system", PageAppearance::MatchApp),
+            ("system", PageAppearance::MatchApp),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<PageAppearance>(&format!("\"{old}\"")).unwrap(),
+                setting,
+                "{old}"
+            );
+        }
+        // The names in the menus and in Settings.
+        assert_eq!(
+            PageAppearance::ALL.map(PageAppearance::label),
+            ["Original", "Force Dark", "Match App"]
+        );
     }
 
     /// The status line shows for a mostly-picture page on dark paper only,
@@ -540,7 +535,7 @@ mod tests {
         assert_eq!(pictures_keep_colours_note(Dark, Dark, Some(0.49)), None);
         assert_eq!(pictures_keep_colours_note(Dark, Dark, Some(0.)), None);
         assert_eq!(pictures_keep_colours_note(Dark, Dark, None), None);
-        // Light pages: nothing to say. A page image still drawn light (the
+        // Original pages: nothing to say. A page image still drawn light (the
         // switch has not arrived) says nothing for dark paper.
         assert_eq!(pictures_keep_colours_note(Real, Real, Some(1.)), None);
         assert_eq!(pictures_keep_colours_note(Real, Dark, Some(1.)), None);

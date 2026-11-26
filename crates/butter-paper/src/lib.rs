@@ -7,6 +7,7 @@ pub mod annotation_adapter;
 mod annotation_caption;
 pub mod annotation_model;
 pub mod annotation_paint_path;
+pub mod app_appearance;
 pub mod application_assets;
 pub mod application_close;
 pub mod application_close_workspace;

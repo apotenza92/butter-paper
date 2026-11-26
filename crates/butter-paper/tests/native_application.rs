@@ -405,6 +405,7 @@ fn in_window_application_menu_is_the_four_menu_projection() {
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
             reverse_scroll_zoom: false,
+            app_appearance: Default::default(),
             page_appearance: Default::default(),
             updates: Default::default(),
         },
@@ -450,7 +451,8 @@ fn in_window_application_menu_is_the_four_menu_projection() {
         "<separator>",
         "Reverse Scroll Zoom",
         "<separator>",
-        // The Page Appearance submenu.
+        // The App Appearance and Page Appearance submenus, side by side.
+        "<other>",
         "<other>",
         "<separator>",
         "Toggle Full Screen",
@@ -489,6 +491,7 @@ fn native_application_projection_retains_document_edit_commands_and_restores_the
             menu_bar_visible: false,
             menu_bar_visibility_supported: true,
             reverse_scroll_zoom: false,
+            app_appearance: Default::default(),
             page_appearance: Default::default(),
             updates: Default::default(),
         },
@@ -642,67 +645,105 @@ fn about_and_settings_are_available_in_both_menu_surfaces() {
     }
 }
 
-/// View ▸ Page Appearance: a submenu of Light, Dark and Match System in the
-/// native menu bar and the in-window View menu, with the setting checked.
-/// It follows Reverse Scroll Zoom, in a group of its own.
+/// View ▸ App Appearance and View ▸ Page Appearance: two submenus side by
+/// side, in the native menu bar and the in-window View menu, each with its
+/// setting checked. They follow Reverse Scroll Zoom, in a group of their own.
 #[test]
-fn page_appearance_is_a_view_submenu_with_the_setting_checked_in_both_menu_surfaces() {
+fn the_appearance_submenus_are_side_by_side_with_the_settings_checked_in_both_menu_surfaces() {
+    use butter_paper::app_appearance::AppAppearance;
     use butter_paper::application_shell::{
-        SetPageAppearanceDark, SetPageAppearanceLight, SetPageAppearanceMatchSystem,
+        SetAppAppearanceDark, SetAppAppearanceLight, SetAppAppearanceMatchSystem,
+        SetPageAppearanceForceDark, SetPageAppearanceMatchApp, SetPageAppearanceOriginal,
     };
     use butter_paper::paper_appearance::PageAppearance;
-    for setting in PageAppearance::ALL {
-        let shell = ApplicationMenuShellState {
-            menu_bar_visibility_supported: !cfg!(target_os = "macos"),
-            page_appearance: setting,
-            ..Default::default()
-        };
-        let state = NativeApplicationMenuState::default();
-        let native = build_native_application_menus_with_shell(state, shell);
-        let in_window = build_in_window_application_menus(state, shell);
-        for menus in [&native, &in_window] {
-            let view = menu(menus, "View");
-            let position = view
-                .items
-                .iter()
-                .position(|item| matches!(item, MenuItem::Submenu(submenu) if submenu.name == "Page Appearance"))
-                .expect("View has a Page Appearance submenu");
-            // Reverse Scroll Zoom, a separator, the submenu, a separator.
-            assert!(matches!(
-                &view.items[position - 2],
-                MenuItem::Action { name, .. } if name == "Reverse Scroll Zoom"
-            ));
-            assert!(matches!(view.items[position - 1], MenuItem::Separator));
-            assert!(matches!(view.items[position + 1], MenuItem::Separator));
-            let MenuItem::Submenu(submenu) = &view.items[position] else {
-                unreachable!()
+    // Every pair of settings, so one submenu's check never follows the other's.
+    for app_setting in AppAppearance::ALL {
+        for page_setting in PageAppearance::ALL {
+            let shell = ApplicationMenuShellState {
+                menu_bar_visibility_supported: !cfg!(target_os = "macos"),
+                app_appearance: app_setting,
+                page_appearance: page_setting,
+                ..Default::default()
             };
-            assert_eq!(
-                menu_item_names(submenu),
-                ["Light", "Dark", "Match System"],
-                "title case in the menu bar"
-            );
-            for (name, expected) in PageAppearance::ALL
-                .iter()
-                .map(|appearance| (appearance.menu_label(), *appearance == setting))
-            {
-                let MenuItem::Action { checked, .. } = item(submenu, name) else {
+            let state = NativeApplicationMenuState::default();
+            let native = build_native_application_menus_with_shell(state, shell);
+            let in_window = build_in_window_application_menus(state, shell);
+            for menus in [&native, &in_window] {
+                let view = menu(menus, "View");
+                let position = view
+                    .items
+                    .iter()
+                    .position(|item| matches!(item, MenuItem::Submenu(submenu) if submenu.name == "App Appearance"))
+                    .expect("View has an App Appearance submenu");
+                // Reverse Scroll Zoom, a separator, App Appearance, Page
+                // Appearance, a separator.
+                assert!(matches!(
+                    &view.items[position - 2],
+                    MenuItem::Action { name, .. } if name == "Reverse Scroll Zoom"
+                ));
+                assert!(matches!(view.items[position - 1], MenuItem::Separator));
+                assert!(matches!(
+                    &view.items[position + 1],
+                    MenuItem::Submenu(submenu) if submenu.name == "Page Appearance"
+                ));
+                assert!(matches!(view.items[position + 2], MenuItem::Separator));
+                let (MenuItem::Submenu(app), MenuItem::Submenu(page)) =
+                    (&view.items[position], &view.items[position + 1])
+                else {
                     unreachable!()
                 };
-                assert_eq!(*checked, expected, "{name} with {setting:?} set");
-            }
-            assert_action(item(submenu, "Light"), |action| {
-                action.as_any().is::<SetPageAppearanceLight>()
-            });
-            assert_action(item(submenu, "Dark"), |action| {
-                action.as_any().is::<SetPageAppearanceDark>()
-            });
-            assert_action(item(submenu, "Match System"), |action| {
-                action.as_any().is::<SetPageAppearanceMatchSystem>()
-            });
-            // Never disabled: it is a setting, not a document command.
-            for name in ["Light", "Dark", "Match System"] {
-                assert!(!item(submenu, name).is_disabled(), "{name}");
+                assert_eq!(
+                    menu_item_names(app),
+                    ["Light", "Dark", "Match System"],
+                    "title case in the menu bar"
+                );
+                assert_eq!(
+                    menu_item_names(page),
+                    ["Original", "Force Dark", "Match App"]
+                );
+                for (name, expected) in AppAppearance::ALL
+                    .iter()
+                    .map(|appearance| (appearance.label(), *appearance == app_setting))
+                {
+                    let MenuItem::Action { checked, .. } = item(app, name) else {
+                        unreachable!()
+                    };
+                    assert_eq!(*checked, expected, "App {name} with {app_setting:?} set");
+                }
+                for (name, expected) in PageAppearance::ALL
+                    .iter()
+                    .map(|appearance| (appearance.label(), *appearance == page_setting))
+                {
+                    let MenuItem::Action { checked, .. } = item(page, name) else {
+                        unreachable!()
+                    };
+                    assert_eq!(*checked, expected, "Page {name} with {page_setting:?} set");
+                }
+                assert_action(item(app, "Light"), |action| {
+                    action.as_any().is::<SetAppAppearanceLight>()
+                });
+                assert_action(item(app, "Dark"), |action| {
+                    action.as_any().is::<SetAppAppearanceDark>()
+                });
+                assert_action(item(app, "Match System"), |action| {
+                    action.as_any().is::<SetAppAppearanceMatchSystem>()
+                });
+                assert_action(item(page, "Original"), |action| {
+                    action.as_any().is::<SetPageAppearanceOriginal>()
+                });
+                assert_action(item(page, "Force Dark"), |action| {
+                    action.as_any().is::<SetPageAppearanceForceDark>()
+                });
+                assert_action(item(page, "Match App"), |action| {
+                    action.as_any().is::<SetPageAppearanceMatchApp>()
+                });
+                // Never disabled, and no shortcut shows: they are settings,
+                // not document commands.
+                for submenu in [app, page] {
+                    for name in menu_item_names(submenu) {
+                        assert!(!item(submenu, name).is_disabled(), "{name}");
+                    }
+                }
             }
         }
     }

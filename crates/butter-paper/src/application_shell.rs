@@ -10,6 +10,7 @@ use gpui_component::ActiveTheme as _;
 use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use serde::{Deserialize, Serialize};
 
+use crate::app_appearance::AppAppearance;
 use crate::mouse_wheel::{PageTurning, ZoomSpeed};
 use crate::paper_appearance::PageAppearance;
 
@@ -74,10 +75,12 @@ gpui::actions!(
         SetPageTurningDeliberate,
         SetPageTurningBalanced,
         SetPageTurningResponsive,
-        SetPageAppearanceLight,
-        SetPageAppearanceDark,
-        SetPageAppearanceMatchSystem,
-        TogglePageAppearance,
+        SetAppAppearanceLight,
+        SetAppAppearanceDark,
+        SetAppAppearanceMatchSystem,
+        SetPageAppearanceOriginal,
+        SetPageAppearanceForceDark,
+        SetPageAppearanceMatchApp,
         NewWindow,
         MoveDocumentToNewWindow,
         MergeAllWindows,
@@ -129,10 +132,14 @@ pub struct ApplicationShellPreferences {
     /// How the wheel turns pages in Single Page view: Settings ▸ Mouse wheel.
     #[serde(default)]
     page_turning: PageTurning,
-    /// Whether pages draw dark: View ▸ Page Appearance and Settings ▸ View.
-    /// Light until set.
+    /// Whether pages draw dark: View ▸ Page Appearance and Settings ▸
+    /// Appearance. Original until set.
     #[serde(default)]
     page_appearance: PageAppearance,
+    /// The application theme: View ▸ App Appearance and Settings ▸
+    /// Appearance. Match System until set.
+    #[serde(default)]
+    app_appearance: AppAppearance,
 }
 
 /// Application-wide copy of the Zoom speed preference.
@@ -175,19 +182,23 @@ impl PageAppearancePreference {
 }
 
 /// The action that chooses `appearance` in View ▸ Page Appearance and
-/// Settings ▸ View.
+/// Settings ▸ Appearance.
 pub fn page_appearance_action(appearance: PageAppearance) -> Box<dyn gpui::Action> {
     match appearance {
-        PageAppearance::Light => Box::new(SetPageAppearanceLight),
-        PageAppearance::Dark => Box::new(SetPageAppearanceDark),
-        PageAppearance::MatchSystem => Box::new(SetPageAppearanceMatchSystem),
+        PageAppearance::Original => Box::new(SetPageAppearanceOriginal),
+        PageAppearance::ForceDark => Box::new(SetPageAppearanceForceDark),
+        PageAppearance::MatchApp => Box::new(SetPageAppearanceMatchApp),
     }
 }
 
-/// The shortcut that toggles Light and Dark pages, as the platform writes
-/// it. It follows the platform's command key, like the other shortcuts.
-pub const fn toggle_page_appearance_shortcut(macos: bool) -> &'static str {
-    if macos { "cmd-shift-d" } else { "ctrl-shift-d" }
+/// The action that chooses `appearance` in View ▸ App Appearance and
+/// Settings ▸ Appearance.
+pub fn app_appearance_action(appearance: AppAppearance) -> Box<dyn gpui::Action> {
+    match appearance {
+        AppAppearance::Light => Box::new(SetAppAppearanceLight),
+        AppAppearance::Dark => Box::new(SetAppAppearanceDark),
+        AppAppearance::MatchSystem => Box::new(SetAppAppearanceMatchSystem),
+    }
 }
 
 /// The action that chooses `speed` in Settings ▸ Mouse wheel.
@@ -301,7 +312,8 @@ impl Default for ApplicationShellPreferences {
             open_documents_in: OpenDocumentsIn::NewTab,
             zoom_speed: ZoomSpeed::Standard,
             page_turning: PageTurning::Responsive,
-            page_appearance: PageAppearance::Light,
+            page_appearance: PageAppearance::Original,
+            app_appearance: AppAppearance::MatchSystem,
         }
     }
 }
@@ -361,6 +373,14 @@ impl ApplicationShellPreferences {
 
     pub fn set_page_appearance(&mut self, page_appearance: PageAppearance) {
         self.page_appearance = page_appearance;
+    }
+
+    pub fn app_appearance(&self) -> AppAppearance {
+        self.app_appearance
+    }
+
+    pub fn set_app_appearance(&mut self, app_appearance: AppAppearance) {
+        self.app_appearance = app_appearance;
     }
 
     pub fn set_menu_bar_visible(&mut self, visible: bool) {
@@ -625,14 +645,14 @@ mod tests {
     }
 
     #[test]
-    fn page_appearance_is_light_until_set_and_survives_a_save() {
+    fn page_appearance_is_original_until_set_and_survives_a_save() {
         // A profile from before the setting shows the document's own colours.
         let saved = br#"{"menu_bar_visible":true,"ui_zoom_level":0,"reverse_scroll_zoom":false}"#;
         let preferences: ApplicationShellPreferences = serde_json::from_slice(saved).unwrap();
-        assert_eq!(preferences.page_appearance(), PageAppearance::Light);
+        assert_eq!(preferences.page_appearance(), PageAppearance::Original);
         assert_eq!(
             ApplicationShellPreferences::default().page_appearance(),
-            PageAppearance::Light
+            PageAppearance::Original
         );
         let directory = std::env::temp_dir().join(format!(
             "bp-page-appearance-{}-{}",
@@ -641,9 +661,9 @@ mod tests {
         ));
         let store = ApplicationShellPreferencesStore::new(&directory);
         for setting in [
-            PageAppearance::Dark,
-            PageAppearance::MatchSystem,
-            PageAppearance::Light,
+            PageAppearance::ForceDark,
+            PageAppearance::MatchApp,
+            PageAppearance::Original,
         ] {
             let mut preferences = preferences;
             preferences.set_page_appearance(setting);
@@ -654,27 +674,64 @@ mod tests {
             assert!(loaded.menu_bar_visible());
         }
         let mut dark = preferences;
-        dark.set_page_appearance(PageAppearance::MatchSystem);
+        dark.set_page_appearance(PageAppearance::MatchApp);
         let text = String::from_utf8(serde_json::to_vec(&dark).unwrap()).unwrap();
-        assert!(
-            text.contains(r#""page_appearance":"match_system""#),
-            "{text}"
-        );
+        assert!(text.contains(r#""page_appearance":"match_app""#), "{text}");
         let _ = std::fs::remove_dir_all(directory);
     }
 
-    /// Cmd+Shift+D on macOS, Ctrl+Shift+D on Windows and Linux: the same
-    /// keys, with the platform's command key.
+    /// A 0.6.0 profile stored the Page Appearance as `light`, `dark` or
+    /// `match_system`.
     #[test]
-    fn the_page_appearance_shortcut_follows_the_platform_command_key() {
-        assert_eq!(toggle_page_appearance_shortcut(true), "cmd-shift-d");
-        assert_eq!(toggle_page_appearance_shortcut(false), "ctrl-shift-d");
-        // The same keys show in Settings, the platform's way.
-        let mac = cfg!(target_os = "macos");
+    fn a_page_appearance_stored_by_0_6_0_loads_under_its_new_name() {
+        for (old, expected) in [
+            ("light", PageAppearance::Original),
+            ("dark", PageAppearance::ForceDark),
+            ("match_system", PageAppearance::MatchApp),
+        ] {
+            let saved = format!(r#"{{"menu_bar_visible":true,"page_appearance":"{old}"}}"#);
+            let preferences: ApplicationShellPreferences =
+                serde_json::from_slice(saved.as_bytes()).unwrap();
+            assert_eq!(preferences.page_appearance(), expected, "{old}");
+        }
+    }
+
+    #[test]
+    fn app_appearance_is_match_system_until_set_and_survives_a_save() {
+        // A profile from before the setting follows the system, as it did.
+        let saved = br#"{"menu_bar_visible":true,"ui_zoom_level":0,"reverse_scroll_zoom":false}"#;
+        let preferences: ApplicationShellPreferences = serde_json::from_slice(saved).unwrap();
+        assert_eq!(preferences.app_appearance(), AppAppearance::MatchSystem);
         assert_eq!(
-            crate::shortcut_label::shortcut_label(if mac { "Cmd+Shift+D" } else { "Ctrl+Shift+D" }),
-            if mac { "⇧⌘D" } else { "Ctrl+Shift+D" }
+            ApplicationShellPreferences::default().app_appearance(),
+            AppAppearance::MatchSystem
         );
+        let directory = std::env::temp_dir().join(format!(
+            "bp-app-appearance-{}-{}",
+            std::process::id(),
+            TEST_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let store = ApplicationShellPreferencesStore::new(&directory);
+        for setting in [
+            AppAppearance::Dark,
+            AppAppearance::Light,
+            AppAppearance::MatchSystem,
+        ] {
+            let mut preferences = preferences;
+            preferences.set_app_appearance(setting);
+            preferences.set_page_appearance(PageAppearance::ForceDark);
+            store.save(preferences).unwrap();
+            let loaded = store.load().unwrap();
+            assert_eq!(loaded.app_appearance(), setting);
+            // The two appearance settings are stored apart.
+            assert_eq!(loaded.page_appearance(), PageAppearance::ForceDark);
+            assert!(loaded.menu_bar_visible());
+        }
+        let mut dark = preferences;
+        dark.set_app_appearance(AppAppearance::Dark);
+        let text = String::from_utf8(serde_json::to_vec(&dark).unwrap()).unwrap();
+        assert!(text.contains(r#""app_appearance":"dark""#), "{text}");
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

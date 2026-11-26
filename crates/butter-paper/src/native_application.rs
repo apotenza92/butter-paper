@@ -3,14 +3,16 @@ use std::path::PathBuf;
 use gpui::{App, Entity, Menu, MenuItem};
 use gpui_component::{GlobalState, menu::AppMenuBar};
 
+use crate::app_appearance::AppAppearance;
 use crate::paper_appearance::PageAppearance;
 
 use crate::{
     application_close_workspace::{RequestApplicationClose, RequestApplicationQuit},
     application_shell::{
         AboutButterPaper, MergeAllWindows, MinimiseWindow, MoveDocumentToNewWindow, NewWindow,
-        OpenSettings, SetAsDefaultPdfApp, SetPageAppearanceDark, SetPageAppearanceLight,
-        SetPageAppearanceMatchSystem, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
+        OpenSettings, SetAppAppearanceDark, SetAppAppearanceLight, SetAppAppearanceMatchSystem,
+        SetAsDefaultPdfApp, SetPageAppearanceForceDark, SetPageAppearanceMatchApp,
+        SetPageAppearanceOriginal, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
         ToggleReverseScrollZoom, ZoomWindow,
     },
     document_workspace::{
@@ -61,7 +63,9 @@ pub struct ApplicationMenuShellState {
     pub menu_bar_visible: bool,
     pub menu_bar_visibility_supported: bool,
     pub reverse_scroll_zoom: bool,
-    /// The Page Appearance setting: the checked item of the submenu.
+    /// The App Appearance setting: the checked item of its submenu.
+    pub app_appearance: AppAppearance,
+    /// The Page Appearance setting: the checked item of its submenu.
     pub page_appearance: PageAppearance,
     pub updates: UpdateMenuState,
 }
@@ -93,7 +97,8 @@ impl Default for ApplicationMenuShellState {
             menu_bar_visible: true,
             menu_bar_visibility_supported: false,
             reverse_scroll_zoom: false,
-            page_appearance: PageAppearance::Light,
+            app_appearance: AppAppearance::MatchSystem,
+            page_appearance: PageAppearance::Original,
             updates: UpdateMenuState::default(),
         }
     }
@@ -317,6 +322,7 @@ fn build_in_window_view_items(
         MenuItem::action("Reverse Scroll Zoom", ToggleReverseScrollZoom)
             .checked(shell.reverse_scroll_zoom),
         MenuItem::separator(),
+        app_appearance_submenu(shell.app_appearance),
         page_appearance_submenu(shell.page_appearance),
         MenuItem::separator(),
         MenuItem::action("Toggle Full Screen", ToggleApplicationFullScreen),
@@ -327,25 +333,48 @@ fn build_in_window_view_items(
     items
 }
 
-/// View ▸ Page Appearance: Light, Dark and Match System, the current
+/// View ▸ App Appearance: Light, Dark and Match System, the current
+/// setting checked (the title-case names of the native menu bar).
+pub fn app_appearance_submenu(current: AppAppearance) -> MenuItem {
+    let item = |appearance: AppAppearance, item: MenuItem| item.checked(current == appearance);
+    MenuItem::submenu(Menu::new("App Appearance").items([
+        item(
+            AppAppearance::Light,
+            MenuItem::action(AppAppearance::Light.label(), SetAppAppearanceLight),
+        ),
+        item(
+            AppAppearance::Dark,
+            MenuItem::action(AppAppearance::Dark.label(), SetAppAppearanceDark),
+        ),
+        item(
+            AppAppearance::MatchSystem,
+            MenuItem::action(
+                AppAppearance::MatchSystem.label(),
+                SetAppAppearanceMatchSystem,
+            ),
+        ),
+    ]))
+}
+
+/// View ▸ Page Appearance: Original, Force Dark and Match App, the current
 /// setting checked (the title-case names of the native menu bar).
 pub fn page_appearance_submenu(current: PageAppearance) -> MenuItem {
     let item = |appearance: PageAppearance, item: MenuItem| item.checked(current == appearance);
     MenuItem::submenu(Menu::new("Page Appearance").items([
         item(
-            PageAppearance::Light,
-            MenuItem::action(PageAppearance::Light.menu_label(), SetPageAppearanceLight),
+            PageAppearance::Original,
+            MenuItem::action(PageAppearance::Original.label(), SetPageAppearanceOriginal),
         ),
         item(
-            PageAppearance::Dark,
-            MenuItem::action(PageAppearance::Dark.menu_label(), SetPageAppearanceDark),
-        ),
-        item(
-            PageAppearance::MatchSystem,
+            PageAppearance::ForceDark,
             MenuItem::action(
-                PageAppearance::MatchSystem.menu_label(),
-                SetPageAppearanceMatchSystem,
+                PageAppearance::ForceDark.label(),
+                SetPageAppearanceForceDark,
             ),
+        ),
+        item(
+            PageAppearance::MatchApp,
+            MenuItem::action(PageAppearance::MatchApp.label(), SetPageAppearanceMatchApp),
         ),
     ]))
 }

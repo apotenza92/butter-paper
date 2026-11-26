@@ -10,12 +10,13 @@ use butter_paper::application_shell::{
     ApplicationShellPreferences, ApplicationShellPreferencesStore, LockImageProportions,
     MergeAllWindows, MinimiseWindow, MoveDocumentToNewWindow, NewWindow, OpenDocumentsIn,
     OpenDocumentsInNewTab, OpenDocumentsInNewWindow, OpenDocumentsInPreference, OpenReleasePage,
-    PageAppearancePreference, PageTurningPreference, ReverseScrollZoom, SetAsDefaultPdfApp,
-    SetPageAppearanceDark, SetPageAppearanceLight, SetPageAppearanceMatchSystem,
+    PageAppearancePreference, PageTurningPreference, ReverseScrollZoom, SetAppAppearanceDark,
+    SetAppAppearanceLight, SetAppAppearanceMatchSystem, SetAsDefaultPdfApp,
+    SetPageAppearanceForceDark, SetPageAppearanceMatchApp, SetPageAppearanceOriginal,
     SetPageTurningBalanced, SetPageTurningDeliberate, SetPageTurningResponsive, SetZoomSpeedCoarse,
     SetZoomSpeedFine, SetZoomSpeedStandard, ToggleApplicationFullScreen, ToggleApplicationMenuBar,
-    ToggleLockImageProportions, TogglePageAppearance, ToggleReverseScrollZoom, ZoomSpeedPreference,
-    ZoomWindow, focus_initial_command_context, init_application_shell_actions,
+    ToggleLockImageProportions, ToggleReverseScrollZoom, ZoomSpeedPreference, ZoomWindow,
+    focus_initial_command_context, init_application_shell_actions,
 };
 use butter_paper::document_recovery_store::{DocumentRecoveryStore, RecoverySourceKind};
 use butter_paper::document_tab_bar::TemplateCatalogItem;
@@ -1359,6 +1360,7 @@ impl ComponentStory {
                 .preferences
                 .get()
                 .reverse_scroll_zoom(),
+            app_appearance: shared_application(cx).preferences.get().app_appearance(),
             page_appearance: shared_application(cx).preferences.get().page_appearance(),
             updates: updates::menu_state(cx),
         }
@@ -1559,25 +1561,30 @@ fn register_application_shell_actions(cx: &mut App) {
     cx.on_action(move |_: &SetPageTurningResponsive, cx| {
         set_page_turning(PageTurning::Responsive, cx)
     });
-    // View ▸ Page Appearance and Settings ▸ View: Dark pages, in every
-    // window.
-    cx.on_action(|_: &SetPageAppearanceLight, cx| {
-        set_page_appearance(butter_paper::paper_appearance::PageAppearance::Light, cx)
+    // View ▸ App Appearance and Settings ▸ Appearance: the application
+    // theme, in every window.
+    cx.on_action(|_: &SetAppAppearanceLight, cx| {
+        set_app_appearance(butter_paper::app_appearance::AppAppearance::Light, cx)
     });
-    cx.on_action(|_: &SetPageAppearanceDark, cx| {
-        set_page_appearance(butter_paper::paper_appearance::PageAppearance::Dark, cx)
+    cx.on_action(|_: &SetAppAppearanceDark, cx| {
+        set_app_appearance(butter_paper::app_appearance::AppAppearance::Dark, cx)
     });
-    cx.on_action(|_: &SetPageAppearanceMatchSystem, cx| {
+    cx.on_action(|_: &SetAppAppearanceMatchSystem, cx| {
+        set_app_appearance(butter_paper::app_appearance::AppAppearance::MatchSystem, cx)
+    });
+    // View ▸ Page Appearance and Settings ▸ Appearance: Dark pages, in every
+    // window. There is no shortcut.
+    cx.on_action(|_: &SetPageAppearanceOriginal, cx| {
+        set_page_appearance(butter_paper::paper_appearance::PageAppearance::Original, cx)
+    });
+    cx.on_action(|_: &SetPageAppearanceForceDark, cx| {
         set_page_appearance(
-            butter_paper::paper_appearance::PageAppearance::MatchSystem,
+            butter_paper::paper_appearance::PageAppearance::ForceDark,
             cx,
         )
     });
-    // The shortcut: Light or Dark, the opposite of the pages that show now.
-    cx.on_action(|_: &TogglePageAppearance, cx| {
-        let system_is_dark = butter_paper::system_theme::is_dark_appearance(cx.window_appearance());
-        let next = PageAppearancePreference::current(cx).toggled(system_is_dark);
-        set_page_appearance(next, cx);
+    cx.on_action(|_: &SetPageAppearanceMatchApp, cx| {
+        set_page_appearance(butter_paper::paper_appearance::PageAppearance::MatchApp, cx)
     });
     cx.on_action(|_: &ToggleApplicationFullScreen, cx| {
         defer_to_active_story(cx, |story, window, cx| {
@@ -2293,6 +2300,10 @@ fn main() {
         cx.set_global(ZoomSpeedPreference(preferences.zoom_speed()));
         cx.set_global(PageTurningPreference(preferences.page_turning()));
         cx.set_global(PageAppearancePreference(preferences.page_appearance()));
+        butter_paper::app_appearance::AppAppearancePreference::set(
+            preferences.app_appearance(),
+            cx,
+        );
         let worker_executable = perf.as_ref().map_or_else(
             || {
                 native_runtime_layout
@@ -2690,27 +2701,50 @@ fn set_page_appearance(appearance: butter_paper::paper_appearance::PageAppearanc
     }
     cx.set_global(PageAppearancePreference(appearance));
     apply_page_appearance(cx);
-    // Let a menu finish its own dismissal before its projection changes.
+    sync_appearance_menus(cx);
+    cx.refresh_windows();
+}
+
+/// Chooses the application theme: keeps the choice across launches and
+/// shows it now in every window and in the menus. Light and Dark ignore the
+/// system. Match System follows it. Match App pages follow the new theme.
+fn set_app_appearance(appearance: butter_paper::app_appearance::AppAppearance, cx: &mut App) {
+    let shared = shared_application(cx);
+    let mut preferences = shared.preferences.get();
+    preferences.set_app_appearance(appearance);
+    shared.preferences.set(preferences);
+    if let Err(error) = shared.preferences_store.save(preferences) {
+        eprintln!("unable to save Butter Paper application preferences: {error}");
+    }
+    butter_paper::app_appearance::AppAppearancePreference::set(appearance, cx);
+    // The theme is global, so one call changes every window.
+    butter_paper::system_theme::apply_window_appearance_with_zoom_base(
+        cx.window_appearance(),
+        None,
+        cx,
+        shared.ui_zoom_level.get(),
+        &shared.ui_zoom_base_font_size,
+    );
+    apply_page_appearance(cx);
+    sync_appearance_menus(cx);
+    cx.refresh_windows();
+}
+
+/// Lets a menu finish its own dismissal before its projection changes.
+fn sync_appearance_menus(cx: &mut App) {
     cx.defer(|cx| {
         for story in document_window_stories(cx) {
             story.update(cx, |story, cx| story.sync_native_application_menu(cx));
         }
     });
-    cx.refresh_windows();
 }
 
-/// Gives every document window the paper its setting resolves to now (for
-/// Match System, from the system's appearance).
+/// Gives every document window the paper its settings resolve to now (Match
+/// App follows the app theme, which Match System takes from the system).
 fn apply_page_appearance(cx: &mut App) {
-    let paper = PageAppearancePreference::current(cx).resolve(
-        butter_paper::system_theme::is_dark_appearance(cx.window_appearance()),
-    );
+    let system = cx.window_appearance();
     for entry in document_window_entries(cx) {
-        if let Some(workspace) = entry.workspace.upgrade() {
-            workspace.update(cx, |workspace, cx| {
-                workspace.set_paper_appearance(paper, cx)
-            });
-        }
+        butter_paper::system_theme::apply_paper_for_system(&entry.workspace, system, cx);
     }
 }
 
@@ -3071,27 +3105,9 @@ fn build_document_window(
             manager
         })
     });
-    // Dark pages: this window's pages follow the setting, and Match System
-    // follows the system's appearance as it changes.
-    {
-        let paper = PageAppearancePreference::current(cx).resolve(
-            butter_paper::system_theme::is_dark_appearance(window.appearance()),
-        );
-        document_workspace.update(cx, |workspace, cx| {
-            workspace.set_paper_appearance(paper, cx)
-        });
-        let workspace = document_workspace.downgrade();
-        window
-            .observe_window_appearance(move |window, cx| {
-                let paper = PageAppearancePreference::current(cx).resolve(
-                    butter_paper::system_theme::is_dark_appearance(window.appearance()),
-                );
-                let _ = workspace.update(cx, |workspace, cx| {
-                    workspace.set_paper_appearance(paper, cx)
-                });
-            })
-            .detach();
-    }
+    // Dark pages: this window's pages follow the setting, and Match App
+    // follows the app theme as the system's appearance changes.
+    butter_paper::system_theme::follow_window_paper(document_workspace.downgrade(), window, cx);
     let story = cx.new(|cx| {
         ComponentStory::new(
             document_workspace.clone(),
@@ -4249,8 +4265,9 @@ mod review_driver {
                         pause(cx, 800).await;
                     }
                     "appearance" => {
-                        // appearance light|dark: every window's theme, as the
-                        // system's would set it.
+                        // appearance light|dark: every window's theme and
+                        // pages, as the system's switch would set them. A
+                        // forced App Appearance keeps its theme.
                         let appearance = if words[1] == "dark" {
                             gpui::WindowAppearance::Dark
                         } else {
@@ -4263,16 +4280,11 @@ mod review_driver {
                                         appearance, window, cx,
                                     );
                                 });
-                                // Match System follows it, as the window's
-                                // appearance observer does for the system.
-                                let paper = PageAppearancePreference::current(cx).resolve(
-                                    butter_paper::system_theme::is_dark_appearance(appearance),
+                                butter_paper::system_theme::apply_paper_for_system(
+                                    &entry.workspace,
+                                    appearance,
+                                    cx,
                                 );
-                                if let Some(workspace) = entry.workspace.upgrade() {
-                                    workspace.update(cx, |workspace, cx| {
-                                        workspace.set_paper_appearance(paper, cx)
-                                    });
-                                }
                             }
                         });
                         // The Settings window follows the system too.
@@ -4289,15 +4301,26 @@ mod review_driver {
                         });
                         pause(cx, 500).await;
                     }
-                    "page-appearance" => {
-                        // page-appearance light|dark|match: View ▸ Page
+                    "app-appearance" => {
+                        // app-appearance light|dark|match: View ▸ App
                         // Appearance, as the menu item sends it.
                         match words[1] {
-                            "dark" => cx.update(|cx| cx.dispatch_action(&SetPageAppearanceDark)),
-                            "match" => {
-                                cx.update(|cx| cx.dispatch_action(&SetPageAppearanceMatchSystem))
+                            "light" => cx.update(|cx| cx.dispatch_action(&SetAppAppearanceLight)),
+                            "dark" => cx.update(|cx| cx.dispatch_action(&SetAppAppearanceDark)),
+                            _ => {
+                                cx.update(|cx| cx.dispatch_action(&SetAppAppearanceMatchSystem))
                             }
-                            _ => cx.update(|cx| cx.dispatch_action(&SetPageAppearanceLight)),
+                        }
+                        pause(cx, 800).await;
+                    }
+                    "page-appearance" => {
+                        // page-appearance original|dark|match: View ▸ Page
+                        // Appearance, as the menu item sends it (`dark` is
+                        // Force Dark, `match` is Match App).
+                        match words[1] {
+                            "dark" => cx.update(|cx| cx.dispatch_action(&SetPageAppearanceForceDark)),
+                            "match" => cx.update(|cx| cx.dispatch_action(&SetPageAppearanceMatchApp)),
+                            _ => cx.update(|cx| cx.dispatch_action(&SetPageAppearanceOriginal)),
                         }
                         pause(cx, 800).await;
                     }
@@ -4341,12 +4364,12 @@ mod review_driver {
                         }
                         pause(cx, 300).await;
                     }
-                    "view-settings" => {
-                        // Settings ▸ View.
+                    "appearance-settings" => {
+                        // Settings ▸ Appearance.
                         cx.update(|cx| {
                             if let Some(window) = cx.windows().first().copied() {
                                 let _ = window.update(cx, |_, window, cx| {
-                                    butter_paper::application_settings::open_view_settings(
+                                    butter_paper::application_settings::open_appearance_settings(
                                         window, cx,
                                     )
                                 });

@@ -94,11 +94,24 @@ changes it; history is in git.
 
 ## Interface
 
-- Dark pages (decided 2026-11-25 by the owner): a view setting draws pages
-  dark and never changes the document. View ▸ Page Appearance and Settings ▸
-  View choose Light (default), Dark or Match System. The setting is global
-  and kept across launches. There is no toolbar button. Ctrl+Shift+D
-  (Cmd+Shift+D on macOS) sets Light or Dark. The worker maps ink and paper
+- App Appearance (decided 2026-11-26 by the owner): a setting for the app's
+  own theme, apart from Page Appearance. View ▸ App Appearance and Settings ▸
+  Appearance ▸ App choose Light, Dark or Match System (default). Light and
+  Dark force the theme in every window and ignore the system. Match System
+  follows the system as it changes. The setting is global and kept across
+  launches. It has no shortcut and no toolbar button. On macOS, Light and
+  Dark also set the application's native appearance, so window frames,
+  menus and native panels match; Match System clears it.
+- Dark pages (decided 2026-11-25 by the owner, changed 2026-11-26): a view
+  setting draws pages dark and never changes the document. View ▸ Page
+  Appearance and Settings ▸ Appearance ▸ Pages choose Original (default,
+  the PDF as it is), Force Dark (always dark) or Match App (dark while the
+  app theme is dark, original while it is light). Match App follows the
+  effective App Appearance, so with App Appearance on Match System one
+  system switch changes the app and the pages. Profiles from 0.6.0 stored
+  `light`, `dark` and `match_system`: they load as Original, Force Dark and
+  Match App. The setting is global and kept across launches. There is no
+  toolbar button and no shortcut. The worker maps ink and paper
   after it renders (paper unblend, then a lift of the ink in OKLab that
   keeps hue). Pictures stay in their real colours: images that are not
   stencil masks, shadings and Stamp annotations. A full-page scan stays real

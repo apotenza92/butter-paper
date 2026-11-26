@@ -409,12 +409,6 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         KeyBinding::new("ctrl-s", Save, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("cmd-shift-s", SaveAs, Some(DOCUMENT_WORKSPACE_CONTEXT)),
         KeyBinding::new("ctrl-shift-s", SaveAs, Some(DOCUMENT_WORKSPACE_CONTEXT)),
-        // Dark pages on or off. Typed letters reach a focused text field.
-        KeyBinding::new(
-            crate::application_shell::toggle_page_appearance_shortcut(cfg!(target_os = "macos")),
-            crate::application_shell::TogglePageAppearance,
-            Some(DOCUMENT_TOOL_SHORTCUT_CONTEXT),
-        ),
         // Find. The stock text field binds the same keys to its own search,
         // which a field of ours does not use: ours is bound over it.
         KeyBinding::new(

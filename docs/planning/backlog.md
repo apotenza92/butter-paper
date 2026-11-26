@@ -10,9 +10,10 @@ alone do not establish these behaviours.
 - Physical trackpad pinch/scroll delivery on Windows and Linux. The X11
   GPUI backend reports both trackpads and mouse wheels as line deltas, so
   separating their preferences there needs device-source support in the fork.
-- Dark pages: the page edge ring on Windows and macOS, and Match System
-  when the Mac changes to Dark appearance. The menu, the shortcut and
-  highlights are verified on both.
+- App Appearance and Page Appearance on Windows and macOS: both View
+  submenus, Settings ▸ Appearance, Match App, and on macOS the native
+  window frames and menus under a forced App Appearance. Dark pages'
+  menu and highlights are verified on both; the page edge ring is not.
 - Find in Documents after a click on the search panel's Visual mode
   button: in the test harness the shortcut did nothing until the page got
   focus. Check whether the real app has the same dead shortcut.

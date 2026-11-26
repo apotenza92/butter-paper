@@ -264,19 +264,26 @@ key 0 escape
 wait 600
 expect-box 0 none
 
-# Dark pages: the shortcut (Ctrl+Shift+D, Cmd+Shift+D on macOS) turns the
-# pages dark and the same keys turn them back. View ▸ Page Appearance sends
-# the same actions as `page-appearance`; a menu cannot be driven by name.
+# Page Appearance has no shortcut: Ctrl+Shift+D (Cmd+Shift+D on macOS) leaves
+# the pages as they are. View ▸ Page Appearance sends the same actions as
+# `page-appearance`; a menu cannot be driven by name. Match App follows the
+# app theme, which View ▸ App Appearance (`app-appearance`) sets.
 os-click-id 0 document-status-bar
 expect-paper 0 real
-key 0 secondary-shift-d
-expect-paper 0 dark
-shot dark-pages
 key 0 secondary-shift-d
 expect-paper 0 real
 page-appearance dark
 expect-paper 0 dark
-page-appearance light
+shot dark-pages
+page-appearance original
+expect-paper 0 real
+page-appearance match
+app-appearance dark
+expect-paper 0 dark
+app-appearance light
+expect-paper 0 real
+app-appearance match
+page-appearance original
 expect-paper 0 real
 
 # A PDF dropped on the page opens as a new tab in the window it is dropped

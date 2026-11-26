@@ -254,67 +254,48 @@ fn a_paper_switch_redraws_the_view_with_the_new_paper(cx: &mut TestAppContext) {
     );
 }
 
-/// Step 3: Cmd+Shift+D on macOS and Ctrl+Shift+D on Windows and Linux are
-/// bound to the toggle, once, and nothing else uses those keys.
+/// Neither App Appearance nor Page Appearance has a shortcut: the keys that
+/// once toggled the pages (Cmd+Shift+D on macOS, Ctrl+Shift+D elsewhere) are
+/// bound to nothing.
 #[gpui::test]
-fn the_page_appearance_shortcut_is_bound_once_and_reaches_its_action(cx: &mut TestAppContext) {
-    use butter_paper::application_shell::{
-        TogglePageAppearance, init_application_shell_actions, toggle_page_appearance_shortcut,
-    };
+fn the_appearance_settings_have_no_shortcut(cx: &mut TestAppContext) {
+    use butter_paper::application_shell::init_application_shell_actions;
     cx.update(|cx| {
         gpui_component::init(cx);
         cx.set_reduce_motion(true);
         init_application_shell_actions(cx);
         init_document_workspace_actions(cx);
     });
-    let shortcut = toggle_page_appearance_shortcut(cfg!(target_os = "macos"));
     cx.update(|cx| {
-        let expected = gpui::KeyBinding::new(shortcut, TogglePageAppearance, None);
         let keymap = cx.key_bindings();
         let keymap = keymap.borrow();
-        let same_keys = keymap
-            .bindings()
-            .filter(|binding| binding.keystrokes() == expected.keystrokes())
-            .collect::<Vec<_>>();
-        assert_eq!(same_keys.len(), 1, "{shortcut} is used by one binding only");
-        assert!(same_keys[0].action().as_any().is::<TogglePageAppearance>());
-        assert_eq!(
-            keymap.bindings_for_action(&TogglePageAppearance).count(),
-            1,
-            "bound for this platform only"
-        );
-    });
-
-    let toggled = std::rc::Rc::new(std::cell::Cell::new(0));
-    cx.update({
-        let toggled = toggled.clone();
-        move |cx| {
-            cx.on_action(move |_: &TogglePageAppearance, _| toggled.set(toggled.get() + 1));
+        for keys in ["cmd-shift-d", "ctrl-shift-d"] {
+            let unused = gpui::KeyBinding::new(keys, gpui::NoAction, None);
+            assert!(
+                keymap
+                    .bindings()
+                    .all(|binding| binding.keystrokes() != unused.keystrokes()),
+                "{keys} is bound to nothing"
+            );
+        }
+        use butter_paper::application_shell::*;
+        let actions: [&dyn gpui::Action; 6] = [
+            &SetAppAppearanceLight,
+            &SetAppAppearanceDark,
+            &SetAppAppearanceMatchSystem,
+            &SetPageAppearanceOriginal,
+            &SetPageAppearanceForceDark,
+            &SetPageAppearanceMatchApp,
+        ];
+        for action in actions {
+            assert_eq!(
+                keymap.bindings_for_action(action).count(),
+                0,
+                "{}",
+                action.name()
+            );
         }
     });
-    let calls = Arc::new(Mutex::new(Calls::default()));
-    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
-    let (_, cx) = cx.add_window_view({
-        let workspace_slot = workspace_slot.clone();
-        move |window, cx| {
-            let workspace =
-                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(PaperOpener(calls)), cx));
-            workspace_slot.replace(Some(workspace.clone()));
-            Root::new(workspace, window, cx)
-        }
-    });
-    let workspace = workspace_slot.borrow_mut().take().unwrap();
-    workspace.update(cx, |workspace, cx| {
-        workspace.open_path("dark-pages.pdf".into(), cx)
-    });
-    cx.run_until_parked();
-    cx.update(|window, cx| {
-        let focus = workspace.read(cx).focus_handle();
-        window.focus(&focus, cx);
-        window.draw(cx).clear(cx);
-    });
-    cx.simulate_keystrokes(shortcut);
-    assert_eq!(toggled.get(), 1, "the shortcut reaches the document window");
 }
 
 /// A page that is mostly picture (a scan) shows the status line on dark
