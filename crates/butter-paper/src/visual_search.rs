@@ -80,8 +80,10 @@ const MIN_VARIANT_SIDE_PX: usize = 6;
 const MAX_VARIANT_SIDE_PX: usize = 2 * MAX_TEMPLATE_SIDE_PX;
 /// A coarse candidate needs `floor - COARSE_MARGIN`, where the floor is the
 /// lower of `min_score` and [`SCORE_FLOOR`]. The neighbouring half-step
-/// sizes are tried from the same score.
-const COARSE_MARGIN: f32 = 0.10;
+/// sizes are tried from the same score. A 6 px coarse template is weak: a
+/// copy at 82 % size that scores 0.89 at full resolution scored 0.48 here
+/// at one sub-pixel position, so the margin is 0.15, not 0.10.
+const COARSE_MARGIN: f32 = 0.15;
 /// At each finer pyramid level a candidate needs `floor - REFINE_MARGIN`.
 /// Finer levels have less blur, but a true hit still scores at least its
 /// full-resolution score there; this drops most false candidates early.

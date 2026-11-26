@@ -463,3 +463,181 @@ fn measure_a_20_page_a1_set() {
     assert!(shown >= expected * 9 / 10, "{shown} of {expected}");
     assert_eq!(found.results.progress(), (20, 20));
 }
+
+/// A red valve of radius `r` centred at (x, y), PDF y up: a circle, and a
+/// closed bow tie that gives two vertical bars and a cross. The bow tie
+/// corners are cut to whole points, as the macOS release check drew them.
+fn valve(x: f64, y: f64, r: f64) -> String {
+    let k = 0.5523 * r;
+    let corner = |dx: f64, dy: f64| format!("{} {}", (x + dx).trunc(), (y + dy).trunc());
+    let a = 0.7 * r;
+    format!(
+        "q 1 0 0 RG 2 w {} {y} m \
+         {:.1} {:.1} {:.1} {:.1} {x} {} c {:.1} {:.1} {:.1} {:.1} {} {y} c \
+         {:.1} {:.1} {:.1} {:.1} {x} {} c {:.1} {:.1} {:.1} {:.1} {} {y} c S \
+         {} m {} l {} l {} l h S Q\n",
+        x + r,
+        x + r,
+        y + k,
+        x + k,
+        y + r,
+        y + r,
+        x - k,
+        y + r,
+        x - r,
+        y + k,
+        x - r,
+        x - r,
+        y - k,
+        x - k,
+        y - r,
+        y - r,
+        x + k,
+        y - r,
+        x + r,
+        y - k,
+        x + r,
+        corner(-a, a),
+        corner(a, -a),
+        corner(a, a),
+        corner(-a, -a),
+    )
+}
+
+/// Helvetica text with its baseline at (x, y).
+fn text(x: f64, y: f64, size: f64, words: &str) -> String {
+    format!("BT /F1 {size} Tf 0 g {x} {y} Td ({words}) Tj ET\n")
+}
+
+fn letter_pdf(pages: &[String]) -> Vec<u8> {
+    let mut document = Document::with_version("1.7");
+    let pages_id = document.new_object_id();
+    let font = document.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let mut kids = Vec::new();
+    for content in pages {
+        let content_id =
+            document.add_object(Stream::new(dictionary! {}, content.clone().into_bytes()));
+        let page_id = document.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Contents" => content_id,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        });
+        kids.push(page_id.into());
+    }
+    let count = kids.len() as i64;
+    document.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => kids, "Count" => count }),
+    );
+    let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+    document.trailer.set("Root", catalog);
+    let mut bytes = Vec::new();
+    document.save_to(&mut bytes).unwrap();
+    bytes
+}
+
+/// The macOS release check drew its source valve with radius 22 pt and the
+/// other valves with 18 pt (82 %, under the 85 % size floor). Each copy
+/// matches at about 90 % at full resolution, but at one sub-point position
+/// the 6 px coarse template scored 0.48 and the copy above a caption was
+/// lost. Every copy must be found, at each phase of the coarse grid.
+#[test]
+#[ignore = "requires the checksum-pinned development PDFium library"]
+fn a_valve_a_little_under_the_size_range_is_found_at_every_phase() {
+    let env = Env::new("valves");
+    let mut first = text(
+        72.,
+        545.,
+        11.,
+        "Colour bars: red orange yellow green blue purple white black",
+    );
+    for (index, colour) in [
+        "1 0 0",
+        "1 0.63 0",
+        "1 1 0",
+        "0 0.67 0",
+        "0 0.47 1",
+        "0.47 0 0.78",
+        "1 1 1",
+        "0 0 0",
+    ]
+    .iter()
+    .enumerate()
+    {
+        first.push_str(&format!(
+            "{colour} rg {} 420 20 120 re f\n",
+            72 + 20 * index
+        ));
+    }
+    let mut copies = vec![(380., 520.), (470., 470.), (380., 420.)];
+    for &(x, y) in &copies {
+        first.push_str(&valve(x, y, 18.));
+    }
+    first.push_str(&text(330., 380., 11., "Three valve symbols on this page"));
+    let source = valve(150., 420., 22.) + &valve(300., 330., 18.);
+    copies.push((300., 330.));
+    // One copy at each whole-point offset over 8 pt, a full period of the
+    // coarse grid at 0.5 px/pt.
+    let mut grid = String::new();
+    let mut grid_copies = Vec::new();
+    for index in 0..64 {
+        let (column, row) = (index % 8, index / 8);
+        let (x, y) = (
+            60. + 70. * f64::from(column) + f64::from(column),
+            740. - 70. * f64::from(row) + f64::from(row),
+        );
+        grid.push_str(&valve(x, y, 18.));
+        grid_copies.push((x, y));
+    }
+    let bytes = letter_pdf(&[first, source, grid]);
+    let opened = env.open(1, "valves.pdf", &bytes);
+    // A 56 pt box round the large valve, as the release check drew it.
+    let box_copy = Copy {
+        x: 150.,
+        y: 420.,
+        turn: 0,
+        size: 46. / 24.,
+        mirrored: false,
+    };
+    let found = search(&opened, 1, box_copy, &VisualSearchOptions::default());
+    let mut report = Vec::new();
+    for (page, expected) in [
+        (0u32, &copies[..3]),
+        (1, &copies[3..]),
+        (2, &grid_copies[..]),
+    ] {
+        let shown: Vec<_> = found
+            .results
+            .page_hits(1, page)
+            .iter()
+            .filter(|hit| hit.hit.score >= DEFAULT_SIMILARITY && !hit.hit.source)
+            .collect();
+        for &(x, y) in expected {
+            let near: Vec<_> = shown
+                .iter()
+                .filter(|hit| {
+                    let (hx, hy) = centre(hit.hit.pdf_rect.unwrap());
+                    (hx - x).abs() < 3. && (hy - y).abs() < 3.
+                })
+                .collect();
+            if near.len() != 1 {
+                report.push(format!("page {page} ({x}, {y}): {} hits", near.len()));
+            }
+        }
+        // Text, colour bars and the large valve give no other hits.
+        if shown.len() != expected.len() {
+            report.push(format!(
+                "page {page}: {} hits for {} valves",
+                shown.len(),
+                expected.len()
+            ));
+        }
+    }
+    assert!(report.is_empty(), "{report:#?}");
+}
