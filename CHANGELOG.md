@@ -4,6 +4,38 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.6.2]
+
+### Cloud+
+
+- A double-click on Cloud+ text edits the text in place. It no longer
+  opens the properties.
+- The leader has handles on its tip and its knee, with no rotation knob.
+- The landing where the leader meets the text is always level. Its
+  default length is 19.8 pt. Drag the knee to change it, or set Landing
+  in the Cloud+ properties. Landing in the Cloud+ tool defaults sets it
+  for new Cloud+ markups.
+- The leader no longer crosses the cloud, the text box or itself, and
+  new text goes above and to the right of the cloud.
+
+### Properties
+
+- Measure is a checkbox in the Measure section heading on Dimension,
+  Polyline and Polygon. While it is off, the measurement fields show
+  disabled. Checking it enables them and opens the section.
+- Properties panels keep the same rows when a setting changes. A
+  setting that depends on another is indented below it and is disabled
+  while the other is off.
+
+### Search
+
+- The find bar and the search panel use the same control sizes and
+  layout as the other panels. The search panel has a close button.
+- Search looks in this document by default. Look in lists This document
+  first, then All open documents.
+- Visual search shows the picture on the page colour, a number field for
+  Similarity, and its options as switch rows.
+
 ## [0.6.1]
 
 ### Appearance
