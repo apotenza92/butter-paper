@@ -1349,7 +1349,9 @@ with it.
   scroll bars float over the pages.
 - Fit Width centres the current page across the view and Fit Page centres the
   whole page, each filling the view to a tenth of a percent; a window resize
-  refits and reframes, staying on the pages. A fit is resolved when it
+  refits and reframes, staying on the pages. A Fit Width refit keeps the
+  page point at the top of the view in place; a Fit Page refit keeps the
+  point at the view centre. A fit is resolved when it
   is chosen or the window resizes, not refitted to each page scrolled past
   (as in Revu, where a wider page runs past the view's sides).
 - The current page is the one level with the view centre. In Continuous

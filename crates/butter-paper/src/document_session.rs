@@ -679,12 +679,24 @@ impl NativeDocumentSession {
     /// The page point at the viewport centre, to hold there across a zoom or
     /// mode change.
     pub(crate) fn viewport_centre_anchor(&self) -> Option<crate::zoom_anchor::ZoomAnchor> {
+        let (_, height) = self.viewport_size?;
+        self.viewport_anchor_at_height(height / 2.)
+    }
+
+    /// The page point at the middle of the viewport's top edge. A Fit Width
+    /// refit holds it there, so the part of the page at the top of the view
+    /// stays in view when the zoom grows.
+    pub(crate) fn viewport_top_anchor(&self) -> Option<crate::zoom_anchor::ZoomAnchor> {
+        self.viewport_anchor_at_height(0.)
+    }
+
+    fn viewport_anchor_at_height(&self, y: f32) -> Option<crate::zoom_anchor::ZoomAnchor> {
         let plan = self.viewer.plan_snapshot()?;
-        let (width, height) = self.viewport_size?;
+        let (width, _) = self.viewport_size?;
         crate::zoom_anchor::zoom_anchor_at(
             &plan.page_layouts,
             self.viewer.logical_scroll(),
-            (width / 2., height / 2.),
+            (width / 2., y),
         )
     }
 

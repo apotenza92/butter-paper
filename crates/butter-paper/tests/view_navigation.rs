@@ -678,6 +678,33 @@ fn fit_width_refit_on_a_narrower_window_stays_on_the_first_page(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn fit_width_refit_on_a_wider_window_keeps_the_top_of_the_page_in_view(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(FitWidth);
+    let top = h.frame();
+    let page_top = |frame: &Frame| f32::from(frame.page(0).unwrap().top() - frame.viewport.top());
+    assert!(
+        page_top(&top) >= -TOLERANCE,
+        "starts with the first page's top in view: {top:?}"
+    );
+    // A side panel closing, or the window widened in steps: each refit zooms
+    // in, and the text at the top of the page must stay in view.
+    for width in [1350., 1450., 1600., 1900.] {
+        h.cx.simulate_resize(size(px(width), px(800.)));
+        let frame = h.frame();
+        assert_eq!(frame.preset, ViewerZoomPreset::FitWidth);
+        assert!(
+            frame.zoom > top.zoom,
+            "the wider window zooms in: {frame:?}"
+        );
+        assert!(
+            page_top(&frame) >= -TOLERANCE,
+            "Fit Width refit at {width} scrolled the page's top out of view: {frame:?}"
+        );
+    }
+}
+
+#[gpui::test]
 fn fit_width_scrolling_across_mixed_page_widths_does_not_jump(cx: &mut TestAppContext) {
     let mut h = setup(cx, &MIXED_PAGES);
     h.action(FitWidth);

@@ -13590,7 +13590,13 @@ impl DocumentWorkspace {
                         ViewerZoomPreset::FitPage => Some(ViewerFitPreset::Page),
                     };
                     if resized && let Some(preset) = preset {
-                        session.pending_zoom_anchor = session.viewport_centre_anchor();
+                        // Fit Width holds the top of the view: about the
+                        // centre, a wider window would push the top of the
+                        // page out of view. Fit Page frames the page again.
+                        session.pending_zoom_anchor = match preset {
+                            ViewerFitPreset::Width => session.viewport_top_anchor(),
+                            ViewerFitPreset::Page => session.viewport_centre_anchor(),
+                        };
                         session.pending_page_frame = Some((session.current_page, preset));
                     }
                     session.viewport_size = next;
