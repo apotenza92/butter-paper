@@ -26,7 +26,6 @@ use crate::document_workspace::DocumentId;
 
 pub const VERTEX_PATH_PROPERTY_INSPECTOR_ID: &str = "vertex-path-property-inspector";
 pub const VERTEX_PATH_INSPECTOR_LOCKED_ID: &str = "vertex-path-property-inspector-locked";
-pub const VERTEX_PATH_INSPECTOR_MEASURE_ID: &str = "vertex-path-property-inspector-measure";
 pub const VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID: &str =
     "vertex-path-property-inspector-stroke-color";
 pub const VERTEX_PATH_INSPECTOR_WIDTH_ID: &str = "vertex-path-property-inspector-width";
@@ -97,16 +96,8 @@ pub struct VertexPathPropertySnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum VertexPathPropertyPatch {
     Locked(bool),
-    /// Measuring on (a Polylength or Area) or off (a Polyline or Polygon).
-    Measure(bool),
-    StrokeColorAndOpacity {
-        color: String,
-        opacity: f64,
-    },
-    FillColorAndOpacity {
-        color: String,
-        opacity: f64,
-    },
+    StrokeColorAndOpacity { color: String, opacity: f64 },
+    FillColorAndOpacity { color: String, opacity: f64 },
     StrokeColor(String),
     StrokeWidthPt(f64),
     Opacity(f64),
@@ -398,11 +389,7 @@ impl Render for VertexPathPropertyInspector {
         };
         let disabled = snapshot.mutation_disabled || snapshot.locked;
         let weak = cx.entity().downgrade();
-        let content_only = self.embedded
-            && matches!(
-                snapshot.kind,
-                PathPropertyKind::Polylength | PathPropertyKind::Area
-            );
+        let content_only = self.embedded;
         let mut lock = Some({
             let weak = weak.clone();
             property_lock_toggle(
@@ -416,31 +403,7 @@ impl Render for VertexPathPropertyInspector {
                 },
             )
         });
-        let measure = {
-            let weak = weak.clone();
-            property_row(
-                "Measure",
-                div()
-                    .id(VERTEX_PATH_INSPECTOR_MEASURE_ID)
-                    .debug_selector(|| VERTEX_PATH_INSPECTOR_MEASURE_ID.into())
-                    .child(
-                        Switch::new("vertex-path-property-inspector-measure-switch")
-                            .checked(snapshot.kind.measures())
-                            .disabled(disabled)
-                            .tooltip(if snapshot.kind.supports_fill() {
-                                "Measure its area with the page scale (Area)"
-                            } else {
-                                "Measure its total length with the page scale (Polylength)"
-                            })
-                            .on_click(move |measure, _, cx| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.emit_patch(VertexPathPropertyPatch::Measure(*measure), cx)
-                                });
-                            }),
-                    ),
-            )
-        };
-        let mut top = PropertyGroup::new().row(measure);
+        let mut top = PropertyGroup::new();
         if content_only && let Some(lock) = lock.take() {
             // No header here, so the lock sits with the other rows.
             top = top.row(property_row("Locked", lock));
@@ -530,7 +493,11 @@ impl Render for VertexPathPropertyInspector {
             panel = panel.header_lock(lock);
         }
         panel
-            .child(property_body().child(top).child(appearance))
+            .child(
+                property_body()
+                    .children((!top.is_empty()).then_some(top))
+                    .child(appearance),
+            )
             .into_any_element()
     }
 }
@@ -538,7 +505,6 @@ impl Render for VertexPathPropertyInspector {
 fn patch_matches(patch: &VertexPathPropertyPatch, snapshot: &VertexPathPropertySnapshot) -> bool {
     match patch {
         VertexPathPropertyPatch::Locked(v) => snapshot.locked == *v,
-        VertexPathPropertyPatch::Measure(v) => snapshot.kind.measures() == *v,
         VertexPathPropertyPatch::StrokeColorAndOpacity { color, opacity } => {
             snapshot.appearance.stroke_color() == color && snapshot.appearance.opacity() == *opacity
         }

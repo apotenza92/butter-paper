@@ -4807,6 +4807,17 @@ impl AnnotationAdapter {
         document.set_measure(ids, measure, &calibrations, &path_text)
     }
 
+    /// The text style a measured path's caption has, from its tool's
+    /// properties. The Measure section of a Polyline or Polygon shows it
+    /// disabled, before the path measures.
+    pub fn measurement_text_style(&self, kind: MeasurementPathKind) -> Option<TextBoxStyle> {
+        let tool = match kind {
+            MeasurementPathKind::Polylength => AnnotationTool::Polylength,
+            MeasurementPathKind::Area => AnnotationTool::Area,
+        };
+        caption_tool_style(&self.tool_properties(tool)).ok()
+    }
+
     pub fn length_calibration(&self) -> Option<&LengthCalibration> {
         self.page_length_calibration(0)
     }

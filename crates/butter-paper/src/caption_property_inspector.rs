@@ -791,19 +791,22 @@ impl Render for CaptionPropertyInspector {
         // A Cloud+ shows its fill opacity with no fill too, disabled, so the
         // panel keeps its shape.
         if snapshot.values.fill().is_some() {
-            rows = rows.row(property_slider_row(
-                "Fill opacity",
-                PropertySliderInput::new(
+            rows = rows.row(
+                property_slider_row(
                     "Fill opacity",
-                    &self.fill_opacity,
-                    &self.fill_opacity_input,
+                    PropertySliderInput::new(
+                        "Fill opacity",
+                        &self.fill_opacity,
+                        &self.fill_opacity_input,
+                    )
+                    .row_id(CAPTION_INSPECTOR_FILL_OPACITY_ID)
+                    .slider_id(CAPTION_INSPECTOR_FILL_OPACITY_SLIDER_ID)
+                    .input_id(CAPTION_INSPECTOR_FILL_OPACITY_INPUT_ID)
+                    .suffix("%")
+                    .disabled(disabled || !fill_on),
                 )
-                .row_id(CAPTION_INSPECTOR_FILL_OPACITY_ID)
-                .slider_id(CAPTION_INSPECTOR_FILL_OPACITY_SLIDER_ID)
-                .input_id(CAPTION_INSPECTOR_FILL_OPACITY_INPUT_ID)
-                .suffix("%")
-                .disabled(disabled || !fill_on),
-            ));
+                .dependent(),
+            );
         }
         if snapshot.values.intensity().is_some() {
             rows = rows.row(property_slider_row(

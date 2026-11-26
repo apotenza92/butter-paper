@@ -958,17 +958,20 @@ impl Render for RectanglePropertyInspector {
                     ),
             ))
             // Shown with no fill too, disabled, so the panel keeps its shape.
-            .row(property_slider_row(
-                "Fill opacity",
-                PropertySliderInput::new(
+            .row(
+                property_slider_row(
                     "Fill opacity",
-                    &self.fill_opacity,
-                    &self.fill_opacity_input,
+                    PropertySliderInput::new(
+                        "Fill opacity",
+                        &self.fill_opacity,
+                        &self.fill_opacity_input,
+                    )
+                    .row_id(ids.fill_opacity)
+                    .suffix("%")
+                    .disabled(property_disabled || !fill_enabled),
                 )
-                .row_id(ids.fill_opacity)
-                .suffix("%")
-                .disabled(property_disabled || !fill_enabled),
-            ));
+                .dependent(),
+            );
 
         let layout = PropertyGroup::new()
             .row(property_number_pair_row(

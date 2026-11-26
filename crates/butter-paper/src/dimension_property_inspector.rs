@@ -22,7 +22,6 @@ use gpui_component::{
     color_picker::ColorPickerState,
     input::{Input, InputEvent, InputState},
     slider::{SliderEvent, SliderState},
-    switch::Switch,
     try_parse_color,
 };
 
@@ -30,7 +29,6 @@ use crate::document_workspace::DocumentId;
 
 pub const DIMENSION_PROPERTY_INSPECTOR_ID: &str = "dimension-property-inspector";
 pub const DIMENSION_INSPECTOR_LOCKED_ID: &str = "dimension-property-inspector-locked";
-pub const DIMENSION_INSPECTOR_MEASURE_ID: &str = "dimension-property-inspector-measure";
 pub const DIMENSION_INSPECTOR_OFFSET_ID: &str = "dimension-property-offset";
 pub const DIMENSION_INSPECTOR_WIDTH_ID: &str = "dimension-property-stroke-width";
 pub const DIMENSION_INSPECTOR_FONT_SIZE_ID: &str = "dimension-property-font-size";
@@ -50,16 +48,19 @@ pub struct DimensionPropertySnapshot {
     pub annotation_id: MarkupId,
     pub expected_revision: u64,
     pub offset_pt: f64,
+    /// Whether the markup has an offset of its own: a Dimension does, a
+    /// Length does not. Its Offset row shows either way, disabled without.
     pub show_offset: bool,
-    /// Only the label's text: a measured path's own panel above it already
-    /// shows its lock, line and opacity.
+    /// Only the label's text: a path's own panel above it already shows its
+    /// lock, line and opacity. A Polyline, Polygon, Polylength or Area.
     pub text_only: bool,
     pub appearance: DimensionAppearance,
     /// A Dimension's caption was moved from where it usually sits.
     pub caption_moved: bool,
-    /// A Dimension's (off) or Length's (on) Measure switch; `None` for a
-    /// measured path's caption.
-    pub measure: Option<bool>,
+    /// The markup measures (a Length, Polylength or Area). A Length's text is
+    /// its measurement, so its Text field shows it disabled, and a path's
+    /// label (Font and Reset text position) applies only while it measures.
+    pub measuring: bool,
     pub locked: bool,
     pub mutation_disabled: bool,
 }
@@ -67,8 +68,6 @@ pub struct DimensionPropertySnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DimensionPropertyPatch {
     Locked(bool),
-    /// Measuring on (a Length) or off (a Dimension).
-    Measure(bool),
     OffsetPt(f64),
     Appearance(DimensionAppearance),
     ResetCaptionPosition,
@@ -276,7 +275,7 @@ impl DimensionPropertyInspector {
     }
     /// Shows the selected Dimension's text in the Text field. The workspace
     /// calls this after `sync`, and again whenever the text changes; a
-    /// measured Length shows no Text field.
+    /// Length's Text field shows its measurement, disabled.
     pub fn sync_content(&mut self, content: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.content_baseline.as_deref() == Some(content) {
             return;
@@ -300,6 +299,7 @@ impl DimensionPropertyInspector {
         if self.syncing
             || snapshot.mutation_disabled
             || snapshot.locked
+            || snapshot.measuring
             || self
                 .content_baseline
                 .as_deref()
@@ -443,6 +443,9 @@ impl Render for DimensionPropertyInspector {
                 .into_any_element();
         };
         let disabled = snapshot.mutation_disabled || snapshot.locked;
+        // A path's label exists only while it measures: shown the same
+        // before, disabled, so measuring adds no row.
+        let label_disabled = disabled || (snapshot.text_only && !snapshot.measuring);
         let font = property_row(
             "Font",
             property_color_and_size(
@@ -451,19 +454,35 @@ impl Render for DimensionPropertyInspector {
                     "Text colour",
                     &self.text_color,
                 )
-                .disabled(disabled),
+                .disabled(label_disabled),
                 PropertyNumericInput::new(
                     DIMENSION_INSPECTOR_FONT_SIZE_ID,
                     "Font size",
                     &self.font_size,
                 )
                 .suffix("pt")
-                .disabled(disabled),
+                .disabled(label_disabled),
             ),
         );
+        let reset = {
+            let reset = cx.entity().downgrade();
+            div().child(
+                Button::new(DIMENSION_INSPECTOR_RESET_CAPTION_ID)
+                    .debug_selector(|| DIMENSION_INSPECTOR_RESET_CAPTION_ID.into())
+                    .label("Reset text position")
+                    .outline()
+                    // Enabled once the text has been moved from where it sits.
+                    .disabled(label_disabled || !snapshot.caption_moved)
+                    .on_click(move |_, _, cx| {
+                        let _ = reset.update(cx, |this, cx| {
+                            this.emit_patch(DimensionPropertyPatch::ResetCaptionPosition, cx)
+                        });
+                    }),
+            )
+        };
         if snapshot.text_only {
-            // A measured path's caption: the path's own panel above already
-            // shows its lock, line and opacity.
+            // A path's label: the path's own panel above already shows its
+            // lock, line and opacity.
             return PropertyInspectorPanel::new(
                 DIMENSION_PROPERTY_INSPECTOR_ID,
                 DIMENSION_INSPECTOR_HEADER_ID,
@@ -471,10 +490,10 @@ impl Render for DimensionPropertyInspector {
                 "Label",
             )
             .content_only(self.embedded)
-            .child(property_body().child(PropertyGroup::new().row(font)))
+            .child(property_body().child(PropertyGroup::new().row(font).row(reset)))
             .into_any_element();
         }
-        let content_only = self.embedded && !snapshot.show_offset;
+        let content_only = self.embedded;
         let mut lock = Some({
             let lock = cx.entity().downgrade();
             property_lock_toggle(
@@ -489,7 +508,8 @@ impl Render for DimensionPropertyInspector {
             )
         });
         let mut top = PropertyGroup::new();
-        if self.content_baseline.is_some() && snapshot.measure != Some(true) {
+        if self.content_baseline.is_some() {
+            // A Length's text is its measurement: shown, but not typed.
             top = top.row(property_row(
                 "Text",
                 div()
@@ -499,31 +519,7 @@ impl Render for DimensionPropertyInspector {
                     .child(
                         Input::new(&self.content)
                             .aria_label("Text")
-                            .disabled(disabled),
-                    ),
-            ));
-        }
-        if let Some(measure) = snapshot.measure {
-            let measure_switch = cx.entity().downgrade();
-            top = top.row(property_row(
-                "Measure",
-                div()
-                    .id(DIMENSION_INSPECTOR_MEASURE_ID)
-                    .debug_selector(|| DIMENSION_INSPECTOR_MEASURE_ID.into())
-                    .child(
-                        Switch::new("dimension-property-measure-switch")
-                            .checked(measure)
-                            .disabled(disabled)
-                            .tooltip(if measure {
-                                "Off, the line keeps its measured text, which you can then edit"
-                            } else {
-                                "Measure the line with the page scale (Length)"
-                            })
-                            .on_click(move |value, _, cx| {
-                                let _ = measure_switch.update(cx, |this, cx| {
-                                    this.emit_patch(DimensionPropertyPatch::Measure(*value), cx)
-                                });
-                            }),
+                            .disabled(disabled || snapshot.measuring),
                     ),
             ));
         }
@@ -546,20 +542,15 @@ impl Render for DimensionPropertyInspector {
             ),
         ));
         appearance = appearance.row(font);
-        if snapshot.show_offset {
-            appearance = appearance.row(property_row(
-                "Offset",
-                property_number(
-                    PropertyNumericInput::new(
-                        DIMENSION_INSPECTOR_OFFSET_ID,
-                        "Offset",
-                        &self.offset,
-                    )
+        // A Length has no offset of its own: its row shows, disabled.
+        appearance = appearance.row(property_row(
+            "Offset",
+            property_number(
+                PropertyNumericInput::new(DIMENSION_INSPECTOR_OFFSET_ID, "Offset", &self.offset)
                     .suffix("pt")
-                    .disabled(disabled),
-                ),
-            ));
-        }
+                    .disabled(disabled || !snapshot.show_offset),
+            ),
+        ));
         appearance = appearance.row(property_slider_row(
             "Opacity",
             PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)
@@ -568,21 +559,7 @@ impl Render for DimensionPropertyInspector {
                 .suffix("%")
                 .disabled(disabled),
         ));
-        if snapshot.show_offset && snapshot.caption_moved {
-            let reset = cx.entity().downgrade();
-            appearance = appearance.row(
-                Button::new(DIMENSION_INSPECTOR_RESET_CAPTION_ID)
-                    .debug_selector(|| DIMENSION_INSPECTOR_RESET_CAPTION_ID.into())
-                    .label("Reset text position")
-                    .outline()
-                    .disabled(disabled)
-                    .on_click(move |_, _, cx| {
-                        let _ = reset.update(cx, |this, cx| {
-                            this.emit_patch(DimensionPropertyPatch::ResetCaptionPosition, cx)
-                        });
-                    }),
-            );
-        }
+        appearance = appearance.row(reset);
         let mut body = property_body();
         if !top.is_empty() {
             body = body.child(top);
@@ -593,7 +570,7 @@ impl Render for DimensionPropertyInspector {
             DIMENSION_INSPECTOR_SCROLL_ID,
             "Dimension",
         )
-        .content_only(self.embedded && !snapshot.show_offset);
+        .content_only(content_only);
         if let Some(lock) = lock {
             panel = panel.header_lock(lock);
         }
@@ -679,7 +656,6 @@ fn rebuild_appearance(
 fn patch_matches(patch: &DimensionPropertyPatch, snapshot: &DimensionPropertySnapshot) -> bool {
     match patch {
         DimensionPropertyPatch::Locked(value) => *value == snapshot.locked,
-        DimensionPropertyPatch::Measure(value) => Some(*value) == snapshot.measure,
         DimensionPropertyPatch::OffsetPt(value) => *value == snapshot.offset_pt,
         DimensionPropertyPatch::Appearance(value) => value == &snapshot.appearance,
         DimensionPropertyPatch::ResetCaptionPosition => !snapshot.caption_moved,

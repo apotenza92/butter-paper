@@ -61,7 +61,8 @@ fn literal_colour_calls(source: &str) -> Vec<String> {
 }
 
 fn embedded_measurement_sections(appearance: &str, measurement: &str) -> bool {
-    appearance.contains(".content_only(self.embedded && !snapshot.show_offset)")
+    appearance.contains("let content_only = self.embedded;")
+        && appearance.contains(".content_only(content_only)")
         && measurement.contains(".content_only(self.embedded)")
 }
 
@@ -164,8 +165,8 @@ fn embedded_appearance_and_measurement_sections_retain_one_scroll_owner() {
         "embedded measurement sections must contribute content to the outer inspector"
     );
     let detached = appearance.replace(
-        ".content_only(self.embedded && !snapshot.show_offset)",
-        ".content_only(false)",
+        "let content_only = self.embedded;",
+        "let content_only = false;",
     );
     assert!(!embedded_measurement_sections(&detached, &measurement));
     let detached = measurement.replace(".content_only(self.embedded)", ".content_only(false)");

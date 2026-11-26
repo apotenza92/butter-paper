@@ -827,11 +827,12 @@ impl ToolDefaultsPanel {
                     ),
             ));
         }
-        // A polygon's cloud intensity applies only once it has a cloud outline.
-        if applies(ToolPropertyField::CloudIntensity)
-            && (!applies(ToolPropertyField::CloudStyle) || self.properties.cloud_style)
-        {
-            rows = rows.row(property_slider_row(
+        // A polygon's cloud intensity applies only once it has a cloud
+        // outline. The row shows either way, indented under Cloud and
+        // disabled until Cloud is on, so the panel keeps its rows.
+        if applies(ToolPropertyField::CloudIntensity) {
+            let depends_on_cloud = applies(ToolPropertyField::CloudStyle);
+            let intensity = property_slider_row(
                 "Intensity",
                 PropertySliderInput::new(
                     "Cloud intensity",
@@ -841,8 +842,13 @@ impl ToolDefaultsPanel {
                 .row_id(TOOL_DEFAULTS_CLOUD_INTENSITY_ID)
                 .slider_id(TOOL_DEFAULTS_CLOUD_INTENSITY_SLIDER_ID)
                 .input_id(TOOL_DEFAULTS_CLOUD_INTENSITY_INPUT_ID)
-                .disabled(disabled),
-            ));
+                .disabled(disabled || (depends_on_cloud && !self.properties.cloud_style)),
+            );
+            rows = rows.row(if depends_on_cloud {
+                intensity.dependent()
+            } else {
+                intensity
+            });
         }
         if applies(ToolPropertyField::LandingPt) {
             rows = rows.row(property_row(

@@ -1,14 +1,20 @@
-//! Retained presentation state for exactly one selected measurement markup.
+//! Retained presentation state for the Measure section of one selected
+//! Dimension, Polyline or Polygon, or of its measured form (a Length, a
+//! Polylength or an Area).
 //!
-//! The inspector owns disclosure and component state only. The workspace owns
-//! selection identity, page-scale authority, validation, history, and save.
+//! The section is the same for all six: its heading holds the Measure
+//! checkbox, and its fields show disabled while the markup does not measure,
+//! so turning Measure on or off adds and removes no row. The inspector owns
+//! disclosure and component state only. The workspace owns selection
+//! identity, page-scale authority, validation, history, and save.
 
 use crate::annotation_model::{
     AnnotationKind, MEASUREMENT_LENGTH_UNITS, MarkupId, PageScale, ScalePrecision,
     ScalePrecisionMode, length_unit_metres,
 };
 use crate::property_controls::{
-    PropertyGroup, PropertyInspectorPanel, property_body, property_row,
+    PropertyGroup, PropertyInspectorPanel, PropertyOptionalSection, PropertyOptionalSectionIds,
+    property_body, property_row,
 };
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -32,7 +38,10 @@ pub const MEASUREMENT_INSPECTOR_UNIT_ID: &str = "measurement-property-unit";
 pub const MEASUREMENT_INSPECTOR_PRECISION_ID: &str = "measurement-property-precision";
 pub const MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID: &str = "measurement-property-show-caption";
 pub const MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID: &str = "measurement-property-set-page-scale";
-pub const MEASUREMENT_INSPECTOR_RESET_CAPTION_ID: &str = "measurement-property-reset-caption";
+pub const MEASUREMENT_INSPECTOR_SECTION_ID: &str = "measurement-property-section";
+pub const MEASUREMENT_INSPECTOR_MEASURE_ID: &str = "measurement-property-measure";
+pub const MEASUREMENT_INSPECTOR_CHEVRON_ID: &str = "measurement-property-chevron";
+pub const MEASUREMENT_INSPECTOR_BODY_ID: &str = "measurement-property-body";
 const MEASUREMENT_INSPECTOR_HEADER_ID: &str = "measurement-property-inspector-header";
 const MEASUREMENT_INSPECTOR_SCROLL_ID: &str = "measurement-property-inspector-scroll";
 
@@ -40,27 +49,29 @@ const MEASUREMENT_INSPECTOR_SCROLL_ID: &str = "measurement-property-inspector-sc
 pub struct MeasurementPropertySnapshot {
     pub document_id: DocumentId,
     pub annotation_id: MarkupId,
+    /// A Dimension, Polyline or Polygon (not measuring) or the Length,
+    /// Polylength or Area it becomes (measuring).
     pub annotation_kind: AnnotationKind,
     pub expected_revision: u64,
     pub page_index: u32,
+    /// The measured value; empty while the markup does not measure.
     pub caption: String,
     pub page_scale: Option<PageScale>,
     pub unit: String,
     pub precision: ScalePrecision,
     pub show_caption: bool,
-    /// The caption was moved from where it usually sits.
-    pub caption_moved: bool,
     pub locked: bool,
     pub mutation_disabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MeasurementPropertyAction {
+    /// Measuring on (a Dimension, Polyline or Polygon becomes a Length,
+    /// Polylength or Area) or off.
+    Measure(bool),
     ShowCaption(bool),
     /// Show the measurement in this unit (one of `MEASUREMENT_LENGTH_UNITS`).
     Unit(&'static str),
-    /// Puts a moved caption back where it usually sits.
-    ResetCaptionPosition,
     OpenPageScale,
 }
 
@@ -74,10 +85,23 @@ pub struct MeasurementPropertyEvent {
     pub action: MeasurementPropertyAction,
 }
 
+impl MeasurementPropertySnapshot {
+    /// Whether the markup measures: a Length, Polylength or Area.
+    pub fn measuring(&self) -> bool {
+        matches!(
+            self.annotation_kind,
+            AnnotationKind::Length | AnnotationKind::Polylength | AnnotationKind::Area
+        )
+    }
+}
+
 pub struct MeasurementPropertyInspector {
     snapshot: Option<MeasurementPropertySnapshot>,
     open: bool,
     embedded: bool,
+    /// Whether the Measure section shows its fields. Checking Measure opens
+    /// it; its chevron collapses or expands it either way.
+    section_open: bool,
     unit_select: Entity<SelectState<Vec<SharedString>>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -129,6 +153,7 @@ impl MeasurementPropertyInspector {
             snapshot: None,
             open: false,
             embedded: false,
+            section_open: true,
             unit_select,
             _subscriptions: vec![subscription],
         }
@@ -144,6 +169,18 @@ impl MeasurementPropertyInspector {
 
     pub const fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Whether the Measure section shows its fields.
+    pub const fn section_open(&self) -> bool {
+        self.section_open
+    }
+
+    pub fn set_section_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.section_open != open {
+            self.section_open = open;
+            cx.notify();
+        }
     }
 
     pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
@@ -185,10 +222,15 @@ impl MeasurementPropertyInspector {
             || snapshot.mutation_disabled
             || matches!(
                 action,
-                MeasurementPropertyAction::ShowCaption(_)
+                MeasurementPropertyAction::Measure(_)
+                    | MeasurementPropertyAction::ShowCaption(_)
                     | MeasurementPropertyAction::Unit(_)
-                    | MeasurementPropertyAction::ResetCaptionPosition
             ) && snapshot.locked
+            || matches!(action, MeasurementPropertyAction::Measure(value) if value == snapshot.measuring())
+            || matches!(
+                action,
+                MeasurementPropertyAction::ShowCaption(_) | MeasurementPropertyAction::Unit(_)
+            ) && !snapshot.measuring()
             || matches!(action, MeasurementPropertyAction::ShowCaption(value) if value == snapshot.show_caption)
             || matches!(action, MeasurementPropertyAction::Unit(unit) if unit == snapshot.unit)
         {
@@ -215,138 +257,187 @@ impl Render for MeasurementPropertyInspector {
                 .hidden()
                 .into_any_element();
         };
-        let show_caption = cx.entity().downgrade();
-        let page_scale = cx.entity().downgrade();
-        let reset_caption = cx.entity().downgrade();
-        let read_only = |id: &'static str, value: String| {
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .min_w_0()
-                .truncate()
-                .text_sm()
-                .child(value)
-        };
-        let editable = !(snapshot.mutation_disabled || snapshot.locked);
-        let mut rows = PropertyGroup::titled("Measurement")
-            .row(property_row(
-                "Scale",
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .items_center()
-                    .child(div().flex_1().min_w_0().truncate().text_sm().child(
-                        snapshot.page_scale.as_ref().map_or_else(
-                            || "None (paper size)".to_owned(),
-                            crate::page_scale_catalog::scale_label,
+        let measuring = snapshot.measuring();
+        let weak = cx.entity().downgrade();
+        let show_caption = weak.clone();
+        let page_scale = weak.clone();
+        let measure_checked = weak.clone();
+        let section_toggled = weak.clone();
+        let muted = cx.theme().muted_foreground;
+        let unit_select = self.unit_select.clone();
+        // Whatever stops the markup changing (a lock, a save) stops the
+        // checkbox too.
+        let frozen = snapshot.mutation_disabled || snapshot.locked;
+        let section = PropertyOptionalSection::new(
+            PropertyOptionalSectionIds {
+                root: MEASUREMENT_INSPECTOR_SECTION_ID,
+                checkbox: MEASUREMENT_INSPECTOR_MEASURE_ID,
+                chevron: MEASUREMENT_INSPECTOR_CHEVRON_ID,
+                body: MEASUREMENT_INSPECTOR_BODY_ID,
+            },
+            "Measure",
+            measuring,
+            self.section_open,
+        )
+        .disabled(frozen)
+        .tooltip(measure_tooltip(snapshot.annotation_kind))
+        .on_checked_change(move |checked, _, cx| {
+            let _ = measure_checked.update(cx, |inspector, cx| {
+                if checked {
+                    inspector.section_open = true;
+                }
+                inspector.emit_action(MeasurementPropertyAction::Measure(checked), cx);
+                cx.notify();
+            });
+        })
+        .on_open_change(move |open, _, cx| {
+            let _ =
+                section_toggled.update(cx, |inspector, cx| inspector.set_section_open(open, cx));
+        })
+        .body(move |fields_disabled| {
+            // While not measuring, the value is a dash and its name is what
+            // the markup becomes, in the quiet colour a disabled field has.
+            let read_only = |id: &'static str, value: String| {
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .when(fields_disabled, |value| value.text_color(muted))
+                    .child(value)
+            };
+            let unit_known = length_unit_metres(&snapshot.unit).is_some();
+            let value = if snapshot.caption.is_empty() {
+                "—".to_owned()
+            } else {
+                snapshot.caption.clone()
+            };
+            PropertyGroup::new()
+                .row(property_row(
+                    "Scale",
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .when(fields_disabled, |scale| scale.text_color(muted))
+                                .child(snapshot.page_scale.as_ref().map_or_else(
+                                    || "None (paper size)".to_owned(),
+                                    crate::page_scale_catalog::scale_label,
+                                )),
+                        )
+                        .child(
+                            Button::new(MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID)
+                                .debug_selector(|| MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID.into())
+                                .label("Change")
+                                .small()
+                                .outline()
+                                .disabled(snapshot.mutation_disabled || !measuring)
+                                .on_click(move |_, _, cx| {
+                                    let _ = page_scale.update(cx, |inspector, cx| {
+                                        inspector.emit_action(
+                                            MeasurementPropertyAction::OpenPageScale,
+                                            cx,
+                                        )
+                                    });
+                                }),
                         ),
-                    ))
-                    .child(
-                        Button::new(MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID)
-                            .debug_selector(|| MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID.into())
-                            .label("Change")
-                            .small()
-                            .outline()
-                            .disabled(snapshot.mutation_disabled)
-                            .on_click(move |_, _, cx| {
-                                let _ = page_scale.update(cx, |inspector, cx| {
-                                    inspector
-                                        .emit_action(MeasurementPropertyAction::OpenPageScale, cx)
-                                });
-                            }),
+                ))
+                .row(property_row(
+                    "Value",
+                    h_flex()
+                        .gap_1()
+                        .child(read_only(MEASUREMENT_INSPECTOR_CAPTION_ID, value))
+                        .child(
+                            div()
+                                .id(MEASUREMENT_INSPECTOR_KIND_ID)
+                                .debug_selector(|| MEASUREMENT_INSPECTOR_KIND_ID.into())
+                                .text_sm()
+                                .text_color(muted)
+                                .child(measurement_kind_label(snapshot.annotation_kind)),
+                        ),
+                ))
+                .row(property_row(
+                    "Unit",
+                    div()
+                        .id(MEASUREMENT_INSPECTOR_UNIT_ID)
+                        .debug_selector(|| MEASUREMENT_INSPECTOR_UNIT_ID.into())
+                        .w_full()
+                        .when(!unit_known, |unit| {
+                            // A unit from another app that cannot be converted.
+                            unit.text_sm()
+                                .when(fields_disabled, |unit| unit.text_color(muted))
+                                .child(snapshot.unit.clone())
+                        })
+                        .when(unit_known, |unit| {
+                            unit.child(Select::new(&unit_select).small().disabled(fields_disabled))
+                        }),
+                ))
+                .row(property_row(
+                    "Precision",
+                    read_only(
+                        MEASUREMENT_INSPECTOR_PRECISION_ID,
+                        precision_label(snapshot.precision),
                     ),
-            ))
-            .row(property_row(
-                "Value",
-                h_flex()
-                    .gap_1()
-                    .child(read_only(
-                        MEASUREMENT_INSPECTOR_CAPTION_ID,
-                        snapshot.caption,
-                    ))
-                    .child(
-                        div()
-                            .id(MEASUREMENT_INSPECTOR_KIND_ID)
-                            .debug_selector(|| MEASUREMENT_INSPECTOR_KIND_ID.into())
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(measurement_kind_label(snapshot.annotation_kind)),
-                    ),
-            ))
-            .row(property_row(
-                "Unit",
-                div()
-                    .id(MEASUREMENT_INSPECTOR_UNIT_ID)
-                    .debug_selector(|| MEASUREMENT_INSPECTOR_UNIT_ID.into())
-                    .w_full()
-                    .when(length_unit_metres(&snapshot.unit).is_none(), |unit| {
-                        // A unit from another app that cannot be converted.
-                        unit.text_sm().child(snapshot.unit.clone())
-                    })
-                    .when(length_unit_metres(&snapshot.unit).is_some(), |unit| {
-                        unit.child(Select::new(&self.unit_select).small().disabled(!editable))
-                    }),
-            ))
-            .row(property_row(
-                "Precision",
-                read_only(
-                    MEASUREMENT_INSPECTOR_PRECISION_ID,
-                    precision_label(snapshot.precision),
-                ),
-            ))
-            .row(property_row(
-                "Caption",
-                div()
-                    .id(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
-                    .debug_selector(|| MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID.into())
-                    .child(
-                        Switch::new("measurement-property-show-caption-switch")
-                            .checked(snapshot.show_caption)
-                            .disabled(!editable)
-                            .tooltip("Show the measured value on the page")
-                            .on_click(move |value, _, cx| {
-                                let _ = show_caption.update(cx, |inspector, cx| {
-                                    inspector.emit_action(
-                                        MeasurementPropertyAction::ShowCaption(*value),
-                                        cx,
-                                    )
-                                });
-                            }),
-                    ),
-            ));
-        if snapshot.caption_moved && snapshot.show_caption {
-            rows = rows.row(
-                Button::new(MEASUREMENT_INSPECTOR_RESET_CAPTION_ID)
-                    .debug_selector(|| MEASUREMENT_INSPECTOR_RESET_CAPTION_ID.into())
-                    .label("Reset caption position")
-                    .small()
-                    .outline()
-                    .disabled(!editable)
-                    .on_click(move |_, _, cx| {
-                        let _ = reset_caption.update(cx, |inspector, cx| {
-                            inspector
-                                .emit_action(MeasurementPropertyAction::ResetCaptionPosition, cx)
-                        });
-                    }),
-            );
-        }
+                ))
+                .row(property_row(
+                    "Caption",
+                    div()
+                        .id(MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID)
+                        .debug_selector(|| MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID.into())
+                        .child(
+                            Switch::new("measurement-property-show-caption-switch")
+                                .checked(snapshot.show_caption)
+                                .disabled(fields_disabled)
+                                .tooltip("Show the measured value on the page")
+                                .on_click(move |value, _, cx| {
+                                    let _ = show_caption.update(cx, |inspector, cx| {
+                                        inspector.emit_action(
+                                            MeasurementPropertyAction::ShowCaption(*value),
+                                            cx,
+                                        )
+                                    });
+                                }),
+                        ),
+                ))
+                .into_any_element()
+        });
         PropertyInspectorPanel::new(
             MEASUREMENT_PROPERTY_INSPECTOR_ID,
             MEASUREMENT_INSPECTOR_HEADER_ID,
             MEASUREMENT_INSPECTOR_SCROLL_ID,
-            "Measurement",
+            "Measure",
         )
         .content_only(self.embedded)
-        .child(property_body().child(rows))
+        .child(property_body().child(section))
         .into_any_element()
     }
 }
 
+/// What the Measure checkbox's tooltip says it does for this markup.
+fn measure_tooltip(kind: AnnotationKind) -> &'static str {
+    match kind {
+        AnnotationKind::Dimension => "Measure the line with the page scale (Length)",
+        AnnotationKind::Length => "Off, the line keeps its measured text, which you can then edit",
+        AnnotationKind::Polyline => "Measure its total length with the page scale (Polylength)",
+        AnnotationKind::Polygon => "Measure its area with the page scale (Area)",
+        AnnotationKind::Polylength => "Off, it becomes a Polyline again",
+        _ => "Off, it becomes a Polygon again",
+    }
+}
+
+/// What the markup measures as: the name of its measured form.
 fn measurement_kind_label(kind: AnnotationKind) -> &'static str {
     match kind {
-        AnnotationKind::Length => "Length",
-        AnnotationKind::Polylength => "Polylength",
-        AnnotationKind::Area => "Area",
+        AnnotationKind::Dimension | AnnotationKind::Length => "Length",
+        AnnotationKind::Polyline | AnnotationKind::Polylength => "Polylength",
+        AnnotationKind::Polygon | AnnotationKind::Area => "Area",
         _ => "Measurement",
     }
 }

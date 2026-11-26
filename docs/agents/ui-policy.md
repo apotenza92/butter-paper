@@ -5,6 +5,13 @@ The core conventions are in [AGENTS.md](../../AGENTS.md); native verification
 follows [native-review.md](native-review.md) and
 [the UX checklist](../planning/ux-review.md).
 
+A properties panel never adds or removes content when a setting changes. It
+shows every row and disables the rows that a setting turns off. An optional
+group is a collapsible section whose heading holds its checkbox. A setting that
+depends on another sits indented under it and stays disabled while that setting
+is off. [The property-control guide](property-controls.md#optional-settings)
+has the full rule.
+
 Write in-window labels, menus, buttons and dialog titles in sentence case
 ("Delete page", "Merge documents"), with British spelling ("colour"). Native
 menu-bar items, tool names and toolbar tooltips that name those commands keep

@@ -14736,6 +14736,256 @@ fn measurement_property_inspector_toggles_exact_selected_length_caption_and_open
     });
 }
 
+/// Every id a Dimension, Polyline or Polygon panel can draw: the markup's own
+/// rows, the label's, and the Measure section's heading and fields.
+fn measure_panel_ids() -> Vec<&'static str> {
+    use butter_paper::dimension_property_inspector::*;
+    use butter_paper::measurement_property_inspector::*;
+    use butter_paper::vertex_path_property_inspector::*;
+    vec![
+        DIMENSION_INSPECTOR_TEXT_ID,
+        DIMENSION_INSPECTOR_LOCKED_ID,
+        DIMENSION_INSPECTOR_STROKE_COLOR_ID,
+        DIMENSION_INSPECTOR_WIDTH_ID,
+        DIMENSION_INSPECTOR_TEXT_COLOR_ID,
+        DIMENSION_INSPECTOR_FONT_SIZE_ID,
+        DIMENSION_INSPECTOR_OFFSET_ID,
+        DIMENSION_INSPECTOR_OPACITY_ID,
+        DIMENSION_INSPECTOR_RESET_CAPTION_ID,
+        VERTEX_PATH_INSPECTOR_LOCKED_ID,
+        VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID,
+        VERTEX_PATH_INSPECTOR_WIDTH_ID,
+        VERTEX_PATH_INSPECTOR_OPACITY_ID,
+        VERTEX_PATH_INSPECTOR_FILL_COLOR_ID,
+        VERTEX_PATH_INSPECTOR_NO_FILL_ID,
+        MEASUREMENT_INSPECTOR_SECTION_ID,
+        MEASUREMENT_INSPECTOR_MEASURE_ID,
+        MEASUREMENT_INSPECTOR_CHEVRON_ID,
+        MEASUREMENT_INSPECTOR_BODY_ID,
+        MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID,
+        MEASUREMENT_INSPECTOR_KIND_ID,
+        MEASUREMENT_INSPECTOR_CAPTION_ID,
+        MEASUREMENT_INSPECTOR_UNIT_ID,
+        MEASUREMENT_INSPECTOR_PRECISION_ID,
+        MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID,
+    ]
+}
+
+/// Measure is a checkbox in its section's heading. Turning it on or off
+/// converts the selected Dimension, Polyline or Polygon, and the panel keeps
+/// every row: the Measure fields show disabled until it is on.
+#[gpui::test]
+fn the_measure_checkbox_enables_the_same_rows_and_opens_its_section(cx: &mut TestAppContext) {
+    use butter_paper::measurement_property_inspector::{
+        MEASUREMENT_INSPECTOR_BODY_ID, MEASUREMENT_INSPECTOR_CHEVRON_ID,
+        MEASUREMENT_INSPECTOR_MEASURE_ID,
+    };
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        // Behaviour tests check end states; motion has its own tests.
+        cx.set_reduce_motion(true);
+    });
+    let workspace_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let (_, cx) = cx.add_window_view({
+        let workspace_slot = workspace_slot.clone();
+        move |window, cx| {
+            let workspace = cx.new(DocumentWorkspace::new);
+            workspace_slot.replace(Some(workspace.clone()));
+            Root::new(workspace, window, cx)
+        }
+    });
+    cx.simulate_resize(size(px(1400.), px(1400.)));
+    let workspace = workspace_slot.borrow_mut().take().unwrap();
+    let request = workspace.update(cx, |workspace, cx| {
+        workspace.begin_open(PathBuf::from("measure-section.pdf"), cx)
+    });
+    let scale = PageScale::from_factors(
+        0,
+        ScaleSource::Custom,
+        "1 in = 2 ft",
+        ScaleUnit::In,
+        ScaleUnit::Ft,
+        2. / 72.,
+        2. / 72.,
+        ScalePrecision::decimal(0.01).unwrap(),
+    )
+    .unwrap();
+    let dimension = butter_paper::annotation_model::DimensionAnnotation::new(
+        MarkupId::new("measure-section:dimension").unwrap(),
+        0,
+        PdfPoint::new(72., 192.).unwrap(),
+        PdfPoint::new(216., 192.).unwrap(),
+        60.,
+        "1200 mm",
+        DimensionAppearance::new(
+            StraightLineAppearance::default_for(LineKind::Line),
+            TextBoxStyle::new("Tinos", 12., "#000000", 1.).unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let path = |id: &str, kind, points: Vec<PdfPoint>| {
+        VertexPathAnnotation::new(
+            MarkupId::new(id).unwrap(),
+            0,
+            points,
+            kind,
+            RectangleAppearance::default(),
+        )
+        .unwrap()
+    };
+    let polyline = path(
+        "measure-section:polyline",
+        VertexPathKind::Polyline,
+        vec![
+            PdfPoint::new(72., 288.).unwrap(),
+            PdfPoint::new(144., 288.).unwrap(),
+            PdfPoint::new(144., 360.).unwrap(),
+        ],
+    );
+    let polygon = path(
+        "measure-section:polygon",
+        VertexPathKind::Polygon,
+        vec![
+            PdfPoint::new(240., 288.).unwrap(),
+            PdfPoint::new(312., 288.).unwrap(),
+            PdfPoint::new(312., 360.).unwrap(),
+        ],
+    );
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_open_result(
+            &request,
+            Ok(opened_document(Arc::new(AtomicBool::new(false)))
+                .with_annotations(vec![
+                    Annotation::Dimension(dimension.clone()),
+                    Annotation::VertexPath(polyline.clone()),
+                    Annotation::VertexPath(polygon.clone()),
+                ])
+                .with_page_scales(vec![scale.clone()])),
+            cx,
+        )
+    });
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(request.document_id, AnnotationTool::Select, cx)
+            .unwrap();
+    });
+    let snapshot = |workspace: &gpui::Entity<DocumentWorkspace>, cx: &gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(request.document_id, cx)
+            })
+            .unwrap()
+    };
+    // What shows now: each id of the markup's panel that is drawn.
+    let rows = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        measure_panel_ids()
+            .into_iter()
+            .filter(|id| cx.debug_bounds(id).is_some())
+            .collect::<Vec<_>>()
+    };
+    let click = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+        let bounds = cx
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("{id} must be drawn"));
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    let section_open = |cx: &gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .measurement_property_inspector()
+                .unwrap()
+                .read(cx)
+                .section_open()
+        })
+    };
+
+    // (markup, what it measures as, an id its panel always shows)
+    for (markup, expect_length) in [(&dimension.id, 0usize), (&polyline.id, 0), (&polygon.id, 0)] {
+        assert!(workspace.update(cx, |workspace, cx| {
+            workspace.select_annotation(request.document_id, markup, cx)
+        }));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        if cx.debug_bounds(MEASUREMENT_INSPECTOR_MEASURE_ID).is_none() {
+            toggle_document_actions(cx);
+        }
+        let unmeasured = rows(cx);
+        assert!(
+            [
+                MEASUREMENT_INSPECTOR_MEASURE_ID,
+                MEASUREMENT_INSPECTOR_CHEVRON_ID,
+                MEASUREMENT_INSPECTOR_BODY_ID
+            ]
+            .iter()
+            .all(|id| unmeasured.contains(id)),
+            "{markup:?} shows its Measure heading and its fields unchecked: {unmeasured:?}"
+        );
+        assert!(unmeasured.len() > 12, "{markup:?}: {unmeasured:?}");
+        let before = snapshot(&workspace, cx);
+        assert_eq!(
+            before.lengths.len() + before.measurement_paths.len(),
+            expect_length
+        );
+
+        // Unchecked, the fields are shown and inert.
+        click(cx, MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID);
+        click(cx, MEASUREMENT_INSPECTOR_SET_PAGE_SCALE_ID);
+        assert_eq!(snapshot(&workspace, cx).revision, before.revision);
+        assert!(
+            workspace
+                .read_with(cx, |workspace, _| workspace.page_scale_control())
+                .is_none_or(|control| control
+                    .read_with(cx, |control, _| control.target())
+                    .is_none()),
+            "{markup:?}: Change must be inert while Measure is off"
+        );
+
+        // Collapsed by the chevron, then checked: it opens.
+        click(cx, MEASUREMENT_INSPECTOR_CHEVRON_ID);
+        assert!(!section_open(cx));
+        assert!(cx.debug_bounds(MEASUREMENT_INSPECTOR_BODY_ID).is_none());
+        assert!(cx.debug_bounds(MEASUREMENT_INSPECTOR_MEASURE_ID).is_some());
+        assert_eq!(snapshot(&workspace, cx).revision, before.revision);
+        click(cx, MEASUREMENT_INSPECTOR_MEASURE_ID);
+        let after = snapshot(&workspace, cx);
+        assert_eq!(after.revision, before.revision + 1, "{markup:?} measures");
+        assert_eq!(
+            after.lengths.len() + after.measurement_paths.len(),
+            1,
+            "{markup:?} became its measured form"
+        );
+        assert!(section_open(cx), "checking Measure opens its section");
+        let measured = rows(cx);
+        assert_eq!(
+            measured, unmeasured,
+            "{markup:?}: Measure adds and removes no row"
+        );
+
+        // Checked, the fields answer.
+        let revision = after.revision;
+        click(cx, MEASUREMENT_INSPECTOR_SHOW_CAPTION_ID);
+        assert_eq!(snapshot(&workspace, cx).revision, revision + 1);
+
+        // The chevron collapses without unchecking.
+        click(cx, MEASUREMENT_INSPECTOR_CHEVRON_ID);
+        assert!(!section_open(cx));
+        let still = snapshot(&workspace, cx);
+        assert_eq!(still.lengths.len() + still.measurement_paths.len(), 1);
+        click(cx, MEASUREMENT_INSPECTOR_CHEVRON_ID);
+        assert_eq!(rows(cx), unmeasured);
+
+        // Unchecked again: the markup is plain, the rows are the same, and
+        // the section stays as the person left it.
+        click(cx, MEASUREMENT_INSPECTOR_MEASURE_ID);
+        let plain = snapshot(&workspace, cx);
+        assert_eq!(plain.lengths.len() + plain.measurement_paths.len(), 0);
+        assert!(section_open(cx));
+        assert_eq!(rows(cx), unmeasured, "{markup:?}: unchecking adds no row");
+    }
+}
+
 #[gpui::test]
 fn rectangle_property_inspector_renders_stable_controls_and_commits_identity_bound_history(
     cx: &mut TestAppContext,

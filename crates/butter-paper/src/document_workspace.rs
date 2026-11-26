@@ -254,7 +254,8 @@ use crate::{
         PdfPoint, PdfRect, PenAppearance, PointerCancelReason, RectangleAppearance,
         RectangleResizeHandle, SceneArc, SceneCloudPlus, SceneDimension, SceneRectangle,
         SceneRedact, StraightLineAppearance, StrokeStyle, TextAlignment, TextBoxAnnotation,
-        TextBoxRichTextRun, TextBoxStyle, ellipse_cubic_bezier_points, rectangle_world_corners,
+        TextBoxRichTextRun, TextBoxStyle, VertexPathKind, ellipse_cubic_bezier_points,
+        rectangle_world_corners,
     },
     annotation_paint_path::{InkPaintPathSegment, build_ink_paint_path},
     generated_document::{
@@ -8223,9 +8224,6 @@ impl DocumentWorkspace {
         event: &VertexPathPropertyEvent,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
-        if let VertexPathPropertyPatch::Measure(measure) = event.patch {
-            return self.set_selected_measure(event.document_id, measure, cx);
-        }
         if self.active_document_id != Some(event.document_id) {
             return Ok(false);
         }
@@ -8807,6 +8805,16 @@ impl DocumentWorkspace {
         else {
             return Ok(false);
         };
+        // Measure is the one action a Dimension, Polyline or Polygon takes
+        // as well as its measured form: it converts the selected markup.
+        if let MeasurementPropertyAction::Measure(measure) = event.action {
+            if snapshot.revision != event.expected_revision
+                || primary_markup_id(&primary) != Some(&event.annotation_id)
+            {
+                return Ok(false);
+            }
+            return self.set_selected_measure(event.document_id, measure, cx);
+        }
         let (current_id, current_kind, page_index, calibration, locked) = match primary {
             Annotation::Length(annotation) => (
                 annotation.id.clone(),
@@ -8877,19 +8885,7 @@ impl DocumentWorkspace {
                     annotations.edit_primary_selected_annotation(id, &annotation_id, edit)
                 })?;
             }
-            MeasurementPropertyAction::ResetCaptionPosition => {
-                if locked {
-                    return Err(format!("markup {} is locked", event.annotation_id));
-                }
-                let annotation_id = event.annotation_id.clone();
-                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
-                    annotations.edit_primary_selected_annotation(
-                        id,
-                        &annotation_id,
-                        AnnotationEdit::SetCaptionOffset(Default::default()),
-                    )
-                })?;
-            }
+            MeasurementPropertyAction::Measure(_) => return Ok(false),
             MeasurementPropertyAction::OpenPageScale => {
                 self.open_page_scale_dialog(event.document_id, page_index, window, cx);
             }
@@ -17521,9 +17517,6 @@ impl DocumentWorkspace {
         event: &DimensionPropertyEvent,
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
-        if let DimensionPropertyPatch::Measure(measure) = event.patch {
-            return self.set_selected_measure(event.document_id, measure, cx);
-        }
         if self.active_document_id != Some(event.document_id)
             || self.pending_close_document_id == Some(event.document_id)
             || self.close_after_save_document_id == Some(event.document_id)
@@ -17583,9 +17576,10 @@ impl DocumentWorkspace {
                     || annotation.id != event.annotation_id
                     || match &event.patch {
                         DimensionPropertyPatch::Locked(value) => *value == annotation.locked,
-                        DimensionPropertyPatch::OffsetPt(_)
-                        | DimensionPropertyPatch::Measure(_)
-                        | DimensionPropertyPatch::ResetCaptionPosition => true,
+                        DimensionPropertyPatch::OffsetPt(_) => true,
+                        DimensionPropertyPatch::ResetCaptionPosition => {
+                            annotation.caption_offset.is_zero()
+                        }
                         DimensionPropertyPatch::Appearance(value) => value == &appearance,
                     }
                 {
@@ -17602,16 +17596,16 @@ impl DocumentWorkspace {
             || *current_id != event.annotation_id
             || match &event.patch {
                 DimensionPropertyPatch::Locked(value) => *value == current_locked,
-                DimensionPropertyPatch::Measure(_) => true,
                 DimensionPropertyPatch::OffsetPt(value) => {
                     !is_dimension
                         || matches!(&current, Annotation::Dimension(annotation) if *value == annotation.dimension_line_offset())
                 }
                 DimensionPropertyPatch::Appearance(value) => value == current_appearance,
-                DimensionPropertyPatch::ResetCaptionPosition => {
-                    !is_dimension
-                        || matches!(&current, Annotation::Dimension(annotation) if annotation.caption_offset.is_zero())
-                }
+                DimensionPropertyPatch::ResetCaptionPosition => match &current {
+                    Annotation::Dimension(annotation) => annotation.caption_offset.is_zero(),
+                    Annotation::Length(annotation) => annotation.caption_offset.is_zero(),
+                    _ => true,
+                },
             }
         {
             return Ok(false);
@@ -17671,7 +17665,6 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> Result<bool, String> {
         match &event.patch {
-            DimensionPropertyPatch::Measure(_) => return Ok(false),
             DimensionPropertyPatch::Locked(value) => {
                 let annotation_id = event.annotation_id.clone();
                 self.update_annotation_history(event.document_id, cx, move |annotations, id| {
@@ -17703,9 +17696,17 @@ impl DocumentWorkspace {
                     )
                 })?;
             }
-            DimensionPropertyPatch::OffsetPt(_) | DimensionPropertyPatch::ResetCaptionPosition => {
-                return Ok(false);
+            DimensionPropertyPatch::ResetCaptionPosition => {
+                let annotation_id = event.annotation_id.clone();
+                self.update_annotation_history(event.document_id, cx, move |annotations, id| {
+                    annotations.edit_primary_selected_annotation(
+                        id,
+                        &annotation_id,
+                        AnnotationEdit::SetCaptionOffset(Default::default()),
+                    )
+                })?;
             }
+            DimensionPropertyPatch::OffsetPt(_) => return Ok(false),
         }
         Ok(true)
     }
@@ -28366,6 +28367,39 @@ impl Render for DocumentWorkspace {
                         .document_page_scale(document_id.value(), annotation.page_index)
                         .cloned(),
                 )),
+                // Not measuring: the Measure section still shows, disabled,
+                // with the page's scale and what the markup would measure by.
+                [Annotation::Dimension(annotation)] => Some((
+                    annotation.id.clone(),
+                    AnnotationKind::Dimension,
+                    annotation.page_index,
+                    String::new(),
+                    session
+                        .annotations
+                        .measurement_calibration(document_id.value(), annotation.page_index),
+                    (annotation.locked, !annotation.caption_offset.is_zero()),
+                    session
+                        .annotations
+                        .document_page_scale(document_id.value(), annotation.page_index)
+                        .cloned(),
+                )),
+                [Annotation::VertexPath(annotation)] => Some((
+                    annotation.id.clone(),
+                    match annotation.kind {
+                        VertexPathKind::Polyline => AnnotationKind::Polyline,
+                        VertexPathKind::Polygon => AnnotationKind::Polygon,
+                    },
+                    annotation.page_index,
+                    String::new(),
+                    session
+                        .annotations
+                        .measurement_calibration(document_id.value(), annotation.page_index),
+                    (annotation.locked, false),
+                    session
+                        .annotations
+                        .document_page_scale(document_id.value(), annotation.page_index)
+                        .cloned(),
+                )),
                 _ => None,
             };
             let selected_dimension = match selected_annotations.as_slice() {
@@ -28381,7 +28415,7 @@ impl Render for DocumentWorkspace {
                     0.,
                     false,
                     annotation.appearance.clone(),
-                    (annotation.locked, false),
+                    (annotation.locked, !annotation.caption_offset.is_zero()),
                 )),
                 [Annotation::MeasurementPath(annotation)] => Some((
                     annotation.id.clone(),
@@ -28416,8 +28450,59 @@ impl Render for DocumentWorkspace {
                         .expect("stored measurement text style is valid"),
                     )
                     .expect("measurement path line and text share opacity"),
-                    (annotation.locked, false),
+                    (annotation.locked, !annotation.caption_offset.is_zero()),
                 )),
+                // A Polyline or Polygon has no text, but its label (Font and
+                // Reset text position) shows disabled with what its measured
+                // form would use, so measuring adds no row.
+                [Annotation::VertexPath(annotation)] => {
+                    let text_style = session.annotations.measurement_text_style(
+                        if annotation.kind == VertexPathKind::Polygon {
+                            MeasurementPathKind::Area
+                        } else {
+                            MeasurementPathKind::Polylength
+                        },
+                    );
+                    text_style.and_then(|text_style| {
+                        // The line and its text share an opacity.
+                        let text_style = TextBoxStyle::new(
+                            text_style.font_family(),
+                            text_style.font_size_pt(),
+                            text_style.color(),
+                            annotation.appearance.opacity(),
+                        )
+                        .and_then(|style| {
+                            style.with_weight_and_alignment(
+                                text_style.weight(),
+                                text_style.alignment(),
+                            )
+                        })
+                        .and_then(|style| {
+                            style.with_layout_metrics(
+                                text_style.line_height_pt(),
+                                text_style.inset_pt(),
+                            )
+                        })
+                        .ok()?;
+                        Some((
+                            annotation.id.clone(),
+                            0.,
+                            false,
+                            DimensionAppearance::new(
+                                StraightLineAppearance::new(
+                                    annotation.appearance.stroke_color(),
+                                    annotation.appearance.stroke_width_pt(),
+                                    annotation.appearance.opacity(),
+                                    annotation.appearance.stroke_style(),
+                                )
+                                .ok()?,
+                                text_style,
+                            )
+                            .ok()?,
+                            (annotation.locked, false),
+                        ))
+                    })
+                }
                 _ => None,
             };
             let selected_rectangle_stroke_width = session
@@ -28890,17 +28975,23 @@ impl Render for DocumentWorkspace {
         if let Some((id, offset, show_offset, appearance, (locked, caption_moved))) =
             selected_dimension.as_ref()
         {
+            let measuring = selected_measurement.as_ref().is_some_and(|measurement| {
+                matches!(
+                    measurement.1,
+                    AnnotationKind::Length | AnnotationKind::Polylength | AnnotationKind::Area
+                )
+            });
             let snapshot = DimensionPropertySnapshot {
                 document_id,
                 annotation_id: id.clone(),
                 expected_revision: annotation_scene.revision,
                 offset_pt: *offset,
+                // A Dimension has an offset; a Length does not.
                 show_offset: *show_offset,
                 text_only: selected_vertex_path.is_some(),
                 appearance: appearance.clone(),
                 caption_moved: *caption_moved,
-                // A Length has no offset of its own; a Dimension has.
-                measure: selected_vertex_path.is_none().then_some(!*show_offset),
+                measuring,
                 locked: *locked,
                 mutation_disabled: save_busy,
             };
@@ -28912,16 +29003,24 @@ impl Render for DocumentWorkspace {
                 dimension_property_inspector
                     .update(cx, |inspector, cx| inspector.sync(snapshot, window, cx));
             }
-            // A Dimension's typed text shows in its Text field; a measured
-            // Length's caption is its measurement, and has none.
-            let content = self.session(document_id, cx).and_then(|session| {
-                session
-                    .read(cx)
-                    .annotations
-                    .exact_selected_dimension(document_id.value())
-                    .filter(|dimension| &dimension.id == id)
-                    .map(|dimension| dimension.content().to_owned())
-            });
+            // A Dimension's typed text shows in its Text field; a Length's
+            // shows its measurement, disabled. A path has no Text field.
+            let content = if selected_vertex_path.is_some() {
+                None
+            } else if measuring {
+                selected_measurement
+                    .as_ref()
+                    .map(|measurement| measurement.3.clone())
+            } else {
+                self.session(document_id, cx).and_then(|session| {
+                    session
+                        .read(cx)
+                        .annotations
+                        .exact_selected_dimension(document_id.value())
+                        .filter(|dimension| &dimension.id == id)
+                        .map(|dimension| dimension.content().to_owned())
+                })
+            };
             if let Some(content) = content {
                 dimension_property_inspector.update(cx, |inspector, cx| {
                     inspector.sync_content(&content, window, cx)
@@ -29166,15 +29265,8 @@ impl Render for DocumentWorkspace {
             self.caption_property_inspector_open = false;
             caption_property_inspector.update(cx, |inspector, cx| inspector.clear(cx));
         }
-        if let Some((
-            id,
-            kind,
-            page_index,
-            caption,
-            calibration,
-            (locked, caption_moved),
-            page_scale,
-        )) = selected_measurement.as_ref()
+        if let Some((id, kind, page_index, caption, calibration, (locked, _), page_scale)) =
+            selected_measurement.as_ref()
         {
             let snapshot = MeasurementPropertySnapshot {
                 document_id,
@@ -29187,7 +29279,6 @@ impl Render for DocumentWorkspace {
                 unit: calibration.unit().to_owned(),
                 precision: calibration.scale_precision(),
                 show_caption: calibration.show_caption(),
-                caption_moved: *caption_moved,
                 locked: *locked,
                 mutation_disabled: ink_mutation_disabled,
             };
@@ -29454,8 +29545,10 @@ impl Render for DocumentWorkspace {
                 ),
             };
         let inspector_visible = inspector_kind.is_some();
-        let combined_measurement_properties =
-            inspector_visible && selected_measurement.is_some() && selected_dimension.is_some();
+        // A Dimension, Polyline or Polygon and its measured form show one
+        // panel, so measuring adds and removes no row: the markup's own
+        // properties, then its Measure section.
+        let combined_measurement_properties = inspector_visible && selected_measurement.is_some();
         let inspector_shell = match inspector_kind {
             Some(ActiveInspectorKind::Rectangle) => active_inspector_shell().child(
                 self.rectangle_property_inspector
@@ -29616,36 +29709,43 @@ impl Render for DocumentWorkspace {
             let title = match selected_measurement.as_ref().map(|selected| selected.1) {
                 Some(AnnotationKind::Area) => "Area",
                 Some(AnnotationKind::Length) => "Length",
+                Some(AnnotationKind::Dimension) => "Dimension",
+                Some(AnnotationKind::Polyline) => "Polyline",
+                Some(AnnotationKind::Polygon) => "Polygon",
                 _ => "Polylength",
             };
             let close = close_icon_button(DOCUMENT_ACTIVE_INSPECTOR_CLOSE_ID, "Close properties")
                 .on_click(cx.listener(|workspace, _, _, cx| {
                     workspace.right_rail_actions_open = false;
                     workspace.dimension_property_inspector_open = false;
+                    workspace.vertex_path_property_inspector_open = false;
                     workspace.measurement_property_inspector_open = false;
                     cx.notify();
                 }));
-            crate::property_controls::PropertyInspectorPanel::new(
-                "measurement-combined-properties",
-                "measurement-combined-properties-header",
-                "measurement-combined-properties-scroll",
-                title,
-            )
-            .header_trailing(close)
-            .child(
-                v_flex()
-                    .w_full()
-                    .child(vertex_path_property_inspector.clone())
-                    .child(dimension_property_inspector.clone())
+            active_inspector_shell()
+                .child(
+                    crate::property_controls::PropertyInspectorPanel::new(
+                        "measurement-combined-properties",
+                        "measurement-combined-properties-header",
+                        "measurement-combined-properties-scroll",
+                        title,
+                    )
+                    .header_trailing(close)
                     .child(
-                        gpui::div()
+                        v_flex()
                             .w_full()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .child(measurement_property_inspector.clone()),
+                            .child(vertex_path_property_inspector.clone())
+                            .child(dimension_property_inspector.clone())
+                            .child(
+                                gpui::div()
+                                    .w_full()
+                                    .border_t_1()
+                                    .border_color(cx.theme().border)
+                                    .child(measurement_property_inspector.clone()),
+                            ),
                     ),
-            )
-            .into_any_element()
+                )
+                .into_any_element()
         } else if inspector_visible {
             gpui::div()
                 .w_full()
@@ -30081,6 +30181,17 @@ fn straight_line_property_patch_matches(
     }
 }
 
+/// The id of the markup a properties panel edits, whatever its kind.
+fn primary_markup_id(markup: &Annotation) -> Option<&MarkupId> {
+    match markup {
+        Annotation::Dimension(annotation) => Some(&annotation.id),
+        Annotation::Length(annotation) => Some(&annotation.id),
+        Annotation::VertexPath(annotation) => Some(&annotation.id),
+        Annotation::MeasurementPath(annotation) => Some(&annotation.id),
+        _ => None,
+    }
+}
+
 fn path_property_patch_matches(
     patch: &VertexPathPropertyPatch,
     appearance: &RectangleAppearance,
@@ -30088,7 +30199,6 @@ fn path_property_patch_matches(
 ) -> bool {
     match patch {
         VertexPathPropertyPatch::Locked(value) => locked == *value,
-        VertexPathPropertyPatch::Measure(_) => false,
         VertexPathPropertyPatch::StrokeColorAndOpacity { color, opacity } => {
             appearance.stroke_color() == color && appearance.opacity() == *opacity
         }

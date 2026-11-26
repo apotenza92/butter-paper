@@ -36,6 +36,7 @@ For each compound control, specify which elements should respond together. Exerc
 ## Geometry and content
 
 - Inventory reference grouping and control type, not only field names: record paired columns, full-width spans and slider/input pairs. A plain numeric field replacing a working slider, or a stacked layout replacing paired columns, is a structural gap, not density polish waived by general visual approval.
+- Toggle every setting that turns other fields on or off (Measure, Fill, Cloud) and compare the panel before and after. The set of rows must stay the same, and only the enabled state and the section's open state can change. A row that appears or vanishes is a defect.
 - Inspect numeric text at the minimum paired-column width, including units. If display precision is reduced to fit, prove that unchanged focus/blur leaves the full stored value and undo history untouched; formatting is not a domain edit.
 - Inspect full hit targets and hover/focus backgrounds, not just glyphs. Check clearance from rounded corners, text/icon baselines and centring, internal leading/trailing padding, label-to-icon space, repeated button/group gaps and app/region-edge insets.
 - For Recovery, check long document names and several items at a narrow window: the header X stays visible, details wrap and the last action can be reached by scrolling. Closing the panel must retain recoverable data; ordinary new unsaved documents must not create a notification.

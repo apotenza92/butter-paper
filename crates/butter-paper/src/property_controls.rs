@@ -10,8 +10,11 @@ use gpui::{
     Subscription, Window, div, prelude::FluentBuilder as _, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
+    collapsible::Collapsible,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
     input::{Input, InputState, Textarea, TextareaState},
@@ -32,6 +35,8 @@ const PROPERTY_PAIR_MIN_WIDTH_REMS: f32 = 6.25;
 const PROPERTY_PAIR_CONTROL_MIN_WIDTH_REMS: f32 = 2. * PROPERTY_PAIR_MIN_WIDTH_REMS + 0.75;
 /// The narrowest a slider and its number get beside their label.
 const PROPERTY_SLIDER_CONTROL_MIN_WIDTH_REMS: f32 = 9.75;
+/// How far a setting that depends on the one above it sits in from the left.
+const PROPERTY_DEPENDENT_INDENT_REMS: f32 = 1.;
 
 /// One property: its name in the left column and its control filling the
 /// right, the layout every properties panel shares.
@@ -43,6 +48,7 @@ pub struct PropertyRow {
     /// The narrowest the control gets beside the label before it moves below
     /// it, in rems; `None` keeps it beside the label.
     stack_below_rems: Option<f32>,
+    dependent: bool,
 }
 
 impl PropertyRow {
@@ -52,7 +58,17 @@ impl PropertyRow {
             control: control.into_any_element(),
             align_top: false,
             stack_below_rems: None,
+            dependent: false,
         }
+    }
+
+    /// Marks a setting that depends on another in the same section, such as
+    /// a fill's opacity under the fill switch. It sits indented under that
+    /// setting, and its owner disables it while the setting it depends on
+    /// is off: a panel never adds or removes the row.
+    pub fn dependent(mut self) -> Self {
+        self.dependent = true;
+        self
     }
 
     /// For a wide control (a number pair, a slider and its number): when the
@@ -84,6 +100,9 @@ impl RenderOnce for PropertyRow {
             .w_full()
             .min_w_0()
             .gap_3()
+            .when(self.dependent, |row| {
+                row.pl(rems(PROPERTY_DEPENDENT_INDENT_REMS))
+            })
             .when(self.stack_below_rems.is_some(), |row| {
                 row.flex_wrap().gap_y_1p5()
             })
@@ -200,6 +219,183 @@ impl RenderOnce for PropertyGroup {
                 )
             })
             .children(self.rows)
+    }
+}
+
+/// The ids an optional section answers to.
+#[derive(Clone, Copy, Debug)]
+pub struct PropertyOptionalSectionIds {
+    /// The whole section.
+    pub root: &'static str,
+    /// The heading's checkbox.
+    pub checkbox: &'static str,
+    /// The heading's chevron.
+    pub chevron: &'static str,
+    /// The fields, drawn while the section is open.
+    pub body: &'static str,
+}
+
+/// An optional group of settings, such as Measure: a collapsible section
+/// whose heading holds its checkbox, then its title, with a chevron at the
+/// far end.
+///
+/// A properties panel never adds or removes rows when a setting changes, so
+/// an unchecked section keeps its heading and shows its fields disabled.
+/// Checking it enables the fields; the owner opens the section too, since the
+/// fields are what the person turned it on for. The chevron collapses or
+/// expands the section on its own. The checkbox and the chevron are separate
+/// controls, each a tab stop that Space and Enter activate.
+///
+/// The owner keeps the checked and open states and updates them from the
+/// callbacks. `body` builds the fields and is told whether they are disabled:
+/// the section is unchecked, or `disabled` (a locked markup, a save in
+/// progress). Each field then takes that value, and a field that depends on
+/// another in the section also stays disabled while that one is off.
+#[derive(IntoElement)]
+pub struct PropertyOptionalSection {
+    ids: PropertyOptionalSectionIds,
+    title: SharedString,
+    checked: bool,
+    open: bool,
+    disabled: bool,
+    tooltip: Option<SharedString>,
+    on_checked_change: Option<std::rc::Rc<dyn Fn(bool, &mut Window, &mut App)>>,
+    on_open_change: Option<std::rc::Rc<dyn Fn(bool, &mut Window, &mut App)>>,
+    body: Option<Box<dyn FnOnce(bool) -> AnyElement>>,
+}
+
+impl PropertyOptionalSection {
+    pub fn new(
+        ids: PropertyOptionalSectionIds,
+        title: impl Into<SharedString>,
+        checked: bool,
+        open: bool,
+    ) -> Self {
+        Self {
+            ids,
+            title: title.into(),
+            checked,
+            open,
+            disabled: false,
+            tooltip: None,
+            on_checked_change: None,
+            on_open_change: None,
+            body: None,
+        }
+    }
+
+    /// Makes the checkbox and every field inert, as a locked markup does. The
+    /// chevron still works: collapsing a section changes no document.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// Called with the new checked state when the checkbox is activated.
+    pub fn on_checked_change(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_checked_change = Some(std::rc::Rc::new(handler));
+        self
+    }
+
+    /// Called with the new open state when the chevron is activated.
+    pub fn on_open_change(
+        mut self,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_open_change = Some(std::rc::Rc::new(handler));
+        self
+    }
+
+    /// Whether the section's fields are disabled: the section is unchecked,
+    /// or it is `disabled` as a whole.
+    pub fn fields_disabled(&self) -> bool {
+        !self.checked || self.disabled
+    }
+
+    /// The fields: `fields` builds them when the section draws, given
+    /// `fields_disabled`.
+    pub fn body(mut self, fields: impl FnOnce(bool) -> AnyElement + 'static) -> Self {
+        self.body = Some(Box::new(fields));
+        self
+    }
+}
+
+impl RenderOnce for PropertyOptionalSection {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let ids = self.ids;
+        let open = self.open;
+        let fields_disabled = self.fields_disabled();
+        let body = self.body.map(|fields| fields(fields_disabled));
+        let title = self.title;
+        let checkbox = Checkbox::new(ids.checkbox)
+            .debug_selector(move || ids.checkbox.into())
+            .small()
+            .label(title.clone())
+            .checked(self.checked)
+            .disabled(self.disabled)
+            .when_some(self.tooltip, |checkbox, tooltip| checkbox.tooltip(tooltip))
+            .when_some(self.on_checked_change, |checkbox, handler| {
+                checkbox.on_click(move |checked, window, cx| handler(*checked, window, cx))
+            });
+        let chevron = crate::accessible_button::accessible_disclosure_button(
+            Button::new(ids.chevron)
+                .debug_selector(move || ids.chevron.into())
+                .ghost()
+                .small()
+                .icon(if open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                })
+                .tooltip(if open {
+                    format!("Collapse {title}")
+                } else {
+                    format!("Expand {title}")
+                })
+                .when_some(self.on_open_change, |button, handler| {
+                    button.on_click(move |_, window, cx| handler(!open, window, cx))
+                }),
+            format!("{title} fields"),
+            open,
+        );
+        div()
+            .id(ids.root)
+            .debug_selector(move || ids.root.into())
+            .w_full()
+            .min_w_0()
+            .child(
+                Collapsible::new()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .open(open)
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .min_w_0()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(div().min_w_0().child(checkbox))
+                            .child(chevron),
+                    )
+                    .content(
+                        div()
+                            .id(ids.body)
+                            .debug_selector(move || ids.body.into())
+                            .w_full()
+                            .min_w_0()
+                            .children(body),
+                    ),
+            )
     }
 }
 
