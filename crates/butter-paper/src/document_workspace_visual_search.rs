@@ -1698,25 +1698,39 @@ impl DocumentWorkspace {
                       detail: &'static str,
                       on: bool,
                       cx: &mut Context<Self>| {
-            crate::property_controls::property_row(
-                label,
-                gpui::div().id(id).debug_selector(move || id.into()).child(
-                    gpui_component::switch::Switch::new(id)
-                        .checked(on)
-                        .label(detail)
-                        .on_click(cx.listener(move |workspace, checked: &bool, _, cx| {
-                            let checked = *checked;
-                            workspace.toggle_visual_option(
-                                |visual| match id {
-                                    DOCUMENT_VISUAL_TURNS_ID => visual.turns = checked,
-                                    DOCUMENT_VISUAL_SIZES_ID => visual.sizes = checked,
-                                    _ => visual.mirrored = checked,
-                                },
-                                cx,
-                            )
-                        })),
-                ),
-            )
+            // The whole option reads as one label, and the switch sits at
+            // the row's end, so a narrow panel wraps the text and never
+            // pushes the switch or its text past the edge.
+            let text = if detail.is_empty() {
+                label.to_string()
+            } else {
+                format!("{label} {detail}")
+            };
+            h_flex()
+                .w_full()
+                .min_h(crate::layout_metrics::scaled(
+                    crate::layout_metrics::CONTROL,
+                ))
+                .items_center()
+                .gap(super::panel_space())
+                .child(gpui::div().flex_1().min_w_0().child(text))
+                .child(
+                    gpui::div().id(id).debug_selector(move || id.into()).child(
+                        gpui_component::switch::Switch::new(id)
+                            .checked(on)
+                            .on_click(cx.listener(move |workspace, checked: &bool, _, cx| {
+                                let checked = *checked;
+                                workspace.toggle_visual_option(
+                                    |visual| match id {
+                                        DOCUMENT_VISUAL_TURNS_ID => visual.turns = checked,
+                                        DOCUMENT_VISUAL_SIZES_ID => visual.sizes = checked,
+                                        _ => visual.mirrored = checked,
+                                    },
+                                    cx,
+                                )
+                            })),
+                    ),
+                )
         };
         let similarity = crate::property_controls::property_slider_row(
             "Similarity",
@@ -1756,8 +1770,8 @@ impl DocumentWorkspace {
             ))
             .child(switch(
                 DOCUMENT_VISUAL_MIRRORED_ID,
-                "Mirrored",
-                "Mirror images",
+                "Include mirrored",
+                "",
                 visual.mirrored,
                 cx,
             ))
