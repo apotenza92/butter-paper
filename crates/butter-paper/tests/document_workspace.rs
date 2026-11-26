@@ -34921,11 +34921,9 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     cx.simulate_keystrokes("escape");
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("dimension.body").is_some());
-    // On the dimension line, clear of its caption: a press on a selected
-    // markup's text edits the text. The page takes the keyboard first: a
-    // press that only moves the focus out of a field starts no edit.
-    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
-    cx.update(|window, cx| focus.focus(window, cx));
+    // On the dimension line, clear of its caption: a press on the selected
+    // markup acts at once, though the last properties field still has the
+    // typing; it commits that field first.
     let body_start = to_view(270., 352.);
     let body_end = to_view(282., 360.);
     cx.simulate_mouse_down(body_start, MouseButton::Left, Modifiers::default());
@@ -53611,5 +53609,167 @@ fn dragging_a_text_box_handle_during_text_edit_commits_the_text_and_resizes(
         text_box.layout_rect.width > 160. + 10.,
         "{:?}",
         text_box.layout_rect
+    );
+}
+
+/// A rectangle drawn with the Rectangle tool, selected, with its properties
+/// open and a number typed in its Line width field. Returns the rectangle's
+/// corner in the viewport (where it was drawn from).
+fn rectangle_with_a_typed_field(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::Entity<DocumentWorkspace>,
+    DocumentId,
+    &mut gpui::VisualTestContext,
+    gpui::Point<Pixels>,
+) {
+    let (workspace, document_id, cx) = scrolled_test_workspace(cx, 300.);
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::Rectangle, cx)
+            .unwrap()
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let start = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap().center();
+    drag_across_viewport(cx);
+    let id = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .rectangles
+        .last()
+        .unwrap()
+        .id
+        .clone();
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::Select, cx)
+            .unwrap();
+        assert!(workspace.select_annotation(document_id, &id, cx));
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let actions = cx.debug_bounds("document-workspace-rail-actions").unwrap();
+    click_on_page(cx, actions.center());
+    let field = cx
+        .debug_bounds(RECTANGLE_INSPECTOR_STROKE_WIDTH_ID)
+        .unwrap();
+    click_on_page(cx, field.center());
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input("7");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .click_out_status(document_id, cx)),
+        Some(butter_paper::document_workspace::CLICK_OUT_TYPING_STATUS),
+        "the field has the typing"
+    );
+    (workspace, document_id, cx, start)
+}
+
+fn last_rectangle(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+) -> (RectangleAnnotation, u64, usize) {
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    (
+        snapshot.rectangles.last().unwrap().clone(),
+        snapshot.revision,
+        snapshot.undo_depth,
+    )
+}
+
+/// While a properties field has the typing, a press on the selected markup's
+/// resize handle commits the field and resizes in the same press.
+#[gpui::test]
+fn a_selected_markups_handle_resizes_at_once_while_a_properties_field_has_the_typing(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, document_id, cx, start) = rectangle_with_a_typed_field(cx);
+    let (before, _, depth) = last_rectangle(&workspace, document_id, cx);
+    // The east edge's middle handle of the 80 x 60 px box.
+    let handle = point(start.x + px(80.), start.y + px(30.));
+    cx.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let to = point(handle.x + px(30.), handle.y);
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (after, _, after_depth) = last_rectangle(&workspace, document_id, cx);
+    assert_eq!(
+        after.appearance.stroke_width_pt(),
+        7.,
+        "the field was committed"
+    );
+    assert!(
+        after.rect.width > before.rect.width + 5.,
+        "{after:?} {before:?}"
+    );
+    // The field's edit and the resize are one undo step each.
+    assert_eq!(after_depth, depth + 2);
+    assert_ne!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .click_out_status(document_id, cx)),
+        Some(butter_paper::document_workspace::CLICK_OUT_TYPING_STATUS)
+    );
+}
+
+/// The same for a press on the selected markup's body: it moves.
+#[gpui::test]
+fn a_selected_markups_body_moves_at_once_while_a_properties_field_has_the_typing(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, document_id, cx, start) = rectangle_with_a_typed_field(cx);
+    let (before, _, depth) = last_rectangle(&workspace, document_id, cx);
+    // The move band just outside the top edge's middle.
+    let band = point(start.x + px(40.), start.y - px(15.));
+    cx.simulate_mouse_down(band, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let to = point(band.x + px(25.), band.y + px(20.));
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (after, _, after_depth) = last_rectangle(&workspace, document_id, cx);
+    assert_eq!(
+        after.appearance.stroke_width_pt(),
+        7.,
+        "the field was committed"
+    );
+    assert!(after.rect.x > before.rect.x + 5., "{after:?} {before:?}");
+    assert_eq!(after_depth, depth + 2);
+}
+
+/// A press on empty page, or on another markup, keeps the rule: it only
+/// finishes the typing.
+#[gpui::test]
+fn a_press_on_empty_page_only_finishes_the_typing_in_a_properties_field(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx, _start) = rectangle_with_a_typed_field(cx);
+    let (before, _, depth) = last_rectangle(&workspace, document_id, cx);
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let empty = point(viewport.origin.x + px(40.), viewport.origin.y + px(40.));
+    cx.simulate_mouse_down(empty, MouseButton::Left, Modifiers::default());
+    let to = point(empty.x + px(30.), empty.y + px(30.));
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    // The field's blur runs with the next frame.
+    for _ in 0..2 {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.run_until_parked();
+    }
+    let (after, _, after_depth) = last_rectangle(&workspace, document_id, cx);
+    // (The field commits on its own blur, which a window that was never
+    // activated does not send; the press itself starts no gesture.)
+    assert_eq!(after.rect, before.rect, "nothing moved or resized");
+    assert_eq!(after_depth, depth, "the press made no edit");
+    assert_ne!(
+        workspace.read_with(cx, |workspace, cx| workspace
+            .click_out_status(document_id, cx)),
+        Some(butter_paper::document_workspace::CLICK_OUT_TYPING_STATUS),
+        "the typing ended"
     );
 }

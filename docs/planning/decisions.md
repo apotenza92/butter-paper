@@ -657,7 +657,13 @@ changes it; history is in git.
   Windows and Linux it acts, as those platforms do. A click away from a
   property field keeps the markup selected; the next press deselects it.
   Focus on a button, tab or thumbnail holds no typed text and stops
-  nothing.
+  nothing. Changed 2026-11-27 by the owner: a press on the selected
+  markup's handles or body moves or resizes it at once, also while a field
+  has the focus: a properties or default field commits as it does when it
+  is left, and text edited in place on a markup (a Text Box, Callout,
+  Cloud+ or Dimension caption) commits as one undo step for the text, then
+  the gesture starts in the same press. A press on empty page or on another
+  markup keeps the rule above: it only finishes the typing.
 - In Continuous view a click on a page makes it the current page (decided
   2026-11-25 by the owner), with no scroll, even when the click only
   dismisses. A scroll makes the page level with the view centre current

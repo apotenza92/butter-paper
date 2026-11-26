@@ -312,8 +312,12 @@ tooltip expands the instructions when the window truncates them.
   shows that markup's usual cursor there. A press inside the editor still
   puts the caret there, and a press on empty page or on another markup only
   finishes the text, as above. A new Text Box being drawn is no markup yet,
-  so any press finishes it. A click away from a property field keeps the markup
-  selected; the next press deselects it. Focus on a button, tab or
+  so any press finishes it. The same holds while a properties or default
+  field has the typing (changed 2026-11-27): a press on the selected
+  markup's handles or body commits the field, as leaving it does, and starts
+  the move or resize in the same press; a press on empty page or on another
+  markup only finishes the typing. A click away from a property field keeps
+  the markup selected; the next press deselects it. Focus on a button, tab or
   thumbnail holds no typed text: the next press on the page acts. A double
   or triple click that begins with such a press counts from the click after
   it. While a click would only dismiss, the pointer over empty page is the

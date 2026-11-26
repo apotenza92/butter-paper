@@ -405,10 +405,13 @@ impl ToolDefaultsPanel {
         ];
         let font_range = displayed_range(tool, ToolPropertyField::FontSizePt);
         let landing_range = displayed_range(tool, ToolPropertyField::LandingPt);
+        let cloud_range = displayed_range(tool, ToolPropertyField::CloudIntensity);
         for (input, step, range) in [
             (&width, 0.5, width_range),
             (&font_size, 1., font_range),
             (&landing, 1., landing_range),
+            // Bump size: half a step, 0 to 4.
+            (&cloud_intensity, 0.5, cloud_range),
         ] {
             subscriptions.push(crate::property_controls::subscribe_number_steps(
                 input, step, range.min, range.max, window, cx,
@@ -857,6 +860,7 @@ impl ToolDefaultsPanel {
                     &self.controls.cloud_intensity_slider,
                     &self.controls.cloud_intensity,
                 )
+                .stepper()
                 .row_id(TOOL_DEFAULTS_CLOUD_INTENSITY_ID)
                 .slider_id(TOOL_DEFAULTS_CLOUD_INTENSITY_SLIDER_ID)
                 .input_id(TOOL_DEFAULTS_CLOUD_INTENSITY_INPUT_ID)

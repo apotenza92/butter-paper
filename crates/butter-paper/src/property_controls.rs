@@ -637,14 +637,20 @@ impl RenderOnce for PropertyColor {
                 })
                 .into_any_element()
         };
-        control
+        // The swatch and its value, not the whole column: a press in the
+        // empty space beside them is no press on the colour.
+        h_flex()
+            .w_full()
+            .min_w_0()
             .child(
-                h_flex()
-                    .min_w_0()
-                    .gap_2()
-                    .items_center()
-                    .child(swatch)
-                    .child(hex_label),
+                control.child(
+                    h_flex()
+                        .min_w_0()
+                        .gap_2()
+                        .items_center()
+                        .child(swatch)
+                        .child(hex_label),
+                ),
             )
             .into_any_element()
     }
@@ -1279,6 +1285,7 @@ pub struct PropertySliderInput {
     input_id: Option<&'static str>,
     suffix: Option<SharedString>,
     disabled: bool,
+    stepper: bool,
 }
 
 impl PropertySliderInput {
@@ -1296,7 +1303,16 @@ impl PropertySliderInput {
             input_id: None,
             suffix: None,
             disabled: false,
+            stepper: false,
         }
+    }
+
+    /// The number beside the slider has the stock − and + buttons, as a
+    /// [`PropertyStepInput`] has: subscribe its field with
+    /// [`subscribe_number_steps`].
+    pub fn stepper(mut self) -> Self {
+        self.stepper = true;
+        self
     }
 
     pub fn row_id(mut self, id: &'static str) -> Self {
@@ -1327,17 +1343,30 @@ impl PropertySliderInput {
 
 impl RenderOnce for PropertySliderInput {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let mut input = Input::new(&self.input)
-            .aria_label(self.label)
-            .w_full()
-            .disabled(self.disabled);
-        if let Some(suffix) = self.suffix {
-            input = input.suffix(suffix);
-        }
+        let stepper = self.stepper;
+        let input = if stepper {
+            let mut input = NumberInput::new(&self.input).disabled(self.disabled);
+            if let Some(suffix) = self.suffix {
+                input = input.suffix(suffix);
+            }
+            input.into_any_element()
+        } else {
+            let mut input = Input::new(&self.input)
+                .aria_label(self.label)
+                .w_full()
+                .disabled(self.disabled);
+            if let Some(suffix) = self.suffix {
+                input = input.suffix(suffix);
+            }
+            input.into_any_element()
+        };
 
+        // The stock slider keeps its full-strength track when disabled;
+        // fade it as the disabled number field beside it is faded.
         let slider = div()
             .flex_1()
             .min_w_0()
+            .when(self.disabled, |slider| slider.opacity(0.5))
             .child(Slider::new(&self.slider).disabled(self.disabled));
         let slider = if let Some(id) = self.slider_id {
             slider
@@ -1348,7 +1377,12 @@ impl RenderOnce for PropertySliderInput {
             slider.into_any_element()
         };
 
-        let input = div().w_20().flex_shrink_0().child(input);
+        // The − and + buttons take room the plain number does not.
+        let input = div()
+            .when(stepper, |input| input.w_32())
+            .when(!stepper, |input| input.w_20())
+            .flex_shrink_0()
+            .child(input);
         let input = if let Some(id) = self.input_id {
             input
                 .id(id)

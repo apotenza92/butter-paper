@@ -3119,6 +3119,9 @@ pub struct DocumentWorkspace {
     /// Whether the last frame had room for the left sidebar beside an open
     /// properties panel (the yield rule). A hidden sidebar takes no focus.
     left_sidebar_fits: bool,
+    /// A press is being played again after the properties field it found
+    /// with the typing committed: it does not wait on that field again.
+    replaying_chrome_press: bool,
     /// Finds the system's signing identities.
     system_identity_source: fn() -> Vec<crate::system_certificates::SystemIdentity>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
@@ -5085,6 +5088,7 @@ impl DocumentWorkspace {
             search_panel_requested: false,
             find_bar_requested: false,
             left_sidebar_fits: true,
+            replaying_chrome_press: false,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
             new_tab_open: false,
@@ -17459,6 +17463,15 @@ impl DocumentWorkspace {
         let Some(document_id) = self.active_document_id else {
             return false;
         };
+        // The flag is only the field's word that it holds an edit: with no
+        // properties field typed in, an edit that is committed already (or
+        // never was one) is nothing for Escape to restore.
+        if self.property_field_editing
+            && self.typing_target(window, cx) != Some(click_out::TypingTarget::ChromeText)
+            && !self.property_preview_active(document_id, cx)
+        {
+            self.property_field_editing = false;
+        }
         if !self.property_preview_active(document_id, cx) && !self.property_field_editing {
             return false;
         }
@@ -20245,6 +20258,7 @@ impl DocumentWorkspace {
         cx: &mut Context<Self>,
     ) -> bool {
         self.placement_press = None;
+        let raw_click_count = click_count;
         // A new press; a double or triple click that began by dismissing
         // something counts from the click after it.
         self.click_out.held = false;
@@ -20283,6 +20297,28 @@ impl DocumentWorkspace {
             // The press is on the edited markup's own handle or body: the
             // text is committed, and the press goes on to move or resize it.
             click_out::CanvasPressGate::CommitThenAct => {
+                if typing == Some(click_out::TypingTarget::ChromeText) {
+                    // A properties field has the typing: it commits from the
+                    // events it is sent, so the press goes on once they ran
+                    // (its edit is then in the history, and the gesture
+                    // starts on the markup as it now is).
+                    self.commit_chrome_typing(window, cx);
+                    self.replaying_chrome_press = true;
+                    cx.defer_in(window, move |_, window, cx| {
+                        cx.defer_in(window, move |workspace, window, cx| {
+                            workspace.begin_annotation_pointer(
+                                position,
+                                modifiers,
+                                raw_click_count,
+                                first_mouse,
+                                window,
+                                cx,
+                            );
+                            workspace.replaying_chrome_press = false;
+                        });
+                    });
+                    return true;
+                }
                 if let Err(error) = self.commit_pending_text_box(cx) {
                     self.text_box_commit_error = Some(error);
                     return true;

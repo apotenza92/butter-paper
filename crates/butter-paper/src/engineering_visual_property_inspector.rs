@@ -4,11 +4,10 @@
 
 use crate::annotation_model::{MarkupId, RectangleAppearance};
 use crate::property_controls::{
-    FieldPhase, PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    PropertyPreviewEvent, PropertySliderInput, PropertyStepInput, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage, property_body,
-    property_lock_toggle, property_number, property_row, property_slider_row,
-    subscribe_property_color,
+    FieldPhase, PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyPreviewEvent,
+    PropertySliderInput, PropertyStepInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_lock_toggle,
+    property_row, property_slider_row, subscribe_property_color,
 };
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
@@ -182,7 +181,6 @@ impl EngineeringVisualPropertyInspector {
                 .default_value("1")
                 .min(0.)
                 .max(4.)
-                .step(0.25)
         });
         let width_slider = cx.new(|_| {
             SliderState::new()
@@ -316,9 +314,12 @@ impl EngineeringVisualPropertyInspector {
                 },
             ),
         ];
-        crate::property_wheel::register_number_wheel(&intensity, 0.25, 0., 4., cx);
         subscriptions.push(crate::property_controls::subscribe_number_steps(
             &width, 0.5, 0.25, 24., window, cx,
+        ));
+        // Bump size: half a step, 0 to 4.
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &intensity, 0.5, 0., 4., window, cx,
         ));
         subscriptions.extend(subscribe_property_color(
             &color,
@@ -693,14 +694,11 @@ impl Render for EngineeringVisualPropertyInspector {
                 ))
                 .row(property_row(
                     "Bump size",
-                    property_number(
-                        PropertyNumericInput::new(
-                            ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
-                            "Bump size",
-                            &self.intensity,
-                        )
-                        .disabled(disabled),
-                    ),
+                    PropertyStepInput::new(
+                        ENGINEERING_VISUAL_INSPECTOR_INTENSITY_ID,
+                        &self.intensity,
+                    )
+                    .disabled(disabled),
                 ));
         }
         PropertyInspectorPanel::new(

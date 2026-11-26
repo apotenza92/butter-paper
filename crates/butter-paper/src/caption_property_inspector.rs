@@ -444,6 +444,14 @@ impl CaptionPropertyInspector {
             &font_size, 1., 6., 72., window, cx,
         ));
         subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &intensity_input,
+            0.5,
+            0.,
+            4.,
+            window,
+            cx,
+        ));
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
             &landing,
             1.,
             0.,
@@ -894,6 +902,7 @@ impl Render for CaptionPropertyInspector {
             rows = rows.row(property_slider_row(
                 "Bump size",
                 PropertySliderInput::new("Cloud bump size", &self.intensity, &self.intensity_input)
+                    .stepper()
                     .row_id(CAPTION_INSPECTOR_INTENSITY_ID)
                     .slider_id(CAPTION_INSPECTOR_INTENSITY_SLIDER_ID)
                     .input_id(CAPTION_INSPECTOR_INTENSITY_INPUT_ID)

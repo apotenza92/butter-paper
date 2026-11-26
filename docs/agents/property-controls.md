@@ -121,8 +121,10 @@ defaults panel uses "Colour" and "Line width" where one colour serves the
 line and the text (Callout, Cloud+, Dimension). The rows stay in place when a
 setting changes, as in [Optional settings](#optional-settings).
 
-Every numeric size (line width, font size, offset, landing) uses
-`PropertyStepInput`. It is the stock gpui-component number input with − and +
+Every numeric size (line width, font size, offset, landing) and the cloud
+Bump size use `PropertyStepInput`. (Where Bump size has a slider, in the Cloud+
+properties and the tool defaults, the slider's number has the same − and +
+buttons: `PropertySliderInput::stepper`.) It is the stock gpui-component number input with − and +
 buttons, in the full width of the value column. Wire it so:
 
 - Build its `InputState` for the field's `min` and `max`. Do not call
@@ -134,7 +136,8 @@ buttons, in the full width of the value column. Wire it so:
   and commits as for a typed one, and each press is one undo step. The
   presses do not coalesce.
 - A press at the smallest or largest value changes nothing.
-- Steps: line width 0.5 pt, font size 1 pt, offset 1 pt, landing 1 pt.
+- Steps: line width 0.5 pt, font size 1 pt, offset 1 pt, landing 1 pt, Bump size
+  0.5 (0 to 4).
   Ranges: the field's own (line width 0.25 to 24 pt, font size 6 to 72 pt,
   landing 0 to the Cloud+ limit). Ink and rectangle line width keep their
   slider's range (0.25 to 20 pt, 0 to 20 pt).
@@ -151,8 +154,8 @@ The code is in `property_wheel.rs`.
   by the slider's own step. A stepper (`PropertyStepInput`) steps as its − and
   + buttons do. `subscribe_number_steps` gives it the wheel. Call
   `register_number_wheel(&input, step, min, max, cx)` to give the wheel to a
-  plain `PropertyNumericInput` (X, Y, Width, Height, Rotation, Cloud
-  intensity, Line spacing). Both clamp to the min and max.
+  plain `PropertyNumericInput` (X, Y, Width, Height, Rotation, Line
+  spacing). Both clamp to the min and max.
 - One wheel notch is one step. A trackpad's pixels add up: 24 px is one step.
   Shift makes one step ten steps, on every platform.
 - The value shows on the markup as it changes (as a typed value does). A

@@ -84,6 +84,8 @@ pub(super) struct PressFacts {
     /// The press lands on a handle, or on the body outside the editor, of the
     /// markup whose text is edited in place.
     pub on_edited_markup: bool,
+    /// The press lands on a handle or the body of a selected markup.
+    pub on_selected_markup: bool,
     pub canvas_dismissal: Option<CanvasDismissal>,
 }
 
@@ -102,6 +104,12 @@ pub(super) fn decide_press(facts: &PressFacts) -> CanvasPressGate {
         return CanvasPressGate::ClickOut(ClickOut::WindowActivation);
     }
     if facts.typing == Some(TypingTarget::CanvasText) && facts.on_edited_markup {
+        return CanvasPressGate::CommitThenAct;
+    }
+    // A properties or default field with the typing: the selected markup's
+    // own handles and body commit it (as leaving the field does) and start
+    // the move or resize in the same press.
+    if facts.typing == Some(TypingTarget::ChromeText) && facts.on_selected_markup {
         return CanvasPressGate::CommitThenAct;
     }
     match facts.typing {
@@ -265,6 +273,9 @@ impl DocumentWorkspace {
                 && self.form_widget_hit(&interaction, point, cx).is_some();
             facts.on_edited_markup = typing == Some(TypingTarget::CanvasText)
                 && self.press_on_edited_markup(&interaction, point, cx);
+            facts.on_selected_markup = typing == Some(TypingTarget::ChromeText)
+                && !self.replaying_chrome_press
+                && self.press_on_selected_markup(&interaction, point, cx);
             facts.canvas_dismissal =
                 self.select_press_dismissal(&interaction, point, modifiers, cx);
         }
@@ -359,6 +370,8 @@ impl DocumentWorkspace {
                 && self.form_widget_hit(interaction, point, cx).is_some(),
             on_edited_markup: typing == Some(TypingTarget::CanvasText)
                 && self.press_on_edited_markup(interaction, point, cx),
+            on_selected_markup: typing == Some(TypingTarget::ChromeText)
+                && self.press_on_selected_markup(interaction, point, cx),
             canvas_dismissal: self.select_press_dismissal(interaction, point, modifiers, cx),
             ..PressFacts::default()
         };
@@ -366,6 +379,61 @@ impl DocumentWorkspace {
             decide_press(&facts),
             CanvasPressGate::Act | CanvasPressGate::CommitThenAct
         )
+    }
+
+    /// Whether `point` is on a handle, or on the body, of a selected markup:
+    /// a press there while a properties or default field has the typing
+    /// commits the field and starts the move or resize at once.
+    pub(super) fn press_on_selected_markup(
+        &self,
+        interaction: &PageInteraction,
+        point: PdfPoint,
+        cx: &App,
+    ) -> bool {
+        let Some(session) = self.session(interaction.document_id, cx) else {
+            return false;
+        };
+        let Ok(tolerance) = interaction.transform.tolerance_points(4.) else {
+            return false;
+        };
+        let annotations = &session.read(cx).annotations;
+        let document = interaction.document_id.value();
+        if annotations.tool() != AnnotationTool::Select {
+            return false;
+        }
+        let selected = annotations.selected_ids(document);
+        if selected.is_empty() {
+            return false;
+        }
+        annotations
+            .hover_transform_handle(document, interaction.page_index, point, tolerance)
+            .ok()
+            .flatten()
+            .is_some_and(|(id, _)| selected.contains(&id))
+            || annotations
+                .hover_markup_id(document, interaction.page_index, point, tolerance)
+                .ok()
+                .flatten()
+                .is_some_and(|id| selected.contains(&id))
+    }
+
+    /// Commits the field that has the typing, as leaving it does, and gives
+    /// the keyboard to the page. The field's own commit runs from the events
+    /// it is sent, so the press that began this goes on only afterwards
+    /// (`replay_press_after_field_commit`).
+    pub(super) fn commit_chrome_typing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_component::input::{AnyInputState, InputEvent};
+        if let Some(state) = window.focused_input(cx) {
+            match state {
+                AnyInputState::Input(input) => input.update(cx, |_, cx| cx.emit(InputEvent::Blur)),
+                AnyInputState::Textarea(input) => {
+                    input.update(cx, |_, cx| cx.emit(InputEvent::Blur))
+                }
+                _ => {}
+            }
+        }
+        self.release_search_query_focus();
+        self.workspace_focus.focus(window, cx);
     }
 
     /// Whether `point` is on a handle, or on the body, of the markup whose
@@ -628,6 +696,7 @@ mod tests {
         inside_typing_target: false,
         on_form_field: false,
         on_edited_markup: false,
+        on_selected_markup: false,
         canvas_dismissal: None,
     };
 
@@ -719,11 +788,16 @@ mod tests {
                 Out(ClickOut::WindowActivation),
             ),
             (
-                "17d a property field is typed in: the press only finishes it",
+                "17d a property field is typed in, the press is on a selected markup's handle or body: it commits the field and acts",
                 PressFacts {
-                    on_edited_markup: true,
+                    on_selected_markup: true,
                     ..typing(ChromeText)
                 },
+                CommitThenAct,
+            ),
+            (
+                "17e a property field is typed in, the press is elsewhere: it only finishes the typing",
+                typing(ChromeText),
                 Out(ClickOut::ChromeText),
             ),
             (
