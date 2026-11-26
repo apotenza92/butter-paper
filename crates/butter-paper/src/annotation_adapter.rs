@@ -33,8 +33,9 @@ use crate::annotation_model::{
     ellipse_move_zone_contains, ellipse_outline_resize_handle,
 };
 use crate::cloud_plus_routing::{
-    CloudPlusObstacle, CloudPlusRoutingContext, place_initial_cloud_plus_text_box,
-    route_cloud_plus_leader, snap_cloud_plus_leader_tip,
+    CLOUD_PLUS_LANDING_PT, CLOUD_PLUS_TEXT_GAP_PT, CloudPlusObstacle, CloudPlusRoutingContext,
+    cloud_plus_landing_pt, drag_cloud_plus_knee, place_initial_cloud_plus_text_box,
+    reroute_cloud_plus_leader, route_cloud_plus_leader, snap_cloud_plus_leader_tip,
 };
 use crate::density_fixture::{DensityFixtureImportOutcome, materialize_density_fixture};
 use crate::native_editing_v5::{
@@ -69,7 +70,6 @@ const CAPTION_MIN_WIDTH_PT: f64 = 24.0;
 const CAPTION_HEIGHT_PT: f64 = 44.0;
 const CALLOUT_DEFAULT_TEXT: &str = "Callout";
 const CLOUD_PLUS_TEXT_HEIGHT_PT: f64 = 44.0;
-const CLOUD_PLUS_TEXT_GAP_PT: f64 = 24.0;
 const LENGTH_MINIMUM_PDF_DISTANCE: f64 = 2.0;
 const ARC_MINIMUM_BULGE_CSS_PX: f64 = 8.0;
 pub const ROTATION_HANDLE_OFFSET_CSS_PX: f64 = crate::annotation_model::ROTATION_HANDLE_OFFSET_PT;
@@ -5173,7 +5173,7 @@ impl AnnotationAdapter {
         let mut cloud_points = annotation.cloud_points().to_vec();
         cloud_points[vertex_index] = point;
         let visible_path = cloud_visible_path(&cloud_points, annotation.border_effect_intensity())?;
-        let leader = route_cloud_plus_leader(
+        let leader = reroute_cloud_plus_leader(
             &cloud_points,
             &visible_path,
             annotation.text_box,
@@ -5255,7 +5255,7 @@ impl AnnotationAdapter {
             annotation.text_box.width,
             annotation.text_box.height,
         )?;
-        let leader = route_cloud_plus_leader(
+        let leader = reroute_cloud_plus_leader(
             annotation.cloud_points(),
             &annotation.scallop_path(),
             text_box,
@@ -6242,6 +6242,14 @@ impl AnnotationAdapter {
         self.documents
             .get(&document_id)
             .is_some_and(AnnotationDocument::selected_is_locked)
+    }
+
+    /// Whether the markup turns from a rotation knob (Rectangle, Ellipse,
+    /// Text Box, Image, Snapshot). A Callout or Cloud+ has none.
+    pub fn annotation_has_rotation_knob(&self, document_id: u64, id: &MarkupId) -> bool {
+        self.documents
+            .get(&document_id)
+            .is_some_and(|document| document.has_rotation_knob(id))
     }
 
     pub fn selected_kind(&self, document_id: u64) -> Option<AnnotationKind> {
@@ -11854,6 +11862,7 @@ impl AnnotationAdapter {
             caption_box_width("Cloud+", appearance.text()),
             CLOUD_PLUS_TEXT_HEIGHT_PT,
             CLOUD_PLUS_TEXT_GAP_PT,
+            properties.landing_pt,
             &routing_context,
         )?;
         let annotation = CloudPlusAnnotation::new(
@@ -12089,7 +12098,7 @@ impl AnnotationAdapter {
             caption_supplement,
         );
         let (text_box, leader_points) =
-            cloud_plus_text_layout(&annotation, &content, &routing_context)?;
+            cloud_plus_text_layout(&annotation, &content, None, &routing_context)?;
         let document = self
             .documents
             .get_mut(&document_id)
@@ -12141,7 +12150,7 @@ impl AnnotationAdapter {
             caption_supplement,
         );
         let (text_box, leader_points) =
-            cloud_plus_text_layout(&annotation, &content, &routing_context)?;
+            cloud_plus_text_layout(&annotation, &content, None, &routing_context)?;
         let document = self
             .documents
             .get_mut(&document_id)
@@ -12185,13 +12194,15 @@ impl AnnotationAdapter {
     }
 
     /// Restyles a Cloud+ from its properties, refitting its caption and
-    /// rerouting its leader, as one undoable change.
+    /// rerouting its leader with a landing of `landing_pt`, as one undoable
+    /// change.
     pub fn set_cloud_plus_style_with_routing_supplement(
         &mut self,
         document_id: u64,
         id: &MarkupId,
         appearance: CloudPlusAppearance,
         border_effect_intensity: f64,
+        landing_pt: f64,
         caption_supplement: &AnnotationSelectionSupplement,
     ) -> Result<(), AnnotationError> {
         let annotation = self
@@ -12218,8 +12229,12 @@ impl AnnotationAdapter {
             Some(id),
             caption_supplement,
         );
-        let (text_box, leader_points) =
-            cloud_plus_text_layout(&restyled, restyled.content(), &routing_context)?;
+        let (text_box, leader_points) = cloud_plus_text_layout(
+            &restyled,
+            restyled.content(),
+            Some(landing_pt),
+            &routing_context,
+        )?;
         self.documents
             .get_mut(&document_id)
             .ok_or(AnnotationError::NoSelection)?
@@ -13861,6 +13876,7 @@ impl AnnotationAdapter {
                     caption_box_width("Cloud+", appearance.text()),
                     CLOUD_PLUS_TEXT_HEIGHT_PT,
                     CLOUD_PLUS_TEXT_GAP_PT,
+                    properties.landing_pt,
                     &routing_context,
                 )
             {
@@ -16499,10 +16515,13 @@ fn hit_cloud_plus_handle(
     );
     let cloud_count = annotation.cloud_points().len();
     let resize_end = cloud_count + RectangleResizeHandle::ALL.len();
+    // The tip and the knee have handles. The connection follows the text
+    // box, so the box's own side handle is there instead.
     if let Some((index, _)) = annotation
         .leader_points()
         .iter()
         .enumerate()
+        .take(2)
         .rev()
         .find(|(_, candidate)| distance(**candidate, point) <= handle_tolerance)
     {
@@ -16737,7 +16756,7 @@ fn resolve_cloud_plus_pointer_edit(
             *point = current;
             let visible_path =
                 cloud_visible_path(&cloud_points, original.border_effect_intensity())?;
-            leader_points = route_cloud_plus_leader(
+            leader_points = reroute_cloud_plus_leader(
                 &cloud_points,
                 &visible_path,
                 text_box,
@@ -16752,7 +16771,7 @@ fn resolve_cloud_plus_pointer_edit(
                 handle,
                 handle.outset_pointer(current, original.text_box_border_inset_pt()),
             );
-            leader_points = route_cloud_plus_leader(
+            leader_points = reroute_cloud_plus_leader(
                 &cloud_points,
                 &original.scallop_path(),
                 text_box,
@@ -16769,7 +16788,7 @@ fn resolve_cloud_plus_pointer_edit(
             }
             if index == leader_points.len() - 1 {
                 leader_points[index] = current;
-                leader_points = route_cloud_plus_leader(
+                leader_points = reroute_cloud_plus_leader(
                     &cloud_points,
                     &original.scallop_path(),
                     text_box,
@@ -16781,13 +16800,19 @@ fn resolve_cloud_plus_pointer_edit(
                 leader_points[index] =
                     snap_cloud_plus_leader_tip(&original.scallop_path(), current)?;
             } else {
-                leader_points[index] = current;
+                // The knee sets the landing's length; the landing stays level.
+                leader_points = drag_cloud_plus_knee(
+                    &original.scallop_path(),
+                    text_box,
+                    &leader_points,
+                    current,
+                )?;
             }
         }
         CloudPlusPointerEditKind::TextBox => {
             text_box.x += current.x - start.x;
             text_box.y += current.y - start.y;
-            leader_points = route_cloud_plus_leader(
+            leader_points = reroute_cloud_plus_leader(
                 &cloud_points,
                 &original.scallop_path(),
                 text_box,
@@ -17193,9 +17218,12 @@ pub(crate) fn cloud_plus_fitted_text_box(
     }
 }
 
+/// A Cloud+ caption box fitted to `content`, with its leader routed again.
+/// The leader keeps its landing length unless `landing_pt` gives a new one.
 fn cloud_plus_text_layout(
     annotation: &CloudPlusAnnotation,
     content: &str,
+    landing_pt: Option<f64>,
     routing_context: &CloudPlusRoutingContext,
 ) -> Result<(PdfRect, Vec<PdfPoint>), AnnotationError> {
     let normalized_content = content.replace("\r\n", "\n").replace('\r', "\n");
@@ -17229,6 +17257,9 @@ fn cloud_plus_text_layout(
         &annotation.scallop_path(),
         text_box,
         annotation.leader_points(),
+        landing_pt
+            .or_else(|| cloud_plus_landing_pt(annotation.leader_points()))
+            .unwrap_or(CLOUD_PLUS_LANDING_PT),
         routing_context,
     )?;
     Ok((text_box, leader.points))
@@ -18418,6 +18449,181 @@ mod tests {
         assert!(!committed.draft);
         assert_eq!(committed.text_box, draft.text_box);
         assert_eq!(committed.leader_points, draft.leader_points);
+    }
+
+    #[test]
+    fn a_new_cloud_plus_has_a_landing_of_the_default_length_and_no_rotation_knob() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        adapter
+            .pointer_down(7, 0, 1, point(120., 420.), 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(260., 520.)).unwrap();
+        adapter.pointer_up(1, point(260., 520.)).unwrap();
+        let created = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let [tip, knee, connection] = created.leader_points() else {
+            panic!("a new Cloud+ has a leader");
+        };
+        assert_eq!(knee.y, connection.y, "the landing is level");
+        assert!(
+            ((connection.x - knee.x).abs() - CLOUD_PLUS_LANDING_PT).abs() < 1e-9,
+            "the landing has the default length: {:?}",
+            created.leader_points()
+        );
+        assert!(
+            (knee.y - tip.y).abs() > 8.,
+            "the leader bends at the knee, so the landing shows: {:?}",
+            created.leader_points()
+        );
+        assert!(!adapter.annotation_has_rotation_knob(7, &created.id));
+    }
+
+    #[test]
+    fn a_new_cloud_plus_takes_the_tool_landing_and_a_landing_of_zero() {
+        for landing in [36., 0.] {
+            let mut adapter = AnnotationAdapter::default();
+            adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+            let mut properties = adapter.tool_properties(AnnotationTool::CloudPlus);
+            properties.landing_pt = landing;
+            adapter
+                .set_tool_properties(AnnotationTool::CloudPlus, properties)
+                .unwrap();
+            adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+            adapter
+                .pointer_down(7, 0, 1, point(120., 420.), 4.)
+                .unwrap();
+            adapter.pointer_move(1, point(260., 520.)).unwrap();
+            let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
+            assert_eq!(
+                cloud_plus_landing_pt(&preview.leader_points),
+                Some(landing),
+                "the preview shows the tool's landing"
+            );
+            adapter.pointer_up(1, point(260., 520.)).unwrap();
+            let created = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+            let [_, knee, connection] = created.leader_points() else {
+                panic!("a new Cloud+ has a leader");
+            };
+            assert_eq!(knee.y, connection.y);
+            assert_eq!(
+                cloud_plus_landing_pt(created.leader_points()),
+                Some(landing)
+            );
+        }
+        let mut properties = ToolProperties::for_tool(AnnotationTool::CloudPlus);
+        properties.landing_pt = -1.;
+        assert!(
+            AnnotationAdapter::default()
+                .set_tool_properties(AnnotationTool::CloudPlus, properties)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn dragging_a_cloud_plus_knee_sets_its_landing_and_moving_the_text_keeps_it() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        adapter
+            .pointer_down(7, 0, 1, point(120., 420.), 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(260., 520.)).unwrap();
+        adapter.pointer_up(1, point(260., 520.)).unwrap();
+        let created = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        adapter.set_tool(AnnotationTool::Select).unwrap();
+        assert!(adapter.documents.get_mut(&7).unwrap().select(&created.id));
+        let [tip, knee, connection] = *created.leader_points() else {
+            panic!("a new Cloud+ has a leader");
+        };
+        let outward = (knee.x - connection.x).signum();
+        let history_before = adapter.history_depths(7);
+
+        // Out by 20 pt and up by 30 pt: the landing grows by 20 pt and stays
+        // level.
+        adapter.pointer_down(7, 0, 2, knee, 4.).unwrap();
+        let target = point(knee.x + outward * 20., knee.y + 30.);
+        adapter.pointer_move(2, target).unwrap();
+        adapter.pointer_up(2, target).unwrap();
+        let dragged = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert_eq!(dragged.text_box, created.text_box);
+        assert_eq!(dragged.leader_points()[2], connection);
+        assert_eq!(dragged.leader_points()[1].y, connection.y);
+        let landing = cloud_plus_landing_pt(dragged.leader_points()).unwrap();
+        assert!(
+            (landing - CLOUD_PLUS_LANDING_PT - 20.).abs() < 1e-9,
+            "the knee sets the landing: {:?}",
+            dragged.leader_points()
+        );
+        assert_eq!(dragged.leader_points()[0], tip, "the tip stays");
+        assert_eq!(adapter.history_depths(7).0, history_before.0 + 1);
+
+        // Moving the text keeps the landing length.
+        adapter
+            .translate_selected_cloud_plus_text_box(7, 30., 40.)
+            .unwrap();
+        let moved = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        assert!((cloud_plus_landing_pt(moved.leader_points()).unwrap() - landing).abs() < 1e-9);
+
+        // Undo returns the landing to the default.
+        adapter.undo(7).unwrap();
+        adapter.undo(7).unwrap();
+        assert!(adapter.snapshot(7).unwrap().cloud_pluses[0].same_persisted_state_as(&created));
+    }
+
+    #[test]
+    fn a_cloud_plus_style_sets_its_landing_and_the_connection_has_no_handle() {
+        let mut adapter = AnnotationAdapter::default();
+        adapter.set_semantic_snap_page_size(7, 0, 612., 792.);
+        adapter.set_tool(AnnotationTool::CloudPlus).unwrap();
+        adapter
+            .pointer_down(7, 0, 1, point(120., 420.), 4.)
+            .unwrap();
+        adapter.pointer_move(1, point(260., 520.)).unwrap();
+        adapter.pointer_up(1, point(260., 520.)).unwrap();
+        let created = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        for landing in [44.5, 0.] {
+            adapter
+                .set_cloud_plus_style_with_routing_supplement(
+                    7,
+                    &created.id,
+                    created.appearance.clone(),
+                    created.border_effect_intensity(),
+                    landing,
+                    &AnnotationSelectionSupplement::new(),
+                )
+                .unwrap();
+            let restyled = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+            assert_eq!(
+                cloud_plus_landing_pt(restyled.leader_points()),
+                Some(landing)
+            );
+        }
+        let restyled = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let connection = restyled.leader_points()[2];
+        // With no landing, the knee's handle is where the text meets it.
+        assert_eq!(
+            hit_cloud_plus_handle(&restyled, connection, 0.5, 1.),
+            Some(restyled.cloud_points().len() + RectangleResizeHandle::ALL.len() + 1)
+        );
+        adapter
+            .set_cloud_plus_style_with_routing_supplement(
+                7,
+                &created.id,
+                created.appearance.clone(),
+                created.border_effect_intensity(),
+                CLOUD_PLUS_LANDING_PT,
+                &AnnotationSelectionSupplement::new(),
+            )
+            .unwrap();
+        let restyled = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
+        let handle = hit_cloud_plus_handle(&restyled, restyled.leader_points()[2], 0.5, 1.);
+        assert!(
+            handle
+                .is_none_or(|index| index
+                    < restyled.cloud_points().len() + RectangleResizeHandle::ALL.len()),
+            "the connection is the text box's side handle, not a leader handle: {handle:?}"
+        );
     }
 
     #[test]
@@ -25604,13 +25810,16 @@ mod tests {
         assert_eq!(moved.appearance, original.appearance);
         assert_eq!(adapter.history_depths(7), (history_before.0 + 1, 0));
 
+        // The knee moves along its level landing: the drag's rise is
+        // ignored.
         let knee = moved.leader_points()[1];
-        let next_knee = point(knee.x + 12., knee.y + 8.);
+        let pointer = point(knee.x + 12., knee.y + 8.);
+        let next_knee = point(knee.x + 12., knee.y);
         adapter.pointer_down(7, 0, 4, knee, 1.).unwrap();
-        adapter.pointer_move(4, next_knee).unwrap();
+        adapter.pointer_move(4, pointer).unwrap();
         let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
         assert_eq!(preview.leader_points[1], next_knee);
-        adapter.pointer_up(4, next_knee).unwrap();
+        adapter.pointer_up(4, pointer).unwrap();
         assert_eq!(
             adapter.snapshot(7).unwrap().cloud_pluses[0].leader_points()[1],
             next_knee
@@ -25667,35 +25876,29 @@ mod tests {
             .pointer_up(6, point(north.x, north.y + 10.))
             .unwrap();
 
+        // The connection has no handle of its own: the text box's side
+        // handle there takes the press.
         let before_connection = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
         let connection = *before_connection.leader_points().last().unwrap();
+        let side_handle = if connection.x == before_connection.text_box.x {
+            RectangleResizeHandle::West
+        } else {
+            RectangleResizeHandle::East
+        };
         assert_eq!(
             adapter
                 .hover_cloud_plus_handle(7, 0, connection, 1.)
                 .unwrap(),
-            Some((id.clone(), 14)),
-            "leader connection must have reverse-order priority over its overlapping resize handle"
+            Some((
+                id.clone(),
+                before_connection.cloud_points().len()
+                    + RectangleResizeHandle::ALL
+                        .iter()
+                        .position(|handle| *handle == side_handle)
+                        .unwrap()
+            )),
+            "the text box's side handle stands for the leader connection"
         );
-        let hinted_connection = point(connection.x + 35., connection.y + 18.);
-        adapter.pointer_down(7, 0, 7, connection, 1.).unwrap();
-        adapter.pointer_move(7, hinted_connection).unwrap();
-        let preview = adapter.document_scene(7, 0).cloud_pluses.remove(0);
-        assert_eq!(preview.text_box, before_connection.text_box);
-        assert_eq!(
-            preview.feedback,
-            SceneInteractionFeedback::Transform {
-                chrome_visible: true,
-                active_handle: 14,
-            }
-        );
-        assert_ne!(*preview.leader_points.last().unwrap(), hinted_connection);
-        assert!(
-            preview.leader_points.last().unwrap().x == preview.text_box.x
-                || preview.leader_points.last().unwrap().x
-                    == preview.text_box.x + preview.text_box.width,
-            "connection drag must reroute to a text-box edge and win over its overlapping resize handle"
-        );
-        adapter.pointer_up(7, hinted_connection).unwrap();
 
         let before_tip = adapter.snapshot(7).unwrap().cloud_pluses[0].clone();
         let tip = before_tip.leader_points()[0];

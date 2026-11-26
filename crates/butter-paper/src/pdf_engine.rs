@@ -16964,6 +16964,41 @@ mod tests {
         assert!(imported.cloud_pluses[0].same_persisted_state_as(&cloud_plus));
     }
 
+    #[test]
+    fn a_cloud_plus_landing_length_reopens_from_its_callout_line() {
+        use super::*;
+        use crate::cloud_plus_routing::cloud_plus_landing_pt;
+        let seeded = persistence_order_test_cloud_plus();
+        // A landing of 41.25 pt, level at the middle of the text's left side.
+        let cloud_plus = CloudPlusAnnotation::new(
+            seeded.id.clone(),
+            seeded.page_index,
+            seeded.cloud_points().to_vec(),
+            seeded.border_effect_intensity(),
+            vec![
+                PdfPoint::new(100., 100.).unwrap(),
+                PdfPoint::new(108.75, 170.).unwrap(),
+                PdfPoint::new(150., 170.).unwrap(),
+            ],
+            seeded.text_box,
+            seeded.content(),
+            seeded.appearance.clone(),
+        )
+        .unwrap();
+        let mut session = PdfPersistenceSession::from_document(
+            PathBuf::new(),
+            retained_render_test_document(),
+            None,
+        )
+        .unwrap();
+        session.add_cloud_plus(cloud_plus.clone()).unwrap();
+
+        let imported = import_annotations(&session.document, &BTreeMap::new()).unwrap();
+        let reopened = &imported.cloud_pluses[0];
+        assert!(reopened.same_persisted_state_as(&cloud_plus));
+        assert_eq!(cloud_plus_landing_pt(reopened.leader_points()), Some(41.25));
+    }
+
     /// Opens `source` bytes as a session, adds a rectangle, saves to a new
     /// file and returns the saved bytes. The scratch folder goes at drop.
     #[cfg(any(unix, windows))]

@@ -334,15 +334,41 @@ tooltip expands the instructions when the window truncates them.
 - A Callout or Cloud+ caption box fits its text and stays against its
   leader; a new Callout's box sits beyond the drag end, away from the arrow
   tip.
+- A Cloud+ leader runs from the cloud to a level landing. The landing meets
+  the left or right side of the text box at the box's vertical middle, as a
+  Callout's does. A new Cloud+ puts its text beside the cloud, clear of
+  other markups and the page edge, with the landing length of the Cloud+
+  tool's Landing property (19.8 pt by default, as Revu draws it).
+- When the text box or the cloud moves or changes size, the leader is routed
+  again. It keeps its landing length and takes the side whose landing points
+  at the cloud. It takes a side where it does not cross the cloud or the
+  text box or turn back over the landing, and then a side clear of other
+  markups. Its tip is the cloud point nearest the knee. When the cloud lies level with the landing and too near for its
+  length, the landing stops 6 pt short of the cloud (halfway, when the gap is
+  less than 12 pt).
+- A selected Cloud+ has handles on its leader's tip and knee, with the point
+  cursor; it has no rotation knob. The text box's side handle stands where
+  the leader meets the text. Dragging the tip slides it along the cloud.
+  Dragging the knee sets the landing length: the landing stays level on its
+  side of the text and takes the pointer's distance out from that side (0
+  at the side or inside the box). The tip stays, unless the leader would then
+  cross the cloud or the text or turn back. The Landing field in the
+  Cloud+'s properties sets the same length (0 to 720 pt); 0 gives no landing.
+  The length is the knee's place in the `/CL` callout line, so other apps
+  read it and it reopens from there.
 - Escape or a click away finishes the text and keeps it, for every markup
   with text; an empty new Text Box is discarded.
-- Double-clicking a markup opens its properties. While text is being edited,
-  a double-click in it selects a word, as in any text field.
+- Double-clicking a markup's text (a Text Box, or the caption of a Callout,
+  Cloud+ or Dimension) edits it on the page with the word under the pointer
+  selected. Double-clicking elsewhere on a markup opens its properties. While
+  text is being edited, a double-click in it selects a word, as in any text
+  field.
 - Every markup with text (Text Box, Callout, Cloud+, Dimension) shows it in
   a Text field in its properties, kept in step with the page. The field
   commits when it is left or on Cmd/Ctrl+Enter, as one undoable change. A
   Callout's and Cloud+'s properties also set its line, font, opacity and
-  (Cloud+) fill and cloud intensity; a new style refits the caption box.
+  (Cloud+) fill, cloud intensity and landing length; a new style refits the
+  caption box.
 - Select All works on the current page. Locked markups cannot be moved,
   resized or deleted.
 

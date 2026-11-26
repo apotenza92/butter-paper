@@ -69,6 +69,11 @@ Dark pages change no stored colour or appearance. They are a view setting
 | Snapshot | `Stamp` / `StampSnapshot` | `Rotation` (always) |
 | Redact | `Redact` | ISO 32000 only (`QuadPoints`, `IC`, `OverlayText`); Revu Standard has no redaction tool to compare. |
 
+Callout and Cloud+ `/CL` holds the leader's tip, knee and connection. A
+Cloud+'s landing length is the distance across the page from the knee to
+the connection; no private key stores it, so files from Revu and older
+Butter Paper versions keep their leaders as saved.
+
 Text style: `DA (r g b rg /Helv 12 Tf)` (`/HelvBld` when bold), `DS (font: [bold ]Family Npt; text-align:left|center|right; margin:3pt; line-height:Lpt; color:#RRGGBB)`. `RC` is Revu's XHTML body (`xfa:APIVersion="BluebeamPDFRevu:2018"`) with one `<p>` per line; a bold or aligned paragraph carries `style="font-weight:bold; text-align:center"`. No `/Q`.
 
 Page scale: page `/VP [<</Type /Viewport /BBox [...] /Measure <</Type /Measure /Subtype /RL /R (1 cm = 1 m) ...>> /NM (...)>>]` — no private page-scale key. `/R` names one paper centimetre (one inch for imperial units); a custom ratio names its own paper unit (`1 mm = 0.123 m`).

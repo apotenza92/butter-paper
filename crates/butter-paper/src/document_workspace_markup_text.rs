@@ -273,6 +273,46 @@ impl DocumentWorkspace {
         true
     }
 
+    /// A double-click in a markup's text opens its editor on the page with
+    /// the word under the pointer selected. The first click selected the
+    /// markup.
+    pub(super) fn begin_markup_text_word_press(
+        &mut self,
+        interaction: PageInteraction,
+        point: PdfPoint,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(hit) = self.markup_text_hit(
+            interaction.document_id,
+            interaction.page_index,
+            point,
+            interaction.transform,
+            cx,
+        ) else {
+            return false;
+        };
+        let offset = text_offset_at(&hit, point, window.text_system());
+        let word = word_range(&hit.content, offset);
+        if !self.begin_pending_composite_text_editor(
+            interaction.document_id,
+            interaction.page_index,
+            hit.target.clone(),
+            window,
+            cx,
+        ) {
+            return false;
+        }
+        if let Some(editor) = self.pending_text_box_editor.as_ref() {
+            editor
+                .input
+                .update(cx, |input, cx| input.set_selected_range(word, cx));
+        }
+        self.markup_text_hover = None;
+        cx.notify();
+        true
+    }
+
     /// Extends the text selection while the press that placed the caret is
     /// held.
     pub(super) fn update_markup_text_drag(
@@ -707,6 +747,56 @@ fn glyph_region(
     })
 }
 
+/// The run of word characters, spaces or other characters around the byte
+/// `offset`, as a double-click in a text field selects it.
+fn word_range(content: &str, offset: usize) -> std::ops::Range<usize> {
+    #[derive(PartialEq)]
+    enum Class {
+        Word,
+        Space,
+        Other,
+    }
+    let class = |character: char| {
+        if character.is_alphanumeric() || character == '_' {
+            Class::Word
+        } else if character.is_whitespace() {
+            Class::Space
+        } else {
+            Class::Other
+        }
+    };
+    let mut offset = offset.min(content.len());
+    while !content.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    // The character under the pointer, or the last one at the end of a line.
+    let Some((start, character)) = content[offset..]
+        .chars()
+        .next()
+        .filter(|character| *character != '\n')
+        .map(|character| (offset, character))
+        .or_else(|| content[..offset].char_indices().next_back())
+        .filter(|(_, character)| *character != '\n')
+    else {
+        return offset..offset;
+    };
+    let kind = class(character);
+    let begin = content[..start]
+        .char_indices()
+        .rev()
+        .take_while(|(_, character)| *character != '\n' && class(*character) == kind)
+        .last()
+        .map_or(start, |(index, _)| index);
+    let end = content[start..]
+        .char_indices()
+        .take_while(|(_, character)| *character != '\n' && class(*character) == kind)
+        .last()
+        .map_or(start, |(index, character)| {
+            start + index + character.len_utf8()
+        });
+    begin..end
+}
+
 /// Whether `point` lies inside a convex quadrilateral, either winding.
 fn point_in_quad(point: PdfPoint, corners: &[PdfPoint; 4]) -> bool {
     let mut sign = 0.;
@@ -807,8 +897,23 @@ fn text_offset_at(
 
 #[cfg(test)]
 mod tests {
-    use super::{expanded_quad, point_in_quad, rotated_rect_corners};
+    use super::{expanded_quad, point_in_quad, rotated_rect_corners, word_range};
     use crate::annotation_model::{PdfPoint, PdfRect};
+
+    #[test]
+    fn a_double_click_selects_the_word_space_run_or_symbols_under_it() {
+        let text = "Cloud+ steel\nbeam";
+        assert_eq!(word_range(text, 2), 0..5);
+        assert_eq!(word_range(text, 5), 5..6);
+        assert_eq!(word_range(text, 6), 6..7);
+        assert_eq!(word_range(text, 9), 7..12);
+        // At the end of a line, the word before the break.
+        assert_eq!(word_range(text, 12), 7..12);
+        assert_eq!(word_range(text, 14), 13..17);
+        assert_eq!(word_range(text, 17), 13..17);
+        assert_eq!(word_range("", 0), 0..0);
+        assert_eq!(word_range("façade", 3), 0.."façade".len());
+    }
 
     #[test]
     fn quads_contain_their_inside_and_grow_outward() {

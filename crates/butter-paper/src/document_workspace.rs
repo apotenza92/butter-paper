@@ -1058,19 +1058,29 @@ pub fn annotation_resize_cursor_style(
             _ => None,
         };
         (handle, annotation.rotation_degrees)
-    } else if scene.callouts.iter().any(|annotation| &annotation.id == id)
-        || scene.pens.iter().any(|annotation| &annotation.id == id)
-    {
+    } else if scene.pens.iter().any(|annotation| &annotation.id == id) {
         (RectangleResizeHandle::ALL.get(index).copied(), 0.)
+    } else if scene.callouts.iter().any(|annotation| &annotation.id == id) {
+        // The leader's points follow the caption box's eight handles. A
+        // Callout has no rotation knob.
+        let Some(handle) = RectangleResizeHandle::ALL.get(index).copied() else {
+            return Some(CursorStyle::Crosshair);
+        };
+        (Some(handle), 0.)
     } else if let Some(annotation) = scene
         .cloud_pluses
         .iter()
         .find(|annotation| &annotation.id == id)
     {
-        let Some(resize_index) = index.checked_sub(annotation.cloud_points.len()) else {
+        // Cloud points, then the caption box's eight handles, then the
+        // leader's points. A Cloud+ has no rotation knob.
+        let Some(handle) = index
+            .checked_sub(annotation.cloud_points.len())
+            .and_then(|resize_index| RectangleResizeHandle::ALL.get(resize_index).copied())
+        else {
             return Some(CursorStyle::Crosshair);
         };
-        (RectangleResizeHandle::ALL.get(resize_index).copied(), 0.)
+        (Some(handle), 0.)
     } else {
         return Some(CursorStyle::Crosshair);
     };
@@ -8624,9 +8634,11 @@ impl DocumentWorkspace {
                 CaptionPropertyValues::CloudPlus {
                     appearance,
                     intensity,
+                    landing_pt,
                 } => {
                     let appearance = appearance.clone();
                     let intensity = *intensity;
+                    let landing_pt = *landing_pt;
                     let caption_supplement =
                         self.annotation_caption_selection_paths(event.document_id, page_index, cx);
                     self.update_annotation_history(
@@ -8638,6 +8650,7 @@ impl DocumentWorkspace {
                                 &annotation_id,
                                 appearance,
                                 intensity,
+                                landing_pt,
                                 &caption_supplement,
                             )
                         },
@@ -20270,6 +20283,14 @@ impl DocumentWorkspace {
                             .and_then(|(id, index)| {
                                 (index == RectangleResizeHandle::ALL.len()).then_some(id)
                             })
+                            // Other markups number other handles there (a
+                            // Callout's leader tip).
+                            .filter(|id| {
+                                session.annotations.annotation_has_rotation_knob(
+                                    interaction.document_id.value(),
+                                    id,
+                                )
+                            })
                     })
             }
         {
@@ -20303,8 +20324,8 @@ impl DocumentWorkspace {
                     return true;
                 }
             };
-            // Double-clicking a markup opens its properties; its text is
-            // edited by a click in it once it is selected.
+            // Double-clicking a markup's text edits it; elsewhere a
+            // double-click opens the markup's properties.
             let caption_paths =
                 self.caption_press_paths(interaction.document_id, interaction.page_index, cx);
             let markup_hit = session
@@ -20326,6 +20347,12 @@ impl DocumentWorkspace {
                         .select_id(interaction.document_id.value(), id);
                     cx.notify();
                 });
+                // A double-click on its text edits the text on the page.
+                if self.begin_markup_text_word_press(interaction, point, window, cx) {
+                    self.active_annotation_pointer = None;
+                    self.annotation_statuses.remove(&interaction.document_id);
+                    return true;
+                }
             }
             // A rotation knob's double-click turns its markup upright instead.
             let outcome = self.update_annotation_history_with_result(
@@ -22521,7 +22548,9 @@ fn paint_cloud_plus_annotation(
                     );
                 }
             }
-            for (leader_index, center) in projected_leader.into_iter().enumerate() {
+            // The tip and the knee; the text box's side handle stands for
+            // the connection.
+            for (leader_index, center) in projected_leader.into_iter().enumerate().take(2) {
                 let index = resize_end + leader_index;
                 if annotation.feedback.handle_visible(index) {
                     interaction_chrome::paint_feedback_handle(
@@ -28302,6 +28331,10 @@ impl Render for DocumentWorkspace {
                     CaptionPropertyValues::CloudPlus {
                         appearance: annotation.appearance.clone(),
                         intensity: annotation.border_effect_intensity(),
+                        landing_pt: crate::cloud_plus_routing::cloud_plus_landing_pt(
+                            annotation.leader_points(),
+                        )
+                        .unwrap_or(crate::cloud_plus_routing::CLOUD_PLUS_LANDING_PT),
                     },
                     annotation.locked,
                     annotation.content().to_owned(),

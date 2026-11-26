@@ -7,6 +7,7 @@
 
 use crate::annotation_adapter::AnnotationTool;
 use crate::annotation_model::AnnotationError;
+use crate::cloud_plus_routing::{CLOUD_PLUS_LANDING_PT, CLOUD_PLUS_MAX_LANDING_PT};
 
 pub const TOOL_FONT_FAMILY_OPTIONS: &[ToolFontFamilyOption] = &[
     ToolFontFamilyOption {
@@ -71,6 +72,7 @@ const CLOUD_PLUS_FIELDS: &[ToolPropertyField] = &[
     ToolPropertyField::FontSizePt,
     ToolPropertyField::Opacity,
     ToolPropertyField::CloudIntensity,
+    ToolPropertyField::LandingPt,
 ];
 const CALLOUT_FIELDS: &[ToolPropertyField] = &[
     ToolPropertyField::Colour,
@@ -103,6 +105,8 @@ pub enum ToolPropertyField {
     /// Polygons drawn with a cloud outline, which are saved as Clouds.
     CloudStyle,
     CloudIntensity,
+    /// The length of a Cloud+ leader's level landing at its text.
+    LandingPt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,6 +134,7 @@ pub struct ToolProperties {
     pub smooth_curves: bool,
     pub cloud_style: bool,
     pub cloud_intensity: f64,
+    pub landing_pt: f64,
 }
 
 impl ToolProperties {
@@ -152,6 +157,7 @@ impl ToolProperties {
             smooth_curves: true,
             cloud_style: false,
             cloud_intensity: 2.0,
+            landing_pt: CLOUD_PLUS_LANDING_PT,
         }
     }
 
@@ -214,6 +220,11 @@ impl ToolProperties {
                 max: 4.0,
                 step: 0.25,
             }),
+            ToolPropertyField::LandingPt => Some(ToolPropertyRange {
+                min: 0.0,
+                max: CLOUD_PLUS_MAX_LANDING_PT,
+                step: 0.1,
+            }),
             ToolPropertyField::Colour
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontFamily
@@ -229,6 +240,7 @@ impl ToolProperties {
             ("opacity", self.opacity),
             ("font size", self.font_size_pt),
             ("cloud intensity", self.cloud_intensity),
+            ("landing", self.landing_pt),
         ] {
             if !value.is_finite() {
                 return Err(AnnotationError::InvalidAppearance(format!(
@@ -264,6 +276,7 @@ impl ToolProperties {
                 ToolPropertyField::Opacity => Some(self.opacity),
                 ToolPropertyField::FontSizePt => Some(self.font_size_pt),
                 ToolPropertyField::CloudIntensity => Some(self.cloud_intensity),
+                ToolPropertyField::LandingPt => Some(self.landing_pt),
                 ToolPropertyField::Colour
                 | ToolPropertyField::FillColour
                 | ToolPropertyField::FontFamily
@@ -311,6 +324,7 @@ impl ToolProperties {
                 ToolPropertyField::CloudIntensity => {
                     canonical.cloud_intensity = self.cloud_intensity
                 }
+                ToolPropertyField::LandingPt => canonical.landing_pt = self.landing_pt,
             }
         }
         Ok(canonical)
@@ -329,6 +343,7 @@ impl ToolPropertyField {
             Self::SmoothCurves => "smooth curves",
             Self::CloudStyle => "cloud style",
             Self::CloudIntensity => "cloud intensity",
+            Self::LandingPt => "landing",
         }
     }
 }

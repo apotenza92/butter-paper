@@ -11532,6 +11532,16 @@ impl AnnotationDocument {
             .find(|annotation| annotation.id == *id)
     }
 
+    /// Whether the markup turns from a rotation knob: the kinds
+    /// `reset_rotation` turns upright.
+    pub fn has_rotation_knob(&self, id: &MarkupId) -> bool {
+        self.annotation(id).is_some()
+            || self.ellipse(id).is_some()
+            || self.text_box(id).is_some()
+            || self.image(id).is_some()
+            || self.snapshot_annotation(id).is_some()
+    }
+
     /// Turns a box shape back to 0°, as a double-click on its rotation knob
     /// does. `None` when the item has no rotation knob or is locked;
     /// otherwise whether its rotation changed.

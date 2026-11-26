@@ -1,5 +1,21 @@
 use crate::annotation_model::{AnnotationError, PdfPoint, PdfRect};
 
+/// The default length of the level landing where a Cloud+ leader meets its
+/// text, from the knee to the text box. Revu draws 19.8 pt for both Cloud+
+/// and Callout (their `/CL`). The Cloud+ tool's Landing property starts here.
+pub const CLOUD_PLUS_LANDING_PT: f64 = 19.8;
+
+/// The longest landing the Landing property takes.
+pub const CLOUD_PLUS_MAX_LANDING_PT: f64 = 720.;
+
+/// How far right (or left) of its cloud's points a new Cloud+'s text box
+/// starts. Revu's Cloud+ puts it 62.4 pt from the points.
+pub const CLOUD_PLUS_TEXT_GAP_PT: f64 = 62.4;
+
+/// How far above the top of its cloud's points a new Cloud+'s leader meets
+/// its text, so the leader bends at its knee and the landing shows.
+pub const CLOUD_PLUS_TEXT_RISE_PT: f64 = 24.;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum CloudPlusObstacle {
     Rect {
@@ -41,15 +57,53 @@ pub struct InitialCloudPlusPlacement {
     pub leader: CloudPlusLeaderRoute,
 }
 
-pub fn route_cloud_plus_leader(
+/// The length of a Cloud+ landing: how far across the page its knee lies
+/// from where the leader meets the text. This is the knee-to-connection part
+/// of the `/CL` callout line. `None` when the Cloud+ has no leader.
+pub fn cloud_plus_landing_pt(leader: &[PdfPoint]) -> Option<f64> {
+    let [_, knee, connection] = leader else {
+        return None;
+    };
+    Some((connection.x - knee.x).abs())
+}
+
+/// A leader routed again for a moved or refitted text box or cloud. It keeps
+/// the landing length of `previous_leader`, or the default for a Cloud+
+/// that had no leader.
+pub fn reroute_cloud_plus_leader(
     control_path: &[PdfPoint],
     visible_path: &[PdfPoint],
     text_box: PdfRect,
     previous_leader: &[PdfPoint],
     context: &CloudPlusRoutingContext,
 ) -> Result<CloudPlusLeaderRoute, AnnotationError> {
+    route_cloud_plus_leader(
+        control_path,
+        visible_path,
+        text_box,
+        previous_leader,
+        cloud_plus_landing_pt(previous_leader).unwrap_or(CLOUD_PLUS_LANDING_PT),
+        context,
+    )
+}
+
+/// The leader from the cloud to `text_box`. Its landing runs level for
+/// `landing_pt` from the left or right side of the text box, at the box's
+/// vertical middle, as a Callout's does. The tip is the point of the drawn
+/// cloud nearest the knee. The side is the one that does not cross the
+/// cloud, the text box or other markups, does not turn back over the
+/// landing, and points towards the cloud.
+pub fn route_cloud_plus_leader(
+    control_path: &[PdfPoint],
+    visible_path: &[PdfPoint],
+    text_box: PdfRect,
+    previous_leader: &[PdfPoint],
+    landing_pt: f64,
+    context: &CloudPlusRoutingContext,
+) -> Result<CloudPlusLeaderRoute, AnnotationError> {
     validate_polygon(control_path)?;
     validate_polyline(visible_path, "Cloud+ visible path")?;
+    validate_landing(landing_pt)?;
     if is_rect_wholly_inside_polygon(text_box, control_path) {
         return Ok(CloudPlusLeaderRoute {
             points: Vec::new(),
@@ -59,45 +113,76 @@ pub fn route_cloud_plus_leader(
     }
 
     let cloud_bounds = points_bounds(control_path)?;
+    let outline = closed_outline(visible_path);
     let previous_side = infer_leader_side(previous_leader, text_box);
-    let detour = (cloud_bounds.width.max(cloud_bounds.height) * 0.75).clamp(32., 96.);
-    let offsets: &[f64] = if context.obstacles.is_empty() {
-        &[0.]
-    } else {
-        &[0., -detour, detour]
-    };
-    let mut candidates = Vec::new();
-    for side in [CloudPlusLeaderSide::Left, CloudPlusLeaderSide::Right] {
-        for offset in offsets {
-            candidates.push(build_route_candidate(
-                control_path,
-                visible_path,
+    [CloudPlusLeaderSide::Left, CloudPlusLeaderSide::Right]
+        .into_iter()
+        .map(|side| {
+            build_route_candidate(
+                &outline,
                 text_box,
                 cloud_bounds,
                 side,
                 previous_side,
-                *offset,
+                landing_pt,
                 context,
-            ));
-        }
-    }
-    candidates
-        .into_iter()
+            )
+        })
         .min_by(|left, right| left.score.total_cmp(&right.score))
         .ok_or_else(|| AnnotationError::InvalidGeometry("Cloud+ route has no candidate".into()))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The leader with its knee dragged to `pointer`. The landing stays level on
+/// the side of the text it meets, and takes the pointer's distance out from
+/// that side as its length (0 at the side or inside the box). It stops short
+/// of the cloud. The tip stays, unless the leader then crosses the cloud or
+/// the text or turns back over the landing: then it moves to the point of
+/// the cloud nearest the knee.
+pub fn drag_cloud_plus_knee(
+    visible_path: &[PdfPoint],
+    text_box: PdfRect,
+    leader: &[PdfPoint],
+    pointer: PdfPoint,
+) -> Result<Vec<PdfPoint>, AnnotationError> {
+    validate_polyline(visible_path, "Cloud+ visible path")?;
+    if !pointer.x.is_finite() || !pointer.y.is_finite() {
+        return Err(AnnotationError::InvalidGeometry(
+            "Cloud+ knee target must be finite".into(),
+        ));
+    }
+    let [tip, _, connection] = *leader else {
+        return Ok(leader.to_vec());
+    };
+    let side = infer_leader_side(leader, text_box).unwrap_or(CloudPlusLeaderSide::Left);
+    let direction = side.outward();
+    let outline = closed_outline(visible_path);
+    let landing = fit_landing(
+        connection,
+        direction,
+        ((pointer.x - connection.x) * direction).max(0.),
+        &outline,
+    );
+    let knee = point(connection.x + direction * landing, connection.y);
+    let kept = [tip, knee, connection];
+    if !leader_is_clear(&kept, &outline, text_box, direction) {
+        let nearest = closest_point_on_polyline(&outline, knee).unwrap_or(tip);
+        return Ok(vec![nearest, knee, connection]);
+    }
+    Ok(kept.to_vec())
+}
+
 pub fn place_initial_cloud_plus_text_box(
     control_path: &[PdfPoint],
     visible_path: &[PdfPoint],
     width: f64,
     height: f64,
     gap: f64,
+    landing_pt: f64,
     context: &CloudPlusRoutingContext,
 ) -> Result<InitialCloudPlusPlacement, AnnotationError> {
     validate_polygon(control_path)?;
     validate_polyline(visible_path, "Cloud+ visible path")?;
+    validate_landing(landing_pt)?;
     if !width.is_finite() || !height.is_finite() || !gap.is_finite() || width < 2. || height < 2. {
         return Err(AnnotationError::InvalidGeometry(
             "Cloud+ initial text-box dimensions and gap must be finite".into(),
@@ -105,19 +190,17 @@ pub fn place_initial_cloud_plus_text_box(
     }
     let gap = gap.max(0.);
     let cloud = points_bounds(control_path)?;
+    // Beside the cloud, raised (or else lowered) so the leader bends at its
+    // knee and its landing shows; then above and below it.
+    let raised = cloud.y + cloud.height + CLOUD_PLUS_TEXT_RISE_PT - height * 0.5;
+    let lowered = cloud.y - CLOUD_PLUS_TEXT_RISE_PT - height * 0.5;
+    let right = cloud.x + cloud.width + gap;
+    let left = cloud.x - gap - width;
     let candidates = [
-        PdfRect::new(
-            cloud.x + cloud.width + gap,
-            cloud.y + (cloud.height - height) * 0.5,
-            width,
-            height,
-        )?,
-        PdfRect::new(
-            cloud.x - gap - width,
-            cloud.y + (cloud.height - height) * 0.5,
-            width,
-            height,
-        )?,
+        PdfRect::new(right, raised, width, height)?,
+        PdfRect::new(left, raised, width, height)?,
+        PdfRect::new(right, lowered, width, height)?,
+        PdfRect::new(left, lowered, width, height)?,
         PdfRect::new(
             cloud.x + (cloud.width - width) * 0.5,
             cloud.y + cloud.height + gap,
@@ -133,7 +216,14 @@ pub fn place_initial_cloud_plus_text_box(
     ];
     let mut scored = Vec::new();
     for (index, text_box) in candidates.into_iter().enumerate() {
-        let leader = route_cloud_plus_leader(control_path, visible_path, text_box, &[], context)?;
+        let leader = route_cloud_plus_leader(
+            control_path,
+            visible_path,
+            text_box,
+            &[],
+            landing_pt,
+            context,
+        )?;
         let obstacle_overlap = context
             .obstacles
             .iter()
@@ -171,7 +261,7 @@ pub fn snap_cloud_plus_leader_tip(
             "Cloud+ leader target must be finite".into(),
         ));
     }
-    Ok(closest_point_on_polyline(visible_path, target).unwrap_or(target))
+    Ok(closest_point_on_polyline(&closed_outline(visible_path), target).unwrap_or(target))
 }
 
 pub fn is_rect_wholly_inside_polygon(rect: PdfRect, polygon: &[PdfPoint]) -> bool {
@@ -195,46 +285,68 @@ pub fn is_rect_wholly_inside_polygon(rect: PdfRect, polygon: &[PdfPoint]) -> boo
 }
 
 const EPSILON: f64 = 0.000_001;
+/// The least room a landing leaves between its knee and the cloud when the
+/// cloud is in its way.
+const LANDING_CLEARANCE_PT: f64 = 6.;
 const SIDE_SWITCH_PENALTY: f64 = 24.;
 const WRONG_FACING_PENALTY: f64 = 20_000.;
-const CLOUD_CROSSING_PENALTY: f64 = 100_000.;
+const DOUBLE_BACK_PENALTY: f64 = 500_000.;
+const TEXT_CROSSING_PENALTY: f64 = 1_000_000.;
+const CLOUD_CROSSING_PENALTY: f64 = 1_000_000.;
 const OBSTACLE_CROSSING_PENALTY: f64 = 25_000.;
 const PAGE_OVERFLOW_PENALTY: f64 = 50_000.;
 
-#[allow(clippy::too_many_arguments)]
+impl CloudPlusLeaderSide {
+    /// The direction across the page that the landing runs from this side.
+    fn outward(self) -> f64 {
+        match self {
+            Self::Left => -1.,
+            Self::Right => 1.,
+        }
+    }
+}
+
+fn validate_landing(landing_pt: f64) -> Result<(), AnnotationError> {
+    if landing_pt.is_finite() && landing_pt >= 0. {
+        Ok(())
+    } else {
+        Err(AnnotationError::InvalidGeometry(
+            "Cloud+ landing must be a finite length of 0 or more".into(),
+        ))
+    }
+}
+
 fn build_route_candidate(
-    control_path: &[PdfPoint],
-    visible_path: &[PdfPoint],
+    outline: &[PdfPoint],
     text_box: PdfRect,
     cloud_bounds: PdfRect,
     side: CloudPlusLeaderSide,
     previous_side: Option<CloudPlusLeaderSide>,
-    knee_offset: f64,
+    landing_pt: f64,
     context: &CloudPlusRoutingContext,
 ) -> CloudPlusLeaderRoute {
     let connection = connection_point(text_box, side);
-    let direction = match side {
-        CloudPlusLeaderSide::Left => point(-1., 0.),
-        CloudPlusLeaderSide::Right => point(1., 0.),
-    };
-    let tip = directional_attachment_point(visible_path, connection, direction)
-        .or_else(|| closest_point_on_polyline(visible_path, connection))
-        .unwrap_or_else(|| rect_center(cloud_bounds));
-    let knee = point((tip.x + connection.x) * 0.5, connection.y + knee_offset);
+    let direction = side.outward();
+    let landing = fit_landing(connection, direction, landing_pt, outline);
+    let knee = point(connection.x + direction * landing, connection.y);
+    let tip = closest_point_on_polyline(outline, knee).unwrap_or_else(|| rect_center(cloud_bounds));
     let points = vec![tip, knee, connection];
     let text_center = rect_center(text_box);
     let cloud_center = rect_center(cloud_bounds);
     let mut score = polyline_length(&points);
-    let facing = match side {
-        CloudPlusLeaderSide::Left => cloud_center.x <= text_center.x + EPSILON,
-        CloudPlusLeaderSide::Right => cloud_center.x >= text_center.x - EPSILON,
-    };
-    if !facing {
+    if (cloud_center.x - text_center.x) * direction < -EPSILON {
         score += WRONG_FACING_PENALTY;
     }
     score += axis_preference_penalty(text_box, cloud_bounds);
-    if leader_crosses_cloud_interior(&points, control_path) {
+    if leader_crosses_outline(&points, outline) {
         score += CLOUD_CROSSING_PENALTY;
+    }
+    if segment_intersects_rect_interior(tip, knee, text_box) {
+        score += TEXT_CROSSING_PENALTY;
+    }
+    let turn_back = (knee.x - tip.x) * direction;
+    if turn_back > EPSILON {
+        score += DOUBLE_BACK_PENALTY + turn_back;
     }
     score +=
         route_obstacle_crossings(&points, &context.obstacles) as f64 * OBSTACLE_CROSSING_PENALTY;
@@ -254,6 +366,75 @@ fn build_route_candidate(
         side: Some(side),
         score,
     }
+}
+
+/// `landing_pt`, shortened where the cloud lies across the landing's path so
+/// the knee stays outside the cloud with room for the leader.
+fn fit_landing(connection: PdfPoint, direction: f64, landing_pt: f64, outline: &[PdfPoint]) -> f64 {
+    if point_in_polygon(connection, outline) {
+        return landing_pt;
+    }
+    let Some(hit) = ray_hit_distance(connection, direction, outline) else {
+        return landing_pt;
+    };
+    let room = if hit > LANDING_CLEARANCE_PT * 2. {
+        hit - LANDING_CLEARANCE_PT
+    } else {
+        hit * 0.5
+    };
+    landing_pt.min(room)
+}
+
+/// How far along the level ray from `origin` (rightwards for a `direction`
+/// of 1, leftwards for -1) the first segment of `outline` lies.
+fn ray_hit_distance(origin: PdfPoint, direction: f64, outline: &[PdfPoint]) -> Option<f64> {
+    open_segments(outline)
+        .into_iter()
+        .filter_map(|(start, end)| {
+            if (end.y - start.y).abs() <= EPSILON {
+                if (origin.y - start.y).abs() > EPSILON {
+                    return None;
+                }
+                let near = [start.x, end.x]
+                    .into_iter()
+                    .map(|x| (x - origin.x) * direction)
+                    .filter(|distance| *distance > EPSILON)
+                    .fold(f64::INFINITY, f64::min);
+                return near.is_finite().then_some(near);
+            }
+            if origin.y < start.y.min(end.y) || origin.y > start.y.max(end.y) {
+                return None;
+            }
+            let amount = (origin.y - start.y) / (end.y - start.y);
+            let distance = (start.x + (end.x - start.x) * amount - origin.x) * direction;
+            (distance > EPSILON).then_some(distance)
+        })
+        .min_by(f64::total_cmp)
+}
+
+/// Whether the leader is clear of the cloud and the text, and does not turn
+/// back over its landing.
+fn leader_is_clear(
+    points: &[PdfPoint; 3],
+    outline: &[PdfPoint],
+    text_box: PdfRect,
+    direction: f64,
+) -> bool {
+    let [tip, knee, _] = *points;
+    !leader_crosses_outline(points, outline)
+        && !segment_intersects_rect_interior(tip, knee, text_box)
+        && (knee.x - tip.x) * direction <= EPSILON
+}
+
+/// The drawn cloud as a closed path.
+fn closed_outline(visible_path: &[PdfPoint]) -> Vec<PdfPoint> {
+    let mut outline = visible_path.to_vec();
+    if let (Some(first), Some(last)) = (outline.first().copied(), outline.last().copied())
+        && squared_distance(first, last) > EPSILON
+    {
+        outline.push(first);
+    }
+    outline
 }
 
 fn validate_polygon(points: &[PdfPoint]) -> Result<(), AnnotationError> {
@@ -306,37 +487,6 @@ fn connection_point(text_box: PdfRect, side: CloudPlusLeaderSide) -> PdfPoint {
     }
 }
 
-fn directional_attachment_point(
-    points: &[PdfPoint],
-    target: PdfPoint,
-    direction: PdfPoint,
-) -> Option<PdfPoint> {
-    let mut intersections = Vec::new();
-    for (start, end) in open_segments(points) {
-        if direction.x.abs() > 0. {
-            if target.y < start.y.min(end.y) - EPSILON || target.y > start.y.max(end.y) + EPSILON {
-                continue;
-            }
-            if (end.y - start.y).abs() <= EPSILON {
-                if (target.y - start.y).abs() <= EPSILON {
-                    intersections.extend([start, end]);
-                }
-            } else {
-                let amount = (target.y - start.y) / (end.y - start.y);
-                if (-EPSILON..=1. + EPSILON).contains(&amount) {
-                    intersections.push(point(start.x + (end.x - start.x) * amount, target.y));
-                }
-            }
-        }
-    }
-    intersections
-        .into_iter()
-        .filter(|candidate| dot(subtract(*candidate, target), direction) >= -EPSILON)
-        .min_by(|left, right| {
-            squared_distance(*left, target).total_cmp(&squared_distance(*right, target))
-        })
-}
-
 fn axis_preference_penalty(text_box: PdfRect, cloud_bounds: PdfRect) -> f64 {
     let text = rect_center(text_box);
     let cloud = rect_center(cloud_bounds);
@@ -347,19 +497,23 @@ fn axis_preference_penalty(text_box: PdfRect, cloud_bounds: PdfRect) -> f64 {
     (vertical - horizontal).max(0.) * 5_000.
 }
 
-fn leader_crosses_cloud_interior(points: &[PdfPoint], polygon: &[PdfPoint]) -> bool {
-    let boundary = closed_segments(polygon);
-    open_segments(points).into_iter().any(|(start, end)| {
-        point_in_polygon(start, polygon)
-            || point_in_polygon(end, polygon)
-            || boundary.iter().any(|(edge_start, edge_end)| {
-                segments_properly_intersect(start, end, *edge_start, *edge_end)
-            })
-            || point_in_polygon(
-                point((start.x + end.x) * 0.5, (start.y + end.y) * 0.5),
-                polygon,
-            )
-    })
+/// Whether the leader (tip, knee, connection) crosses the drawn cloud or
+/// runs inside it. The tip sits on the outline, so it only touches it.
+fn leader_crosses_outline(points: &[PdfPoint], outline: &[PdfPoint]) -> bool {
+    let boundary = open_segments(outline);
+    points
+        .iter()
+        .skip(1)
+        .any(|point| point_in_polygon(*point, outline))
+        || open_segments(points).into_iter().any(|(start, end)| {
+            squared_distance(start, end) > EPSILON
+                && (boundary.iter().any(|(edge_start, edge_end)| {
+                    segments_properly_intersect(start, end, *edge_start, *edge_end)
+                }) || point_in_polygon(
+                    point((start.x + end.x) * 0.5, (start.y + end.y) * 0.5),
+                    outline,
+                ))
+        })
 }
 
 fn route_obstacle_crossings(points: &[PdfPoint], obstacles: &[CloudPlusObstacle]) -> usize {
@@ -606,6 +760,12 @@ mod tests {
         PdfRect::new(x, y, width, height).unwrap()
     }
 
+    fn distance_to_segment(target: PdfPoint, start: PdfPoint, end: PdfPoint) -> f64 {
+        closest_point_on_polyline(&[start, end], target).map_or(f64::INFINITY, |closest| {
+            squared_distance(closest, target).sqrt()
+        })
+    }
+
     #[test]
     fn cloud_plus_routing_places_right_by_default_and_uses_three_points() {
         let control = vec![
@@ -622,6 +782,7 @@ mod tests {
             150.,
             44.,
             24.,
+            CLOUD_PLUS_LANDING_PT,
             &CloudPlusRoutingContext {
                 page_bounds: Some(rect(0., 0., 612., 792.)),
                 obstacles: Vec::new(),
@@ -629,10 +790,97 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(placement.text_box, rect(114., 18., 150., 44.));
+        // Right of the cloud, its leader meeting the text above the cloud.
+        assert_eq!(
+            placement.text_box,
+            rect(114., 70. + CLOUD_PLUS_TEXT_RISE_PT - 22., 150., 44.)
+        );
         assert_eq!(placement.leader.side, Some(CloudPlusLeaderSide::Left));
         assert_eq!(placement.leader.points.len(), 3);
-        assert_eq!(placement.leader.points[2], point(114., 40.));
+        assert_eq!(
+            placement.leader.points[2],
+            point(114., 70. + CLOUD_PLUS_TEXT_RISE_PT)
+        );
+    }
+
+    #[test]
+    fn a_cloud_plus_leader_meets_its_text_with_a_level_landing_of_the_default_length() {
+        let control = vec![
+            point(10., 10.),
+            point(90., 10.),
+            point(90., 70.),
+            point(10., 70.),
+        ];
+        let mut visible = control.clone();
+        visible.push(control[0]);
+        // The text sits above and to the right of the cloud.
+        let route = route_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(180., 90., 60., 44.),
+            &[],
+            CLOUD_PLUS_LANDING_PT,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        let [tip, knee, connection] = route.points.as_slice() else {
+            panic!("a Cloud+ leader has a tip, a knee and a connection");
+        };
+        assert_eq!(*connection, point(180., 112.));
+        assert_eq!(knee.y, connection.y, "the landing is level");
+        assert!(
+            (connection.x - knee.x - CLOUD_PLUS_LANDING_PT).abs() < 1e-9,
+            "the landing has the default length: {knee:?} {connection:?}"
+        );
+        assert!(
+            tip.y < knee.y - 10.,
+            "the leader bends down to the cloud, so the landing shows: {tip:?} {knee:?}"
+        );
+        assert!(
+            visible
+                .windows(2)
+                .any(|edge| distance_to_segment(*tip, edge[0], edge[1]) < 1e-9),
+            "the tip is on the cloud: {tip:?}"
+        );
+    }
+
+    #[test]
+    fn a_new_cloud_plus_shows_a_landing_of_the_default_length_and_a_bend() {
+        let control = vec![
+            point(110., 310.),
+            point(250., 310.),
+            point(250., 420.),
+            point(110., 420.),
+        ];
+        let mut visible = control.clone();
+        visible.push(control[0]);
+        let placement = place_initial_cloud_plus_text_box(
+            &control,
+            &visible,
+            50.,
+            44.,
+            CLOUD_PLUS_TEXT_GAP_PT,
+            CLOUD_PLUS_LANDING_PT,
+            &CloudPlusRoutingContext {
+                page_bounds: Some(rect(0., 0., 612., 792.)),
+                obstacles: Vec::new(),
+            },
+        )
+        .unwrap();
+        let [tip, knee, connection] = placement.leader.points.as_slice() else {
+            panic!("a new Cloud+ has a leader");
+        };
+        assert!(
+            placement.text_box.x > 250.,
+            "the text is right of the cloud"
+        );
+        assert_eq!(knee.y, connection.y);
+        assert!((connection.x - knee.x - CLOUD_PLUS_LANDING_PT).abs() < 1e-9);
+        assert!(
+            knee.y - tip.y > 8.,
+            "a new Cloud+'s leader is not one straight line: {:?}",
+            placement.leader.points
+        );
     }
 
     #[test]
@@ -650,6 +898,7 @@ mod tests {
             &visible,
             rect(40., 30., 100., 44.),
             &[],
+            CLOUD_PLUS_LANDING_PT,
             &CloudPlusRoutingContext::default(),
         )
         .unwrap();
@@ -662,6 +911,7 @@ mod tests {
             150.,
             44.,
             24.,
+            CLOUD_PLUS_LANDING_PT,
             &CloudPlusRoutingContext {
                 page_bounds: Some(rect(-300., -300., 1_000., 1_000.)),
                 obstacles: vec![CloudPlusObstacle::Rect {
@@ -700,6 +950,7 @@ mod tests {
             150.,
             44.,
             24.,
+            CLOUD_PLUS_LANDING_PT,
             &CloudPlusRoutingContext {
                 page_bounds: Some(rect(0., 0., 612., 792.)),
                 obstacles: Vec::new(),
@@ -714,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn cloud_plus_routing_uses_a_knee_detour_for_a_blocking_line() {
+    fn a_blocking_line_never_bends_the_landing() {
         let control = vec![
             point(10., 10.),
             point(90., 10.),
@@ -724,19 +975,12 @@ mod tests {
         let mut visible = control.clone();
         visible.push(control[0]);
         let text_box = rect(180., 18., 150., 44.);
-        let unobstructed = route_cloud_plus_leader(
-            &control,
-            &visible,
-            text_box,
-            &[],
-            &CloudPlusRoutingContext::default(),
-        )
-        .unwrap();
         let rerouted = route_cloud_plus_leader(
             &control,
             &visible,
             text_box,
             &[],
+            CLOUD_PLUS_LANDING_PT,
             &CloudPlusRoutingContext {
                 page_bounds: Some(rect(-300., -300., 1_000., 1_000.)),
                 obstacles: vec![CloudPlusObstacle::Polyline {
@@ -747,8 +991,270 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(unobstructed.points[1].y, unobstructed.points[2].y);
-        assert_ne!(rerouted.points[1].y, rerouted.points[2].y);
+        assert_eq!(rerouted.points[1].y, rerouted.points[2].y);
+        assert!((rerouted.points[2].x - rerouted.points[1].x - CLOUD_PLUS_LANDING_PT).abs() < 1e-9);
+    }
+
+    /// A square cloud's outline, closed, as a scalloped cloud's sampled path
+    /// is.
+    fn square_cloud(left: f64, bottom: f64, size: f64) -> (Vec<PdfPoint>, Vec<PdfPoint>) {
+        let control = vec![
+            point(left, bottom),
+            point(left + size, bottom),
+            point(left + size, bottom + size),
+            point(left, bottom + size),
+        ];
+        let mut visible = control.clone();
+        visible.push(control[0]);
+        (control, visible)
+    }
+
+    fn assert_clear_route(
+        name: &str,
+        control: &[PdfPoint],
+        visible: &[PdfPoint],
+        text_box: PdfRect,
+        landing: f64,
+    ) -> CloudPlusLeaderRoute {
+        let route = route_cloud_plus_leader(
+            control,
+            visible,
+            text_box,
+            &[],
+            landing,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        let [tip, knee, connection] = route.points.as_slice() else {
+            panic!("{name}: a leader has a tip, a knee and a connection");
+        };
+        let outline = closed_outline(visible);
+        assert_eq!(knee.y, connection.y, "{name}: the landing is level");
+        assert!(
+            (connection.x - text_box.x).abs() < 1e-9
+                || (connection.x - text_box.x - text_box.width).abs() < 1e-9,
+            "{name}: the landing meets a side of the text: {connection:?}"
+        );
+        assert!(
+            (connection.y - (text_box.y + text_box.height * 0.5)).abs() < 1e-9,
+            "{name}: the landing meets the text at its middle"
+        );
+        assert!(
+            !leader_crosses_outline(&route.points, &outline),
+            "{name}: the leader does not cross the cloud: {:?}",
+            route.points
+        );
+        assert!(
+            !segment_intersects_rect_interior(*tip, *knee, text_box),
+            "{name}: the leader does not cross the text: {:?}",
+            route.points
+        );
+        let direction = if (connection.x - text_box.x).abs() < 1e-9 {
+            -1.
+        } else {
+            1.
+        };
+        assert!(
+            (knee.x - tip.x) * direction <= 1e-9,
+            "{name}: the leader does not turn back over the landing: {:?}",
+            route.points
+        );
+        assert!(
+            outline
+                .windows(2)
+                .any(|edge| distance_to_segment(*tip, edge[0], edge[1]) < 1e-9),
+            "{name}: the tip is on the cloud: {tip:?}"
+        );
+        let nearest = closest_point_on_polyline(&outline, *knee).unwrap();
+        assert!(
+            squared_distance(nearest, *tip) < 1e-9,
+            "{name}: the tip is the cloud point nearest the knee"
+        );
+        route
+    }
+
+    #[test]
+    fn a_leader_never_crosses_the_cloud_or_its_text_and_never_turns_back() {
+        let (control, visible) = square_cloud(200., 200., 100.);
+        let cases = [
+            (
+                "right",
+                rect(380., 260., 60., 30.),
+                Some(CloudPlusLeaderSide::Left),
+            ),
+            (
+                "left",
+                rect(60., 260., 60., 30.),
+                Some(CloudPlusLeaderSide::Right),
+            ),
+            // Centred over or under the cloud, either side points at it.
+            ("above", rect(220., 360., 60., 30.), None),
+            ("below", rect(220., 110., 60., 30.), None),
+            (
+                "above right",
+                rect(330., 340., 60., 30.),
+                Some(CloudPlusLeaderSide::Left),
+            ),
+            (
+                "below left",
+                rect(110., 120., 60., 30.),
+                Some(CloudPlusLeaderSide::Right),
+            ),
+            // Overlapping the cloud's width, the landing reaches over it.
+            (
+                "above, offset right",
+                rect(270., 340., 80., 30.),
+                Some(CloudPlusLeaderSide::Left),
+            ),
+            (
+                "above, offset left",
+                rect(150., 340., 80., 30.),
+                Some(CloudPlusLeaderSide::Right),
+            ),
+        ];
+        for (name, text_box, side) in cases {
+            let route =
+                assert_clear_route(name, &control, &visible, text_box, CLOUD_PLUS_LANDING_PT);
+            if let Some(side) = side {
+                assert_eq!(
+                    route.side,
+                    Some(side),
+                    "{name}: the landing points at the cloud"
+                );
+            }
+            assert!(
+                ((route.points[2].x - route.points[1].x).abs() - CLOUD_PLUS_LANDING_PT).abs()
+                    < 1e-9,
+                "{name}: the landing keeps its length: {:?}",
+                route.points
+            );
+        }
+    }
+
+    #[test]
+    fn a_landing_near_the_cloud_stops_short_of_it() {
+        let (control, visible) = square_cloud(200., 200., 100.);
+        // Level with the cloud, 14 pt from it: too close for a full landing.
+        let near = rect(314., 260., 60., 30.);
+        let route = assert_clear_route("near", &control, &visible, near, CLOUD_PLUS_LANDING_PT);
+        let landing = route.points[2].x - route.points[1].x;
+        assert!(
+            (landing - (14. - LANDING_CLEARANCE_PT)).abs() < 1e-9,
+            "the landing leaves room for the leader: {:?}",
+            route.points
+        );
+        // Very close, the knee lies halfway.
+        let touching = rect(304., 260., 60., 30.);
+        let route = assert_clear_route("touching", &control, &visible, touching, 40.);
+        assert!((route.points[2].x - route.points[1].x - 2.).abs() < 1e-9);
+        // A long landing level with the cloud stops before it too.
+        let route =
+            assert_clear_route("long", &control, &visible, rect(380., 260., 60., 30.), 200.);
+        assert!((route.points[1].x - (300. + LANDING_CLEARANCE_PT)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_landing_of_zero_meets_the_text_at_the_knee() {
+        let (control, visible) = square_cloud(200., 200., 100.);
+        let route = assert_clear_route("zero", &control, &visible, rect(380., 340., 60., 30.), 0.);
+        assert_eq!(route.points[1], route.points[2]);
+        assert!(
+            route_cloud_plus_leader(
+                &control,
+                &visible,
+                rect(380., 340., 60., 30.),
+                &[],
+                -1.,
+                &CloudPlusRoutingContext::default(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_rerouted_leader_keeps_its_landing_length() {
+        let (control, visible) = square_cloud(200., 200., 100.);
+        let first = route_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(380., 340., 60., 30.),
+            &[],
+            37.5,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        assert_eq!(cloud_plus_landing_pt(&first.points), Some(37.5));
+        let moved = reroute_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(60., 120., 60., 30.),
+            &first.points,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        assert_eq!(moved.side, Some(CloudPlusLeaderSide::Right));
+        assert!((cloud_plus_landing_pt(&moved.points).unwrap() - 37.5).abs() < 1e-9);
+        // A Cloud+ with no leader takes the default landing.
+        let fresh = reroute_cloud_plus_leader(
+            &control,
+            &visible,
+            rect(380., 340., 60., 30.),
+            &[],
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        assert!(
+            (cloud_plus_landing_pt(&fresh.points).unwrap() - CLOUD_PLUS_LANDING_PT).abs() < 1e-9
+        );
+    }
+
+    #[test]
+    fn dragging_the_knee_sets_a_level_landing_on_the_text_side() {
+        let (control, visible) = square_cloud(200., 200., 100.);
+        let text_box = rect(380., 340., 60., 30.);
+        let route = route_cloud_plus_leader(
+            &control,
+            &visible,
+            text_box,
+            &[],
+            CLOUD_PLUS_LANDING_PT,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        let [tip, _, connection] = route.points.as_slice() else {
+            panic!("a leader");
+        };
+        // Out and up from the text: the landing takes the distance out only.
+        let dragged =
+            drag_cloud_plus_knee(&visible, text_box, &route.points, point(330., 400.)).unwrap();
+        assert_eq!(dragged[2], *connection);
+        assert_eq!(dragged[1], point(330., connection.y));
+        assert_eq!(cloud_plus_landing_pt(&dragged), Some(50.));
+        assert_eq!(dragged[0], *tip, "a clear tip stays where it is");
+        // Into the text: no landing.
+        let flat =
+            drag_cloud_plus_knee(&visible, text_box, &route.points, point(400., 300.)).unwrap();
+        assert_eq!(flat[1], flat[2]);
+        // Past the cloud's side, the tip moves so the leader stays clear.
+        let far =
+            drag_cloud_plus_knee(&visible, text_box, &route.points, point(150., 355.)).unwrap();
+        assert_eq!(far[1], point(150., 355.));
+        assert!(!leader_crosses_outline(&far, &closed_outline(&visible)));
+        assert!((far[0].x - 200.).abs() < 1e-9 && (far[0].y - 300.).abs() < 1e-9);
+        // Level with the cloud, it stops short of the cloud.
+        let level = rect(380., 260., 60., 30.);
+        let route = route_cloud_plus_leader(
+            &control,
+            &visible,
+            level,
+            &[],
+            CLOUD_PLUS_LANDING_PT,
+            &CloudPlusRoutingContext::default(),
+        )
+        .unwrap();
+        let blocked =
+            drag_cloud_plus_knee(&visible, level, &route.points, point(250., 275.)).unwrap();
+        assert_eq!(blocked[1].x, 300. + LANDING_CLEARANCE_PT);
     }
 
     #[test]
@@ -768,6 +1274,7 @@ mod tests {
             &visible,
             text_box,
             &[],
+            CLOUD_PLUS_LANDING_PT,
             &CloudPlusRoutingContext {
                 page_bounds: Some(rect(-200., -200., 700., 700.)),
                 obstacles: vec![CloudPlusObstacle::Rect {
@@ -800,6 +1307,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             translate_rect(text_box),
             &[],
+            CLOUD_PLUS_LANDING_PT,
             &CloudPlusRoutingContext {
                 page_bounds: Some(translate_rect(rect(-200., -200., 700., 700.))),
                 obstacles: vec![CloudPlusObstacle::Rect {

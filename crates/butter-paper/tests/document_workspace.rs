@@ -23,8 +23,8 @@ use butter_paper::annotation_adapter::{
 };
 use butter_paper::annotation_model::{
     Annotation, AnnotationSnapshot, ArcAnnotation, ArcControlPoint, BlendMode, CloudAnnotation,
-    DecodedRgbaAsset, DimensionAppearance, EllipseAnnotation, ImageAnnotation, InkTool,
-    LengthAnnotation, LengthCalibration, LengthEndpoint, LineKind, MarkupId,
+    CloudPlusAnnotation, DecodedRgbaAsset, DimensionAppearance, EllipseAnnotation, ImageAnnotation,
+    InkTool, LengthAnnotation, LengthCalibration, LengthEndpoint, LineKind, MarkupId,
     MeasurementPathAnnotation, MeasurementPathKind, PageRotation, PageRotationDirection, PageScale,
     PageScaleApplyTarget, PageTransform, PdfPoint, PdfRect, PenAnnotation, PenAppearance,
     RectangleAnnotation, RectangleAppearance, RectangleResizeHandle, RedactAnnotation,
@@ -39,6 +39,7 @@ use butter_paper::caption_property_inspector::{
     CaptionPropertyEvent, CaptionPropertyPatch, CaptionPropertyValues, CaptionStyleEdit,
     edit_caption_values,
 };
+use butter_paper::cloud_plus_routing::{CLOUD_PLUS_LANDING_PT, cloud_plus_landing_pt};
 use butter_paper::dimension_property_inspector::{
     DIMENSION_INSPECTOR_FONT_SIZE_ID, DIMENSION_INSPECTOR_LOCKED_ID, DIMENSION_INSPECTOR_OFFSET_ID,
     DIMENSION_INSPECTOR_OPACITY_ID, DIMENSION_INSPECTOR_STROKE_COLOR_ID,
@@ -28412,39 +28413,51 @@ fn a_selected_markups_text_shows_an_ibeam_and_a_press_there_edits_it(cx: &mut Te
     );
 }
 
-/// Double-clicking a markup, text or not, opens its properties and never
-/// starts editing its text.
+/// Double-clicking a markup's text edits that text on the page and opens no
+/// properties; a double-click elsewhere on the markup opens its properties.
 #[gpui::test]
-fn double_clicking_a_markup_opens_its_properties_without_editing_text(cx: &mut TestAppContext) {
+fn double_clicking_a_text_box_text_edits_it_and_elsewhere_opens_properties(
+    cx: &mut TestAppContext,
+) {
     let (workspace, document_id, cx) = markup_text_workspace(cx);
     create_test_text_box(&workspace, document_id, cx);
     let project = page_projection(cx, document_id);
-    let text = project(330., 330.);
-    for click_count in [1, 2] {
-        cx.simulate_event(MouseDownEvent {
-            button: MouseButton::Left,
-            position: text,
-            modifiers: Modifiers::default(),
-            click_count,
-            first_mouse: false,
-        });
-        cx.simulate_event(MouseUpEvent {
-            button: MouseButton::Left,
-            position: text,
-            modifiers: Modifiers::default(),
-            click_count,
-        });
-        cx.update(|window, cx| window.draw(cx).clear(cx));
-    }
+    // On "baseline", the first line under the box's top edge.
+    double_click_at(cx, project(330., 352.));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("baseline text".to_owned()),
+        "a double-click on the text edits it"
+    );
+    let input = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+        .unwrap();
+    assert_eq!(
+        input.read_with(cx, |input, _| input.selected_range()),
+        0.."baseline".len(),
+        "the word under the pointer is selected"
+    );
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_none(),
+        "a double-click on the text opens no properties"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    // Inside the box, below its one line of text.
+    double_click_at(cx, project(330., 330.));
     assert_eq!(
         workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
         None,
-        "a double-click does not edit the text"
+        "a double-click away from the text does not edit it"
     );
     assert!(
         cx.debug_bounds("document-workspace-properties-sidebar")
             .is_some(),
-        "a double-click opens the markup's properties"
+        "a double-click away from the text opens the properties"
     );
 }
 
@@ -33660,6 +33673,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         &CaptionPropertyValues::CloudPlus {
             appearance: current.appearance.clone(),
             intensity: current.border_effect_intensity(),
+            landing_pt: CLOUD_PLUS_LANDING_PT,
         },
         &CaptionStyleEdit {
             line_color: Some("#1d4ed8".into()),
@@ -33670,6 +33684,7 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
             fill_color: Some(Some("#fde68a".into())),
             fill_opacity: Some(0.6),
             intensity: Some(next_intensity),
+            landing_pt: Some(32.),
         },
     )
     .unwrap();
@@ -33685,6 +33700,67 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
                 cx,
             ))
             .unwrap()
+    );
+    // The leader's knee and tip drag from their handles, and both save.
+    let drag = |cx: &mut gpui::VisualTestContext, from: PdfPoint, to: PdfPoint| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.simulate_mouse_down(
+            to_view(from.x, from.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            to_view(to.x, to.y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(to_view(to.x, to.y), MouseButton::Left, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    let restyled_leader = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .cloud_pluses[0]
+        .leader_points()
+        .to_vec();
+    assert!(
+        (cloud_plus_landing_pt(&restyled_leader).unwrap() - 32.).abs() < 1e-6,
+        "the Landing property sets the landing: {restyled_leader:?}"
+    );
+    // Dragging the knee 10 pt further out lengthens the landing; it stays
+    // level, whatever the drag does up or down.
+    let knee = restyled_leader[1];
+    let outward = (knee.x - restyled_leader[2].x).signum();
+    drag(
+        cx,
+        knee,
+        PdfPoint::new(knee.x + outward * 10., knee.y + 26.).unwrap(),
+    );
+    let tip = restyled_leader[0];
+    drag(cx, tip, PdfPoint::new(tip.x, tip.y + 16.).unwrap());
+    let dragged_leader = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .cloud_pluses[0]
+        .leader_points()
+        .to_vec();
+    assert_eq!(
+        dragged_leader[1].y, dragged_leader[2].y,
+        "the landing stays level"
+    );
+    assert!(
+        (cloud_plus_landing_pt(&dragged_leader).unwrap() - 42.).abs() < 1.5,
+        "the knee drag sets the landing: {knee:?} -> {:?}",
+        dragged_leader[1]
+    );
+    assert!(
+        dragged_leader[0].y > tip.y + 4.,
+        "the tip follows its handle along the cloud: {tip:?} -> {:?}",
+        dragged_leader[0]
     );
     let edited = workspace
         .read_with(cx, |workspace, cx| {
@@ -33812,6 +33888,20 @@ fn real_cloud_plus_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCo
         .find(|cloud_plus| cloud_plus.id == cloud_plus_id)
         .expect("a fresh workspace must reopen one logical Cloud+");
     assert!(fresh_cloud_plus.same_persisted_state_as(edited_cloud_plus));
+    for (reopened, dragged) in fresh_cloud_plus.leader_points().iter().zip(&dragged_leader) {
+        assert!(
+            (reopened.x - dragged.x).abs() < 1e-3 && (reopened.y - dragged.y).abs() < 1e-3,
+            "the dragged leader reopens as it was saved: {:?} {dragged_leader:?}",
+            fresh_cloud_plus.leader_points()
+        );
+    }
+    assert!(
+        (cloud_plus_landing_pt(fresh_cloud_plus.leader_points()).unwrap()
+            - cloud_plus_landing_pt(&dragged_leader).unwrap())
+        .abs()
+            < 1e-3,
+        "the landing length reopens from /CL"
+    );
     let reopened_worker_pid = fresh_workspace
         .read_with(cx, |workspace, cx| {
             workspace
@@ -52530,4 +52620,386 @@ fn each_scaled_page_shows_one_scale_badge_on_its_thumbnail(cx: &mut TestAppConte
     assert!(badge(cx, 0).is_some(), "page 1 has a scale");
     assert!(badge(cx, 1).is_none(), "page 2 has none");
     assert!(badge(cx, 2).is_some(), "page 3 has a scale");
+}
+
+/// Presses at `at` twice, as one double-click.
+fn double_click_at(cx: &mut gpui::VisualTestContext, at: Point<Pixels>) {
+    for click_count in [1, 2] {
+        cx.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+}
+
+/// Draws a Cloud+ with the tool and keeps its default text. Nothing is
+/// selected afterwards.
+fn draw_test_cloud_plus(
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+    cx: &mut gpui::VisualTestContext,
+) -> CloudPlusAnnotation {
+    cx.simulate_keystrokes("k");
+    let project = page_projection(cx, document_id);
+    cx.simulate_click(project(120., 420.), Modifiers::default());
+    cx.simulate_click(project(260., 520.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(snapshot.cloud_pluses.len(), 1);
+    snapshot.cloud_pluses[0].clone()
+}
+
+/// A double-click on a Cloud+'s text edits that text on the page, with the
+/// word under the pointer selected, as in a Text Box or Callout. A
+/// double-click on its cloud opens its properties, as on other markups.
+#[gpui::test]
+fn double_clicking_a_cloud_plus_text_edits_it_and_its_cloud_opens_properties(
+    cx: &mut TestAppContext,
+) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    let cloud_plus = draw_test_cloud_plus(&workspace, document_id, cx);
+    let project = page_projection(cx, document_id);
+    let text_box = cloud_plus.text_box;
+    let text = project(
+        (text_box.x + text_box.width / 2.) as f32,
+        (text_box.y + text_box.height / 2.) as f32,
+    );
+    double_click_at(cx, text);
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("Cloud".to_owned() + "+"),
+        "a double-click on the text edits it"
+    );
+    let input = workspace
+        .read_with(cx, |workspace, _| workspace.pending_text_box_input())
+        .unwrap();
+    assert!(
+        !input
+            .read_with(cx, |input, _| input.selected_range())
+            .is_empty(),
+        "the word under the pointer is selected"
+    );
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_none(),
+        "a double-click on the text opens no properties"
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(butter_paper::document_workspace::DOCUMENT_TEXT_BOX_EDITOR_ID)
+            .is_some(),
+        "the editor shows on the page"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    // Selected first, a double-click on its text edits it the same way.
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &cloud_plus.id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    double_click_at(cx, text);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        Some("Cloud".to_owned() + "+"),
+        "a double-click on a selected Cloud+'s text edits it"
+    );
+    assert!(
+        cx.debug_bounds(butter_paper::document_workspace::DOCUMENT_TEXT_BOX_EDITOR_ID)
+            .is_some(),
+        "the editor shows on the page for a selected Cloud+ too"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let outline = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(document_id, 0, cx).cloud_pluses[0].scallop_path[2]
+    });
+    double_click_at(cx, project(outline.x as f32, outline.y as f32));
+    assert_eq!(
+        workspace.read_with(cx, |workspace, cx| workspace.pending_text_box_value(cx)),
+        None,
+        "a double-click on the cloud does not edit the text"
+    );
+    assert!(
+        cx.debug_bounds("document-workspace-properties-sidebar")
+            .is_some(),
+        "a double-click on the cloud opens the properties"
+    );
+}
+
+/// A selected Cloud+'s leader tip and knee are handles that drag the leader,
+/// with the point cursor, never the rotate cursor: a Cloud+ has no
+/// rotation knob.
+#[gpui::test]
+fn a_cloud_plus_leader_tip_and_knee_drag_with_the_point_cursor(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    let cloud_plus = draw_test_cloud_plus(&workspace, document_id, cx);
+    assert!(
+        workspace.update(cx, |workspace, cx| workspace.select_annotation(
+            document_id,
+            &cloud_plus.id,
+            cx
+        ))
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let project = page_projection(cx, document_id);
+    let scene = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(document_id, 0, cx)
+    });
+    let leader_start = cloud_plus.cloud_points().len() + 8;
+    for index in leader_start..leader_start + 2 {
+        assert_eq!(
+            annotation_resize_cursor_style(&scene, &cloud_plus.id, index),
+            Some(CursorStyle::Crosshair),
+            "leader handle {index} takes the point cursor"
+        );
+    }
+    let [tip, knee, _] = cloud_plus.leader_points() else {
+        panic!("a new Cloud+ has a leader");
+    };
+    assert_eq!(
+        hover_cursor(&workspace, cx, project(knee.x as f32, knee.y as f32)),
+        CursorStyle::Crosshair,
+        "the knee shows the point cursor"
+    );
+
+    // Drag the knee out and up, then the tip along the cloud. The knee sets
+    // the landing's length; the landing stays level.
+    let outward = (knee.x - cloud_plus.leader_points()[2].x).signum() as f32;
+    let knee_target = (knee.x as f32 + outward * 12., knee.y as f32 + 30.);
+    cx.simulate_mouse_down(
+        project(knee.x as f32, knee.y as f32),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        project(knee_target.0, knee_target.1),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        project(knee_target.0, knee_target.1),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after_knee = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .cloud_pluses[0]
+        .clone();
+    let moved_knee = after_knee.leader_points()[1];
+    assert_eq!(moved_knee.y, knee.y, "the landing stays level");
+    assert!(
+        (cloud_plus_landing_pt(after_knee.leader_points()).unwrap() - CLOUD_PLUS_LANDING_PT - 12.)
+            .abs()
+            < 1.5,
+        "the knee drag lengthens the landing: {knee:?} -> {moved_knee:?}"
+    );
+    assert_eq!(after_knee.text_box, cloud_plus.text_box);
+
+    let tip_target = (tip.x as f32, tip.y as f32 - 20.);
+    cx.simulate_mouse_down(
+        project(tip.x as f32, tip.y as f32),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        project(tip_target.0, tip_target.1),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        project(tip_target.0, tip_target.1),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after_tip = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap()
+        .cloud_pluses[0]
+        .clone();
+    assert!(
+        after_tip.leader_points()[0].y < tip.y - 5.,
+        "the tip follows the drag along the cloud: {tip:?} -> {:?}",
+        after_tip.leader_points()[0]
+    );
+    assert_eq!(after_tip.leader_points()[1], moved_knee);
+}
+
+/// A Callout's leader handles take the point cursor too.
+#[gpui::test]
+fn a_callout_leader_handle_takes_the_point_cursor(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    cx.simulate_keystrokes("q");
+    let project = page_projection(cx, document_id);
+    cx.simulate_click(project(120., 420.), Modifiers::default());
+    cx.simulate_click(project(260., 520.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let scene = workspace.read_with(cx, |workspace, cx| {
+        workspace.annotation_scene(document_id, 0, cx)
+    });
+    let id = scene.callouts[0].id.clone();
+    for index in 8..8 + scene.callouts[0].leader_points.len() {
+        assert_eq!(
+            annotation_resize_cursor_style(&scene, &id, index),
+            Some(CursorStyle::Crosshair),
+            "Callout leader handle {index} takes the point cursor"
+        );
+    }
+}
+
+/// The Cloud+ tool's Landing default sets the landing of the next Cloud+,
+/// and a selected Cloud+'s Landing property sets its own, 0 included.
+#[gpui::test]
+fn the_cloud_plus_landing_comes_from_its_tool_default_and_its_properties(cx: &mut TestAppContext) {
+    use butter_paper::caption_property_inspector::CAPTION_INSPECTOR_LANDING_ID;
+    use butter_paper::tool_defaults_panel::TOOL_DEFAULTS_LANDING_ID;
+    use butter_paper::tool_properties::ToolPropertyField;
+    let (workspace, document_id, cx) = markup_text_workspace(cx);
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::CloudPlus, cx)
+            .unwrap()
+    });
+    toggle_document_actions(cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        cx.debug_bounds(TOOL_DEFAULTS_LANDING_ID).is_some(),
+        "the Cloud+ tool shows its Landing"
+    );
+    let panel = workspace
+        .read_with(cx, |workspace, _| workspace.tool_defaults_panel())
+        .unwrap();
+    let landing = panel
+        .read_with(cx, |panel, _| panel.input(ToolPropertyField::LandingPt))
+        .unwrap();
+    assert_eq!(
+        landing.read_with(cx, |input, _| input.value().to_string()),
+        "19.8"
+    );
+    commit_caption_number(cx, landing, "30");
+    assert_eq!(
+        workspace
+            .read_with(cx, |workspace, cx| workspace.tool_properties(
+                document_id,
+                AnnotationTool::CloudPlus,
+                cx
+            ))
+            .map(|properties| properties.landing_pt),
+        Some(30.)
+    );
+
+    // A click away finishes the field; the next two clicks draw a Cloud+.
+    let project = page_projection(cx, document_id);
+    cx.simulate_click(project(400., 200.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_click(project(120., 420.), Modifiers::default());
+    cx.simulate_click(project(260., 520.), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_keystrokes("escape");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let snapshot = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(snapshot.cloud_pluses.len(), 1);
+    let cloud_plus = snapshot.cloud_pluses[0].clone();
+    assert!(
+        (cloud_plus_landing_pt(cloud_plus.leader_points()).unwrap() - 30.).abs() < 1e-9,
+        "a new Cloud+ takes the tool's landing: {:?}",
+        cloud_plus.leader_points()
+    );
+
+    // Selected, its properties show and set its landing.
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .set_annotation_tool(document_id, AnnotationTool::Select, cx)
+            .unwrap();
+        assert!(workspace.select_annotation(document_id, &cloud_plus.id, cx));
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    if cx.debug_bounds(CAPTION_INSPECTOR_LANDING_ID).is_none() {
+        toggle_document_actions(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+    assert!(
+        cx.debug_bounds(CAPTION_INSPECTOR_LANDING_ID).is_some(),
+        "a Cloud+ shows its Landing"
+    );
+    let inspector = workspace
+        .read_with(cx, |workspace, _| workspace.caption_property_inspector())
+        .unwrap();
+    let landing = inspector.read_with(cx, |inspector, _| inspector.landing_input());
+    assert_eq!(
+        landing.read_with(cx, |input, _| input.value().to_string()),
+        "30"
+    );
+    let before = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    // The unchanged value changes nothing.
+    commit_caption_number(cx, landing.clone(), "30");
+    for value in ["12.5", "0"] {
+        commit_caption_number(cx, landing.clone(), value);
+        let after = workspace
+            .read_with(cx, |workspace, cx| {
+                workspace.annotation_snapshot(document_id, cx)
+            })
+            .unwrap();
+        let leader = after.cloud_pluses[0].leader_points();
+        assert_eq!(leader[1].y, leader[2].y, "the landing stays level");
+        assert!(
+            (cloud_plus_landing_pt(leader).unwrap() - value.parse::<f64>().unwrap()).abs() < 1e-9,
+            "the Landing property sets {value}: {leader:?}"
+        );
+    }
+    // A negative length is refused and the field shows the landing again.
+    commit_caption_number(cx, landing.clone(), "-4");
+    assert_eq!(
+        landing.read_with(cx, |input, _| input.value().to_string()),
+        "0"
+    );
+    let after = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace.annotation_snapshot(document_id, cx)
+        })
+        .unwrap();
+    assert_eq!(after.undo_depth, before.undo_depth + 2);
 }

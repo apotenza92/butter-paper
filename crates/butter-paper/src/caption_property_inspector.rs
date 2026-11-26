@@ -1,7 +1,7 @@
 //! Retained presentation state for one exact selected Callout or Cloud+.
 //!
-//! The panel shows the markup's text, line, font, (for a Cloud+) fill and
-//! cloud intensity, and opacity, laid out as the Dimension and Text Box
+//! The panel shows the markup's text, line, font, (for a Cloud+) fill,
+//! cloud intensity and landing length, and opacity, laid out as the Dimension and Text Box
 //! panels are. The workspace owns document authority, annotation identity,
 //! revision validation, and history.
 
@@ -9,12 +9,14 @@ use crate::annotation_model::{
     CalloutAppearance, CloudPlusAppearance, MarkupId, RectangleAppearance, StraightLineAppearance,
     TextBoxStyle,
 };
+use crate::cloud_plus_routing::CLOUD_PLUS_MAX_LANDING_PT;
 use crate::property_controls::{
     PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
     PropertySliderInput, PropertyTextEditEvent, PropertyTextField, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage, property_body,
-    property_color_and_size, property_lock_toggle, property_row, property_slider_row,
-    subscribe_property_color, subscribe_property_slider,
+    format_property_geometry, format_property_number, format_property_percentage,
+    parse_property_percentage, property_body, property_color_and_size, property_lock_toggle,
+    property_number, property_row, property_slider_row, subscribe_property_color,
+    subscribe_property_slider,
 };
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
@@ -45,6 +47,7 @@ pub const CAPTION_INSPECTOR_FILL_COLOR_ID: &str = "caption-property-fill-color";
 pub const CAPTION_INSPECTOR_FILL_OPACITY_ID: &str = "caption-property-fill-opacity";
 pub const CAPTION_INSPECTOR_INTENSITY_ID: &str = "caption-property-intensity";
 pub const CAPTION_INSPECTOR_OPACITY_ID: &str = "caption-property-opacity";
+pub const CAPTION_INSPECTOR_LANDING_ID: &str = "caption-property-landing";
 const CAPTION_INSPECTOR_HEADER_ID: &str = "caption-property-inspector-header";
 const CAPTION_INSPECTOR_SCROLL_ID: &str = "caption-property-inspector-scroll";
 const CAPTION_INSPECTOR_FILL_SWITCH_ID: &str = "caption-property-fill-enabled-switch";
@@ -64,6 +67,8 @@ pub enum CaptionPropertyValues {
     CloudPlus {
         appearance: CloudPlusAppearance,
         intensity: f64,
+        /// The length of the leader's level landing at the text.
+        landing_pt: f64,
     },
 }
 
@@ -112,6 +117,13 @@ impl CaptionPropertyValues {
         }
     }
 
+    fn landing_pt(&self) -> Option<f64> {
+        match self {
+            Self::Callout(_) => None,
+            Self::CloudPlus { landing_pt, .. } => Some(*landing_pt),
+        }
+    }
+
     pub fn is_cloud_plus(&self) -> bool {
         matches!(self, Self::CloudPlus { .. })
     }
@@ -153,6 +165,8 @@ pub struct CaptionStyleEdit {
     pub fill_color: Option<Option<String>>,
     pub fill_opacity: Option<f64>,
     pub intensity: Option<f64>,
+    /// A Cloud+'s landing length, from 0 to `CLOUD_PLUS_MAX_LANDING_PT`.
+    pub landing_pt: Option<f64>,
 }
 
 /// The values with `edit` applied, keeping everything it leaves alone,
@@ -196,6 +210,7 @@ pub fn edit_caption_values(
         CaptionPropertyValues::CloudPlus {
             appearance,
             intensity,
+            landing_pt,
         } => {
             let cloud = appearance.cloud();
             let fill_color = edit
@@ -219,11 +234,16 @@ pub fn edit_caption_values(
             if !(0. ..=4.).contains(&intensity) {
                 return None;
             }
+            let landing_pt = edit.landing_pt.unwrap_or(*landing_pt);
+            if !(0. ..=CLOUD_PLUS_MAX_LANDING_PT).contains(&landing_pt) {
+                return None;
+            }
             CloudPlusAppearance::new(cloud, leader, text)
                 .ok()
                 .map(|appearance| CaptionPropertyValues::CloudPlus {
                     appearance,
                     intensity,
+                    landing_pt,
                 })
         }
     }
@@ -246,6 +266,7 @@ pub struct CaptionPropertyInspector {
     fill_opacity_input: gpui::Entity<InputState>,
     intensity: gpui::Entity<SliderState>,
     intensity_input: gpui::Entity<InputState>,
+    landing: gpui::Entity<InputState>,
     opacity: gpui::Entity<SliderState>,
     opacity_input: gpui::Entity<InputState>,
     _subscriptions: Vec<Subscription>,
@@ -296,6 +317,14 @@ impl CaptionPropertyInspector {
         let opacity_input = cx.new(|cx| InputState::new(window, cx).default_value("100"));
         let fill_opacity_input = cx.new(|cx| InputState::new(window, cx).default_value("100"));
         let intensity_input = cx.new(|cx| InputState::new(window, cx).default_value("1"));
+        let landing = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(format_property_geometry(
+                    crate::cloud_plus_routing::CLOUD_PLUS_LANDING_PT,
+                ))
+                .min(0.)
+                .max(CLOUD_PLUS_MAX_LANDING_PT)
+        });
 
         let mut subscriptions = vec![
             // Enter starts a new line; leaving the field, or Cmd/Ctrl+Enter,
@@ -371,6 +400,7 @@ impl CaptionPropertyInspector {
             number_subscription(&line_width, window, cx, NumberField::LineWidth),
             number_subscription(&font_size, window, cx, NumberField::FontSize),
             number_subscription(&intensity_input, window, cx, NumberField::Intensity),
+            number_subscription(&landing, window, cx, NumberField::Landing),
             percent_subscription(&opacity_input, window, cx, PercentField::Opacity),
             percent_subscription(&fill_opacity_input, window, cx, PercentField::FillOpacity),
         ];
@@ -405,6 +435,7 @@ impl CaptionPropertyInspector {
             fill_opacity_input,
             intensity,
             intensity_input,
+            landing,
             opacity,
             opacity_input,
             _subscriptions: subscriptions,
@@ -443,6 +474,9 @@ impl CaptionPropertyInspector {
     }
     pub fn intensity_input(&self) -> gpui::Entity<InputState> {
         self.intensity_input.clone()
+    }
+    pub fn landing_input(&self) -> gpui::Entity<InputState> {
+        self.landing.clone()
     }
     pub fn line_color_picker(&self) -> gpui::Entity<ColorPickerState> {
         self.line_color.clone()
@@ -516,6 +550,11 @@ impl CaptionPropertyInspector {
             });
             self.intensity_input.update(cx, |input, cx| {
                 input.set_value(format_property_number(intensity), window, cx)
+            });
+        }
+        if let Some(landing_pt) = values.landing_pt() {
+            self.landing.update(cx, |input, cx| {
+                input.set_value(format_property_geometry(landing_pt), window, cx)
             });
         }
         self.snapshot = Some(snapshot);
@@ -776,6 +815,20 @@ impl Render for CaptionPropertyInspector {
                     .disabled(disabled),
             ));
         }
+        if snapshot.values.landing_pt().is_some() {
+            rows = rows.row(property_row(
+                "Landing",
+                property_number(
+                    PropertyNumericInput::new(
+                        CAPTION_INSPECTOR_LANDING_ID,
+                        "Landing length",
+                        &self.landing,
+                    )
+                    .suffix("pt")
+                    .disabled(disabled),
+                ),
+            ));
+        }
         let lock = cx.entity().downgrade();
         PropertyInspectorPanel::new(
             CAPTION_PROPERTY_INSPECTOR_ID,
@@ -814,6 +867,7 @@ enum NumberField {
     LineWidth,
     FontSize,
     Intensity,
+    Landing,
 }
 
 #[derive(Clone, Copy)]
@@ -835,7 +889,19 @@ fn number_subscription(
             if this.syncing || !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
                 return;
             }
-            let value = input.read(cx).value().trim().parse::<f64>().ok();
+            let text = input.read(cx).value();
+            // The landing shows rounded; its unchanged text keeps the exact
+            // length.
+            if matches!(field, NumberField::Landing)
+                && this
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.values.landing_pt())
+                    .is_some_and(|landing| text.trim() == format_property_geometry(landing))
+            {
+                return;
+            }
+            let value = text.trim().parse::<f64>().ok();
             let edit = match (field, value) {
                 (NumberField::LineWidth, Some(value)) if (0.25..=24.).contains(&value) => {
                     Some(CaptionStyleEdit {
@@ -852,6 +918,14 @@ fn number_subscription(
                 (NumberField::Intensity, Some(value)) if (0. ..=4.).contains(&value) => {
                     Some(CaptionStyleEdit {
                         intensity: Some(value),
+                        ..Default::default()
+                    })
+                }
+                (NumberField::Landing, Some(value))
+                    if (0. ..=CLOUD_PLUS_MAX_LANDING_PT).contains(&value) =>
+                {
+                    Some(CaptionStyleEdit {
+                        landing_pt: Some(value),
                         ..Default::default()
                     })
                 }
@@ -941,6 +1015,7 @@ mod tests {
         CaptionPropertyValues::CloudPlus {
             appearance: CloudPlusAppearance::new(cloud, leader, text).unwrap(),
             intensity: 1.,
+            landing_pt: 19.8,
         }
     }
 
@@ -981,11 +1056,13 @@ mod tests {
         let CaptionPropertyValues::CloudPlus {
             appearance,
             intensity,
+            landing_pt,
         } = next
         else {
             panic!("a Cloud+ stays a Cloud+");
         };
         assert_eq!(intensity, 2.);
+        assert_eq!(landing_pt, 19.8, "a style edit keeps the landing");
         assert_eq!(appearance.cloud().stroke_color(), "#00ff00");
         assert_eq!(appearance.leader().stroke_color(), "#00ff00");
         assert_eq!(appearance.cloud().stroke_width_pt(), 2.5);
@@ -1019,5 +1096,24 @@ mod tests {
             edit_caption_values(&callout(), &CaptionStyleEdit::default()),
             Some(callout())
         );
+    }
+
+    #[test]
+    fn a_cloud_plus_landing_edit_takes_zero_and_refuses_out_of_range() {
+        let landing = |value: f64| {
+            edit_caption_values(
+                &cloud_plus(),
+                &CaptionStyleEdit {
+                    landing_pt: Some(value),
+                    ..Default::default()
+                },
+            )
+            .and_then(|values| values.landing_pt())
+        };
+        assert_eq!(landing(36.), Some(36.));
+        assert_eq!(landing(0.), Some(0.));
+        assert_eq!(landing(-1.), None);
+        assert_eq!(landing(CLOUD_PLUS_MAX_LANDING_PT + 1.), None);
+        assert_eq!(callout().landing_pt(), None);
     }
 }

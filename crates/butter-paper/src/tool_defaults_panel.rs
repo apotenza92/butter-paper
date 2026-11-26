@@ -7,12 +7,13 @@
 use crate::{
     accessible_button::close_icon_button,
     annotation_adapter::AnnotationTool,
+    cloud_plus_routing::CLOUD_PLUS_MAX_LANDING_PT,
     document_workspace::{DocumentId, MeasureFamily},
     property_controls::{
         PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-        PropertyResetConfirm, PropertyResetIds, PropertySliderInput, format_property_number,
-        format_property_percentage, property_body, property_color_and_size, property_number,
-        property_row, property_slider_row, subscribe_property_color,
+        PropertyResetConfirm, PropertyResetIds, PropertySliderInput, format_property_geometry,
+        format_property_number, format_property_percentage, property_body, property_color_and_size,
+        property_number, property_row, property_slider_row, subscribe_property_color,
     },
     tool_properties::{ToolProperties, ToolPropertyField, ToolPropertyRange},
 };
@@ -59,6 +60,7 @@ pub const TOOL_DEFAULTS_CLOUD_INTENSITY_SLIDER_ID: &str =
     "tool-defaults-panel-cloud-intensity-slider";
 pub const TOOL_DEFAULTS_CLOUD_INTENSITY_INPUT_ID: &str =
     "tool-defaults-panel-cloud-intensity-input";
+pub const TOOL_DEFAULTS_LANDING_ID: &str = "tool-defaults-panel-landing";
 pub const TOOL_DEFAULTS_EMPTY_ID: &str = "tool-defaults-panel-empty";
 pub const TOOL_DEFAULTS_MEASURE_ID: &str = "tool-defaults-panel-measure";
 pub const TOOL_DEFAULTS_RESET_ID: &str = "tool-defaults-panel-reset";
@@ -95,6 +97,7 @@ struct ToolDefaultControls {
     font_size: Entity<InputState>,
     cloud_intensity: Entity<InputState>,
     cloud_intensity_slider: Entity<SliderState>,
+    landing: Entity<InputState>,
     colour: Entity<ColorPickerState>,
     fill_colour: Entity<ColorPickerState>,
     font_family: Entity<SelectState<Vec<SharedString>>>,
@@ -253,6 +256,7 @@ impl ToolDefaultsPanel {
             ToolPropertyField::Opacity => Some(self.controls.opacity.clone()),
             ToolPropertyField::FontSizePt => Some(self.controls.font_size.clone()),
             ToolPropertyField::CloudIntensity => Some(self.controls.cloud_intensity.clone()),
+            ToolPropertyField::LandingPt => Some(self.controls.landing.clone()),
             ToolPropertyField::Colour
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontFamily
@@ -273,6 +277,7 @@ impl ToolDefaultsPanel {
             ToolPropertyField::Colour
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontSizePt
+            | ToolPropertyField::LandingPt
             | ToolPropertyField::FontFamily
             | ToolPropertyField::SmoothCurves
             | ToolPropertyField::CloudStyle => None,
@@ -336,6 +341,10 @@ impl ToolDefaultsPanel {
         });
         let cloud_intensity_slider =
             cx.new(|_| slider_state(cloud_range, properties.cloud_intensity));
+        let landing = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(format_property_geometry(properties.landing_pt))
+        });
         let colour = cx.new(|cx| {
             ColorPickerState::new(window, cx).default_value(parsed_colour(
                 &properties.colour,
@@ -374,6 +383,7 @@ impl ToolDefaultsPanel {
                 ToolPropertyField::CloudIntensity,
                 cx,
             ),
+            numeric_input_subscription(&landing, ToolPropertyField::LandingPt, window, cx),
             cx.subscribe_in(
                 &font_family,
                 window,
@@ -441,6 +451,7 @@ impl ToolDefaultsPanel {
                 font_size,
                 cloud_intensity,
                 cloud_intensity_slider,
+                landing,
                 colour,
                 fill_colour,
                 font_family,
@@ -505,6 +516,10 @@ impl ToolDefaultsPanel {
                 )
             });
 
+        self.controls.landing.update(cx, |input, cx| {
+            input.set_value(format_property_geometry(properties.landing_pt), window, cx)
+        });
+
         if let Ok(mut colour) = try_parse_color(&properties.colour) {
             colour.a = properties.opacity.clamp(0., 1.) as f32;
             self.controls
@@ -565,6 +580,7 @@ impl ToolDefaultsPanel {
             ToolPropertyField::CloudIntensity => {
                 format_property_number(self.properties.cloud_intensity)
             }
+            ToolPropertyField::LandingPt => format_property_geometry(self.properties.landing_pt),
             ToolPropertyField::Colour
             | ToolPropertyField::FillColour
             | ToolPropertyField::FontFamily
@@ -828,6 +844,20 @@ impl ToolDefaultsPanel {
                 .disabled(disabled),
             ));
         }
+        if applies(ToolPropertyField::LandingPt) {
+            rows = rows.row(property_row(
+                "Landing",
+                property_number(
+                    PropertyNumericInput::new(
+                        TOOL_DEFAULTS_LANDING_ID,
+                        "Landing length",
+                        &self.controls.landing,
+                    )
+                    .suffix("pt")
+                    .disabled(disabled),
+                ),
+            ));
+        }
 
         div()
             .id(TOOL_DEFAULTS_APPEARANCE_ID)
@@ -1007,6 +1037,11 @@ fn displayed_range(tool: AnnotationTool, field: ToolPropertyField) -> ToolProper
             max: 4.,
             step: 0.25,
         },
+        ToolPropertyField::LandingPt => ToolPropertyRange {
+            min: 0.,
+            max: CLOUD_PLUS_MAX_LANDING_PT,
+            step: 0.1,
+        },
         ToolPropertyField::Colour
         | ToolPropertyField::FillColour
         | ToolPropertyField::FontFamily
@@ -1072,6 +1107,7 @@ fn properties_with_displayed_value(
         ToolPropertyField::Opacity => next.opacity = displayed_value / 100.,
         ToolPropertyField::FontSizePt => next.font_size_pt = displayed_value,
         ToolPropertyField::CloudIntensity => next.cloud_intensity = displayed_value,
+        ToolPropertyField::LandingPt => next.landing_pt = displayed_value,
         ToolPropertyField::Colour
         | ToolPropertyField::FillColour
         | ToolPropertyField::FontFamily
