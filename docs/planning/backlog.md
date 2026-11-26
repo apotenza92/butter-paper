@@ -10,9 +10,12 @@ alone do not establish these behaviours.
 - Physical trackpad pinch/scroll delivery on Windows and Linux. The X11
   GPUI backend reports both trackpads and mouse wheels as line deltas, so
   separating their preferences there needs device-source support in the fork.
-- Dark pages on Windows and on macOS: the shortcut, View ▸ Page Appearance
-  (the macOS menu bar), highlights (the CPU path on both) and the page edge
-  ring. Verified on Linux only.
+- Dark pages: the page edge ring on Windows and macOS, and Match System
+  when the Mac changes to Dark appearance. The menu, the shortcut and
+  highlights are verified on both.
+- Find in Documents after a click on the search panel's Visual mode
+  button: in the test harness the shortcut did nothing until the page got
+  focus. Check whether the real app has the same dead shortcut.
 - Installed update download/restart on macOS, Windows and Linux: preserve
   open documents, view positions and unsaved work, and check relaunch focus.
 - Phone signing with a physical phone (the relay is verified with synthetic

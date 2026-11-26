@@ -4,6 +4,90 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.6.0]
+
+### Search
+
+- Cmd+F (Ctrl+F on Windows and Linux) opens a find bar at the top right of
+  the document. It finds page text, steps through the results and
+  highlights them on the page.
+- Cmd+Shift+F (Ctrl+Shift+F) opens Search in the left rail. It searches
+  page text and markups (subject, author, text and replies) in this
+  document or in all open documents. Results are grouped by document and
+  page, with the text around each hit.
+- The search box takes a query language: quoted phrases, `-word` to
+  exclude, `OR`, `/regex/`, and `file:`, `page:`, `author:` and `subject:`
+  filters. Explain search shows how the query is read.
+- Visual search finds a symbol on the pages. Draw a box around one copy,
+  or paste a picture, and it finds the other copies, also turned 90°, 180°
+  or 270°, at other sizes and mirrored. It runs on this computer.
+
+### Dark pages
+
+- View > Page Appearance: Light, Dark or Match System (Cmd+Shift+D or
+  Ctrl+Shift+D switches). Dark pages show dark paper with light ink and
+  keep the hue of coloured lines and text. Pictures keep their real
+  colours, and highlights stay visible.
+- Saved files, exports and copies always use the real colours.
+
+### Pages
+
+- Rotate Left and Rotate Right are in the General section of the rail.
+  Shift+click rotates all pages. Page Thumbnails and the Document menu also
+  rotate all pages.
+- Cmd+A (Ctrl+A) in Page Thumbnails selects all pages.
+- Fit Width and Fit Page refit when a rotation turns the page in view.
+- In Single Page view, each page remembers its zoom and position. Butter
+  Paper keeps this for the last 50 files and opens a file again on its last
+  page.
+- In Continuous view, a click on a page makes it the current page.
+- When a wider window refits Fit Width, the top of the view stays in place.
+
+### Windows and tabs
+
+- Merge All Windows is in the Window menu on macOS and in the View menu on
+  Windows and Linux.
+- Settings > Documents: open documents in a new tab (default) or a new
+  window. A PDF that another app opens goes to the last-used window. A PDF
+  dropped on a window always opens as a tab in that window.
+- The blank New Tab closes when a document opens from it.
+- A PDF dropped on the window after a key press now opens.
+
+### Toolbar
+
+- Undo and Redo are on the left. The page selector is in the centre and
+  fits its numbers.
+- Edit is an icon button. Page Scale is an icon split button, with the
+  scale of the current page beside it. Page Thumbnails show each page's
+  scale.
+
+### Drawing
+
+- Angle snap is 15° by default. A dashed guide and the angle show while a
+  line snaps, also when you drag a line end or a path point.
+- Arrows no longer use Page Scale or a typed angle.
+- The Cloud+ tool has a new icon.
+
+### Mouse wheel
+
+- Settings > Mouse wheel: Zoom speed (Fine, Standard, Coarse) and Page
+  turning (Deliberate, Balanced, Responsive).
+- In Single Page view, a fast wheel spin no longer turns many pages.
+- On Windows, one wheel notch zooms by one step.
+
+### Selecting
+
+- A press on the page starts a selection box only when nothing else needs
+  the press. A click away from a field, a menu or the page selector only
+  moves the focus.
+
+### Files
+
+- PDFs with damaged names in their markups now open with all their
+  markups.
+- Saves, signatures and snapshots keep PDF objects that Butter Paper cannot
+  read, without changes.
+
 ## [0.5.7]
 
 ### Selecting
