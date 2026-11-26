@@ -29,6 +29,11 @@ use crate::{
     search_text_cache::SharedSearchTextCache,
 };
 
+/// Match case and Match whole word, a pair in the bar.
+pub const DOCUMENT_FIND_OPTIONS_ID: &str = "document-find-options";
+/// Previous match and Next match, a pair in the bar.
+pub const DOCUMENT_FIND_STEPS_ID: &str = "document-find-steps";
+
 /// The key context of the bar: the toggles' shortcuts act inside it.
 pub(super) const FIND_BAR_CONTEXT: &str = "FindBar";
 /// How long the query rests before a search starts.
@@ -41,8 +46,13 @@ const FIND_EDIT_DELAY: Duration = Duration::from_millis(400);
 const FIND_UPDATE_INTERVAL: Duration = Duration::from_millis(50);
 /// The longest query a selection seeds, in characters.
 const FIND_SEED_CHARACTERS: usize = 256;
-/// The bar's width, when the canvas has room.
-const FIND_BAR_WIDTH: f32 = 440.;
+/// The bar's width, when the canvas has room: the field, the count and
+/// five medium buttons, on the grid.
+const FIND_BAR_WIDTH: f32 = 480.;
+/// The count's width: room for "1,234 of 5,678".
+const FIND_COUNT_WIDTH: f32 = 80.;
+/// The field's least width before the bar shortens it no more.
+const FIND_FIELD_MIN_WIDTH: f32 = 128.;
 /// The space between the bar and a match scrolled into view under it.
 const FIND_BAR_REVEAL_GAP: f32 = 16.;
 /// The bar's distance from the top and right edges of the canvas.
@@ -1115,7 +1125,6 @@ impl DocumentWorkspace {
                 .debug_selector(|| DOCUMENT_FIND_MATCH_CASE_ID.into())
                 .accessibility_id(DOCUMENT_FIND_MATCH_CASE_ID)
                 .ghost()
-                .small()
                 .icon(IconName::CaseSensitive)
                 .selected(options.match_case)
                 .toggled(options.match_case),
@@ -1130,7 +1139,6 @@ impl DocumentWorkspace {
                 .debug_selector(|| DOCUMENT_FIND_WHOLE_WORD_ID.into())
                 .accessibility_id(DOCUMENT_FIND_WHOLE_WORD_ID)
                 .ghost()
-                .small()
                 .icon(Icon::default().path(crate::application_assets::WHOLE_WORD_ICON))
                 .selected(options.whole_word)
                 .toggled(options.whole_word),
@@ -1145,7 +1153,6 @@ impl DocumentWorkspace {
                 .debug_selector(|| DOCUMENT_FIND_PREVIOUS_ID.into())
                 .accessibility_id(DOCUMENT_FIND_PREVIOUS_ID)
                 .ghost()
-                .small()
                 .icon(IconName::ChevronUp)
                 .disabled(!has_hits),
             "Previous Match",
@@ -1157,18 +1164,19 @@ impl DocumentWorkspace {
                 .debug_selector(|| DOCUMENT_FIND_NEXT_ID.into())
                 .accessibility_id(DOCUMENT_FIND_NEXT_ID)
                 .ghost()
-                .small()
                 .icon(IconName::ChevronDown)
                 .disabled(!has_hits),
             "Next Match",
             "Enter",
         )
         .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| workspace.step_find(true, cx)));
+        // The app's one X size (`close_icon_button`), as in every header.
         let close =
             crate::accessible_button::close_icon_button(DOCUMENT_FIND_CLOSE_ID, "Close find bar")
                 .on_click(cx.listener(|workspace, _: &ClickEvent, window, cx| {
                     workspace.close_find_bar(window, cx)
                 }));
+        let space = crate::layout_metrics::scaled(crate::layout_metrics::SPACE);
         let theme = cx.theme();
         Some(
             gpui::div()
@@ -1185,8 +1193,11 @@ impl DocumentWorkspace {
                         .key_context(FIND_BAR_CONTEXT)
                         .relative()
                         .items_center()
-                        .gap_1()
-                        .p_1()
+                        // A bar of medium controls, as the toolbar: 8 + 32 + 8,
+                        // its border inside the 48 px.
+                        .h(crate::layout_metrics::scaled(crate::layout_metrics::BAR))
+                        .gap(space)
+                        .px(space)
                         .w(crate::layout_metrics::scaled(FIND_BAR_WIDTH))
                         .max_w_full()
                         .rounded(theme.radius_lg)
@@ -1216,15 +1227,13 @@ impl DocumentWorkspace {
                                 .id(DOCUMENT_FIND_INPUT_ID)
                                 .debug_selector(|| DOCUMENT_FIND_INPUT_ID.into())
                                 .flex_1()
-                                .min_w(crate::layout_metrics::scaled(128.))
+                                .min_w(crate::layout_metrics::scaled(FIND_FIELD_MIN_WIDTH))
                                 .child(
                                     Input::new(&bar.input)
                                         .accessibility_id(DOCUMENT_FIND_INPUT_ID)
                                         .aria_label("Find in document")
-                                        .small()
                                         .prefix(
                                             Icon::new(IconName::Search)
-                                                .small()
                                                 .text_color(theme.muted_foreground),
                                         ),
                                 ),
@@ -1234,17 +1243,32 @@ impl DocumentWorkspace {
                                 .id(DOCUMENT_FIND_COUNT_ID)
                                 .debug_selector(|| DOCUMENT_FIND_COUNT_ID.into())
                                 .min_w_0()
-                                .w(crate::layout_metrics::scaled(76.))
-                                .px_1()
+                                .w(crate::layout_metrics::scaled(FIND_COUNT_WIDTH))
                                 .truncate()
                                 .text_sm()
                                 .text_color(count_colour)
                                 .child(count),
                         )
-                        .child(match_case)
-                        .child(whole_word)
-                        .child(previous)
-                        .child(next)
+                        // Related buttons pair a half unit apart; the
+                        // pairs and the X are a unit apart.
+                        .child(
+                            h_flex()
+                                .id(DOCUMENT_FIND_OPTIONS_ID)
+                                .debug_selector(|| DOCUMENT_FIND_OPTIONS_ID.into())
+                                .flex_none()
+                                .gap_1()
+                                .child(match_case)
+                                .child(whole_word),
+                        )
+                        .child(
+                            h_flex()
+                                .id(DOCUMENT_FIND_STEPS_ID)
+                                .debug_selector(|| DOCUMENT_FIND_STEPS_ID.into())
+                                .flex_none()
+                                .gap_1()
+                                .child(previous)
+                                .child(next),
+                        )
                         .child(close),
                 )
                 .into_any_element(),

@@ -22,12 +22,14 @@ use butter_paper::annotation_model::{
     Annotation, MarkupId, PdfRect, TextBoxAnnotation, TextBoxStyle,
 };
 use butter_paper::document_workspace::{
-    DOCUMENT_LEFT_RAIL_SEARCH_ID, DOCUMENT_SEARCH_COLLAPSE_ID, DOCUMENT_SEARCH_EXPLAIN_ID,
-    DOCUMENT_SEARCH_INPUT_ID, DOCUMENT_SEARCH_MATCH_CASE_ID, DOCUMENT_SEARCH_MORE_CONTEXT_ID,
-    DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_SCOPE_ALL_ID, DOCUMENT_SEARCH_SCOPE_THIS_ID,
-    DOCUMENT_SEARCH_SORT_ID, DocumentId, DocumentWorkspace, LeftPanel, NativeDocumentResource,
-    OpenedNativeDocument, RasterSurface, SearchPanelRow, SearchPanelSummary, ThumbnailSurface,
-    init_document_workspace_actions, search_panel_row_id, search_panel_shortcut,
+    DOCUMENT_LEFT_RAIL_SEARCH_ID, DOCUMENT_SEARCH_CLOSE_ID, DOCUMENT_SEARCH_COLLAPSE_ID,
+    DOCUMENT_SEARCH_CONTROLS_ID, DOCUMENT_SEARCH_EXPLAIN_ID, DOCUMENT_SEARCH_HEADER_ID,
+    DOCUMENT_SEARCH_INPUT_ID, DOCUMENT_SEARCH_MATCH_CASE_ID, DOCUMENT_SEARCH_MODE_TEXT_ID,
+    DOCUMENT_SEARCH_MODE_VISUAL_ID, DOCUMENT_SEARCH_MORE_CONTEXT_ID, DOCUMENT_SEARCH_PANEL_ID,
+    DOCUMENT_SEARCH_SCOPE_ID, DOCUMENT_SEARCH_SORT_ID, DocumentId, DocumentWorkspace, LeftPanel,
+    NativeDocumentResource, OpenedNativeDocument, RasterSurface, SearchPanelRow,
+    SearchPanelSummary, ThumbnailSurface, init_document_workspace_actions, search_panel_row_id,
+    search_panel_shortcut,
 };
 use butter_paper::page_view_control::PageViewMode;
 use butter_paper::pdf_text_edit::{PageTextLayer, TextEditLimits, extract_page_text};
@@ -347,12 +349,37 @@ impl Fixture<'_> {
         self.draw();
     }
 
+    /// Searches the document in view, the panel's first scope.
     fn search(&mut self, text: &str) -> SearchPanelSummary {
         self.open_panel();
         self.type_text(text);
         self.wait_for("the search", |summary| {
             summary.finished && summary.searched == text && !summary.summary.is_empty()
         })
+    }
+
+    /// Searches every open document: All open documents, chosen in the
+    /// scope menu, then the query.
+    fn search_all(&mut self, text: &str) -> SearchPanelSummary {
+        self.open_panel();
+        self.choose_scope(SearchScope::AllOpenDocuments);
+        self.search(text)
+    }
+
+    /// Chooses a scope in the stock Select by keyboard, as a person does:
+    /// it opens on the current scope, and the arrows move to the other.
+    fn choose_scope(&mut self, scope: SearchScope) {
+        let current = self.summary().map(|summary| summary.scope).unwrap();
+        if current == scope {
+            return;
+        }
+        self.click(DOCUMENT_SEARCH_SCOPE_ID);
+        let from = SearchScope::ALL.iter().position(|other| *other == current);
+        let to = SearchScope::ALL.iter().position(|other| *other == scope);
+        let step = if to > from { "down" } else { "up" };
+        self.cx.simulate_keystrokes(&format!("{step} enter"));
+        self.draw();
+        assert_eq!(self.summary().unwrap().scope, scope);
     }
 
     fn click(&mut self, id: &'static str) {
@@ -489,7 +516,7 @@ fn the_rail_buttons_open_close_and_switch_the_sidebar(cx: &mut TestAppContext) {
 #[gpui::test]
 fn results_group_by_document_then_page_with_counts(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    let summary = f.search("\"fire door\"");
+    let summary = f.search_all("\"fire door\"");
     // doors.pdf: page 1 twice (two paragraphs), page 2 once across two
     // lines, page 3 once: its two matches share one snippet, so one row.
     // plan.pdf: its Text Box ("Fire exit door" is not the phrase).
@@ -568,28 +595,89 @@ fn a_markup_row_shows_subject_author_text_and_replies(cx: &mut TestAppContext) {
     assert_eq!(reply, Some((Some(0), "Agreed".to_owned())));
 }
 
+/// The scope is a stock Select: This document first, and the panel starts
+/// there; All open documents is second.
 #[gpui::test]
-fn the_scope_switches_to_this_document_and_back(cx: &mut TestAppContext) {
+fn the_scope_starts_at_this_document_and_switches_to_all_and_back(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    f.search("\"fire door\"");
-    f.click(DOCUMENT_SEARCH_SCOPE_THIS_ID);
-    let summary = f.wait_for("this document", |summary| {
-        summary.scope == SearchScope::ThisDocument && summary.finished
-    });
+    let summary = f.search("\"fire door\"");
+    assert_eq!(summary.scope, SearchScope::ThisDocument);
     // plan.pdf is the tab in view.
     assert_eq!(document_rows(&summary), [("plan.pdf".to_owned(), 1)]);
     assert_eq!(summary.summary, "1 result in 1 document");
-    f.click(DOCUMENT_SEARCH_SCOPE_ALL_ID);
+    f.choose_scope(SearchScope::AllOpenDocuments);
     let summary = f.wait_for("all documents", |summary| {
         summary.scope == SearchScope::AllOpenDocuments && summary.finished
     });
     assert_eq!(document_rows(&summary).len(), 2);
+    f.choose_scope(SearchScope::ThisDocument);
+    let summary = f.wait_for("this document", |summary| {
+        summary.scope == SearchScope::ThisDocument && summary.finished
+    });
+    assert_eq!(document_rows(&summary), [("plan.pdf".to_owned(), 1)]);
+    // The panel keeps the chosen scope while it is closed and opened again.
+    f.choose_scope(SearchScope::AllOpenDocuments);
+    f.click(DOCUMENT_LEFT_RAIL_SEARCH_ID);
+    f.click(DOCUMENT_LEFT_RAIL_SEARCH_ID);
+    assert_eq!(f.summary().unwrap().scope, SearchScope::AllOpenDocuments);
+}
+
+/// The panel's controls are the app's medium size, as the properties
+/// panels and the toolbar: 32 px buttons, field and menu, in a header,
+/// controls, list layout with the grid's 8 px margins.
+#[gpui::test]
+fn the_panel_uses_medium_controls_on_the_grid(cx: &mut TestAppContext) {
+    let mut f = setup(cx);
+    f.open_panel();
+    let panel = f.cx.debug_bounds(DOCUMENT_SEARCH_PANEL_ID).unwrap();
+    let header = f.cx.debug_bounds(DOCUMENT_SEARCH_HEADER_ID).unwrap();
+    assert_eq!(header.size.height, gpui::px(48.), "the sidebar header bar");
+    assert_eq!(header.top(), panel.top());
+    let controls = f.cx.debug_bounds(DOCUMENT_SEARCH_CONTROLS_ID).unwrap();
+    assert_eq!(controls.top(), header.bottom());
+    for id in [
+        DOCUMENT_SEARCH_MODE_TEXT_ID,
+        DOCUMENT_SEARCH_MODE_VISUAL_ID,
+        DOCUMENT_SEARCH_INPUT_ID,
+        DOCUMENT_SEARCH_MATCH_CASE_ID,
+        DOCUMENT_SEARCH_EXPLAIN_ID,
+        DOCUMENT_SEARCH_COLLAPSE_ID,
+        DOCUMENT_SEARCH_MORE_CONTEXT_ID,
+        DOCUMENT_SEARCH_SORT_ID,
+        DOCUMENT_SEARCH_SCOPE_ID,
+    ] {
+        let bounds = f.cx.debug_bounds(id).unwrap();
+        assert_eq!(bounds.size.height, gpui::px(32.), "{id} is medium");
+        assert!(
+            bounds.left() >= panel.left() + gpui::px(8.)
+                && bounds.right() <= panel.right() - gpui::px(8.),
+            "{id} inside the margins: {bounds:?} {panel:?}"
+        );
+    }
+    let mode = f.cx.debug_bounds(DOCUMENT_SEARCH_MODE_TEXT_ID).unwrap();
+    assert_eq!(mode.left(), panel.left() + gpui::px(8.));
+    // The X in the header closes the panel and gives the page the keyboard.
+    f.click(DOCUMENT_SEARCH_CLOSE_ID);
+    assert_eq!(f.left_panel(), None);
+    assert!(f.cx.debug_bounds(DOCUMENT_SEARCH_PANEL_ID).is_none());
+    assert!(!query_focused(&mut f));
+    f.cx.simulate_keystrokes("r");
+    f.draw();
+    let plan = f.plan;
+    let tool = f
+        .workspace
+        .read_with(f.cx, |workspace, cx| workspace.annotation_tool(plan, cx));
+    assert_eq!(
+        tool,
+        Some(AnnotationTool::Rectangle),
+        "the keys reach the page"
+    );
 }
 
 #[gpui::test]
 fn explain_collapse_more_context_match_case_and_sort(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    f.search("\"fire door\"");
+    f.search_all("\"fire door\"");
     // Explain search reads the query.
     f.click(DOCUMENT_SEARCH_EXPLAIN_ID);
     let explanation = f.summary().unwrap().explanation.unwrap();
@@ -648,7 +736,7 @@ fn explain_collapse_more_context_match_case_and_sort(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_group_collapses_and_expands_by_click(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    let summary = f.search("\"fire door\"");
+    let summary = f.search_all("\"fire door\"");
     let rows = summary.rows.len();
     f.click_row(0);
     let summary = f.summary().unwrap();
@@ -668,7 +756,7 @@ fn a_group_collapses_and_expands_by_click(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_click_on_a_result_goes_to_its_tab_and_marks_it(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    let summary = f.search("\"fire door\"");
+    let summary = f.search_all("\"fire door\"");
     assert_eq!(f.active(), Some(f.plan));
     // The third doors.pdf match: page 2, across two lines.
     let index = row_index(&summary, |row| {
@@ -708,7 +796,7 @@ fn a_click_on_a_result_goes_to_its_tab_and_marks_it(cx: &mut TestAppContext) {
 #[gpui::test]
 fn a_markup_result_selects_the_markup(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    let summary = f.search("rating");
+    let summary = f.search_all("rating");
     let index = row_index(&summary, |row| matches!(row, SearchPanelRow::Markup { .. }));
     // Another tab first, so the result switches back.
     let doors = f.doors;
@@ -731,7 +819,7 @@ fn a_markup_result_selects_the_markup(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_keyboard_moves_through_the_results(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    let summary = f.search("\"fire door\"");
+    let summary = f.search_all("\"fire door\"");
     // Down in the field: the first result.
     f.cx.simulate_keystrokes("down");
     f.draw();
@@ -838,7 +926,6 @@ fn a_search_stops_at_the_cap_and_says_so(cx: &mut TestAppContext) {
     let workspace = f.workspace.clone();
     open_document(&workspace, f.cx, "many.pdf", &[content.as_slice()], false);
     f.open_panel();
-    f.click(DOCUMENT_SEARCH_SCOPE_THIS_ID);
     f.click(DOCUMENT_SEARCH_INPUT_ID);
     f.type_text("x");
     let summary = f.wait_for("the cap", |summary| {
@@ -885,7 +972,7 @@ fn all_open_documents_takes_in_every_window(cx: &mut TestAppContext) {
     let mut f = setup(cx);
     let (handle, other, other_plan) = second_window(&mut f);
     assert_ne!(other_plan, f.plan, "ids are unique across windows");
-    let summary = f.search("door");
+    let summary = f.search_all("door");
     assert_eq!(
         document_rows(&summary),
         [
@@ -914,12 +1001,12 @@ fn all_open_documents_takes_in_every_window(cx: &mut TestAppContext) {
         "the match is marked in the other window"
     );
     // This document leaves the other window out, and All takes it back.
-    f.click(DOCUMENT_SEARCH_SCOPE_THIS_ID);
+    f.choose_scope(SearchScope::ThisDocument);
     let summary = f.wait_for("this document", |summary| {
         summary.scope == SearchScope::ThisDocument && summary.finished
     });
     assert_eq!(document_rows(&summary).len(), 1);
-    f.click(DOCUMENT_SEARCH_SCOPE_ALL_ID);
+    f.choose_scope(SearchScope::AllOpenDocuments);
     let summary = f.wait_for("all documents", |summary| {
         summary.scope == SearchScope::AllOpenDocuments && summary.finished
     });
@@ -948,7 +1035,7 @@ fn the_shortcut_reaches_the_panel_from_inside_a_text_field(cx: &mut TestAppConte
 fn a_change_in_another_window_runs_an_all_documents_search_again(cx: &mut TestAppContext) {
     let mut f = setup(cx);
     let (handle, other, other_plan) = second_window(&mut f);
-    let summary = f.search("rating");
+    let summary = f.search_all("rating");
     // plan.pdf of window 1 has the Text Box; window 2's plan.pdf has none.
     assert_eq!(
         document_rows(&summary),
@@ -987,7 +1074,7 @@ fn a_change_in_another_window_runs_an_all_documents_search_again(cx: &mut TestAp
 #[gpui::test]
 fn after_an_undone_edit_a_new_tab_is_still_searched(cx: &mut TestAppContext) {
     let mut f = setup(cx);
-    let summary = f.search("rating");
+    let summary = f.search_all("rating");
     assert_eq!(summary.hits, 1);
     let plan = f.plan;
     let text_box = TextBoxAnnotation::new(

@@ -1,7 +1,7 @@
 //! The search panel (Cmd+Shift+F, Ctrl+Shift+F, or the Search button on the
 //! left rail). It shares the left sidebar with Page Thumbnails: one shows at
 //! a time, at one width. A query in the panel's language (`search_query`)
-//! searches every open document in every window, or the document in view.
+//! searches the document in view, or every open document in every window.
 //! The results group by document, then page, with counts; each match shows a
 //! snippet with the match marked, and each markup its subject, author, text
 //! and replies. A click on a result, or Enter, goes to it (another tab or
@@ -21,7 +21,11 @@ use std::{
 use gpui::{
     AnyWindowHandle, FontWeight, HighlightStyle, ListAlignment, ListState, StyledText, Task,
 };
-use gpui_component::{Icon, button::ButtonGroup};
+use gpui_component::{
+    Icon, IndexPath,
+    button::ButtonGroup,
+    select::{SelectEvent, SelectState},
+};
 
 use super::*;
 use crate::{
@@ -39,12 +43,14 @@ use crate::{
 mod visual;
 pub use visual::{
     DOCUMENT_SEARCH_MODE_TEXT_ID, DOCUMENT_SEARCH_MODE_VISUAL_ID, DOCUMENT_SEARCH_TRY_VISUAL_ID,
-    DOCUMENT_VISUAL_CLEAR_ID, DOCUMENT_VISUAL_DRAW_BOX_ID, DOCUMENT_VISUAL_ERROR_ID,
-    DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_PROGRESS_ID,
-    DOCUMENT_VISUAL_RESULTS_ID, DOCUMENT_VISUAL_SIMILARITY_ID, DOCUMENT_VISUAL_SIZES_ID,
-    DOCUMENT_VISUAL_STOP_ID, DOCUMENT_VISUAL_SUMMARY_ID, DOCUMENT_VISUAL_TEMPLATE_ID,
-    DOCUMENT_VISUAL_TURNS_ID, SearchMode, TemplateOrigin, VisualPanelRow, VisualPanelSummary,
-    VisualTileView, visual_row_id, visual_tile_id,
+    DOCUMENT_VISUAL_ACTIONS_ID, DOCUMENT_VISUAL_CLEAR_ID, DOCUMENT_VISUAL_DRAW_BOX_ID,
+    DOCUMENT_VISUAL_ERROR_ID, DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_OPTIONS_ID,
+    DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_PREVIEW_ID, DOCUMENT_VISUAL_PROGRESS_ID,
+    DOCUMENT_VISUAL_RESULTS_ID, DOCUMENT_VISUAL_SIMILARITY_ID, DOCUMENT_VISUAL_SIMILARITY_INPUT_ID,
+    DOCUMENT_VISUAL_SIMILARITY_ROW_ID, DOCUMENT_VISUAL_SIZES_ID, DOCUMENT_VISUAL_STOP_ID,
+    DOCUMENT_VISUAL_SUMMARY_ID, DOCUMENT_VISUAL_TEMPLATE_ID, DOCUMENT_VISUAL_TURNS_ID, SearchMode,
+    TemplateOrigin, VisualPanelRow, VisualPanelSummary, VisualTileView, visual_row_id,
+    visual_tile_id,
 };
 
 pub const DOCUMENT_LEFT_RAIL_SEARCH_ID: &str = "document-left-rail-search";
@@ -55,13 +61,16 @@ pub const DOCUMENT_SEARCH_EXPLAIN_ID: &str = "document-search-explain";
 pub const DOCUMENT_SEARCH_COLLAPSE_ID: &str = "document-search-collapse";
 pub const DOCUMENT_SEARCH_MORE_CONTEXT_ID: &str = "document-search-more-context";
 pub const DOCUMENT_SEARCH_SORT_ID: &str = "document-search-sort";
-pub const DOCUMENT_SEARCH_SCOPE_ALL_ID: &str = "document-search-scope-all";
-pub const DOCUMENT_SEARCH_SCOPE_THIS_ID: &str = "document-search-scope-this";
+pub const DOCUMENT_SEARCH_HEADER_ID: &str = "document-search-header";
+pub const DOCUMENT_SEARCH_CLOSE_ID: &str = "document-search-close";
+pub const DOCUMENT_SEARCH_CONTROLS_ID: &str = "document-search-controls";
+pub const DOCUMENT_SEARCH_TOGGLES_ID: &str = "document-search-toggles";
+/// The scope: a stock Select, This document first.
+pub const DOCUMENT_SEARCH_SCOPE_ID: &str = "document-search-scope";
 pub const DOCUMENT_SEARCH_SUMMARY_ID: &str = "document-search-summary";
 pub const DOCUMENT_SEARCH_EXPLANATION_ID: &str = "document-search-explanation";
 pub const DOCUMENT_SEARCH_RESULTS_ID: &str = "document-search-results";
 pub const DOCUMENT_SEARCH_FOOTER_ID: &str = "document-search-footer";
-const DOCUMENT_SEARCH_SCOPE_ID: &str = "document-search-scope";
 
 /// The debug selector of the result row at `index` of the list.
 pub fn search_panel_row_id(index: usize) -> String {
@@ -84,6 +93,53 @@ const COMPACT_BEFORE: usize = 12;
 const SEARCH_FOCUS_FRAMES: u8 = 30;
 /// The replies a markup row shows.
 const SHOWN_REPLIES: usize = 3;
+/// A result row's indent for each level under its document: a chevron and
+/// its gap, so that a page's chevron is under its document's name and a
+/// match under its page's name.
+pub(super) const ROW_INDENT: f32 = 16.;
+/// The least height of a result list, in points at the default interface
+/// size: about five text rows, or two rows of hit pictures. In a shorter
+/// window the controls above the list scroll instead.
+pub(super) const RESULTS_MIN_HEIGHT: f32 = 160.;
+
+/// The grid's unit: the panel's margins and the space between its controls.
+pub(super) fn panel_space() -> gpui::Rems {
+    crate::layout_metrics::scaled(crate::layout_metrics::SPACE)
+}
+
+/// The controls above a result list, in a region as tall as they are. In a
+/// short window the region is shorter and they scroll, with the stock
+/// overlay scroll bar, so that the list keeps `RESULTS_MIN_HEIGHT`.
+pub(super) fn search_controls_region(
+    controls: gpui::Stateful<gpui::Div>,
+    scroll: &gpui::ScrollHandle,
+) -> gpui::AnyElement {
+    v_flex()
+        .w_full()
+        .min_h_0()
+        .relative()
+        .child(controls.min_h_0().overflow_y_scroll().track_scroll(scroll))
+        .vertical_scrollbar(scroll)
+        .into_any_element()
+}
+
+/// The line over a result list: "42 results in 3 documents". Hidden while
+/// empty, so that the list starts under the controls.
+pub(super) fn search_summary_line(
+    id: &'static str,
+    text: String,
+    colour: gpui::Hsla,
+) -> impl IntoElement {
+    gpui::div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_none()
+        .px(panel_space())
+        .pb(panel_space())
+        .text_color(colour)
+        .when(text.is_empty(), |summary| summary.hidden())
+        .child(text)
+}
 
 gpui::actions!(
     search_panel,
@@ -298,6 +354,11 @@ pub(super) struct SearchPanel {
     more_context: bool,
     sort: SearchSort,
     scope: SearchScope,
+    /// The scroll position of the controls over the list, in a short window.
+    controls_scroll: gpui::ScrollHandle,
+    /// The scope's menu, in `SearchScope::ALL` order.
+    scope_select: Entity<SelectState<Vec<SharedString>>>,
+    _scope_events: Subscription,
     /// The query of the search that runs or ran.
     query: Option<Arc<SearchQuery>>,
     query_text: String,
@@ -616,6 +677,30 @@ impl DocumentWorkspace {
                     _ => {}
                 },
             );
+        let scope = SearchScope::default();
+        let scope_select = cx.new(|cx| {
+            SelectState::new(
+                SearchScope::ALL
+                    .map(|scope| SharedString::from(scope.label()))
+                    .to_vec(),
+                SearchScope::ALL
+                    .iter()
+                    .position(|other| *other == scope)
+                    .map(IndexPath::new),
+                window,
+                cx,
+            )
+        });
+        let scope_events = cx.subscribe(
+            &scope_select,
+            |workspace, _, event: &SelectEvent<Vec<SharedString>>, cx| {
+                if let SelectEvent::Confirm(Some(label)) = event
+                    && let Some(scope) = SearchScope::from_label(label)
+                {
+                    workspace.set_search_scope(scope, cx);
+                }
+            },
+        );
         let visual = visual::VisualPanel::new(window, cx);
         self.search_panel = Some(SearchPanel {
             input,
@@ -628,10 +713,13 @@ impl DocumentWorkspace {
             collapse: false,
             more_context: false,
             sort: SearchSort::DocumentOrder,
-            scope: SearchScope::AllOpenDocuments,
+            scope,
+            controls_scroll: gpui::ScrollHandle::new(),
+            scope_select,
+            _scope_events: scope_events,
             query: None,
             query_text: String::new(),
-            ran_with: (false, SearchScope::AllOpenDocuments, None),
+            ran_with: (false, scope, None),
             results: SearchResults::default(),
             run: None,
             generation: 0,
@@ -861,7 +949,7 @@ impl DocumentWorkspace {
     /// Match case, the scope and, for This document, the document in view.
     fn search_settings(&self) -> (bool, SearchScope, Option<DocumentId>) {
         let Some(panel) = self.search_panel.as_ref() else {
-            return (false, SearchScope::AllOpenDocuments, None);
+            return (false, SearchScope::default(), None);
         };
         let document = match panel.scope {
             SearchScope::AllOpenDocuments => None,
@@ -1474,7 +1562,86 @@ impl DocumentWorkspace {
             .is_some_and(|panel| panel.results_focus.is_focused(window))
     }
 
-    /// The panel, in the left sidebar.
+    /// The X in the panel's header: the sidebar closes, as a click on the
+    /// rail's Search button does, and the keyboard goes back to the page.
+    /// The query, options and results stay for the next time it opens.
+    pub(super) fn close_search_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.left_panel == Some(LeftPanel::Search) {
+            self.left_panel = None;
+        }
+        self.release_search_query_focus();
+        self.workspace_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// The panel's header: its title and the X that closes it.
+    fn render_search_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        crate::property_controls::PropertyInspectorHeader::new(DOCUMENT_SEARCH_HEADER_ID, "Search")
+            .trailing(
+                crate::accessible_button::close_icon_button(
+                    DOCUMENT_SEARCH_CLOSE_ID,
+                    "Close search",
+                )
+                .on_click(cx.listener(|workspace, _: &ClickEvent, window, cx| {
+                    workspace.close_search_panel(window, cx)
+                })),
+            )
+            .into_any_element()
+    }
+
+    /// Text and Visual, the panel's two modes, as one segmented control.
+    fn render_search_mode(&self, panel: &SearchPanel, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mode_button =
+            |id: &'static str, mode: SearchMode, label: &'static str, cx: &mut Context<Self>| {
+                Button::new(id)
+                    .debug_selector(move || id.into())
+                    .accessibility_id(id)
+                    .label(label)
+                    .flex_1()
+                    .min_w_0()
+                    .selected(panel.mode == mode)
+                    .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
+                        workspace.set_search_mode(mode, cx)
+                    }))
+            };
+        ButtonGroup::new(visual::DOCUMENT_SEARCH_MODE_ID)
+            .w_full()
+            .outline()
+            .child(mode_button(
+                DOCUMENT_SEARCH_MODE_TEXT_ID,
+                SearchMode::Text,
+                "Text",
+                cx,
+            ))
+            .child(mode_button(
+                DOCUMENT_SEARCH_MODE_VISUAL_ID,
+                SearchMode::Visual,
+                "Visual",
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// Where the search looks, as a property row: This document or All open
+    /// documents. Both modes share it.
+    fn render_search_scope(&self, panel: &SearchPanel) -> gpui::AnyElement {
+        // Beside its label while the menu shows "All open documents" whole;
+        // below it, at full width, in a narrower panel.
+        crate::property_controls::property_row(
+            "Look in",
+            gpui::div()
+                .id(DOCUMENT_SEARCH_SCOPE_ID)
+                .debug_selector(|| DOCUMENT_SEARCH_SCOPE_ID.into())
+                .w_full()
+                .child(gpui_component::select::Select::new(&panel.scope_select)),
+        )
+        .stack_when_narrow()
+        .into_any_element()
+    }
+
+    /// The panel, in the left sidebar: the header, then the controls with
+    /// the grid's margins (a properties panel's layout), then the summary
+    /// and the results, which take the rest of the height.
     pub(super) fn render_search_panel(
         &self,
         window: &mut Window,
@@ -1488,13 +1655,42 @@ impl DocumentWorkspace {
                 .bg(cx.theme().background)
                 .into_any_element();
         };
+        let column = v_flex()
+            .id(DOCUMENT_SEARCH_PANEL_ID)
+            .debug_selector(|| DOCUMENT_SEARCH_PANEL_ID.into())
+            .key_context(SEARCH_PANEL_CONTEXT)
+            .size_full()
+            .min_h_0()
+            .text_sm()
+            .bg(cx.theme().background)
+            .on_action(cx.listener(|workspace, _: &Escape, window, cx| {
+                workspace.escape_in_search_panel(window, cx)
+            }))
+            .on_action(
+                cx.listener(|workspace, _: &SearchFocusResults, window, cx| {
+                    workspace.focus_search_results(window, cx)
+                }),
+            )
+            .child(self.render_search_header(cx));
+        let mode = self.render_search_mode(panel, cx);
+        let scope = self.render_search_scope(panel);
+        if panel.mode == SearchMode::Visual {
+            let body = self.render_visual_search_body(panel, mode, scope, cx);
+            return column
+                // Cmd+V or Ctrl+V in the panel pastes the picture to find,
+                // not markups on the page.
+                .on_action(cx.listener(|workspace, _: &Paste, window, cx| {
+                    workspace.paste_visual_picture(window, cx)
+                }))
+                .child(body)
+                .into_any_element();
+        }
         let toggle = |id: &'static str, label: &'static str, icon: Icon, on: bool| {
             crate::accessible_button::accessible_icon_button(
                 Button::new(id)
                     .debug_selector(move || id.into())
                     .accessibility_id(id)
                     .ghost()
-                    .small()
                     .icon(icon)
                     .selected(on)
                     .toggled(on)
@@ -1559,7 +1755,6 @@ impl DocumentWorkspace {
                 .debug_selector(|| DOCUMENT_SEARCH_SORT_ID.into())
                 .accessibility_id(DOCUMENT_SEARCH_SORT_ID)
                 .ghost()
-                .small()
                 .icon(IconName::SortAscending)
                 .tooltip(format!("Sort: {}", sort_label(current_sort))),
             "Sort",
@@ -1578,102 +1773,6 @@ impl DocumentWorkspace {
             }
             menu
         });
-        let scope_button = |id: &'static str, scope: SearchScope, cx: &mut Context<Self>| {
-            Button::new(id)
-                .debug_selector(move || id.into())
-                .accessibility_id(id)
-                .label(scope.label())
-                // The two share the panel's width, each as its label needs.
-                .flex_auto()
-                .min_w_0()
-                .selected(panel.scope == scope)
-                .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
-                    workspace.set_search_scope(scope, cx)
-                }))
-        };
-        let scope = ButtonGroup::new(DOCUMENT_SEARCH_SCOPE_ID)
-            .w_full()
-            // Extra small: both labels fit the sidebar at its least width.
-            .xsmall()
-            .outline()
-            .child(scope_button(
-                DOCUMENT_SEARCH_SCOPE_ALL_ID,
-                SearchScope::AllOpenDocuments,
-                cx,
-            ))
-            .child(scope_button(
-                DOCUMENT_SEARCH_SCOPE_THIS_ID,
-                SearchScope::ThisDocument,
-                cx,
-            ));
-        let mode_button =
-            |id: &'static str, mode: SearchMode, label: &'static str, cx: &mut Context<Self>| {
-                Button::new(id)
-                    .debug_selector(move || id.into())
-                    .accessibility_id(id)
-                    .label(label)
-                    .flex_1()
-                    .min_w_0()
-                    .selected(panel.mode == mode)
-                    .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
-                        workspace.set_search_mode(mode, cx)
-                    }))
-            };
-        let mode = ButtonGroup::new(visual::DOCUMENT_SEARCH_MODE_ID)
-            .w_full()
-            .xsmall()
-            .outline()
-            .child(mode_button(
-                DOCUMENT_SEARCH_MODE_TEXT_ID,
-                SearchMode::Text,
-                "Text",
-                cx,
-            ))
-            .child(mode_button(
-                DOCUMENT_SEARCH_MODE_VISUAL_ID,
-                SearchMode::Visual,
-                "Visual",
-                cx,
-            ));
-        let column = v_flex()
-            .id(DOCUMENT_SEARCH_PANEL_ID)
-            .debug_selector(|| DOCUMENT_SEARCH_PANEL_ID.into())
-            .key_context(SEARCH_PANEL_CONTEXT)
-            .size_full()
-            .min_h_0()
-            .bg(cx.theme().background)
-            .on_action(cx.listener(|workspace, _: &Escape, window, cx| {
-                workspace.escape_in_search_panel(window, cx)
-            }))
-            .on_action(
-                cx.listener(|workspace, _: &SearchFocusResults, window, cx| {
-                    workspace.focus_search_results(window, cx)
-                }),
-            )
-            .child(crate::property_controls::PropertyInspectorHeader::new(
-                "document-search-header",
-                "Search",
-            ));
-        if panel.mode == SearchMode::Visual {
-            let body = self.render_visual_search_body(panel, cx);
-            return column
-                // Cmd+V or Ctrl+V in the panel pastes the picture to find,
-                // not markups on the page.
-                .on_action(cx.listener(|workspace, _: &Paste, window, cx| {
-                    workspace.paste_visual_picture(window, cx)
-                }))
-                .child(
-                    v_flex()
-                        .flex_none()
-                        .gap_2()
-                        .px_2()
-                        .pb_2()
-                        .child(mode)
-                        .child(scope),
-                )
-                .child(body)
-                .into_any_element();
-        }
         let summary = self.search_panel_summary(cx);
         let summary_text = summary
             .as_ref()
@@ -1689,86 +1788,76 @@ impl DocumentWorkspace {
         let try_visual = Button::new(DOCUMENT_SEARCH_TRY_VISUAL_ID)
             .debug_selector(|| DOCUMENT_SEARCH_TRY_VISUAL_ID.into())
             .accessibility_id(DOCUMENT_SEARCH_TRY_VISUAL_ID)
-            .link()
-            .small()
+            .outline()
             .label("Try Visual search")
             .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
                 workspace.set_search_mode(SearchMode::Visual, cx)
             }));
         let theme = cx.theme();
-        column
+        let query = gpui::div()
+            .id(DOCUMENT_SEARCH_INPUT_ID)
+            .debug_selector(|| DOCUMENT_SEARCH_INPUT_ID.into())
+            .w_full()
+            .child(
+                Input::new(&panel.input)
+                    .accessibility_id(DOCUMENT_SEARCH_INPUT_ID)
+                    .aria_label("Search text and markups")
+                    .cleanable(true)
+                    .prefix(Icon::new(IconName::Search).text_color(theme.muted_foreground)),
+            );
+        // The toggles are one group: icon buttons a half unit apart, as in
+        // the Page Thumbnails header.
+        let toggles = h_flex()
+            .id(DOCUMENT_SEARCH_TOGGLES_ID)
+            .debug_selector(|| DOCUMENT_SEARCH_TOGGLES_ID.into())
+            .gap_1()
+            .child(match_case)
+            .child(explain)
+            .child(collapse)
+            .child(more_context)
+            .child(sort);
+        let controls = crate::property_controls::property_body()
+            .id(DOCUMENT_SEARCH_CONTROLS_ID)
+            .debug_selector(|| DOCUMENT_SEARCH_CONTROLS_ID.into())
+            .child(mode)
             .child(
                 v_flex()
-                    .flex_none()
-                    .gap_2()
-                    .px_2()
-                    .pb_2()
-                    .child(mode)
-                    .child(
-                        gpui::div()
-                            .id(DOCUMENT_SEARCH_INPUT_ID)
-                            .debug_selector(|| DOCUMENT_SEARCH_INPUT_ID.into())
-                            .w_full()
-                            .child(
-                                Input::new(&panel.input)
-                                    .accessibility_id(DOCUMENT_SEARCH_INPUT_ID)
-                                    .aria_label("Search text and markups")
-                                    .small()
-                                    .cleanable(true)
-                                    .prefix(
-                                        Icon::new(IconName::Search)
-                                            .small()
-                                            .text_color(theme.muted_foreground),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(match_case)
-                            .child(explain)
-                            .child(collapse)
-                            .child(more_context)
-                            .child(sort),
-                    )
+                    .w_full()
+                    .gap(panel_space())
+                    .child(query)
+                    .child(toggles)
+                    .when_some(explanation, |group, explanation| {
+                        group.child(
+                            gpui::div()
+                                .id(DOCUMENT_SEARCH_EXPLANATION_ID)
+                                .debug_selector(|| DOCUMENT_SEARCH_EXPLANATION_ID.into())
+                                .w_full()
+                                .p(panel_space())
+                                .rounded(theme.radius)
+                                .bg(theme.muted)
+                                .text_color(theme.foreground)
+                                .child(explanation),
+                        )
+                    })
                     .child(scope),
-            )
-            .child(
-                gpui::div()
-                    .id(DOCUMENT_SEARCH_SUMMARY_ID)
-                    .debug_selector(|| DOCUMENT_SEARCH_SUMMARY_ID.into())
-                    .flex_none()
-                    .px_2()
-                    .pb_1()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .when(summary_text.is_empty(), |summary| summary.hidden())
-                    .child(summary_text),
-            )
-            .when_some(explanation, |column, explanation| {
-                column.child(
-                    gpui::div()
-                        .id(DOCUMENT_SEARCH_EXPLANATION_ID)
-                        .debug_selector(|| DOCUMENT_SEARCH_EXPLANATION_ID.into())
-                        .flex_none()
-                        .mx_2()
-                        .mb_2()
-                        .p_2()
-                        .rounded(theme.radius)
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.muted)
-                        .text_sm()
-                        .text_color(theme.foreground)
-                        .child(explanation),
-                )
-            })
+            );
+        column
+            .child(search_controls_region(controls, &panel.controls_scroll))
+            .child(search_summary_line(
+                DOCUMENT_SEARCH_SUMMARY_ID,
+                summary_text,
+                theme.muted_foreground,
+            ))
             .child(
                 gpui::div()
                     .flex_1()
-                    .min_h_0()
-                    .border_t_1()
-                    .border_color(theme.border)
+                    .flex_shrink_0()
+                    .min_h(crate::layout_metrics::scaled(RESULTS_MIN_HEIGHT))
+                    .relative()
+                    .child(crate::layout_metrics::inside_line(
+                        crate::layout_metrics::Edge::Top,
+                        theme.border,
+                    ))
                     .child(list),
             )
             .when(!footer.is_empty(), |column| {
@@ -1777,11 +1866,13 @@ impl DocumentWorkspace {
                         .id(DOCUMENT_SEARCH_FOOTER_ID)
                         .debug_selector(|| DOCUMENT_SEARCH_FOOTER_ID.into())
                         .flex_none()
-                        .gap_1()
-                        .p_2()
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .text_sm()
+                        .relative()
+                        .gap(panel_space())
+                        .p(panel_space())
+                        .child(crate::layout_metrics::inside_line(
+                            crate::layout_metrics::Edge::Top,
+                            theme.border,
+                        ))
                         .text_color(theme.muted_foreground)
                         .children(footer)
                         // Pages with no text (scans, text drawn as lines)
@@ -1919,8 +2010,8 @@ fn search_row_element(
     let mark = theme.warning.opacity(0.35);
     let indent = match key {
         RowKey::Document(_) => 0.,
-        RowKey::Page(..) => 12.,
-        RowKey::Hit(..) => 28.,
+        RowKey::Page(..) => ROW_INDENT,
+        RowKey::Hit(..) => 2. * ROW_INDENT,
     };
     let chevron = |collapsed: bool| {
         Icon::new(if collapsed {
@@ -2055,8 +2146,13 @@ fn search_row_element(
         .debug_selector(move || search_panel_row_id(index))
         .w_full()
         .py_1()
-        .pr_2()
-        .pl(px(8. + indent))
+        // Clear of the overlay scroll bar.
+        .pr(crate::layout_metrics::scaled(
+            crate::layout_metrics::GROUP_SPACE,
+        ))
+        .pl(crate::layout_metrics::scaled(
+            crate::layout_metrics::SPACE + indent,
+        ))
         .bg(background)
         .when(state.selected && state.list_focused, |row| {
             row.border_l_2().border_color(theme.list_active_border)

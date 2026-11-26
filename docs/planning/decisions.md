@@ -137,8 +137,11 @@ changes it; history is in git.
   at a time, at one shared width and with the same yield rule.
   Cmd+Shift+F (Ctrl+Shift+F) opens it with the focus in the query; Edit ▸
   Find and Find in Documents are in the native and in-window menus. Its
-  scope is All open documents (every tab in every window; document ids
-  are unique across windows) or This document. A query uses a subset of
+  scope is This document (first, and the default; decided 2026-11-26 by
+  the owner) or All open documents (every tab in every window; document
+  ids are unique across windows). The find bar and the panel use the
+  app's medium controls, as the toolbar and properties panels do (decided
+  2026-11-26 by the owner). A query uses a subset of
   a common notes app's search language (words, phrases, OR, exclusion,
   groups, regular expressions, case, and the filters text:, markup:,
   author:, subject:, page: and file:), and all terms match in one unit: a

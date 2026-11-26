@@ -20,10 +20,11 @@ use butter_paper::annotation_model::{
 };
 use butter_paper::document_workspace::{
     DOCUMENT_FIND_BAR_ID, DOCUMENT_FIND_CLOSE_ID, DOCUMENT_FIND_COUNT_ID, DOCUMENT_FIND_INPUT_ID,
-    DOCUMENT_FIND_MATCH_CASE_ID, DOCUMENT_FIND_NEXT_ID, DOCUMENT_FIND_PREVIOUS_ID,
-    DOCUMENT_FIND_WHOLE_WORD_ID, DOCUMENT_PAGE_ID, DOCUMENT_VIEWPORT_ID, DocumentId,
-    DocumentWorkspace, FindBarSummary, NativeDocumentResource, OpenedNativeDocument, RasterSurface,
-    ThumbnailSurface, document_annotation_layer_id, find_shortcut, init_document_workspace_actions,
+    DOCUMENT_FIND_MATCH_CASE_ID, DOCUMENT_FIND_NEXT_ID, DOCUMENT_FIND_OPTIONS_ID,
+    DOCUMENT_FIND_PREVIOUS_ID, DOCUMENT_FIND_STEPS_ID, DOCUMENT_FIND_WHOLE_WORD_ID,
+    DOCUMENT_PAGE_ID, DOCUMENT_VIEWPORT_ID, DocumentId, DocumentWorkspace, FindBarSummary,
+    NativeDocumentResource, OpenedNativeDocument, RasterSurface, ThumbnailSurface,
+    document_annotation_layer_id, find_shortcut, init_document_workspace_actions,
 };
 use butter_paper::page_view_control::PageViewMode;
 use butter_paper::pdf_text_edit::{PageTextLayer, TextEditLimits, extract_page_text};
@@ -367,6 +368,73 @@ fn the_platform_shortcut_opens_the_bar_at_the_top_right_of_the_canvas(cx: &mut T
     }
     let summary = f.summary().unwrap();
     assert!(summary.open && summary.text.is_empty() && summary.count.is_empty());
+}
+
+/// The bar holds the app's medium controls, as the toolbar: a 48 px bar
+/// (8 + 32 + 8), 32 px field and buttons, the pairs of buttons 4 px apart
+/// and the groups 8 px apart.
+#[gpui::test]
+fn the_bar_uses_medium_controls_on_the_grid(cx: &mut TestAppContext) {
+    let mut f = setup(cx, PageViewMode::Continuous, false);
+    f.cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+    f.settle_view();
+    f.open_bar();
+    let bar = f.cx.debug_bounds(DOCUMENT_FIND_BAR_ID).unwrap();
+    // Its border is inside the bar's 48 px.
+    assert!((bar.size.height - px(48.)).abs() < px(0.5), "{bar:?}");
+    assert!((bar.size.width - px(480.)).abs() < px(0.5), "{bar:?}");
+    for id in [
+        DOCUMENT_FIND_INPUT_ID,
+        DOCUMENT_FIND_MATCH_CASE_ID,
+        DOCUMENT_FIND_WHOLE_WORD_ID,
+        DOCUMENT_FIND_PREVIOUS_ID,
+        DOCUMENT_FIND_NEXT_ID,
+    ] {
+        let control = f.cx.debug_bounds(id).unwrap();
+        assert_eq!(control.size.height, px(32.), "{id} is medium");
+        assert!(
+            (control.center().y - bar.center().y).abs() < px(0.5),
+            "{id} on the bar's centre line"
+        );
+    }
+    let input = f.cx.debug_bounds(DOCUMENT_FIND_INPUT_ID).unwrap();
+    assert!(
+        (input.left() - bar.left() - px(8.)).abs() < px(1.5),
+        "8 px inset"
+    );
+    // The X is the app's one close size, on the same centre line.
+    let close = f.cx.debug_bounds(DOCUMENT_FIND_CLOSE_ID).unwrap();
+    assert_eq!(close.size.height, px(24.));
+    assert!((close.center().y - bar.center().y).abs() < px(0.5));
+    assert!(
+        (bar.right() - close.right() - px(8.)).abs() < px(1.5),
+        "8 px inset"
+    );
+    let gap = |a: &'static str, b: &'static str, f: &mut Fixture<'_>| {
+        let a = f.cx.debug_bounds(a).unwrap();
+        let b = f.cx.debug_bounds(b).unwrap();
+        b.left() - a.right()
+    };
+    assert_eq!(
+        gap(
+            DOCUMENT_FIND_MATCH_CASE_ID,
+            DOCUMENT_FIND_WHOLE_WORD_ID,
+            &mut f
+        ),
+        px(4.)
+    );
+    assert_eq!(
+        gap(DOCUMENT_FIND_PREVIOUS_ID, DOCUMENT_FIND_NEXT_ID, &mut f),
+        px(4.)
+    );
+    assert_eq!(
+        gap(DOCUMENT_FIND_OPTIONS_ID, DOCUMENT_FIND_STEPS_ID, &mut f),
+        px(8.)
+    );
+    assert_eq!(
+        gap(DOCUMENT_FIND_STEPS_ID, DOCUMENT_FIND_CLOSE_ID, &mut f),
+        px(8.)
+    );
 }
 
 #[gpui::test]

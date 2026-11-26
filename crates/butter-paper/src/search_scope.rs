@@ -1,5 +1,5 @@
-//! Where a search looks: every document open in every window, or the
-//! document in view. The binary owns the list of windows; it tells the
+//! Where a search looks: the document in view, or every document open in
+//! every window. The binary owns the list of windows; it tells the
 //! library about it once, at startup, with [`set_workspace_directory`]. A
 //! search then asks [`open_workspaces`] for the workspaces it reads.
 //!
@@ -12,22 +12,31 @@ use gpui::{AnyWindowHandle, App, Entity, Global, WeakEntity};
 
 use crate::document_workspace::DocumentWorkspace;
 
-/// The documents a search panel reads.
+/// The documents a search panel reads. A new panel reads the document in
+/// view; the panel keeps a changed scope while its window is open.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchScope {
-    /// Every tab in every window.
-    #[default]
-    AllOpenDocuments,
     /// The active tab of the panel's window.
+    #[default]
     ThisDocument,
+    /// Every tab in every window.
+    AllOpenDocuments,
 }
 
 impl SearchScope {
+    /// The scopes in the order the panel lists them.
+    pub const ALL: [Self; 2] = [Self::ThisDocument, Self::AllOpenDocuments];
+
     pub fn label(self) -> &'static str {
         match self {
-            Self::AllOpenDocuments => "All open documents",
             Self::ThisDocument => "This document",
+            Self::AllOpenDocuments => "All open documents",
         }
+    }
+
+    /// The scope a label names, as the panel's menu gives it back.
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|scope| scope.label() == label)
     }
 }
 
@@ -65,9 +74,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_scopes_have_their_labels() {
-        assert_eq!(SearchScope::default(), SearchScope::AllOpenDocuments);
-        assert_eq!(SearchScope::AllOpenDocuments.label(), "All open documents");
-        assert_eq!(SearchScope::ThisDocument.label(), "This document");
+    fn this_document_comes_first_and_is_the_default() {
+        assert_eq!(SearchScope::default(), SearchScope::ThisDocument);
+        assert_eq!(
+            SearchScope::ALL.map(SearchScope::label),
+            ["This document", "All open documents"]
+        );
+        for scope in SearchScope::ALL {
+            assert_eq!(SearchScope::from_label(scope.label()), Some(scope));
+        }
+        assert_eq!(SearchScope::from_label("Everything"), None);
     }
 }

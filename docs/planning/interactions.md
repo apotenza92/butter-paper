@@ -396,7 +396,8 @@ copy it, as Acrobat's does; nothing about the PDF changes.
 ## Searching
 
 The find bar finds text in the open document. The search panel searches
-every open document, in every window, with a query language.
+the document in view, or every open document in every window, with a
+query language.
 
 - Cmd+F (Ctrl+F on Windows and Linux) opens the find bar of the active
   document and puts the focus in its field with the text selected. The same
@@ -404,11 +405,14 @@ every open document, in every window, with a query language.
   text is selected, its first line (256 characters at most) becomes the
   query. Each tab has its own bar, query, options and current match.
 - The bar floats at the top right of the canvas, 8 px from the top and the
-  right edge, over the page. Nothing on the page moves. From left to right:
-  the field (search icon, placeholder "Find in document"), the count, Match
-  case, Match whole word, Previous match, Next match and a top-right X
-  ("Close find bar"). The bar is at most as wide as the canvas less 16 px:
-  the count shortens first, then the field.
+  right edge, over the page. Nothing on the page moves. It holds the app's
+  medium (32 px) controls, as the toolbar does: a 48 px bar, 480 px wide,
+  with 8 px margins. From left to right: the field (search icon,
+  placeholder "Find in document"), the count, Match case and Match whole
+  word, Previous match and Next match (each pair 4 px apart, the groups
+  8 px apart) and a top-right X ("Close find bar", the app's one close
+  size). The bar is at most as
+  wide as the canvas less 16 px: the count shortens first, then the field.
 - The query is literal text. Runs of white space match any run of white
   space, and a line break between two lines. The search covers page text,
   as Copy reads it with edits included, and the text of markups (Text Box,
@@ -463,11 +467,18 @@ every open document, in every window, with a query language.
   and selects its text. The rail button keeps the last-used mode. Selected page text becomes the query. While the sidebar
   yields to properties, the panel is open but hidden and the focus stays
   where it was; the panel shows when the window widens or properties close.
-- From the top: the header "Search", the Text and Visual switch, the query
-  field (search icon, clear button), the toggles Match case, Explain
-  search, Collapse results, More context and the Sort menu, then the scope:
-  All open documents (every tab in every window) or This document (the tab
-  in view). The two modes share the scope.
+- The panel has the layout of the other sidebar panels: the header
+  "Search" with a top-right X ("Close search"), which closes the sidebar
+  as the rail button does and gives the keyboard back to the page; then
+  the controls, at the medium (32 px) size, with the 8 px grid's margins;
+  then the summary and the results. From the top: the Text and Visual
+  switch, the query field (search icon, clear button), the toggles Match
+  case, Explain search, Collapse results, More context and the Sort menu,
+  then the scope as a property row, "Look in", with a menu: This document
+  (the tab in view, first and the default) or All open documents (every
+  tab in every window). The panel keeps a chosen scope while its window is
+  open; a new window starts at This document. The two modes share the
+  scope.
 - The query language: words (all must match, in any order), "a phrase",
   `OR`, `-` to exclude, `( )` to group, `/regex/`, `match-case:` and
   `ignore-case:`, and the filters `text:` (or `content:`), `markup:`,
@@ -506,7 +517,7 @@ every open document, in every window, with a query language.
 - The list builds only the rows in view. A search keeps 10,000 results at
   most, and then the list ends with "First 10,000 results. Narrow the
   search to see more." Under the list, "3 pages have no searchable text."
-  counts scans and pages whose text is drawn as lines, with the link "Try
+  counts scans and pages whose text is drawn as lines, with the button "Try
   Visual search", which switches the panel to Visual.
 - An edit to a searched document, in this window or another, or a tab
   opened or closed in a window in scope, runs the search again 400 ms after
@@ -515,13 +526,16 @@ every open document, in every window, with a query language.
 ### Visual search
 
 - The Visual mode of the search panel finds more of a symbol by its look.
-  From the top, under the Text and Visual switch and the scope: the picture
-  card (the picture, where it came from and its size in points, Draw box
-  and Paste picture, and a top-right X that clears it), Similarity (a
-  slider from 70 % to 99 %, 80 % at first), the options "Turned 90°, 180°,
-  270°", "Sizes 85 % to 118 %" (50 % to 200 % for a pasted picture) and
-  "Include mirrored", all on at first, then the progress line, the summary
-  ("23 matches on 9 pages in 2 documents") and the results.
+  From the top, under the Text and Visual switch: the picture to find (a
+  64 px preview on the page's own paper, where it came from and its size
+  in points, and an X that clears it), then Draw box and Paste picture
+  side by side; then the options as property rows: Similarity (a slider
+  from 70 % to 99 %, 80 % at first, with its number, which takes a typed
+  value on Enter or when it loses the focus), Turned (90°, 180°, 270°),
+  Sizes (85 % to 118 %, or 50 % to 200 % for a pasted picture) and
+  Mirrored, switches that are all on at first, and Look in; then the
+  progress line, the summary ("23 matches on 9 pages in 2 documents") and
+  the results.
 - Draw box arms the Snapshot tool for the page in view and gives it the
   keys. The prompt over the page and the status bar say "Drag a box around
   what to find". The box leaves no markup and copies nothing; the tool goes
@@ -543,7 +557,9 @@ every open document, in every window, with a query language.
   it runs; Stop keeps what was found ("Stopped after 3 of 20 pages"). A
   document that closes leaves the search and its hits go.
 - Results group by document, then page, with counts; each hit shows a small
-  picture of the page there and its score, three to a row. With dark pages
+  picture of the page there and its score, three to a row in equal
+  columns. A page row's chevron is under its document's name, and a hit
+  under its page's name, as in the Text results. With dark pages
   on, these pictures and the picture card show the page's dark colours
   (the search still matches the real colours). The box the
   picture came from is a hit marked "Source". The tooltip says how a hit

@@ -25,10 +25,12 @@ use butter_paper::annotation_adapter::AnnotationTool;
 use butter_paper::annotation_model::PageRotation;
 use butter_paper::document_workspace::{
     DOCUMENT_LEFT_RAIL_SEARCH_ID, DOCUMENT_SEARCH_FOOTER_ID, DOCUMENT_SEARCH_MODE_TEXT_ID,
-    DOCUMENT_SEARCH_MODE_VISUAL_ID, DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_SCOPE_THIS_ID,
-    DOCUMENT_SEARCH_TRY_VISUAL_ID, DOCUMENT_VISUAL_CLEAR_ID, DOCUMENT_VISUAL_DRAW_BOX_ID,
-    DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_SIMILARITY_ID,
-    DOCUMENT_VISUAL_STOP_ID, DOCUMENT_VISUAL_TEMPLATE_ID, DocumentId, DocumentWorkspace,
+    DOCUMENT_SEARCH_MODE_VISUAL_ID, DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_SCOPE_ID,
+    DOCUMENT_SEARCH_TRY_VISUAL_ID, DOCUMENT_VISUAL_ACTIONS_ID, DOCUMENT_VISUAL_CLEAR_ID,
+    DOCUMENT_VISUAL_DRAW_BOX_ID, DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_OPTIONS_ID,
+    DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_PREVIEW_ID, DOCUMENT_VISUAL_SIMILARITY_ID,
+    DOCUMENT_VISUAL_SIMILARITY_INPUT_ID, DOCUMENT_VISUAL_SIZES_ID, DOCUMENT_VISUAL_STOP_ID,
+    DOCUMENT_VISUAL_TEMPLATE_ID, DOCUMENT_VISUAL_TURNS_ID, DocumentId, DocumentWorkspace,
     NativeDocumentResource, OpenedNativeDocument, RasterSurface, SearchMode, TemplateOrigin,
     ThumbnailSurface, VisualPanelRow, VisualPanelSummary, document_annotation_layer_id,
     init_document_workspace_actions, search_panel_shortcut, visual_tile_id,
@@ -36,7 +38,7 @@ use butter_paper::document_workspace::{
 use butter_paper::page_view_control::PageViewMode;
 use butter_paper::paper_appearance::PaperAppearance;
 use butter_paper::pdf_text_edit::PageTextLayer;
-use butter_paper::search_scope::set_workspace_directory;
+use butter_paper::search_scope::{SearchScope, set_workspace_directory};
 use gpui::{
     AppContext as _, ClipboardItem, Entity, Image, ImageFormat, Modifiers, TestAppContext,
     VisualTestContext, point, px,
@@ -395,11 +397,38 @@ impl Fixture<'_> {
         self.click(id);
     }
 
+    /// The Visual mode, searching both tabs: All open documents, chosen in
+    /// the scope menu (the panel starts at This document).
     fn open_visual(&mut self) {
         self.cx
             .simulate_keystrokes(search_panel_shortcut(cfg!(target_os = "macos")));
         self.draw();
         self.click(DOCUMENT_SEARCH_MODE_VISUAL_ID);
+        assert_eq!(self.scope(), SearchScope::ThisDocument, "the first scope");
+        self.choose_scope(SearchScope::AllOpenDocuments);
+    }
+
+    fn scope(&mut self) -> SearchScope {
+        self.workspace
+            .read_with(self.cx, |workspace, cx| workspace.search_panel_summary(cx))
+            .expect("the panel was opened")
+            .scope
+    }
+
+    /// Chooses a scope in the stock Select by keyboard: it opens on the
+    /// current scope, and the arrows move to the other.
+    fn choose_scope(&mut self, scope: SearchScope) {
+        let current = self.scope();
+        if current == scope {
+            return;
+        }
+        self.click(DOCUMENT_SEARCH_SCOPE_ID);
+        let from = SearchScope::ALL.iter().position(|other| *other == current);
+        let to = SearchScope::ALL.iter().position(|other| *other == scope);
+        let step = if to > from { "down" } else { "up" };
+        self.cx.simulate_keystrokes(&format!("{step} enter"));
+        self.draw();
+        assert_eq!(self.scope(), scope);
     }
 
     fn tool(&mut self) -> Option<AnnotationTool> {
@@ -473,13 +502,64 @@ fn visual_mode_starts_with_no_picture_and_its_controls(cx: &mut TestAppContext) 
         assert!(f.cx.debug_bounds(id).is_some(), "{id} is drawn");
     }
     assert!(f.cx.debug_bounds(DOCUMENT_VISUAL_CLEAR_ID).is_none());
-    // The option check boxes are the small stock size, as the panel's other
-    // controls are: their text is as small as the Text mode's options.
+    // A properties panel's layout: the preview, then its actions at the
+    // medium size, then the options as rows, each a unit apart, inside the
+    // grid's 8 px margins.
+    let panel = f.cx.debug_bounds(DOCUMENT_SEARCH_PANEL_ID).unwrap();
+    let preview = f.cx.debug_bounds(DOCUMENT_VISUAL_PREVIEW_ID).unwrap();
+    let actions = f.cx.debug_bounds(DOCUMENT_VISUAL_ACTIONS_ID).unwrap();
+    let options = f.cx.debug_bounds(DOCUMENT_VISUAL_OPTIONS_ID).unwrap();
+    assert_eq!(preview.size.width, gpui::px(64.));
+    assert_eq!(preview.left(), panel.left() + gpui::px(8.));
+    assert!(actions.top() >= preview.bottom() + gpui::px(8.));
+    assert!(options.top() >= actions.bottom() + gpui::px(16.));
+    assert_eq!(actions.left(), panel.left() + gpui::px(8.));
+    assert_eq!(actions.right(), panel.right() - gpui::px(8.));
+    for id in [
+        DOCUMENT_VISUAL_DRAW_BOX_ID,
+        DOCUMENT_VISUAL_PASTE_ID,
+        DOCUMENT_VISUAL_SIMILARITY_INPUT_ID,
+        DOCUMENT_SEARCH_SCOPE_ID,
+    ] {
+        let bounds = f.cx.debug_bounds(id).unwrap();
+        assert_eq!(bounds.size.height, gpui::px(32.), "{id} is medium");
+    }
+    // The options are switches in property rows, in a column; the
+    // similarity's number is in the column of the properties' numbers.
+    let turns = f.cx.debug_bounds(DOCUMENT_VISUAL_TURNS_ID).unwrap();
+    let sizes = f.cx.debug_bounds(DOCUMENT_VISUAL_SIZES_ID).unwrap();
     let mirrored = f.cx.debug_bounds(DOCUMENT_VISUAL_MIRRORED_ID).unwrap();
+    assert_eq!(turns.left(), sizes.left());
+    assert_eq!(sizes.left(), mirrored.left());
     assert!(
-        mirrored.size.height <= gpui::px(14.),
-        "a small check box: {mirrored:?}"
+        turns.left() > panel.left() + gpui::px(64.),
+        "beside a label"
     );
+    let number =
+        f.cx.debug_bounds(DOCUMENT_VISUAL_SIMILARITY_INPUT_ID)
+            .unwrap();
+    assert_eq!(number.right(), panel.right() - gpui::px(8.));
+    // Typing a similarity sets the slider's filter.
+    f.click(DOCUMENT_VISUAL_SIMILARITY_INPUT_ID);
+    f.cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
+    f.cx.simulate_input("91");
+    f.cx.simulate_keystrokes("enter");
+    f.draw();
+    assert_eq!(f.summary().similarity, 91);
+    f.click(DOCUMENT_VISUAL_SIMILARITY_INPUT_ID);
+    f.cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
+    f.cx.simulate_input("40");
+    f.cx.simulate_keystrokes("enter");
+    f.draw();
+    assert_eq!(f.summary().similarity, 70, "the slider's least");
     // Nothing is drawn for a search without a picture.
     assert!(f.plan_calls.lock().unwrap().search.is_empty());
     // The Text switch goes back.
@@ -498,7 +578,12 @@ fn a_box_drawn_on_the_page_finds_each_copy_and_leaves_no_markup(cx: &mut TestApp
         ),
         "{summary:?}"
     );
-    assert_eq!(summary.template_text[0], "plan.pdf, page 1");
+    assert_eq!(summary.template_text[0], "plan.pdf");
+    assert!(
+        summary.template_text[1].starts_with("Page 1 · "),
+        "{:?}",
+        summary.template_text
+    );
     // plan.pdf: the source, the turned, mirrored and larger copies; the
     // "E" stays under 80 %. other.pdf: its "F".
     assert_eq!(
@@ -734,7 +819,7 @@ fn an_option_runs_the_search_again(cx: &mut TestAppContext) {
     assert_eq!(strong(&summary), with_mirrored - 2, "{summary:#?}");
     assert!(summary.shown.iter().all(|tile| !tile.mirrored));
     // This document leaves other.pdf out.
-    f.click(DOCUMENT_SEARCH_SCOPE_THIS_ID);
+    f.choose_scope(SearchScope::ThisDocument);
     let summary = f.wait_for("this document", |summary| {
         summary.finished && hits_on(summary).len() == 1
     });

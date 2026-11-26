@@ -15,7 +15,7 @@
 use std::{cell::RefCell, time::Instant};
 
 use gpui::{Global, RenderImage};
-use gpui_component::slider::{Slider, SliderEvent, SliderState};
+use gpui_component::slider::{SliderEvent, SliderState};
 
 use super::*;
 use crate::visual_search::{
@@ -34,7 +34,15 @@ pub const DOCUMENT_VISUAL_TEMPLATE_ID: &str = "document-visual-template";
 pub const DOCUMENT_VISUAL_DRAW_BOX_ID: &str = "document-visual-draw-box";
 pub const DOCUMENT_VISUAL_PASTE_ID: &str = "document-visual-paste";
 pub const DOCUMENT_VISUAL_CLEAR_ID: &str = "document-visual-clear";
+pub const DOCUMENT_VISUAL_PREVIEW_ID: &str = "document-visual-preview";
+pub const DOCUMENT_VISUAL_ACTIONS_ID: &str = "document-visual-actions";
+pub const DOCUMENT_VISUAL_OPTIONS_ID: &str = "document-visual-options";
+/// The similarity slider's track.
 pub const DOCUMENT_VISUAL_SIMILARITY_ID: &str = "document-visual-similarity";
+/// The similarity row: the slider and its number.
+pub const DOCUMENT_VISUAL_SIMILARITY_ROW_ID: &str = "document-visual-similarity-row";
+/// The similarity's number, in percent.
+pub const DOCUMENT_VISUAL_SIMILARITY_INPUT_ID: &str = "document-visual-similarity-input";
 pub const DOCUMENT_VISUAL_TURNS_ID: &str = "document-visual-turns";
 pub const DOCUMENT_VISUAL_SIZES_ID: &str = "document-visual-sizes";
 pub const DOCUMENT_VISUAL_MIRRORED_ID: &str = "document-visual-mirrored";
@@ -58,6 +66,12 @@ pub fn visual_row_id(index: usize) -> String {
 
 /// Hit pictures in one row of the list.
 const TILES_PER_ROW: usize = 3;
+/// The side of the picture to find, in points at the default interface
+/// size: two controls high.
+const PREVIEW_SIDE: f32 = 64.;
+/// The height of a hit's picture in the list, in points at the default
+/// interface size.
+const TILE_PICTURE_HEIGHT: f32 = 56.;
 /// How often the list takes what the search found.
 const VISUAL_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 /// How long a document rests, after a change, before the search runs again.
@@ -156,7 +170,8 @@ pub struct VisualPanelSummary {
     pub mode: SearchMode,
     /// The picture's origin, when there is one.
     pub template: Option<TemplateOrigin>,
-    /// "plan.pdf, page 3" or "Pasted picture", and the size in points.
+    /// The document's name, then "Page 3 · 36 × 36 pt"; or "Pasted
+    /// picture", then the size in points.
     pub template_text: Vec<String>,
     /// Why there is no picture, or no search.
     pub error: Option<String>,
@@ -199,6 +214,8 @@ pub(super) struct VisualPanel {
     pending: Option<Task<()>>,
     error: Option<String>,
     similarity: Entity<SliderState>,
+    /// The similarity's number beside the slider, in percent.
+    similarity_input: Entity<InputState>,
     threshold: f32,
     turns: bool,
     sizes: bool,
@@ -220,6 +237,7 @@ pub(super) struct VisualPanel {
     first_hit: Option<Duration>,
     finished_after: Option<Duration>,
     _similarity_events: Subscription,
+    _similarity_input_events: Subscription,
 }
 
 /// The pages a visual search drew, for every window.
@@ -243,6 +261,20 @@ struct VisualTarget {
 
 fn percent(value: f32) -> u8 {
     (value * 100.).round().clamp(0., 100.) as u8
+}
+
+/// A typed similarity, such as "85" or "85 %", rounded to a whole percent
+/// in the slider's range; `None` for anything else.
+fn parse_similarity(text: &str) -> Option<f32> {
+    let value = text
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<f32>()
+        .ok()?;
+    value
+        .is_finite()
+        .then(|| value.round().clamp(SIMILARITY_MIN, SIMILARITY_MAX))
 }
 
 fn hit_bounds(hit: &crate::visual_search::VisualHit) -> Option<[f64; 4]> {
@@ -335,12 +367,31 @@ impl VisualPanel {
                 .step(1.)
                 .default_value(DEFAULT_SIMILARITY * 100.)
         });
+        let similarity_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(percent(DEFAULT_SIMILARITY).to_string())
+        });
         let events = cx.subscribe_in(
             &similarity,
             window,
-            |workspace, _, event: &SliderEvent, _, cx| {
+            |workspace, _, event: &SliderEvent, window, cx| {
                 let (SliderEvent::Change(value) | SliderEvent::Release(value)) = event;
                 workspace.set_visual_similarity(value.start() / 100., cx);
+                workspace.show_visual_similarity(window, cx);
+            },
+        );
+        // A typed similarity applies on Enter or when the field loses the
+        // focus; one the slider cannot show goes back to the slider's.
+        let input_events = cx.subscribe_in(
+            &similarity_input,
+            window,
+            |workspace, input, event: &InputEvent, window, cx| {
+                if !matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    return;
+                }
+                if let Some(typed) = parse_similarity(&input.read(cx).value()) {
+                    workspace.set_visual_similarity_percent(typed, window, cx);
+                }
+                workspace.show_visual_similarity(window, cx);
             },
         );
         Self {
@@ -348,6 +399,7 @@ impl VisualPanel {
             pending: None,
             error: None,
             similarity,
+            similarity_input,
             threshold: DEFAULT_SIMILARITY,
             turns: true,
             sizes: true,
@@ -367,6 +419,7 @@ impl VisualPanel {
             first_hit: None,
             finished_after: None,
             _similarity_events: events,
+            _similarity_input_events: input_events,
         }
     }
 
@@ -715,7 +768,7 @@ impl DocumentWorkspace {
         let scope = self
             .search_panel
             .as_ref()
-            .map_or(SearchScope::AllOpenDocuments, |panel| panel.scope);
+            .map_or(SearchScope::default(), |panel| panel.scope);
         let own = cx.entity().downgrade();
         let Some(target) = self.visual_target(document_id, 1, None, own, cx) else {
             return;
@@ -952,6 +1005,19 @@ impl DocumentWorkspace {
         let slider = visual.similarity.clone();
         slider.update(cx, |slider, cx| slider.set_value(percent, window, cx));
         self.set_visual_similarity(percent / 100., cx);
+        self.show_visual_similarity(window, cx);
+    }
+
+    /// The similarity's number shows the filter's percent.
+    fn show_visual_similarity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(visual) = self.visual_panel_mut() else {
+            return;
+        };
+        let text = percent(visual.threshold).to_string();
+        let input = visual.similarity_input.clone();
+        if input.read(cx).value() != text.as_str() {
+            input.update(cx, |input, cx| input.set_value(text, window, cx));
+        }
     }
 
     fn toggle_visual_option(
@@ -984,7 +1050,7 @@ impl DocumentWorkspace {
         let scope = self
             .search_panel
             .as_ref()
-            .map_or(SearchScope::AllOpenDocuments, |panel| panel.scope);
+            .map_or(SearchScope::default(), |panel| panel.scope);
         let Some(visual) = self.visual_panel_mut() else {
             return;
         };
@@ -1495,52 +1561,84 @@ impl DocumentWorkspace {
         }
     }
 
-    /// The panel's Visual body: the picture, the options, the progress and
-    /// the results.
+    /// The Visual mode under the header: the mode switch, the picture to
+    /// find (its preview, where it came from, Draw box and Paste picture),
+    /// the options as property rows (Similarity, Turned, Sizes, Mirrored,
+    /// Look in), the progress while it runs, then the summary and results.
     pub(super) fn render_visual_search_body(
         &self,
         panel: &SearchPanel,
+        mode: impl IntoElement,
+        scope: impl IntoElement,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let visual = &panel.visual;
         let summary = self.visual_panel_summary(cx);
-        let theme = cx.theme();
         let card = visual.template.as_ref();
-        let picture_box = gpui::div()
+        let paper = crate::paper_chrome::chrome_colour(|chrome| chrome.paper);
+        let theme = cx.theme();
+        let preview_side = crate::layout_metrics::scaled(PREVIEW_SIDE);
+        let preview = gpui::div()
+            .id(DOCUMENT_VISUAL_PREVIEW_ID)
+            .debug_selector(|| DOCUMENT_VISUAL_PREVIEW_ID.into())
             .flex_none()
-            .size(px(56.))
+            .size(preview_side)
+            .p_1()
             .rounded(theme.radius)
             .border_1()
             .border_color(theme.border)
-            // A picture of the page: its own paper, whatever the theme.
-            .bg(gpui::white())
             .overflow_hidden()
             .flex()
             .items_center()
             .justify_center()
-            .when_some(card.and_then(|card| card.image.clone()), |frame, image| {
-                frame.child(
-                    gpui::img(image)
-                        .max_w(px(52.))
-                        .max_h(px(52.))
-                        .object_fit(gpui::ObjectFit::Contain),
-                )
-            })
-            .when(card.is_none(), |frame| {
-                frame.bg(theme.muted).child(
+            .map(|frame| match card {
+                // A picture of the page: its own paper, whatever the theme.
+                Some(card) => frame
+                    .bg(paper)
+                    .when_some(card.image.clone(), |frame, image| {
+                        frame.child(
+                            gpui::img(image)
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Contain),
+                        )
+                    }),
+                None => frame.bg(theme.muted).child(
                     Icon::new(IconName::Search)
-                        .small()
+                        .large()
                         .text_color(theme.muted_foreground),
-                )
+                ),
             });
         let template_lines = summary
             .as_ref()
             .map(|summary| summary.template_text.clone())
             .unwrap_or_default();
+        let caption = v_flex().flex_1().min_w_0().gap_1().children(
+            template_lines.into_iter().enumerate().map(|(index, line)| {
+                gpui::div()
+                    .min_w_0()
+                    // The hint with no picture wraps; a name shortens.
+                    .when(card.is_some(), |line| line.truncate())
+                    .when(index > 0 || card.is_none(), |line| {
+                        line.text_color(theme.muted_foreground)
+                    })
+                    .child(line)
+            }),
+        );
+        let clear = card.map(|_| {
+            crate::accessible_button::close_icon_button(
+                DOCUMENT_VISUAL_CLEAR_ID,
+                "Clear the picture",
+            )
+            .on_click(
+                cx.listener(|workspace, _: &ClickEvent, _, cx| workspace.clear_visual_template(cx)),
+            )
+        });
         let draw_box = Button::new(DOCUMENT_VISUAL_DRAW_BOX_ID)
             .debug_selector(|| DOCUMENT_VISUAL_DRAW_BOX_ID.into())
             .accessibility_id(DOCUMENT_VISUAL_DRAW_BOX_ID)
-            .small()
+            .outline()
+            .flex_1()
+            .min_w_0()
             .label("Draw box")
             .tooltip("Drag a box around what to find on the page")
             .loading(visual.pending.is_some())
@@ -1550,117 +1648,120 @@ impl DocumentWorkspace {
         let paste = Button::new(DOCUMENT_VISUAL_PASTE_ID)
             .debug_selector(|| DOCUMENT_VISUAL_PASTE_ID.into())
             .accessibility_id(DOCUMENT_VISUAL_PASTE_ID)
-            .small()
+            .outline()
+            .flex_1()
+            .min_w_0()
             .label("Paste picture")
             .tooltip("Find a picture from the clipboard, such as a screenshot")
             .on_click(cx.listener(|workspace, _: &ClickEvent, window, cx| {
                 workspace.paste_visual_picture(window, cx)
             }));
-        let template_card = h_flex()
+        let error = visual.error.clone();
+        let theme = cx.theme();
+        let template_card = v_flex()
             .id(DOCUMENT_VISUAL_TEMPLATE_ID)
             .debug_selector(|| DOCUMENT_VISUAL_TEMPLATE_ID.into())
-            .relative()
             .w_full()
-            .gap_2()
-            .items_start()
-            .child(picture_box)
+            .gap(super::panel_space())
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_1()
-                    .children(template_lines.into_iter().enumerate().map(|(index, line)| {
-                        gpui::div()
-                            .min_w_0()
-                            // The hint with no picture wraps; a name
-                            // shortens.
-                            .when(card.is_some(), |line| line.truncate())
-                            .text_sm()
-                            .when(index > 0 || card.is_none(), |line| {
-                                line.text_color(theme.muted_foreground)
-                            })
-                            .when(card.is_some(), |line| line.pr_6())
-                            .child(line)
-                    }))
-                    .child(h_flex().gap_1().flex_wrap().child(draw_box).child(paste)),
+                h_flex()
+                    .w_full()
+                    .gap(crate::layout_metrics::scaled(
+                        crate::layout_metrics::SPACE + 4.,
+                    ))
+                    .items_start()
+                    .child(preview)
+                    .child(caption)
+                    .children(clear),
             )
-            .when(card.is_some(), |row| {
-                row.child(
-                    gpui::div().absolute().top_0().right_0().child(
-                        crate::accessible_button::close_icon_button(
-                            DOCUMENT_VISUAL_CLEAR_ID,
-                            "Clear the picture",
-                        )
-                        .on_click(cx.listener(
-                            |workspace, _: &ClickEvent, _, cx| workspace.clear_visual_template(cx),
-                        )),
-                    ),
+            .when_some(error, |card, error| {
+                card.child(
+                    gpui::div()
+                        .id(DOCUMENT_VISUAL_ERROR_ID)
+                        .debug_selector(|| DOCUMENT_VISUAL_ERROR_ID.into())
+                        .text_color(theme.danger)
+                        .child(error),
                 )
-            });
-        let pasted = matches!(card.map(|card| &card.origin), Some(TemplateOrigin::Pasted));
-        let checkbox = |id: &'static str, label: &'static str, on: bool, cx: &mut Context<Self>| {
-            // The panel's other controls are small: so are these.
-            gpui_component::checkbox::Checkbox::new(id)
-                .debug_selector(move || id.into())
-                .small()
-                .label(label)
-                .checked(on)
-                .on_click(cx.listener(move |workspace, checked: &bool, _, cx| {
-                    let checked = *checked;
-                    workspace.toggle_visual_option(
-                        |visual| match id {
-                            DOCUMENT_VISUAL_TURNS_ID => visual.turns = checked,
-                            DOCUMENT_VISUAL_SIZES_ID => visual.sizes = checked,
-                            _ => visual.mirrored = checked,
-                        },
-                        cx,
-                    )
-                }))
-        };
-        let turns = checkbox(
-            DOCUMENT_VISUAL_TURNS_ID,
-            "Turned 90°, 180°, 270°",
-            visual.turns,
-            cx,
-        );
-        let sizes = checkbox(
-            DOCUMENT_VISUAL_SIZES_ID,
-            if pasted {
-                "Sizes 50 % to 200 %"
-            } else {
-                "Sizes 85 % to 118 %"
-            },
-            visual.sizes,
-            cx,
-        );
-        let mirrored = checkbox(
-            DOCUMENT_VISUAL_MIRRORED_ID,
-            "Include mirrored",
-            visual.mirrored,
-            cx,
-        );
-        let theme = cx.theme();
-        let similarity = h_flex()
-            .w_full()
-            .gap_2()
-            .items_center()
-            .child(gpui::div().flex_none().text_sm().child("Similarity"))
+            })
             .child(
-                gpui::div()
-                    .id(DOCUMENT_VISUAL_SIMILARITY_ID)
-                    .debug_selector(|| DOCUMENT_VISUAL_SIMILARITY_ID.into())
-                    .flex_1()
-                    .min_w_0()
-                    .child(Slider::new(&visual.similarity)),
-            )
-            .child(
-                gpui::div()
-                    .flex_none()
-                    .w(px(40.))
-                    .text_right()
-                    .text_sm()
-                    .child(format!("{} %", percent(visual.threshold))),
+                h_flex()
+                    .id(DOCUMENT_VISUAL_ACTIONS_ID)
+                    .debug_selector(|| DOCUMENT_VISUAL_ACTIONS_ID.into())
+                    .w_full()
+                    .gap(super::panel_space())
+                    .child(draw_box)
+                    .child(paste),
             );
+        let pasted = matches!(card.map(|card| &card.origin), Some(TemplateOrigin::Pasted));
+        let switch = |id: &'static str,
+                      label: &'static str,
+                      detail: &'static str,
+                      on: bool,
+                      cx: &mut Context<Self>| {
+            crate::property_controls::property_row(
+                label,
+                gpui::div().id(id).debug_selector(move || id.into()).child(
+                    gpui_component::switch::Switch::new(id)
+                        .checked(on)
+                        .label(detail)
+                        .on_click(cx.listener(move |workspace, checked: &bool, _, cx| {
+                            let checked = *checked;
+                            workspace.toggle_visual_option(
+                                |visual| match id {
+                                    DOCUMENT_VISUAL_TURNS_ID => visual.turns = checked,
+                                    DOCUMENT_VISUAL_SIZES_ID => visual.sizes = checked,
+                                    _ => visual.mirrored = checked,
+                                },
+                                cx,
+                            )
+                        })),
+                ),
+            )
+        };
+        let similarity = crate::property_controls::property_slider_row(
+            "Similarity",
+            crate::property_controls::PropertySliderInput::new(
+                "Similarity",
+                &visual.similarity,
+                &visual.similarity_input,
+            )
+            .row_id(DOCUMENT_VISUAL_SIMILARITY_ROW_ID)
+            .slider_id(DOCUMENT_VISUAL_SIMILARITY_ID)
+            .input_id(DOCUMENT_VISUAL_SIMILARITY_INPUT_ID)
+            .suffix("%"),
+        );
+        let options = v_flex()
+            .id(DOCUMENT_VISUAL_OPTIONS_ID)
+            .debug_selector(|| DOCUMENT_VISUAL_OPTIONS_ID.into())
+            .w_full()
+            .gap(super::panel_space())
+            .child(similarity)
+            .child(switch(
+                DOCUMENT_VISUAL_TURNS_ID,
+                "Turned",
+                "90°, 180°, 270°",
+                visual.turns,
+                cx,
+            ))
+            .child(switch(
+                DOCUMENT_VISUAL_SIZES_ID,
+                "Sizes",
+                if pasted {
+                    "50 % to 200 %"
+                } else {
+                    "85 % to 118 %"
+                },
+                visual.sizes,
+                cx,
+            ))
+            .child(switch(
+                DOCUMENT_VISUAL_MIRRORED_ID,
+                "Mirrored",
+                "Mirror images",
+                visual.mirrored,
+                cx,
+            ))
+            .child(scope);
         let progress_text = summary
             .as_ref()
             .map(|summary| summary.progress.clone())
@@ -1668,22 +1769,25 @@ impl DocumentWorkspace {
         let (done, all) = visual.results.progress();
         let running = visual.running();
         let progress_empty = progress_text.is_empty();
+        let theme = cx.theme();
         let progress = v_flex()
             .id(DOCUMENT_VISUAL_PROGRESS_ID)
             .debug_selector(|| DOCUMENT_VISUAL_PROGRESS_ID.into())
             .w_full()
-            .gap_1()
+            .gap(super::panel_space())
             .child(
                 h_flex()
                     .w_full()
-                    .gap_2()
+                    .min_h(crate::layout_metrics::scaled(
+                        crate::layout_metrics::CONTROL,
+                    ))
+                    .gap(super::panel_space())
                     .items_center()
                     .child(
                         gpui::div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_sm()
                             .text_color(theme.muted_foreground)
                             .child(progress_text),
                     )
@@ -1692,7 +1796,7 @@ impl DocumentWorkspace {
                             Button::new(DOCUMENT_VISUAL_STOP_ID)
                                 .debug_selector(|| DOCUMENT_VISUAL_STOP_ID.into())
                                 .accessibility_id(DOCUMENT_VISUAL_STOP_ID)
-                                .xsmall()
+                                .outline()
                                 .label("Stop")
                                 .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
                                     workspace.stop_visual_search(cx)
@@ -1715,49 +1819,36 @@ impl DocumentWorkspace {
             .as_ref()
             .map(|summary| summary.summary.clone())
             .unwrap_or_default();
-        let error = visual.error.clone();
+        let theme = cx.theme();
+        let controls = crate::property_controls::property_body()
+            .id(super::DOCUMENT_SEARCH_CONTROLS_ID)
+            .debug_selector(|| super::DOCUMENT_SEARCH_CONTROLS_ID.into())
+            .child(mode)
+            .child(template_card)
+            .child(options)
+            .when(running || !progress_empty, |column| column.child(progress));
         v_flex()
             .flex_1()
             .min_h_0()
-            .child(
-                v_flex()
-                    .flex_none()
-                    .gap_2()
-                    .px_2()
-                    .pb_2()
-                    .child(template_card)
-                    .when_some(error, |column, error| {
-                        column.child(
-                            gpui::div()
-                                .id(DOCUMENT_VISUAL_ERROR_ID)
-                                .debug_selector(|| DOCUMENT_VISUAL_ERROR_ID.into())
-                                .text_sm()
-                                .text_color(theme.danger)
-                                .child(error),
-                        )
-                    })
-                    .child(similarity)
-                    .child(v_flex().gap_1().child(turns).child(sizes).child(mirrored))
-                    .when(running || !progress_empty, |column| column.child(progress)),
-            )
-            .child(
-                gpui::div()
-                    .id(DOCUMENT_VISUAL_SUMMARY_ID)
-                    .debug_selector(|| DOCUMENT_VISUAL_SUMMARY_ID.into())
-                    .flex_none()
-                    .px_2()
-                    .pb_1()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .when(summary_text.is_empty(), |summary| summary.hidden())
-                    .child(summary_text),
-            )
+            .child(super::search_controls_region(
+                controls,
+                &panel.controls_scroll,
+            ))
+            .child(super::search_summary_line(
+                DOCUMENT_VISUAL_SUMMARY_ID,
+                summary_text,
+                theme.muted_foreground,
+            ))
             .child(
                 gpui::div()
                     .flex_1()
-                    .min_h_0()
-                    .border_t_1()
-                    .border_color(theme.border)
+                    .flex_shrink_0()
+                    .min_h(crate::layout_metrics::scaled(super::RESULTS_MIN_HEIGHT))
+                    .relative()
+                    .child(crate::layout_metrics::inside_line(
+                        crate::layout_metrics::Edge::Top,
+                        theme.border,
+                    ))
                     .child(self.render_visual_rows(panel, cx)),
             )
             .into_any_element()
@@ -1853,19 +1944,21 @@ impl DocumentWorkspace {
             None => {
                 vec!["Draw a box around a symbol on a page, or paste a picture of it.".to_owned()]
             }
-            Some(card) => vec![
-                match &card.origin {
-                    TemplateOrigin::PageBox {
-                        title, page_index, ..
-                    } => format!("{title}, page {}", page_index + 1),
-                    TemplateOrigin::Pasted => "Pasted picture".to_owned(),
-                },
-                format!(
+            Some(card) => {
+                let size = format!(
                     "{} × {} pt",
                     card.size_pt.0.round() as i64,
                     card.size_pt.1.round() as i64
-                ),
-            ],
+                );
+                // The name on its own line, so that a narrow panel cuts
+                // only the name, never the page.
+                match &card.origin {
+                    TemplateOrigin::PageBox {
+                        title, page_index, ..
+                    } => vec![title.clone(), format!("Page {} · {size}", page_index + 1)],
+                    TemplateOrigin::Pasted => vec!["Pasted picture".to_owned(), size],
+                }
+            }
         };
         let running = visual.running();
         let (done, all) = visual.results.progress();
@@ -1994,6 +2087,8 @@ fn visual_row_element(
     owner: WeakEntity<DocumentWorkspace>,
     cx: &mut App,
 ) -> gpui::AnyElement {
+    // A picture of the page: its own paper, whatever the theme.
+    let paper = crate::paper_chrome::chrome_colour(|chrome| chrome.paper);
     let theme = cx.theme();
     let chevron = |collapsed: bool| {
         Icon::new(if collapsed {
@@ -2071,8 +2166,11 @@ fn visual_row_element(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            // Three equal columns: a row with fewer hits keeps their width.
             let mut row = h_flex().w_full().gap_1();
+            let mut in_row = 0;
             for (tile, hit_key) in tiles.into_iter().zip(keys) {
+                in_row += 1;
                 let place = context
                     .shown
                     .iter()
@@ -2100,7 +2198,6 @@ fn visual_row_element(
                         .debug_selector(move || visual_tile_id(place))
                         .flex_1()
                         .min_w_0()
-                        .max_w(px(88.))
                         .gap_0p5()
                         .p_0p5()
                         .rounded(theme.radius)
@@ -2123,12 +2220,11 @@ fn visual_row_element(
                         .child(
                             gpui::div()
                                 .w_full()
-                                .h(px(56.))
+                                .h(crate::layout_metrics::scaled(TILE_PICTURE_HEIGHT))
                                 .rounded(theme.radius)
                                 .border_1()
                                 .border_color(theme.border)
-                                // A picture of the page in its real colours.
-                                .bg(gpui::white())
+                                .bg(paper)
                                 .overflow_hidden()
                                 .flex()
                                 .items_center()
@@ -2164,6 +2260,9 @@ fn visual_row_element(
                         }),
                 );
             }
+            for _ in in_row..TILES_PER_ROW {
+                row = row.child(gpui::div().flex_1().min_w_0());
+            }
             row.into_any_element()
         }
     };
@@ -2176,8 +2275,8 @@ fn visual_row_element(
     };
     let indent = match key {
         VisualRowKey::Document(_) => 0.,
-        VisualRowKey::Page(..) => 12.,
-        VisualRowKey::Tiles(..) => 20.,
+        VisualRowKey::Page(..) => super::ROW_INDENT,
+        VisualRowKey::Tiles(..) => 2. * super::ROW_INDENT,
     };
     let click_owner = owner.clone();
     gpui::div()
@@ -2186,8 +2285,12 @@ fn visual_row_element(
         .w_full()
         .py_1()
         // Clear of the overlay scroll bar.
-        .pr_4()
-        .pl(px(8. + indent))
+        .pr(crate::layout_metrics::scaled(
+            crate::layout_metrics::GROUP_SPACE,
+        ))
+        .pl(crate::layout_metrics::scaled(
+            crate::layout_metrics::SPACE + indent,
+        ))
         .bg(background)
         .when(selected_group && context.list_focused, |row| {
             row.border_l_2().border_color(theme.list_active_border)
