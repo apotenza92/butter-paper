@@ -504,9 +504,10 @@ impl DocumentWorkspace {
         });
         let noun = if count == 1 { "page" } else { "pages" };
         let verb = if cut { "Cut" } else { "Copied" };
-        self.annotation_statuses.insert(
+        self.set_status(
             document_id,
             format!("{verb} {count} {noun}: select a page and paste to place them after it"),
+            StatusSeverity::Info,
         );
         cx.notify();
     }
@@ -606,7 +607,7 @@ impl DocumentWorkspace {
             return;
         }
         if let Err(error) = operation(self, document_id, pages, cx) {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -828,7 +829,7 @@ impl DocumentWorkspace {
             return;
         };
         if let Err(error) = self.rotate_all_pages(document_id, direction, cx) {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -903,7 +904,7 @@ impl DocumentWorkspace {
             return;
         }
         if let Err(error) = self.move_pages(document_id, &drag.pages, before, cx) {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
         }
         cx.notify();
     }

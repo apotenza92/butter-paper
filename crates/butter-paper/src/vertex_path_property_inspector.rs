@@ -3,10 +3,10 @@
 
 use crate::annotation_model::{MarkupId, MeasurementPathKind, RectangleAppearance, VertexPathKind};
 use crate::property_controls::{
-    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    PropertySliderInput, canonical_picker_opacity, format_property_number,
-    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
-    property_lock_toggle, property_row, property_slider_row, subscribe_property_color,
+    FieldPhase, PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyPreviewEvent,
+    PropertySliderInput, PropertyStepInput, canonical_picker_opacity, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_lock_toggle,
+    property_row, property_slider_row, subscribe_property_color,
 };
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
@@ -134,7 +134,6 @@ impl VertexPathPropertyInspector {
                 .default_value("1")
                 .min(0.25)
                 .max(24.)
-                .step(0.25)
         });
         let width_slider = cx.new(|_| {
             SliderState::new()
@@ -166,18 +165,25 @@ impl VertexPathPropertyInspector {
                 cx,
                 |this| !this.syncing,
                 |this, value, cx| {
+                    this.preview_patch(VertexPathPropertyPatch::StrokeWidthPt(value), cx)
+                },
+                |this, value, cx| {
+                    this.end_preview(cx);
                     this.emit_patch(VertexPathPropertyPatch::StrokeWidthPt(value), cx)
                 },
             ),
             cx.subscribe_in(&width, window, |this, input, event: &InputEvent, _, cx| {
-                if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                let Some(phase) = FieldPhase::of(event) else {
                     return;
-                }
+                };
                 let Ok(value) = input.read(cx).value().parse::<f64>() else {
+                    this.field_unparsed(phase, cx);
                     return;
                 };
                 if value.is_finite() && (0.25..=24.).contains(&value) {
-                    this.emit_patch(VertexPathPropertyPatch::StrokeWidthPt(value), cx);
+                    this.apply_field(VertexPathPropertyPatch::StrokeWidthPt(value), phase, cx);
+                } else {
+                    this.field_unparsed(phase, cx);
                 }
             }),
             cx.subscribe_in(
@@ -192,24 +198,35 @@ impl VertexPathPropertyInspector {
                                 cx,
                             )
                         });
+                        this.preview_patch(
+                            VertexPathPropertyPatch::Opacity(value.start() as f64 / 100.),
+                            cx,
+                        );
                         cx.notify();
                     }
                     SliderEvent::Change(_) => {}
-                    SliderEvent::Release(value) => this.emit_patch(
-                        VertexPathPropertyPatch::Opacity(value.start() as f64 / 100.),
-                        cx,
-                    ),
+                    SliderEvent::Release(value) => {
+                        this.end_preview(cx);
+                        this.emit_patch(
+                            VertexPathPropertyPatch::Opacity(value.start() as f64 / 100.),
+                            cx,
+                        )
+                    }
                 },
             ),
             cx.subscribe_in(
                 &opacity_input,
                 window,
                 |this, input, event: &InputEvent, window, cx| {
-                    if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    let Some(phase) = FieldPhase::of(event) else {
                         return;
-                    }
+                    };
                     let Some(opacity) = parse_property_percentage(input.read(cx).value().as_ref())
                     else {
+                        this.field_unparsed(phase, cx);
+                        if phase == FieldPhase::Preview {
+                            return;
+                        }
                         let canonical = this
                             .snapshot
                             .as_ref()
@@ -220,10 +237,13 @@ impl VertexPathPropertyInspector {
                         });
                         return;
                     };
-                    this.emit_patch(VertexPathPropertyPatch::Opacity(opacity), cx);
+                    this.apply_field(VertexPathPropertyPatch::Opacity(opacity), phase, cx);
                 },
             ),
         ];
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &width, 0.5, 0.25, 24., window, cx,
+        ));
         subscriptions.extend(subscribe_property_color(
             &stroke_color,
             cx,
@@ -355,28 +375,76 @@ impl VertexPathPropertyInspector {
         };
         self.emit_patch(patch, cx);
     }
-    fn emit_patch(&mut self, patch: VertexPathPropertyPatch, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// The event that applies `patch`, unless it changes nothing or the
+    /// markup cannot be edited.
+    fn patch_event(&self, patch: VertexPathPropertyPatch) -> Option<VertexPathPropertyEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         if !(self.open || self.embedded)
             || self.syncing
             || snapshot.mutation_disabled
             || (snapshot.locked && !matches!(patch, VertexPathPropertyPatch::Locked(_)))
             || patch_matches(&patch, snapshot)
         {
-            return;
+            return None;
         }
-        cx.emit(VertexPathPropertyEvent {
+        Some(VertexPathPropertyEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_revision: snapshot.expected_revision,
             expected_kind: snapshot.kind,
             patch,
+        })
+    }
+
+    fn emit_patch(&mut self, patch: VertexPathPropertyPatch, cx: &mut Context<Self>) {
+        if let Some(event) = self.patch_event(patch) {
+            cx.emit(event);
+        }
+    }
+
+    /// Shows `patch` on the canvas while a slider is dragged.
+    fn preview_patch(&mut self, patch: VertexPathPropertyPatch, cx: &mut Context<Self>) {
+        cx.emit(match self.patch_event(patch) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
         });
+    }
+
+    /// Shows the committed markup again, as a drag ends.
+    fn end_preview(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<VertexPathPropertyEvent>::Clear);
+    }
+
+    /// A typed value: shown on the markup as it is typed, committed when the
+    /// field is left or Enter is pressed.
+    fn apply_field(
+        &mut self,
+        patch: VertexPathPropertyPatch,
+        phase: FieldPhase,
+        cx: &mut Context<Self>,
+    ) {
+        match phase {
+            FieldPhase::Preview => self.preview_patch(patch, cx),
+            FieldPhase::Commit => {
+                self.end_preview(cx);
+                self.emit_patch(patch, cx);
+            }
+        }
+    }
+
+    /// Typed text that is not a valid value: a partial one keeps the last
+    /// preview, and leaving the field ends it.
+    fn field_unparsed(&mut self, phase: FieldPhase, cx: &mut Context<Self>) {
+        match phase {
+            FieldPhase::Preview => {
+                cx.emit(PropertyPreviewEvent::<VertexPathPropertyEvent>::Pending)
+            }
+            FieldPhase::Commit => self.end_preview(cx),
+        }
     }
 }
 impl EventEmitter<VertexPathPropertyEvent> for VertexPathPropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<VertexPathPropertyEvent>> for VertexPathPropertyInspector {}
 
 impl Render for VertexPathPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -408,24 +476,22 @@ impl Render for VertexPathPropertyInspector {
             // No header here, so the lock sits with the other rows.
             top = top.row(property_row("Locked", lock));
         }
-        let mut appearance = PropertyGroup::new().row(property_row(
-            "Line",
-            property_color_and_size(
+        let mut appearance = PropertyGroup::new()
+            .row(property_row(
+                "Line colour",
                 PropertyColor::new(
                     VERTEX_PATH_INSPECTOR_STROKE_COLOR_ID,
                     "Line colour",
                     &self.stroke_color,
                 )
                 .disabled(disabled),
-                PropertyNumericInput::new(
-                    VERTEX_PATH_INSPECTOR_WIDTH_ID,
-                    "Line width",
-                    &self.width,
-                )
-                .suffix("pt")
-                .disabled(disabled),
-            ),
-        ));
+            ))
+            .row(property_row(
+                "Line width",
+                PropertyStepInput::new(VERTEX_PATH_INSPECTOR_WIDTH_ID, &self.width)
+                    .suffix("pt")
+                    .disabled(disabled),
+            ));
         appearance = appearance.row(property_slider_row(
             "Opacity",
             PropertySliderInput::new("Opacity", &self.opacity, &self.opacity_input)

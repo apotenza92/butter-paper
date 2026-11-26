@@ -6,14 +6,13 @@ use crate::annotation_model::{
     DimensionAppearance, MarkupId, StraightLineAppearance, TextBoxStyle,
 };
 use crate::property_controls::{
-    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    PropertySliderInput, PropertyTextEditEvent, canonical_picker_opacity, format_property_number,
-    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
-    property_lock_toggle, property_number, property_row, property_slider_row,
-    subscribe_property_color,
+    FieldPhase, PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyPreviewEvent,
+    PropertySliderInput, PropertyStepInput, PropertyTextEditEvent, canonical_picker_opacity,
+    format_property_number, format_property_percentage, parse_property_percentage, property_body,
+    property_lock_toggle, property_row, property_slider_row, subscribe_property_color,
 };
 use gpui::{
-    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
@@ -102,20 +101,18 @@ pub struct DimensionPropertyInspector {
 
 impl DimensionPropertyInspector {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let offset = cx.new(|cx| InputState::new(window, cx).default_value("24").step(1.));
+        let offset = cx.new(|cx| InputState::new(window, cx).default_value("24"));
         let width = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("1")
                 .min(0.25)
                 .max(24.)
-                .step(0.25)
         });
         let font_size = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("12")
                 .min(6.)
                 .max(72.)
-                .step(1.)
         });
         let width_slider = cx.new(|_| {
             SliderState::new()
@@ -151,6 +148,12 @@ impl DimensionPropertyInspector {
                 cx,
                 |this| !this.syncing,
                 |this, value, cx| {
+                    this.preview_appearance(cx, |line, text| {
+                        rebuild_appearance(line, text, None, None, Some(value), None, None)
+                    })
+                },
+                |this, value, cx| {
+                    this.end_preview(cx);
                     this.edit_appearance(cx, |line, text| {
                         rebuild_appearance(line, text, None, None, Some(value), None, None)
                     })
@@ -171,31 +174,42 @@ impl DimensionPropertyInspector {
                                 cx,
                             )
                         });
+                        let opacity = value.start() as f64 / 100.;
+                        this.preview_appearance(cx, |line, text| {
+                            rebuild_appearance(line, text, None, None, None, Some(opacity), None)
+                        });
                         cx.notify();
                     }
                     SliderEvent::Change(_) => {}
-                    SliderEvent::Release(value) => this.edit_appearance(cx, |line, text| {
-                        rebuild_appearance(
-                            line,
-                            text,
-                            None,
-                            None,
-                            None,
-                            Some(value.start() as f64 / 100.),
-                            None,
-                        )
-                    }),
+                    SliderEvent::Release(value) => {
+                        this.end_preview(cx);
+                        this.edit_appearance(cx, |line, text| {
+                            rebuild_appearance(
+                                line,
+                                text,
+                                None,
+                                None,
+                                None,
+                                Some(value.start() as f64 / 100.),
+                                None,
+                            )
+                        })
+                    }
                 },
             ),
             cx.subscribe_in(
                 &opacity_input,
                 window,
                 |this, input, event: &InputEvent, window, cx| {
-                    if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    let Some(phase) = FieldPhase::of(event) else {
                         return;
-                    }
+                    };
                     let Some(opacity) = parse_property_percentage(input.read(cx).value().as_ref())
                     else {
+                        this.field_unparsed(phase, cx);
+                        if phase == FieldPhase::Preview {
+                            return;
+                        }
                         let canonical = this
                             .snapshot
                             .as_ref()
@@ -206,7 +220,7 @@ impl DimensionPropertyInspector {
                         });
                         return;
                     };
-                    this.edit_appearance(cx, |line, text| {
+                    this.edit_appearance_phase(phase, cx, |line, text| {
                         rebuild_appearance(line, text, None, None, None, Some(opacity), None)
                     });
                 },
@@ -217,11 +231,20 @@ impl DimensionPropertyInspector {
         subscriptions.push(cx.subscribe_in(
             &content,
             window,
-            |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                    this.emit_content(cx);
-                }
+            |this, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => this.preview_content(cx),
+                InputEvent::Blur | InputEvent::PressEnter { .. } => this.emit_content(cx),
+                InputEvent::Focus => {}
             },
+        ));
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &width, 0.5, 0.25, 24., window, cx,
+        ));
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &font_size, 1., 6., 72., window, cx,
+        ));
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &offset, 1., -10000., 10000., window, cx,
         ));
         subscriptions.extend(subscribe_property_color(
             &stroke_color,
@@ -291,10 +314,10 @@ impl DimensionPropertyInspector {
     pub fn content_input(&self) -> gpui::Entity<InputState> {
         self.content.clone()
     }
-    fn emit_content(&mut self, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// The edit that the Text field now holds, unless it changes nothing or
+    /// the markup cannot be edited.
+    fn content_event(&self, cx: &App) -> Option<PropertyTextEditEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         let content = self.content.read(cx).value().to_string();
         if self.syncing
             || snapshot.mutation_disabled
@@ -305,15 +328,31 @@ impl DimensionPropertyInspector {
                 .as_deref()
                 .is_none_or(|baseline| baseline == content)
         {
-            return;
+            return None;
         }
-        self.content_baseline = Some(content.clone());
-        cx.emit(PropertyTextEditEvent {
+        Some(PropertyTextEditEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_revision: snapshot.expected_revision,
             content,
+        })
+    }
+
+    /// Shows the typed text on the markup, without committing it.
+    fn preview_content(&mut self, cx: &mut Context<Self>) {
+        cx.emit(match self.content_event(cx) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
         });
+    }
+
+    /// Commits the typed text as one change.
+    fn emit_content(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<PropertyTextEditEvent>::Clear);
+        if let Some(event) = self.content_event(cx) {
+            self.content_baseline = Some(event.content.clone());
+            cx.emit(event);
+        }
     }
     pub fn sync(
         &mut self,
@@ -410,29 +449,109 @@ impl DimensionPropertyInspector {
         }
     }
 
-    fn emit_patch(&mut self, patch: DimensionPropertyPatch, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// The event that applies `patch`, unless it changes nothing or the
+    /// markup cannot be edited.
+    fn patch_event(&self, patch: DimensionPropertyPatch) -> Option<DimensionPropertyEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         if !(self.open || self.embedded)
             || self.syncing
             || snapshot.mutation_disabled
             || (snapshot.locked && !matches!(patch, DimensionPropertyPatch::Locked(_)))
             || patch_matches(&patch, snapshot)
         {
-            return;
+            return None;
         }
-        cx.emit(DimensionPropertyEvent {
+        Some(DimensionPropertyEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_revision: snapshot.expected_revision,
             patch,
+        })
+    }
+
+    /// A typed value: shown on the markup as it is typed, committed when the
+    /// field is left or Enter is pressed.
+    fn apply_field(
+        &mut self,
+        patch: DimensionPropertyPatch,
+        phase: FieldPhase,
+        cx: &mut Context<Self>,
+    ) {
+        match phase {
+            FieldPhase::Preview => self.preview_patch(patch, cx),
+            FieldPhase::Commit => {
+                self.end_preview(cx);
+                self.emit_patch(patch, cx);
+            }
+        }
+    }
+
+    fn edit_appearance_phase(
+        &mut self,
+        phase: FieldPhase,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&StraightLineAppearance, &TextBoxStyle) -> Option<DimensionAppearance>,
+    ) {
+        match phase {
+            FieldPhase::Preview => self.preview_appearance(cx, edit),
+            FieldPhase::Commit => {
+                self.end_preview(cx);
+                self.edit_appearance(cx, edit);
+            }
+        }
+    }
+
+    /// Typed text that is not a valid value: a partial one keeps the last
+    /// preview, and leaving the field ends it.
+    fn field_unparsed(&mut self, phase: FieldPhase, cx: &mut Context<Self>) {
+        match phase {
+            FieldPhase::Preview => cx.emit(PropertyPreviewEvent::<DimensionPropertyEvent>::Pending),
+            FieldPhase::Commit => self.end_preview(cx),
+        }
+    }
+
+    /// Shows a dragged slider's appearance on the canvas, without committing it.
+    fn preview_appearance(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&StraightLineAppearance, &TextBoxStyle) -> Option<DimensionAppearance>,
+    ) {
+        let appearance = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| edit(snapshot.appearance.line(), snapshot.appearance.text()));
+        match appearance {
+            Some(appearance) => {
+                self.preview_patch(DimensionPropertyPatch::Appearance(appearance), cx)
+            }
+            None => self.end_preview(cx),
+        }
+    }
+
+    fn emit_patch(&mut self, patch: DimensionPropertyPatch, cx: &mut Context<Self>) {
+        if let Some(event) = self.patch_event(patch) {
+            cx.emit(event);
+        }
+    }
+
+    /// Shows `patch` on the canvas while a slider is dragged.
+    fn preview_patch(&mut self, patch: DimensionPropertyPatch, cx: &mut Context<Self>) {
+        cx.emit(match self.patch_event(patch) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
         });
+    }
+
+    /// Shows the committed markup again, as a drag ends.
+    fn end_preview(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<DimensionPropertyEvent>::Clear);
     }
 }
 
 impl EventEmitter<DimensionPropertyEvent> for DimensionPropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<DimensionPropertyEvent>> for DimensionPropertyInspector {}
 impl EventEmitter<PropertyTextEditEvent> for DimensionPropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<PropertyTextEditEvent>> for DimensionPropertyInspector {}
 
 impl Render for DimensionPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -446,23 +565,20 @@ impl Render for DimensionPropertyInspector {
         // A path's label exists only while it measures: shown the same
         // before, disabled, so measuring adds no row.
         let label_disabled = disabled || (snapshot.text_only && !snapshot.measuring);
-        let font = property_row(
-            "Font",
-            property_color_and_size(
-                PropertyColor::new(
-                    DIMENSION_INSPECTOR_TEXT_COLOR_ID,
-                    "Text colour",
-                    &self.text_color,
-                )
-                .disabled(label_disabled),
-                PropertyNumericInput::new(
-                    DIMENSION_INSPECTOR_FONT_SIZE_ID,
-                    "Font size",
-                    &self.font_size,
-                )
+        let font_colour = property_row(
+            "Font colour",
+            PropertyColor::new(
+                DIMENSION_INSPECTOR_TEXT_COLOR_ID,
+                "Text colour",
+                &self.text_color,
+            )
+            .disabled(label_disabled),
+        );
+        let font_size = property_row(
+            "Font size",
+            PropertyStepInput::new(DIMENSION_INSPECTOR_FONT_SIZE_ID, &self.font_size)
                 .suffix("pt")
                 .disabled(label_disabled),
-            ),
         );
         let reset = {
             let reset = cx.entity().downgrade();
@@ -490,7 +606,14 @@ impl Render for DimensionPropertyInspector {
                 "Label",
             )
             .content_only(self.embedded)
-            .child(property_body().child(PropertyGroup::new().row(font).row(reset)))
+            .child(
+                property_body().child(
+                    PropertyGroup::new()
+                        .row(font_colour)
+                        .row(font_size)
+                        .row(reset),
+                ),
+            )
             .into_any_element();
         }
         let content_only = self.embedded;
@@ -527,29 +650,29 @@ impl Render for DimensionPropertyInspector {
             // No header here, so the lock sits with the other rows.
             top = top.row(property_row("Locked", lock));
         }
-        let mut appearance = PropertyGroup::new().row(property_row(
-            "Line",
-            property_color_and_size(
+        let mut appearance = PropertyGroup::new()
+            .row(property_row(
+                "Line colour",
                 PropertyColor::new(
                     DIMENSION_INSPECTOR_STROKE_COLOR_ID,
                     "Line colour",
                     &self.stroke_color,
                 )
                 .disabled(disabled),
-                PropertyNumericInput::new(DIMENSION_INSPECTOR_WIDTH_ID, "Line width", &self.width)
+            ))
+            .row(property_row(
+                "Line width",
+                PropertyStepInput::new(DIMENSION_INSPECTOR_WIDTH_ID, &self.width)
                     .suffix("pt")
                     .disabled(disabled),
-            ),
-        ));
-        appearance = appearance.row(font);
+            ));
+        appearance = appearance.row(font_colour).row(font_size);
         // A Length has no offset of its own: its row shows, disabled.
         appearance = appearance.row(property_row(
             "Offset",
-            property_number(
-                PropertyNumericInput::new(DIMENSION_INSPECTOR_OFFSET_ID, "Offset", &self.offset)
-                    .suffix("pt")
-                    .disabled(disabled || !snapshot.show_offset),
-            ),
+            PropertyStepInput::new(DIMENSION_INSPECTOR_OFFSET_ID, &self.offset)
+                .suffix("pt")
+                .disabled(disabled || !snapshot.show_offset),
         ));
         appearance = appearance.row(property_slider_row(
             "Opacity",
@@ -595,30 +718,30 @@ fn numeric_subscription(
         input,
         window,
         move |this, input, event: &InputEvent, _, cx| {
-            if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+            let Some(phase) = FieldPhase::of(event) else {
                 return;
-            }
+            };
             let Ok(value) = input.read(cx).value().parse::<f64>() else {
+                this.field_unparsed(phase, cx);
                 return;
             };
             if !value.is_finite() {
+                this.field_unparsed(phase, cx);
                 return;
             }
             match property {
                 NumericProperty::Offset => {
-                    this.emit_patch(DimensionPropertyPatch::OffsetPt(value), cx)
+                    this.apply_field(DimensionPropertyPatch::OffsetPt(value), phase, cx)
                 }
-                NumericProperty::Width if (0.25..=24.).contains(&value) => {
-                    this.edit_appearance(cx, |line, text| {
+                NumericProperty::Width if (0.25..=24.).contains(&value) => this
+                    .edit_appearance_phase(phase, cx, |line, text| {
                         rebuild_appearance(line, text, None, None, Some(value), None, None)
-                    })
-                }
-                NumericProperty::FontSize if (6. ..=72.).contains(&value) => {
-                    this.edit_appearance(cx, |line, text| {
+                    }),
+                NumericProperty::FontSize if (6. ..=72.).contains(&value) => this
+                    .edit_appearance_phase(phase, cx, |line, text| {
                         rebuild_appearance(line, text, None, None, None, None, Some(value))
-                    })
-                }
-                _ => {}
+                    }),
+                _ => this.field_unparsed(phase, cx),
             }
         },
     )

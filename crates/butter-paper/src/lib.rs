@@ -37,6 +37,7 @@ pub mod highlight_compositor;
 pub mod highlight_defaults_panel;
 pub mod layout_metrics;
 pub mod property_controls;
+pub mod property_wheel;
 pub mod reduce_motion;
 pub mod save_places;
 mod sidebar_sizing;

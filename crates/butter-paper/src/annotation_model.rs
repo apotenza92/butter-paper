@@ -8829,13 +8829,20 @@ impl AnnotationDocument {
         if updates.is_empty() {
             return None;
         }
-        let mut state = self.state.clone();
+        let mut preview = self.preview_copy();
         for update in updates {
-            put_annotation(&mut state, update);
+            put_annotation(&mut preview.state, update);
         }
-        state.rectangle_index = RectangleSpatialIndex::rebuild(&state.rectangles);
-        Some(Self {
-            state,
+        preview.state.rectangle_index = RectangleSpatialIndex::rebuild(&preview.state.rectangles);
+        Some(preview)
+    }
+
+    /// A copy of the committed annotations and selection, with no history
+    /// and no gesture, to apply an edit to for display only. Dropping it
+    /// leaves this document, its history and its revision as they were.
+    pub fn preview_copy(&self) -> Self {
+        Self {
+            state: self.state.clone(),
             selected_ids: self.selected_ids.clone(),
             focused_id: self.focused_id.clone(),
             active_gesture: None,
@@ -8844,7 +8851,7 @@ impl AnnotationDocument {
             history_limit: self.history_limit,
             saved_revision: self.saved_revision,
             next_revision: self.next_revision,
-        })
+        }
     }
 
     pub fn rotate_page(

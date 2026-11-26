@@ -4,6 +4,7 @@
 //! Save As for the signed copy ([`crate::pdf_signing`]). A timestamp is
 //! added only when Settings names a timestamp server.
 
+use super::StatusSeverity;
 use super::*;
 use gpui::div;
 use gpui_component::{
@@ -565,8 +566,11 @@ impl DocumentWorkspace {
             .is_some_and(|session| session.read(cx).is_dirty());
         if dirty {
             self.sign_after_save = Some(pending);
-            self.annotation_statuses
-                .insert(document_id, "Saving the PDF before signing it…".into());
+            self.set_status(
+                document_id,
+                "Saving the PDF before signing it…".into(),
+                StatusSeverity::Info,
+            );
             // This document's own save, whichever tab is active.
             if self.document_requires_save_as(document_id, cx) {
                 self.prompt_to_save_as(document_id, cx);
@@ -600,9 +604,10 @@ impl DocumentWorkspace {
             .session(document_id, cx)
             .is_some_and(|session| session.read(cx).is_dirty());
         if dirty {
-            self.annotation_statuses.insert(
+            self.set_status(
                 document_id,
                 "Not signed: the PDF changed while it was saved. Sign it again.".into(),
+                StatusSeverity::Error,
             );
             cx.notify();
         } else {
@@ -619,8 +624,11 @@ impl DocumentWorkspace {
             .is_some_and(|pending| pending.document_id == document_id)
         {
             self.sign_after_save = None;
-            self.annotation_statuses
-                .insert(document_id, "Not signed: the PDF wasn't saved.".into());
+            self.set_status(
+                document_id,
+                "Not signed: the PDF wasn't saved.".into(),
+                StatusSeverity::Error,
+            );
         }
     }
 
@@ -664,9 +672,7 @@ impl DocumentWorkspace {
             let Some(destination) = chosen else {
                 let _ = entity.update(cx, |workspace, cx| {
                     workspace.signing_documents.remove(&document_id);
-                    workspace
-                        .annotation_statuses
-                        .insert(document_id, "Not signed.".into());
+                    workspace.set_status(document_id, "Not signed.".into(), StatusSeverity::Info);
                     cx.notify();
                 });
                 return;
@@ -750,13 +756,14 @@ impl DocumentWorkspace {
                 match result {
                     Ok(()) => {
                         if let Some(opened) = opened {
-                            workspace.annotation_statuses.insert(
+                            workspace.set_status(
                                 opened,
                                 if signer.is_empty() {
                                     "Signed.".into()
                                 } else {
                                     format!("Signed by {signer}.")
                                 },
+                                StatusSeverity::Notice,
                             );
                         }
                     }

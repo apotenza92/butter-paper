@@ -5,9 +5,9 @@
 //! layout and the selected-property numeric presentation policy.
 
 use gpui::{
-    AnyElement, App, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, rems,
+    AnyElement, App, Context, ElementId, Entity, Focusable as _, InteractiveElement as _,
+    IntoElement, ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
@@ -17,7 +17,10 @@ use gpui_component::{
     collapsible::Collapsible,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{
+        Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction, Textarea,
+        TextareaState,
+    },
     scroll::ScrollableElement as _,
     slider::{Slider, SliderState},
     v_flex,
@@ -677,21 +680,6 @@ pub fn subscribe_property_color<T: 'static>(
     [on_change, on_close]
 }
 
-/// A colour and the size that goes with it on one row: a line's colour and
-/// width, or text's colour and font size.
-pub fn property_color_and_size(
-    color: impl IntoElement,
-    size: impl IntoElement,
-) -> impl IntoElement {
-    h_flex()
-        .w_full()
-        .min_w_0()
-        .gap_3()
-        .items_center()
-        .child(div().flex_1().min_w_0().child(color))
-        .child(div().w_20().flex_none().child(size))
-}
-
 /// A number on its own row, in the same right-hand column as the sizes
 /// beside colours and the values beside sliders.
 pub fn property_number(input: impl IntoElement) -> impl IntoElement {
@@ -811,14 +799,51 @@ fn hex_label(color: gpui::Hsla) -> String {
     )
 }
 
-/// Keep the displayed number live without producing an undo entry per frame.
-/// The inspector supplies its sync guard and its identity-checked commit path.
+/// What a property inspector tells its owner while one of its sliders is
+/// dragged. The value is shown on the canvas at once and committed once,
+/// when the pointer is released.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PropertyPreviewEvent<E> {
+    /// Show the markup with the edit `E`, without committing it.
+    Show(E),
+    /// Show the committed markup again: the drag ended, or the value is the
+    /// committed one.
+    Clear,
+    /// A field holds text that is not yet a valid value: keep what the page
+    /// shows, and let Escape restore the field.
+    Pending,
+}
+
+/// What a typed change in a properties field means. Each keystroke previews
+/// the value; leaving the field or pressing Enter commits it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldPhase {
+    Preview,
+    Commit,
+}
+
+impl FieldPhase {
+    /// The phase of an input's event, if it is a typed change.
+    pub fn of(event: &InputEvent) -> Option<Self> {
+        match event {
+            InputEvent::Change => Some(Self::Preview),
+            InputEvent::Blur | InputEvent::PressEnter { .. } => Some(Self::Commit),
+            InputEvent::Focus => None,
+        }
+    }
+}
+
+/// Keep the displayed number and the canvas live while a slider is dragged,
+/// without producing an undo entry per frame. `preview` shows the value on
+/// the canvas. `commit` runs once, on release: it ends the preview and makes
+/// the identity-checked edit. The inspector supplies its sync guard.
 pub fn subscribe_property_slider<T: 'static>(
     slider: &Entity<SliderState>,
     input: &Entity<InputState>,
     window: &mut Window,
     cx: &mut gpui::Context<T>,
     enabled: impl Fn(&T) -> bool + 'static,
+    preview: impl Fn(&mut T, f64, &mut gpui::Context<T>) + 'static,
     commit: impl Fn(&mut T, f64, &mut gpui::Context<T>) + 'static,
 ) -> gpui::Subscription {
     let input = input.clone();
@@ -834,6 +859,7 @@ pub fn subscribe_property_slider<T: 'static>(
                     input.update(cx, |input, cx| {
                         input.set_value(format_property_number(value.start().into()), window, cx);
                     });
+                    preview(this, value.start().into(), cx);
                 }
                 gpui_component::slider::SliderEvent::Release(value) => {
                     commit(this, value.start().into(), cx)
@@ -1023,6 +1049,8 @@ impl RenderOnce for PropertyInspectorPanel {
                 .debug_selector(move || self.id.into())
                 .w_full()
                 .min_w_0()
+                // A scroll that no field took belongs to the panel.
+                .on_scroll_wheel(|_, _, cx| crate::property_wheel::wheel_over_panel(cx))
                 .children(self.content)
                 .into_any_element();
         }
@@ -1046,6 +1074,8 @@ impl RenderOnce for PropertyInspectorPanel {
             .border_l_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
+            // A scroll that no field took belongs to the panel.
+            .on_scroll_wheel(|_, _, cx| crate::property_wheel::wheel_over_panel(cx))
             .child(header)
             .child(
                 div()
@@ -1106,7 +1136,7 @@ impl PropertyNumericInput {
 }
 
 impl RenderOnce for PropertyNumericInput {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut input = Input::new(&self.state)
             .aria_label(self.label)
             .w_full()
@@ -1118,12 +1148,123 @@ impl RenderOnce for PropertyNumericInput {
             input = input.suffix(suffix);
         }
 
-        div()
-            .id(self.id)
-            .debug_selector(move || self.id.into())
+        let id = self.id;
+        let element = div()
+            .id(id)
+            .debug_selector(move || id.into())
             .w_full()
-            .child(input)
+            .child(input);
+        // The wheel steps the number, if its owner gave it steps.
+        crate::property_wheel::number_wheel(element, &ElementId::from(id), &self.state, window, cx)
     }
+}
+
+/// A size with the stock number input's − and + buttons: a line's width, a
+/// font size, an offset or a landing. The buttons and the Up and Down keys
+/// step the value; subscribe the field to its step with
+/// [`subscribe_number_steps`], and build its `InputState` without `.step(..)`,
+/// so that the owner sees each step as an edit (the subscription turns the input's own stepping off).
+#[derive(IntoElement)]
+pub struct PropertyStepInput {
+    id: &'static str,
+    state: Entity<InputState>,
+    suffix: Option<SharedString>,
+    disabled: bool,
+}
+
+impl PropertyStepInput {
+    pub fn new(id: &'static str, state: &Entity<InputState>) -> Self {
+        Self {
+            id,
+            state: state.clone(),
+            suffix: None,
+            disabled: false,
+        }
+    }
+
+    /// The unit, after the number.
+    pub fn suffix(mut self, suffix: impl Into<SharedString>) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+}
+
+impl RenderOnce for PropertyStepInput {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let mut input = NumberInput::new(&self.state).disabled(self.disabled);
+        if let Some(suffix) = self.suffix {
+            input = input.suffix(suffix);
+        }
+        let id = self.id;
+        let element = div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .w_full()
+            .child(input);
+        // The wheel steps the number, with or without the keyboard focus.
+        crate::property_wheel::number_wheel(element, &ElementId::from(id), &self.state, window, cx)
+    }
+}
+
+/// The value one press of a number input's − or + gives: `current` moved by
+/// `step` and held between `min` and `max`, rounded to the step's precision.
+/// `None` when the press changes nothing (the value is at that end already).
+pub fn stepped_number(
+    current: f64,
+    action: StepAction,
+    step: f64,
+    min: f64,
+    max: f64,
+) -> Option<f64> {
+    let moved = match action {
+        StepAction::Increment => current + step,
+        StepAction::Decrement => current - step,
+    };
+    let next = ((moved.clamp(min, max)) * 1e6).round() / 1e6;
+    (next != current).then_some(next)
+}
+
+/// Steps a number field by `step` for each press of its − and + buttons or
+/// of Up and Down, between `min` and `max`. Each press shows its value on
+/// the markup and commits it as its own undo step: the field emits the
+/// `Change` and the `PressEnter` that typing the value and pressing Enter
+/// does, so the owner's usual handler for that field runs.
+pub fn subscribe_number_steps<T: 'static>(
+    input: &Entity<InputState>,
+    step: f64,
+    min: f64,
+    max: f64,
+    window: &mut Window,
+    cx: &mut gpui::Context<T>,
+) -> gpui::Subscription {
+    // The stock input steps silently by 1 unless told otherwise; with no step
+    // of its own it reports each press to the owner.
+    input.update(cx, |input, cx| input.set_step(None, window, cx));
+    crate::property_wheel::register_number_wheel(input, step, min, max, cx);
+    cx.subscribe_in(
+        input,
+        window,
+        move |_, input, event: &NumberInputEvent, window, cx| {
+            let NumberInputEvent::Step(action) = event;
+            let current = input.read(cx).value().trim().parse::<f64>().unwrap_or(min);
+            let Some(next) = stepped_number(current, *action, step, min, max) else {
+                return;
+            };
+            input.update(cx, |input, cx| {
+                input.set_value(format_property_number(next), window, cx);
+                cx.emit(InputEvent::Change);
+                cx.emit(InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                });
+            });
+        },
+    )
 }
 
 /// A stock slider paired with a stepper-free numeric input and unit suffix.
@@ -1185,7 +1326,7 @@ impl PropertySliderInput {
 }
 
 impl RenderOnce for PropertySliderInput {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let mut input = Input::new(&self.input)
             .aria_label(self.label)
             .w_full()
@@ -1223,13 +1364,16 @@ impl RenderOnce for PropertySliderInput {
             .gap_4()
             .child(slider)
             .child(input);
-        if let Some(id) = self.row_id {
-            row.id(id)
-                .debug_selector(move || id.into())
-                .into_any_element()
+        // The wheel over the slider or its number steps the slider.
+        let row = if let Some(id) = self.row_id {
+            let row = row.id(id).debug_selector(move || id.into());
+            crate::property_wheel::slider_wheel(row, &ElementId::from(id), &self.slider, window, cx)
         } else {
-            row.into_any_element()
-        }
+            let id =
+                ElementId::NamedInteger("property-slider".into(), self.slider.entity_id().as_u64());
+            crate::property_wheel::slider_wheel(row.id(id.clone()), &id, &self.slider, window, cx)
+        };
+        row.into_any_element()
     }
 }
 
@@ -1237,6 +1381,23 @@ impl RenderOnce for PropertySliderInput {
 /// colour-derived accessibility IDs in the stock featured and full palettes.
 pub fn property_color_picker(state: &Entity<ColorPickerState>) -> ColorPicker {
     ColorPicker::new(state).featured_colors(Vec::new())
+}
+
+/// Puts `text` in a number field, unless the field already shows a number
+/// that reads the same. While a number is typed, the value it previews comes
+/// back through the panel's sync: "1." must not become "1" under the caret.
+pub fn set_number_text(
+    input: &Entity<InputState>,
+    text: String,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    let reads = |text: &str| text.trim().trim_end_matches('%').trim().parse::<f64>().ok();
+    let current = input.read(cx).value();
+    if reads(current.as_ref()).is_some_and(|current| Some(current) == reads(&text)) {
+        return;
+    }
+    input.update(cx, |input, cx| input.set_value(text, window, cx));
 }
 
 pub fn format_property_number(value: f64) -> String {

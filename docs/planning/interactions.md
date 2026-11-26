@@ -416,6 +416,42 @@ tooltip expands the instructions when the window truncates them.
   Callout's and Cloud+'s properties also set its line, font, opacity and
   (Cloud+) fill, bump size and landing length; a new style refits the
   caption box.
+- A slider in a markup's properties (Opacity, Fill opacity, Rotation,
+  Cloud+ intensity) acts while its thumb is dragged. Each frame shows the
+  markup on the page with the slider's value, and the number beside the
+  slider follows. Nothing is committed during the drag: the history, the
+  revision, the unsaved state and the recovery copy stay as they were. The
+  release commits the value as one undoable change and marks the document
+  unsaved once. A drag that ends at the committed value changes nothing.
+  Escape during the drag ends it, shows the committed markup, and returns
+  the slider and its number to the committed value. A click on the track is a
+  drag that ends at once. The slider has no keyboard steps. The Opacity
+  slider of a tool's defaults changes the default at once, with no history,
+  as before.
+- A text or number field in a markup's properties (Text, line width, font
+  size, offset, landing, opacity and the position fields) acts as it is typed.
+  Each keystroke that makes a valid value shows it on the markup. Text that is
+  not yet a valid value, such as an empty field, keeps the last preview and
+  shows no error until the field is left. Leaving the field or pressing Enter
+  commits the value as one undoable change. Escape restores the value from
+  before the field took focus. A tool's defaults panel changes the default at
+  each valid keystroke, with no undo step.
+- A size in a markup's properties or a tool's defaults (line width, font
+  size, offset, landing) has − and + buttons, and Up and Down step it. A line
+  width steps by 0.5 pt, a font size, offset or landing by 1 pt, within the
+  field's range. Each press shows the value on the markup and commits it as
+  one undoable change; the presses do not merge. Colours and sizes have rows
+  of their own: Line colour and Line width, Font colour and Font size.
+- The mouse wheel or a trackpad scroll over a number or a slider in a
+  markup's properties or a tool's defaults steps it: up adds, down subtracts,
+  one step for a notch (the step of the − and + buttons, or the slider's own
+  step), ten with Shift, within the field's range. A trackpad's movement adds
+  up (24 px is one step). The markup shows each value, the burst of steps
+  is one undoable change, and it commits when the wheel rests for about
+  300 ms or the pointer leaves. It works without the keyboard focus. A scroll
+  that starts over the panel's empty space or a label keeps scrolling the
+  panel when a field passes under the pointer; one that starts over a field
+  belongs to that field, and the panel stays still.
 - Select All works on the current page. Locked markups cannot be moved,
   resized or deleted.
 
@@ -1454,13 +1490,22 @@ with it.
 - A full-width bottom status bar explains the active tool and navigation
   shortcuts while a document is open. Empty windows omit it. Narrow windows
   show shorter guidance; full help remains in tooltips. A status message
-  (why text cannot be edited, a save or conversion's progress or result)
-  replaces the tool's guidance, in the stronger text colour, for six
-  seconds, and shows as a toast. Toasts sit at the bottom right of the
-  canvas, 16px inside its edges: above the status bar, and left of the right
-  rail and any panel open beside the canvas, never over them. Toasts are for
-  results and errors that have no visible place of their own; guidance a
-  mode's banner already gives (Calibrate) never shows as a toast too.
+  (a confirmation, why text cannot be edited, a conversion's progress or
+  result) replaces the tool's guidance, in the stronger text colour, for six
+  seconds. Each message has a severity. An *info* message is a routine
+  confirmation of what the user just did and can see (deleted, copied, cut,
+  pasted, applied, a scale set), a hint or progress ("Copying the
+  content…"): the status bar only, with no toast. A *notice* is a refused
+  action with the reason the user needs ("Annotation is locked", "This text
+  cannot be edited: …") or a result the user cannot see otherwise (a PDF
+  saved to another location, "Signed by …"): it also shows as a toast. An
+  *error* is a failure ("The image was not added: …", "The table was not
+  changed: …"): a toast in the error style. A new status message must
+  choose its severity (`DocumentWorkspace::set_status`). Toasts sit at the
+  bottom right of the canvas, 16px inside its edges: above the status bar,
+  and left of the right rail and any panel open beside the canvas, never over
+  them. Guidance a mode's banner already gives (Calibrate) never shows as a
+  toast too.
 - *Native:* a pan (Pan tool, Space or middle button) goes past the pages into
   blank space until 48px of a page stays in view; zooming over blank space
   keeps the page where it is. Scrolling stops at the pages' edges, as a

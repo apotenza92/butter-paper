@@ -302,7 +302,7 @@ mod optional_section {
 
     use butter_paper::property_controls::{
         PropertyColor, PropertyNumericInput, PropertyOptionalSection, PropertyOptionalSectionIds,
-        PropertySliderInput, PropertyTextField, property_color_and_size, property_row,
+        PropertySliderInput, PropertyStepInput, PropertyTextField, property_row,
         property_slider_row,
     };
     use gpui::{
@@ -394,13 +394,13 @@ mod optional_section {
                         gpui::div()
                             .w_full()
                             .child(property_row(
-                                "Line",
-                                property_color_and_size(
-                                    PropertyColor::new("field-colour", "Line colour", &colour)
-                                        .disabled(disabled),
-                                    PropertyNumericInput::new("field-number", "Width", &number)
-                                        .disabled(disabled),
-                                ),
+                                "Line colour",
+                                PropertyColor::new("field-colour", "Line colour", &colour)
+                                    .disabled(disabled),
+                            ))
+                            .child(property_row(
+                                "Line width",
+                                PropertyStepInput::new("field-number", &number).disabled(disabled),
                             ))
                             .child(property_slider_row(
                                 "Opacity",

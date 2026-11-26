@@ -166,6 +166,7 @@ pub use crate::document_session::{
     SaveDestination, SaveDocumentRequest, SavedNativeDocument, resolve_document_save_route,
 };
 pub use crate::document_viewer::{DocumentViewerSnapshot, ViewerFitPreset, ViewerRenderQuality};
+use crate::property_controls::PropertyPreviewEvent;
 use crate::viewer::CadOrganisation as PlannerCadOrganisation;
 use crate::{
     accessible_button::{accessible_disclosure_button, accessible_icon_button, close_icon_button},
@@ -3001,6 +3002,21 @@ fn active_inspector_shell() -> gpui::Stateful<gpui::Div> {
         .relative()
 }
 
+/// How much a status message matters. The status bar shows every message
+/// for a few seconds. Only a notice or an error also shows as a toast.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusSeverity {
+    /// A confirmation of what the user just did and can see (deleted, copied,
+    /// pasted, applied), guidance, or progress: the status bar only.
+    #[default]
+    Info,
+    /// A refused action with its reason, or a result that the user cannot
+    /// otherwise see (a file written elsewhere): a toast.
+    Notice,
+    /// A failure: a toast in the error style.
+    Error,
+}
+
 pub struct DocumentWorkspace {
     sessions: Vec<Entity<NativeDocumentSession>>,
     /// Dark pages or real colours for every document's view. Step 3 of
@@ -3274,7 +3290,7 @@ pub struct DocumentWorkspace {
     /// The active document's latest status message and when it was first
     /// shown: the status bar shows it for a few seconds in place of its
     /// guidance.
-    status_message: Option<(DocumentId, String, std::time::Instant)>,
+    status_message: Option<(DocumentId, String, std::time::Instant, StatusSeverity)>,
     /// When the status message last shown as a toast was set.
     status_toast_shown: Option<std::time::Instant>,
     /// Documents with a page render for navigation in flight. Navigation
@@ -3314,6 +3330,8 @@ pub struct DocumentWorkspace {
     )>,
     text_box_commit_error: Option<String>,
     annotation_statuses: HashMap<DocumentId, String>,
+    /// The severity of each document's status message in `annotation_statuses`.
+    annotation_status_severities: HashMap<DocumentId, StatusSeverity>,
     last_file_error: Option<String>,
     rejected_stale_image_prepares: u64,
     signature_popover_open: bool,
@@ -3383,6 +3401,15 @@ pub struct DocumentWorkspace {
     ink_property_inspector_open: bool,
     engineering_visual_property_inspector: Option<Entity<EngineeringVisualPropertyInspector>>,
     engineering_visual_property_subscription: Option<Subscription>,
+    /// Set while a dragged slider's value is applied for display only:
+    /// annotation edits then change a copy of the document, not the
+    /// document, its history or its recovery data.
+    property_preview_mode: bool,
+    /// A properties field holds an edit that is not committed: a preview, or
+    /// text that is not yet a valid value. Escape restores the field.
+    property_field_editing: bool,
+    /// Listeners for the inspectors' slider previews.
+    property_preview_subscriptions: Vec<Subscription>,
     engineering_visual_property_inspector_open: bool,
     straight_line_property_inspector: Option<Entity<StraightLinePropertyInspector>>,
     straight_line_property_subscription: Option<Subscription>,
@@ -5169,6 +5196,7 @@ impl DocumentWorkspace {
             edit_pdf_content_property_inspector: None,
             text_box_commit_error: None,
             annotation_statuses: HashMap::new(),
+            annotation_status_severities: HashMap::new(),
             last_file_error: None,
             rejected_stale_image_prepares: 0,
             signature_popover_open: false,
@@ -5216,6 +5244,9 @@ impl DocumentWorkspace {
             ink_property_inspector_open: false,
             engineering_visual_property_inspector: None,
             engineering_visual_property_subscription: None,
+            property_preview_mode: false,
+            property_field_editing: false,
+            property_preview_subscriptions: Vec::new(),
             engineering_visual_property_inspector_open: false,
             straight_line_property_inspector: None,
             straight_line_property_subscription: None,
@@ -7478,13 +7509,19 @@ impl DocumentWorkspace {
             &inspector,
             |workspace, _, event: &RectanglePropertyEvent, cx| {
                 if let Err(error) = workspace.apply_rectangle_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             },
         );
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<RectanglePropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_rectangle_property_event(event, cx)
+                });
+            },
+        ));
         self.rectangle_property_subscription = Some(subscription);
         self.rectangle_property_inspector = Some(inspector.clone());
         inspector
@@ -7507,13 +7544,19 @@ impl DocumentWorkspace {
             &inspector,
             |workspace, _, event: &RectanglePropertyEvent, cx| {
                 if let Err(error) = workspace.apply_rectangular_shape_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             },
         );
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<RectanglePropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_rectangular_shape_property_event(event, cx)
+                });
+            },
+        ));
         self.ellipse_property_subscription = Some(subscription);
         self.ellipse_property_inspector = Some(inspector.clone());
         inspector
@@ -7539,12 +7582,18 @@ impl DocumentWorkspace {
         let subscription =
             cx.subscribe(&inspector, |workspace, _, event: &InkPropertyEvent, cx| {
                 if let Err(error) = workspace.apply_ink_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             });
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<InkPropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_ink_property_event(event, cx)
+                });
+            },
+        ));
         self.ink_property_subscription = Some(subscription);
         self.ink_property_inspector = Some(inspector.clone());
         inspector
@@ -7693,13 +7742,21 @@ impl DocumentWorkspace {
             &inspector,
             |workspace, _, event: &EngineeringVisualPropertyEvent, cx| {
                 if let Err(error) = workspace.apply_engineering_visual_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             },
         );
+        let preview_subscription = cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<EngineeringVisualPropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_engineering_visual_property_event(event, cx)
+                });
+            },
+        );
+        self.property_preview_subscriptions
+            .push(preview_subscription);
         self.engineering_visual_property_subscription = Some(subscription);
         self.engineering_visual_property_inspector = Some(inspector.clone());
         inspector
@@ -8042,13 +8099,19 @@ impl DocumentWorkspace {
             &inspector,
             |workspace, _, event: &StraightLinePropertyEvent, cx| {
                 if let Err(error) = workspace.apply_straight_line_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             },
         );
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<StraightLinePropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_straight_line_property_event(event, cx)
+                });
+            },
+        ));
         self.straight_line_property_subscription = Some(subscription);
         self.straight_line_property_inspector = Some(inspector.clone());
         inspector
@@ -8231,6 +8294,14 @@ impl DocumentWorkspace {
                 }
             },
         );
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<VertexPathPropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_vertex_path_property_event(event, cx)
+                });
+            },
+        ));
         self.vertex_path_property_subscription = Some(subscription);
         self.vertex_path_property_inspector = Some(inspector.clone());
         inspector
@@ -8501,14 +8572,31 @@ impl DocumentWorkspace {
             &inspector,
             |workspace, _, event: &TextBoxPropertyEvent, cx| {
                 if let Err(error) = workspace.apply_text_box_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             },
         );
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<TextBoxPropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_text_box_property_event(event, cx)
+                });
+            },
+        ));
         self.text_box_property_subscription = Some(subscription);
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace,
+             _,
+             event: &PropertyPreviewEvent<crate::property_controls::PropertyTextEditEvent>,
+             cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.try_property_text_edit(event, cx)
+                });
+            },
+        ));
         self.property_text_subscriptions.push(cx.subscribe(
             &inspector,
             |workspace, _, event: &crate::property_controls::PropertyTextEditEvent, cx| {
@@ -8552,11 +8640,28 @@ impl DocumentWorkspace {
             &inspector,
             |workspace, _, event: &CaptionPropertyEvent, cx| {
                 if let Err(error) = workspace.apply_caption_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
+            },
+        ));
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<CaptionPropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_caption_property_event(event, cx)
+                });
+            },
+        ));
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace,
+             _,
+             event: &PropertyPreviewEvent<crate::property_controls::PropertyTextEditEvent>,
+             cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.try_property_text_edit(event, cx)
+                });
             },
         ));
         self.property_text_subscriptions.push(cx.subscribe(
@@ -8776,9 +8881,7 @@ impl DocumentWorkspace {
             window,
             |workspace, _, event: &MeasurementPropertyEvent, window, cx| {
                 if let Err(error) = workspace.apply_measurement_property_event(event, window, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             },
@@ -9364,9 +9467,10 @@ impl DocumentWorkspace {
                 .map_err(|error| error.to_string())?;
             Ok::<(), String>(())
         })?;
-        self.annotation_statuses.insert(
+        self.set_status(
             document_id,
             format!("Applied page scale to page {}.", page_index + 1),
+            StatusSeverity::Info,
         );
         cx.notify();
         Ok(())
@@ -11120,7 +11224,7 @@ impl DocumentWorkspace {
         if self.document_requires_save_as(document_id, cx) {
             self.prompt_to_save_as_with_intent(document_id, true, cx);
         } else if let Err(error) = self.dirty_close_save_path(cx) {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -11178,9 +11282,11 @@ impl DocumentWorkspace {
                         }
                         let message = format!("Could not open the Save As picker: {error}");
                         if authority.close_after_save {
-                            workspace
-                                .annotation_statuses
-                                .insert(authority.document_id, message);
+                            workspace.set_status(
+                                authority.document_id,
+                                message,
+                                StatusSeverity::Error,
+                            );
                         } else {
                             workspace.record_document_save_failure(
                                 authority.document_id,
@@ -11200,9 +11306,11 @@ impl DocumentWorkspace {
                         }
                         let message = format!("The Save As picker closed unexpectedly: {error}");
                         if authority.close_after_save {
-                            workspace
-                                .annotation_statuses
-                                .insert(authority.document_id, message);
+                            workspace.set_status(
+                                authority.document_id,
+                                message,
+                                StatusSeverity::Error,
+                            );
                         } else {
                             workspace.record_document_save_failure(
                                 authority.document_id,
@@ -11266,9 +11374,7 @@ impl DocumentWorkspace {
                 if let Err(error) = result
                     && authority.close_after_save
                 {
-                    workspace
-                        .annotation_statuses
-                        .insert(authority.document_id, error);
+                    workspace.set_status(authority.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             });
@@ -15966,8 +16072,7 @@ impl DocumentWorkspace {
             self.record_detached_release("replaced generated source", temporary_release, cx);
         }
         if let Some(warning) = publication_warning {
-            self.annotation_statuses
-                .insert(request.document_id, warning);
+            self.set_status(request.document_id, warning, StatusSeverity::Error);
         } else if previous_publication_warning
             .as_ref()
             .is_some_and(|warning| {
@@ -15977,12 +16082,11 @@ impl DocumentWorkspace {
             self.annotation_statuses.remove(&request.document_id);
         }
         if let Some(warning) = recovery_repair_warning {
-            self.annotation_statuses.insert(
+            self.set_status(
                 request.document_id,
                 format!(
                     "The PDF was saved, but crash recovery still needs repair before editing can continue: {warning}"
-                ),
-            );
+                ), StatusSeverity::Error);
         }
         self.page_interactions
             .retain(|(document_id, _), _| *document_id != request.document_id);
@@ -15994,7 +16098,7 @@ impl DocumentWorkspace {
             self.remember_recent_document(request.document_id, cx);
         }
         if let Some(note) = moved_note {
-            self.annotation_statuses.insert(request.document_id, note);
+            self.set_status(request.document_id, note, StatusSeverity::Notice);
         }
         if self.close_after_save_document_id == Some(request.document_id) {
             let saved_current_revision = self
@@ -16855,23 +16959,25 @@ impl DocumentWorkspace {
         if deleted.is_empty() {
             let selected_count = self.selected_annotation_ids(document_id, cx).len();
             if selected_count > 0 {
-                self.annotation_statuses.insert(
+                self.set_status(
                     document_id,
                     if selected_count == 1 {
                         "Annotation is locked".into()
                     } else {
                         "Selected annotations are locked".into()
                     },
+                    StatusSeverity::Notice,
                 );
             }
         } else {
-            self.annotation_statuses.insert(
+            self.set_status(
                 document_id,
                 if deleted.len() == 1 {
                     "Deleted annotation".into()
                 } else {
                     format!("Deleted {} annotations", deleted.len())
                 },
+                StatusSeverity::Info,
             );
         }
         cx.notify();
@@ -16929,13 +17035,14 @@ impl DocumentWorkspace {
                 system_pdf,
                 system_image,
             });
-            self.annotation_statuses.insert(
+            self.set_status(
                 document_id,
                 if count == 1 {
                     "Copied annotation".into()
                 } else {
                     format!("Copied {count} annotations")
                 },
+                StatusSeverity::Info,
             );
             cx.notify();
         }
@@ -16985,7 +17092,7 @@ impl DocumentWorkspace {
             system_pdf,
             system_image,
         });
-        self.annotation_statuses.insert(
+        self.set_status(
             document_id,
             if has_unlocked {
                 if count == 1 {
@@ -16998,6 +17105,7 @@ impl DocumentWorkspace {
             } else {
                 format!("Copied {count} locked annotations")
             },
+            StatusSeverity::Info,
         );
         cx.notify();
         Ok(count)
@@ -17197,13 +17305,14 @@ impl DocumentWorkspace {
             system_pdf: clipboard.system_pdf,
             system_image: clipboard.system_image,
         });
-        self.annotation_statuses.insert(
+        self.set_status(
             document_id,
             if inserted.len() == 1 {
                 "Pasted annotation".into()
             } else {
                 format!("Pasted {} annotations", inserted.len())
             },
+            StatusSeverity::Info,
         );
         cx.notify();
         Ok(inserted)
@@ -17300,6 +17409,97 @@ impl DocumentWorkspace {
         Ok(())
     }
 
+    /// Shows a dragged slider's value on the canvas and takes it away again.
+    /// `apply` is the inspector's usual handler for the same edit; run for
+    /// display only, it changes no history, revision or dirty state. The
+    /// release of the slider commits the value through the usual handler.
+    fn apply_property_preview<E>(
+        &mut self,
+        event: &PropertyPreviewEvent<E>,
+        cx: &mut Context<Self>,
+        apply: impl FnOnce(&mut Self, &E, &mut Context<Self>) -> Result<bool, String>,
+    ) {
+        // Text that is not a valid value yet keeps what the page shows.
+        if matches!(event, PropertyPreviewEvent::Pending) {
+            self.property_field_editing = true;
+            return;
+        }
+        self.clear_property_previews(cx);
+        self.property_field_editing = !matches!(event, PropertyPreviewEvent::Clear);
+        if let PropertyPreviewEvent::Show(event) = event {
+            let was_preview = std::mem::replace(&mut self.property_preview_mode, true);
+            // A refused preview shows the committed markup; a refused commit
+            // reports its reason.
+            let _ = apply(self, event, cx);
+            self.property_preview_mode = was_preview;
+        }
+        cx.notify();
+    }
+
+    /// Whether the canvas shows a slider's value that is not committed.
+    pub fn property_preview_active(&self, document_id: DocumentId, cx: &App) -> bool {
+        self.session(document_id, cx).is_some_and(|session| {
+            session
+                .read(cx)
+                .annotations
+                .property_preview_active(document_id.value())
+        })
+    }
+
+    /// Escape during a slider drag or while a properties field holds an
+    /// uncommitted edit: the page shows the committed markup, the drag ends,
+    /// and the slider and the fields return to the committed values, so the
+    /// release or the blur that follows changes nothing. False when there is
+    /// no such edit.
+    pub fn cancel_property_slider_drag(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(document_id) = self.active_document_id else {
+            return false;
+        };
+        if !self.property_preview_active(document_id, cx) && !self.property_field_editing {
+            return false;
+        }
+        self.property_field_editing = false;
+        self.clear_property_previews(cx);
+        cx.stop_active_drag(window);
+        // A cleared inspector takes the committed values again when the
+        // workspace next draws.
+        macro_rules! reset {
+            ($($inspector:ident),*) => {$(
+                if let Some(inspector) = self.$inspector.clone() {
+                    inspector.update(cx, |inspector, cx| inspector.clear(cx));
+                }
+            )*};
+        }
+        reset!(
+            rectangle_property_inspector,
+            ellipse_property_inspector,
+            ink_property_inspector,
+            engineering_visual_property_inspector,
+            straight_line_property_inspector,
+            vertex_path_property_inspector,
+            text_box_property_inspector,
+            caption_property_inspector,
+            dimension_property_inspector
+        );
+        cx.notify();
+        true
+    }
+
+    /// Drops every uncommitted slider value from the canvas.
+    pub fn clear_property_previews(&mut self, cx: &mut Context<Self>) {
+        for session in &self.sessions {
+            session.update(cx, |session, cx| {
+                if session.annotations.clear_property_previews() {
+                    cx.notify();
+                }
+            });
+        }
+    }
+
     fn update_annotation_history(
         &mut self,
         document_id: DocumentId,
@@ -17337,12 +17537,30 @@ impl DocumentWorkspace {
             return Err("document session is closed".into());
         };
         let recovery_store = self.document_recovery_store.clone();
+        let preview_only = self.property_preview_mode;
         let result = session.update(cx, |session, cx| {
             if session.save_status == NativeDocumentSaveStatus::Saving {
                 return Err("document save is in progress".into());
             }
             if session.pending_rotation_generation.is_some() {
                 return Err("page rotation pixels are still pending".into());
+            }
+            if preview_only {
+                // A dragged slider's value, shown and not committed: the
+                // edit changes a copy of the document, so the history, the
+                // revision, the dirty state and the recovery data stay.
+                let committed = session
+                    .annotations
+                    .begin_property_preview(document_id.value())
+                    .ok_or_else(|| "the annotation timeline is unavailable".to_owned())?;
+                let result = command(session);
+                session.annotations.end_property_preview(
+                    document_id.value(),
+                    committed,
+                    result.is_ok(),
+                );
+                cx.notify();
+                return result;
             }
             let result = commit_recovery_guarded_annotation_change(
                 session,
@@ -17511,14 +17729,31 @@ impl DocumentWorkspace {
             &inspector,
             |workspace, _, event: &DimensionPropertyEvent, cx| {
                 if let Err(error) = workspace.apply_dimension_property_event(event, cx) {
-                    workspace
-                        .annotation_statuses
-                        .insert(event.document_id, error);
+                    workspace.set_status(event.document_id, error, StatusSeverity::Error);
                     cx.notify();
                 }
             },
         );
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace, _, event: &PropertyPreviewEvent<DimensionPropertyEvent>, cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.apply_dimension_property_event(event, cx)
+                });
+            },
+        ));
         self.dimension_property_subscription = Some(subscription);
+        self.property_preview_subscriptions.push(cx.subscribe(
+            &inspector,
+            |workspace,
+             _,
+             event: &PropertyPreviewEvent<crate::property_controls::PropertyTextEditEvent>,
+             cx| {
+                workspace.apply_property_preview(event, cx, |workspace, event, cx| {
+                    workspace.try_property_text_edit(event, cx)
+                });
+            },
+        ));
         self.property_text_subscriptions.push(cx.subscribe(
             &inspector,
             |workspace, _, event: &crate::property_controls::PropertyTextEditEvent, cx| {
@@ -18360,7 +18595,7 @@ impl DocumentWorkspace {
             return;
         };
         if let Err(error) = self.set_annotation_tool(document_id, AnnotationTool::Image, cx) {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
             return;
         }
@@ -18439,8 +18674,7 @@ impl DocumentWorkspace {
                 self.annotation_statuses.remove(&authority.document_id);
             }
             Err(error) => {
-                self.annotation_statuses
-                    .insert(authority.document_id, error);
+                self.set_status(authority.document_id, error, StatusSeverity::Error);
             }
         }
         cx.notify();
@@ -19089,9 +19323,10 @@ impl DocumentWorkspace {
             Ok::<(), String>(())
         })?;
         self.dismiss_signature_popover(document_id, Some(window), cx);
-        self.annotation_statuses.insert(
+        self.set_status(
             document_id,
             "Click or drag on the page to place the signature".into(),
+            StatusSeverity::Info,
         );
         self.workspace_focus.focus(window, cx);
         cx.notify();
@@ -19449,8 +19684,7 @@ impl DocumentWorkspace {
             }
             Ok(_) => {}
             Err(error) => {
-                self.annotation_statuses
-                    .insert(document_id, error.to_string());
+                self.set_status(document_id, error.to_string(), StatusSeverity::Error);
             }
         }
         cx.notify();
@@ -19612,7 +19846,7 @@ impl DocumentWorkspace {
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.cut_selected_annotations(document_id, cx)
         {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -19712,7 +19946,7 @@ impl DocumentWorkspace {
             return;
         }
         if let Err(error) = self.paste_annotations_at(document_id, page_index, at, cx) {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -19754,7 +19988,7 @@ impl DocumentWorkspace {
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.undo_annotations(document_id, cx)
         {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -19771,7 +20005,7 @@ impl DocumentWorkspace {
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.redo_annotations(document_id, cx)
         {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -19786,7 +20020,7 @@ impl DocumentWorkspace {
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.undo_annotations(document_id, cx)
         {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -19801,7 +20035,7 @@ impl DocumentWorkspace {
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.redo_annotations(document_id, cx)
         {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
             cx.notify();
         }
     }
@@ -20206,8 +20440,11 @@ impl DocumentWorkspace {
             let tolerance = match interaction.transform.tolerance_points(4.) {
                 Ok(tolerance) => tolerance,
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
+                    self.set_status(
+                        interaction.document_id,
+                        error.to_string(),
+                        StatusSeverity::Error,
+                    );
                     cx.notify();
                     return true;
                 }
@@ -20235,8 +20472,11 @@ impl DocumentWorkspace {
                 Ok(PointerPhaseOutcome::Ignored) => {}
                 Ok(_) => {}
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
+                    self.set_status(
+                        interaction.document_id,
+                        error.to_string(),
+                        StatusSeverity::Error,
+                    );
                 }
             }
             cx.notify();
@@ -20281,8 +20521,11 @@ impl DocumentWorkspace {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
+                    self.set_status(
+                        interaction.document_id,
+                        error.to_string(),
+                        StatusSeverity::Error,
+                    );
                 }
             }
             cx.notify();
@@ -20344,8 +20587,7 @@ impl DocumentWorkspace {
                     self.annotation_statuses.remove(&interaction.document_id);
                 }
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error);
+                    self.set_status(interaction.document_id, error, StatusSeverity::Error);
                 }
             }
             // Even an already-upright knob owns the double-click; it must
@@ -20357,8 +20599,11 @@ impl DocumentWorkspace {
             let tolerance = match interaction.transform.tolerance_points(4.) {
                 Ok(tolerance) => tolerance,
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
+                    self.set_status(
+                        interaction.document_id,
+                        error.to_string(),
+                        StatusSeverity::Error,
+                    );
                     cx.notify();
                     return true;
                 }
@@ -20429,8 +20674,7 @@ impl DocumentWorkspace {
                     return true;
                 }
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error);
+                    self.set_status(interaction.document_id, error, StatusSeverity::Error);
                     cx.notify();
                     return true;
                 }
@@ -20467,8 +20711,11 @@ impl DocumentWorkspace {
                         self.annotation_statuses.remove(&interaction.document_id);
                     }
                     Err(error) => {
-                        self.annotation_statuses
-                            .insert(interaction.document_id, error.to_string());
+                        self.set_status(
+                            interaction.document_id,
+                            error.to_string(),
+                            StatusSeverity::Error,
+                        );
                     }
                 }
                 cx.notify();
@@ -20497,8 +20744,11 @@ impl DocumentWorkspace {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
+                    self.set_status(
+                        interaction.document_id,
+                        error.to_string(),
+                        StatusSeverity::Error,
+                    );
                 }
             }
             cx.notify();
@@ -20543,8 +20793,11 @@ impl DocumentWorkspace {
                     }
                     Ok(_) => {}
                     Err(error) => {
-                        self.annotation_statuses
-                            .insert(interaction.document_id, error.to_string());
+                        self.set_status(
+                            interaction.document_id,
+                            error.to_string(),
+                            StatusSeverity::Error,
+                        );
                     }
                 }
                 cx.notify();
@@ -20573,8 +20826,11 @@ impl DocumentWorkspace {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
+                    self.set_status(
+                        interaction.document_id,
+                        error.to_string(),
+                        StatusSeverity::Error,
+                    );
                 }
             }
             cx.notify();
@@ -28700,8 +28956,13 @@ impl Render for DocumentWorkspace {
             let active_selection_marquee = session
                 .annotations
                 .active_selection_marquee(document_id.value());
-            let current_highlights_precomposed =
-                session.highlight_composite.annotation_revision == annotation_scene.revision;
+            // A highlight whose property is being previewed is painted from
+            // the scene: the page raster still holds its committed look.
+            let current_highlights_precomposed = session.highlight_composite.annotation_revision
+                == annotation_scene.revision
+                && !session
+                    .annotations
+                    .property_preview_active(document_id.value());
             let image_assets = Arc::new(session.image_assets.clone());
             let thumbnails = session
                 .page_sizes

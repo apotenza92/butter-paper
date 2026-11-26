@@ -81,7 +81,7 @@ For relevant checks record pass, fail, blocked or not run in the handoff. Separa
 
 Check coupled values, not just the edited control: a stepper must update its slider and document defaults immediately; a resized fitted canvas must agree with the toolbar percentage in both resize directions. Test popup opening with native accessibility active, since headless rendering may omit that code path. Inspect complete glyph strokes against the SVG viewport, including composite overlays that deliberately extend beyond the base icon; correct source coordinates alone do not prove unclipped pixels.
 
-For slider/input pairs, check the number during pointer-down and intermediate drag movement, not only after release. At the slider maximum, measure clearance from the painted thumb and its hover ring to the input, not merely the gap between layout boxes.
+For slider/input pairs, check the number during pointer-down and intermediate drag movement, not only after release. A slider that edits a markup must also show the value on the page during the drag (capture mid-drag), commit one undo step on release and restore the old value on Escape. At the slider maximum, measure clearance from the painted thumb and its hover ring to the input, not merely the gap between layout boxes.
 
 Show reference/before/after for implementation handoffs, with honest state/theme/build labels. Planning-only sessions do not invent an after. Report visible defects and unverified interactions before declaring completion; fix known in-scope defects when authorised, without redundant approval pauses.
 

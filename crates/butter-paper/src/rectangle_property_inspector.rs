@@ -11,9 +11,9 @@
 
 use crate::annotation_model::{MarkupId, PdfRect, RectangleAppearance, StrokeStyle};
 use crate::property_controls::{
-    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    PropertySliderInput, canonical_picker_opacity, format_property_number,
-    format_property_percentage, parse_property_percentage, property_body, property_color_and_size,
+    FieldPhase, PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
+    PropertyPreviewEvent, PropertySliderInput, PropertyStepInput, canonical_picker_opacity,
+    format_property_number, format_property_percentage, parse_property_percentage, property_body,
     property_lock_toggle, property_number_pair_row, property_row, property_slider_row,
     subscribe_property_color,
 };
@@ -274,7 +274,6 @@ impl RectanglePropertyInspector {
                 .default_value("1")
                 .min(0.)
                 .max(20.)
-                .step(0.25)
         });
         let x = cx.new(|cx| InputState::new(window, cx).default_value("0").step(1.));
         let y = cx.new(|cx| InputState::new(window, cx).default_value("0").step(1.));
@@ -357,7 +356,11 @@ impl RectanglePropertyInspector {
             window,
             cx,
             |this| !this.syncing,
-            |this, value, cx| this.emit_patch(RectanglePropertyPatch::StrokeWidthPt(value), cx),
+            |this, value, cx| this.preview_patch(RectanglePropertyPatch::StrokeWidthPt(value), cx),
+            |this, value, cx| {
+                this.end_preview(cx);
+                this.emit_patch(RectanglePropertyPatch::StrokeWidthPt(value), cx)
+            },
         ));
         subscriptions.push(crate::property_controls::subscribe_property_slider(
             &rotation_slider,
@@ -365,8 +368,32 @@ impl RectanglePropertyInspector {
             window,
             cx,
             |this| !this.syncing,
-            |this, value, cx| this.emit_patch(RectanglePropertyPatch::RotationDegrees(value), cx),
+            |this, value, cx| {
+                this.preview_patch(RectanglePropertyPatch::RotationDegrees(value), cx)
+            },
+            |this, value, cx| {
+                this.end_preview(cx);
+                this.emit_patch(RectanglePropertyPatch::RotationDegrees(value), cx)
+            },
         ));
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &stroke_width,
+            0.5,
+            0.,
+            20.,
+            window,
+            cx,
+        ));
+        // The wheel steps each number by what its keys would.
+        for (input, step, min, max) in [
+            (&x, 1., -100_000., 100_000.),
+            (&y, 1., -100_000., 100_000.),
+            (&width, 1., 0., 100_000.),
+            (&height, 1., 0., 100_000.),
+            (&rotation, 1., 0., 359.),
+        ] {
+            crate::property_wheel::register_number_wheel(input, step, min, max, cx);
+        }
         macro_rules! subscribe_number {
             ($input:expr, $property:expr) => {
                 subscriptions.push(cx.subscribe_in(
@@ -394,24 +421,35 @@ impl RectanglePropertyInspector {
                     opacity_input_for_slider.update(cx, |input, cx| {
                         input.set_value(format_property_number(value.start().into()), window, cx)
                     });
+                    this.preview_patch(
+                        RectanglePropertyPatch::Opacity(value.start() as f64 / 100.),
+                        cx,
+                    );
                     cx.notify();
                 }
                 SliderEvent::Change(_) => {}
-                SliderEvent::Release(value) => this.emit_patch(
-                    RectanglePropertyPatch::Opacity(value.start() as f64 / 100.),
-                    cx,
-                ),
+                SliderEvent::Release(value) => {
+                    this.end_preview(cx);
+                    this.emit_patch(
+                        RectanglePropertyPatch::Opacity(value.start() as f64 / 100.),
+                        cx,
+                    )
+                }
             },
         ));
         subscriptions.push(cx.subscribe_in(
             &opacity_input,
             window,
             |this, input, event: &InputEvent, window, cx| {
-                if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                let Some(phase) = FieldPhase::of(event) else {
                     return;
-                }
+                };
                 let Some(opacity) = parse_property_percentage(input.read(cx).value().as_ref())
                 else {
+                    this.field_unparsed(phase, cx);
+                    if phase == FieldPhase::Preview {
+                        return;
+                    }
                     let canonical = this
                         .snapshot
                         .as_ref()
@@ -422,7 +460,7 @@ impl RectanglePropertyInspector {
                     });
                     return;
                 };
-                this.emit_patch(RectanglePropertyPatch::Opacity(opacity), cx);
+                this.apply_field(RectanglePropertyPatch::Opacity(opacity), phase, cx);
             },
         ));
         let fill_opacity_input_for_slider = fill_opacity_input.clone();
@@ -434,24 +472,35 @@ impl RectanglePropertyInspector {
                     fill_opacity_input_for_slider.update(cx, |input, cx| {
                         input.set_value(format_property_number(value.start().into()), window, cx)
                     });
+                    this.preview_patch(
+                        RectanglePropertyPatch::FillOpacity(value.start() as f64 / 100.),
+                        cx,
+                    );
                     cx.notify();
                 }
                 SliderEvent::Change(_) => {}
-                SliderEvent::Release(value) => this.emit_patch(
-                    RectanglePropertyPatch::FillOpacity(value.start() as f64 / 100.),
-                    cx,
-                ),
+                SliderEvent::Release(value) => {
+                    this.end_preview(cx);
+                    this.emit_patch(
+                        RectanglePropertyPatch::FillOpacity(value.start() as f64 / 100.),
+                        cx,
+                    )
+                }
             },
         ));
         subscriptions.push(cx.subscribe_in(
             &fill_opacity_input,
             window,
             |this, input, event: &InputEvent, window, cx| {
-                if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                let Some(phase) = FieldPhase::of(event) else {
                     return;
-                }
+                };
                 let Some(opacity) = parse_property_percentage(input.read(cx).value().as_ref())
                 else {
+                    this.field_unparsed(phase, cx);
+                    if phase == FieldPhase::Preview {
+                        return;
+                    }
                     let canonical = this
                         .snapshot
                         .as_ref()
@@ -462,7 +511,7 @@ impl RectanglePropertyInspector {
                     });
                     return;
                 };
-                this.emit_patch(RectanglePropertyPatch::FillOpacity(opacity), cx);
+                this.apply_field(RectanglePropertyPatch::FillOpacity(opacity), phase, cx);
             },
         ));
         subscriptions.extend(subscribe_property_color(
@@ -783,9 +832,11 @@ impl RectanglePropertyInspector {
         event: &InputEvent,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+        let Some(phase) = FieldPhase::of(event) else {
             return;
-        }
+        };
+        // A field that still shows the committed, rounded value changes
+        // nothing: it must not turn the rounded text into the markup's value.
         if let Some(snapshot) = &self.snapshot {
             let canonical = match property {
                 NumericProperty::X => Some(snapshot.rect.x),
@@ -798,13 +849,16 @@ impl RectanglePropertyInspector {
                 input.read(cx).value().as_ref()
                     == crate::property_controls::format_property_geometry(value)
             }) {
+                self.end_preview(cx);
                 return;
             }
         }
         let Ok(value) = input.read(cx).value().parse::<f64>() else {
+            self.field_unparsed(phase, cx);
             return;
         };
         if !value.is_finite() {
+            self.field_unparsed(phase, cx);
             return;
         }
         let patch = match property {
@@ -819,31 +873,77 @@ impl RectanglePropertyInspector {
                 RectanglePropertyPatch::RotationDegrees(value.rem_euclid(360.))
             }
         };
-        self.emit_patch(patch, cx);
+        self.apply_field(patch, phase, cx);
     }
 
-    fn emit_patch(&mut self, patch: RectanglePropertyPatch, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// The event that applies `patch`, unless it changes nothing or the
+    /// markup cannot be edited.
+    fn patch_event(&self, patch: RectanglePropertyPatch) -> Option<RectanglePropertyEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         if !(self.open || self.embedded)
             || self.syncing
             || snapshot.mutation_disabled
             || (snapshot.locked && !matches!(patch, RectanglePropertyPatch::Locked(_)))
             || patch_matches_snapshot(&patch, snapshot)
         {
-            return;
+            return None;
         }
-        cx.emit(RectanglePropertyEvent {
+        Some(RectanglePropertyEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_kind: self.presentation.kind,
             patch,
+        })
+    }
+
+    fn emit_patch(&mut self, patch: RectanglePropertyPatch, cx: &mut Context<Self>) {
+        if let Some(event) = self.patch_event(patch) {
+            cx.emit(event);
+        }
+    }
+
+    /// Shows `patch` on the canvas while a slider is dragged.
+    fn preview_patch(&mut self, patch: RectanglePropertyPatch, cx: &mut Context<Self>) {
+        cx.emit(match self.patch_event(patch) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
         });
+    }
+
+    /// Shows the committed markup again, as a drag ends.
+    fn end_preview(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<RectanglePropertyEvent>::Clear);
+    }
+
+    /// A typed value: shown on the markup as it is typed, committed when the
+    /// field is left or Enter is pressed.
+    fn apply_field(
+        &mut self,
+        patch: RectanglePropertyPatch,
+        phase: FieldPhase,
+        cx: &mut Context<Self>,
+    ) {
+        match phase {
+            FieldPhase::Preview => self.preview_patch(patch, cx),
+            FieldPhase::Commit => {
+                self.end_preview(cx);
+                self.emit_patch(patch, cx);
+            }
+        }
+    }
+
+    /// Typed text that is not a valid value: a partial one keeps the last
+    /// preview, and leaving the field ends it.
+    fn field_unparsed(&mut self, phase: FieldPhase, cx: &mut Context<Self>) {
+        match phase {
+            FieldPhase::Preview => cx.emit(PropertyPreviewEvent::<RectanglePropertyEvent>::Pending),
+            FieldPhase::Commit => self.end_preview(cx),
+        }
     }
 }
 
 impl EventEmitter<RectanglePropertyEvent> for RectanglePropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<RectanglePropertyEvent>> for RectanglePropertyInspector {}
 
 impl Render for RectanglePropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -884,14 +984,15 @@ impl Render for RectanglePropertyInspector {
 
         let appearance = PropertyGroup::new()
             .row(property_row(
-                "Line",
-                property_color_and_size(
-                    PropertyColor::new(ids.stroke_color, "Line colour", &self.stroke_color)
-                        .disabled(property_disabled),
-                    PropertyNumericInput::new(ids.stroke_width, "Line width", &self.stroke_width)
-                        .suffix("pt")
-                        .disabled(property_disabled),
-                ),
+                "Line colour",
+                PropertyColor::new(ids.stroke_color, "Line colour", &self.stroke_color)
+                    .disabled(property_disabled),
+            ))
+            .row(property_row(
+                "Line width",
+                PropertyStepInput::new(ids.stroke_width, &self.stroke_width)
+                    .suffix("pt")
+                    .disabled(property_disabled),
             ))
             .row(property_row(
                 "Style",

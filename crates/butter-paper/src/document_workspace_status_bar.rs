@@ -30,6 +30,32 @@ const BOX_HINT: &str = if cfg!(target_os = "macos") {
 };
 
 impl DocumentWorkspace {
+    /// Sets a document's status message, as `severity` says it matters: the
+    /// status bar shows every message, and only a notice or an error is
+    /// also a toast.
+    pub(super) fn set_status(
+        &mut self,
+        document_id: DocumentId,
+        text: String,
+        severity: StatusSeverity,
+    ) {
+        self.annotation_statuses.insert(document_id, text);
+        self.annotation_status_severities
+            .insert(document_id, severity);
+    }
+
+    /// The severity of the active document's status message.
+    pub fn annotation_status_severity(&self) -> Option<StatusSeverity> {
+        let document_id = self.active_document_id?;
+        self.annotation_statuses.get(&document_id)?;
+        Some(
+            self.annotation_status_severities
+                .get(&document_id)
+                .copied()
+                .unwrap_or_default(),
+        )
+    }
+
     /// Notes a new status message for the active document (why text cannot
     /// be edited, a conversion's progress or failure) so the status bar
     /// shows it, then clears it once it has been shown long enough, so the
@@ -48,11 +74,21 @@ impl DocumentWorkspace {
         if self
             .status_message
             .as_ref()
-            .is_some_and(|(shown, shown_text, _)| *shown == document_id && *shown_text == text)
+            .is_some_and(|(shown, shown_text, _, _)| *shown == document_id && *shown_text == text)
         {
             return;
         }
-        self.status_message = Some((document_id, text.clone(), std::time::Instant::now()));
+        let severity = self
+            .annotation_status_severities
+            .get(&document_id)
+            .copied()
+            .unwrap_or_default();
+        self.status_message = Some((
+            document_id,
+            text.clone(),
+            std::time::Instant::now(),
+            severity,
+        ));
         cx.spawn(async move |workspace, cx| {
             cx.background_executor().timer(STATUS_MESSAGE_SHOWN).await;
             let _ = workspace.update(cx, |workspace, cx| {
@@ -62,7 +98,7 @@ impl DocumentWorkspace {
                 if workspace
                     .status_message
                     .as_ref()
-                    .is_some_and(|(_, shown_text, _)| *shown_text == text)
+                    .is_some_and(|(_, shown_text, _, _)| *shown_text == text)
                 {
                     workspace.status_message = None;
                 }
@@ -359,10 +395,11 @@ impl DocumentWorkspace {
             ))
     }
 
-    /// Shows a new status message as a stock toast. A newer message
+    /// Shows a new status message as a stock toast, if it is a notice or an
+    /// error: a routine message stays in the status bar. A newer message
     /// replaces the one before it.
     pub(super) fn push_status_toast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((document_id, text, shown)) = self.status_message.clone() else {
+        let Some((document_id, text, shown, severity)) = self.status_message.clone() else {
             return;
         };
         if Some(document_id) != self.active_document_id
@@ -377,14 +414,16 @@ impl DocumentWorkspace {
             return;
         }
         self.status_toast_shown = Some(shown);
+        if severity == StatusSeverity::Info {
+            return;
+        }
         struct StatusToast;
-        window.push_notification(
-            gpui_component::notification::Notification::new()
-                .id::<StatusToast>()
-                .placement(TOAST_PLACEMENT)
-                .message(text),
-            cx,
-        );
+        let toast = if severity == StatusSeverity::Error {
+            gpui_component::notification::Notification::error(text)
+        } else {
+            gpui_component::notification::Notification::new().message(text)
+        };
+        window.push_notification(toast.id::<StatusToast>().placement(TOAST_PLACEMENT), cx);
     }
 }
 

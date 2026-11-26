@@ -10,10 +10,10 @@ use crate::{
     cloud_plus_routing::CLOUD_PLUS_MAX_LANDING_PT,
     document_workspace::{DocumentId, MeasureFamily},
     property_controls::{
-        PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-        PropertyResetConfirm, PropertyResetIds, PropertySliderInput, format_property_geometry,
-        format_property_number, format_property_percentage, property_body, property_color_and_size,
-        property_number, property_row, property_slider_row, subscribe_property_color,
+        PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyResetConfirm,
+        PropertyResetIds, PropertySliderInput, PropertyStepInput, format_property_geometry,
+        format_property_number, format_property_percentage, property_body, property_row,
+        property_slider_row, subscribe_property_color,
     },
     tool_properties::{ToolProperties, ToolPropertyField, ToolPropertyRange},
 };
@@ -403,6 +403,17 @@ impl ToolDefaultsPanel {
                 },
             ),
         ];
+        let font_range = displayed_range(tool, ToolPropertyField::FontSizePt);
+        let landing_range = displayed_range(tool, ToolPropertyField::LandingPt);
+        for (input, step, range) in [
+            (&width, 0.5, width_range),
+            (&font_size, 1., font_range),
+            (&landing, 1., landing_range),
+        ] {
+            subscriptions.push(crate::property_controls::subscribe_number_steps(
+                input, step, range.min, range.max, window, cx,
+            ));
+        }
         subscriptions.extend(subscribe_property_color(
             &colour,
             cx,
@@ -467,9 +478,12 @@ impl ToolDefaultsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.controls.width.update(cx, |input, cx| {
-            input.set_value(format_property_number(properties.width_pt), window, cx)
-        });
+        crate::property_controls::set_number_text(
+            &self.controls.width,
+            format_property_number(properties.width_pt),
+            window,
+            cx,
+        );
         self.controls.width_slider.update(cx, |slider, cx| {
             slider.set_value(
                 safe_slider_value(
@@ -480,9 +494,12 @@ impl ToolDefaultsPanel {
                 cx,
             )
         });
-        self.controls.opacity.update(cx, |input, cx| {
-            input.set_value(format_property_percentage(properties.opacity), window, cx)
-        });
+        crate::property_controls::set_number_text(
+            &self.controls.opacity,
+            format_property_percentage(properties.opacity),
+            window,
+            cx,
+        );
         self.controls.opacity_slider.update(cx, |slider, cx| {
             slider.set_value(
                 safe_slider_value(
@@ -493,16 +510,18 @@ impl ToolDefaultsPanel {
                 cx,
             )
         });
-        self.controls.font_size.update(cx, |input, cx| {
-            input.set_value(format_property_number(properties.font_size_pt), window, cx)
-        });
-        self.controls.cloud_intensity.update(cx, |input, cx| {
-            input.set_value(
-                format_property_number(properties.cloud_intensity),
-                window,
-                cx,
-            )
-        });
+        crate::property_controls::set_number_text(
+            &self.controls.font_size,
+            format_property_number(properties.font_size_pt),
+            window,
+            cx,
+        );
+        crate::property_controls::set_number_text(
+            &self.controls.cloud_intensity,
+            format_property_number(properties.cloud_intensity),
+            window,
+            cx,
+        );
         self.controls
             .cloud_intensity_slider
             .update(cx, |slider, cx| {
@@ -516,9 +535,12 @@ impl ToolDefaultsPanel {
                 )
             });
 
-        self.controls.landing.update(cx, |input, cx| {
-            input.set_value(format_property_geometry(properties.landing_pt), window, cx)
-        });
+        crate::property_controls::set_number_text(
+            &self.controls.landing,
+            format_property_geometry(properties.landing_pt),
+            window,
+            cx,
+        );
 
         if let Ok(mut colour) = try_parse_color(&properties.colour) {
             colour.a = properties.opacity.clamp(0., 1.) as f32;
@@ -557,16 +579,21 @@ impl ToolDefaultsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+        // A default changes at once, as it is typed, and has no undo step.
+        // Text that is not yet a valid value leaves the last default; leaving
+        // the field then shows the default again.
+        let Some(phase) = crate::property_controls::FieldPhase::of(event) else {
             return;
-        }
+        };
         let value = input.read(cx).value();
         let Some(properties) =
             properties_with_displayed_number(self.tool, &self.properties, field, value.as_ref())
         else {
-            input.update(cx, |input, cx| {
-                input.set_value(self.formatted_numeric_value(field), window, cx)
-            });
+            if phase == crate::property_controls::FieldPhase::Commit {
+                input.update(cx, |input, cx| {
+                    input.set_value(self.formatted_numeric_value(field), window, cx)
+                });
+            }
             return;
         };
         self.emit_change(properties, cx);
@@ -689,26 +716,19 @@ impl ToolDefaultsPanel {
                 .id(TOOL_DEFAULTS_WIDTH_ID)
                 .debug_selector(|| TOOL_DEFAULTS_WIDTH_ID.into())
                 .child(
-                    PropertyNumericInput::new(
-                        TOOL_DEFAULTS_WIDTH_INPUT_ID,
-                        "Line width",
-                        &self.controls.width,
-                    )
-                    .suffix("pt")
-                    .disabled(disabled),
+                    PropertyStepInput::new(TOOL_DEFAULTS_WIDTH_INPUT_ID, &self.controls.width)
+                        .suffix("pt")
+                        .disabled(disabled),
                 )
         };
         let font_size = || {
-            PropertyNumericInput::new(
-                TOOL_DEFAULTS_FONT_SIZE_ID,
-                "Font size",
-                &self.controls.font_size,
-            )
-            .suffix("pt")
-            .disabled(disabled)
+            PropertyStepInput::new(TOOL_DEFAULTS_FONT_SIZE_ID, &self.controls.font_size)
+                .suffix("pt")
+                .disabled(disabled)
         };
-        // A colour shares its row with the size that goes with it: a line's
-        // width, or a Text Box's font size.
+        // A colour and the size that goes with it, a line's width or a Text
+        // Box's font size, each have a row of their own, so that the size has
+        // room for its − and + buttons.
         let mut font_size_shown = false;
         if applies(ToolPropertyField::Colour) {
             let colour = self.render_colour_control(disabled);
@@ -717,26 +737,24 @@ impl ToolDefaultsPanel {
                     AnnotationTool::CloudPlus
                     | AnnotationTool::Callout
                     | AnnotationTool::Dimension => "Colour",
-                    _ => "Line",
+                    _ => "Line colour",
                 };
-                rows = rows.row(property_row(
-                    label,
-                    property_color_and_size(colour, width()),
-                ));
+                rows = rows
+                    .row(property_row(label, colour))
+                    .row(property_row("Line width", width()));
             } else if applies(ToolPropertyField::FontSizePt) {
                 font_size_shown = true;
-                rows = rows.row(property_row(
-                    "Font",
-                    property_color_and_size(colour, font_size()),
-                ));
+                rows = rows
+                    .row(property_row("Font colour", colour))
+                    .row(property_row("Font size", font_size()));
             } else {
                 rows = rows.row(property_row("Colour", colour));
             }
         } else if applies(ToolPropertyField::WidthPt) {
-            rows = rows.row(property_row("Line width", property_number(width())));
+            rows = rows.row(property_row("Line width", width()));
         }
         if applies(ToolPropertyField::FontSizePt) && !font_size_shown {
-            rows = rows.row(property_row("Font size", property_number(font_size())));
+            rows = rows.row(property_row("Font size", font_size()));
         }
         if applies(ToolPropertyField::FontFamily) {
             rows = rows.row(property_row(
@@ -853,15 +871,9 @@ impl ToolDefaultsPanel {
         if applies(ToolPropertyField::LandingPt) {
             rows = rows.row(property_row(
                 "Landing",
-                property_number(
-                    PropertyNumericInput::new(
-                        TOOL_DEFAULTS_LANDING_ID,
-                        "Landing length",
-                        &self.controls.landing,
-                    )
+                PropertyStepInput::new(TOOL_DEFAULTS_LANDING_ID, &self.controls.landing)
                     .suffix("pt")
                     .disabled(disabled),
-                ),
             ));
         }
 

@@ -33,3 +33,13 @@ a changed UI contract, update its precise assertion and verify the new behaviour
 Do not blanket-disable rules or broaden unrelated allowances merely to make a
 failure pass. Native compiled interaction tests and visual review remain
 required for UI changes.
+
+## Status messages and toasts
+
+A status message names its severity when it is set
+(`DocumentWorkspace::set_status`). Only a notice (a refusal with its reason, a
+result that the user cannot see otherwise) or an error (a failure) shows as a
+toast. Routine confirmations of what the user did and can see, hints and
+progress are info: the status bar only. Do not add a toast for a deleted,
+moved, copied, pasted, rotated, locked or applied result. See
+[the interaction contract](../planning/interactions.md) for the list.

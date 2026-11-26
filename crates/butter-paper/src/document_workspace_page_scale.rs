@@ -94,6 +94,7 @@ impl DocumentWorkspace {
             }
             return;
         }
+        let mut failed = false;
         let status = if let Some(current) = self.page_scale(document_id, page_index, cx) {
             match self.remove_page_scale(document_id, PageScaleApplyTarget::Current(page_index), cx)
             {
@@ -101,7 +102,10 @@ impl DocumentWorkspace {
                     "Removed the scale from page {page}. Turn Page Scale on to bring back {}.",
                     crate::page_scale_catalog::scale_label(&current)
                 ),
-                Err(error) => error,
+                Err(error) => {
+                    failed = true;
+                    error
+                }
             }
         } else if let Some(previous) = self
             .removed_page_scales
@@ -118,14 +122,25 @@ impl DocumentWorkspace {
                     "Page {page} set to {}.",
                     crate::page_scale_catalog::scale_label(&previous)
                 ),
-                Err(error) => error,
+                Err(error) => {
+                    failed = true;
+                    error
+                }
             }
         } else {
             self.page_scale_switching_on = Some((document_id, page_index));
             self.open_page_scale_dialog(document_id, page_index, window, cx);
             return;
         };
-        self.annotation_statuses.insert(document_id, status);
+        self.set_status(
+            document_id,
+            status,
+            if failed {
+                StatusSeverity::Error
+            } else {
+                StatusSeverity::Info
+            },
+        );
         cx.notify();
     }
 

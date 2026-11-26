@@ -5,6 +5,7 @@
 //! mail address with the system, or shows the page it links to. Other
 //! addresses are not opened.
 
+use super::StatusSeverity;
 use super::*;
 use crate::pdf_links::{LinkLayer, LinkTarget, openable_uri};
 
@@ -139,9 +140,10 @@ impl DocumentWorkspace {
                     self.annotation_statuses.remove(&document_id);
                     cx.open_url(uri.trim());
                 } else {
-                    self.annotation_statuses.insert(
+                    self.set_status(
                         document_id,
                         "Butter Paper only opens web and email links.".into(),
+                        StatusSeverity::Notice,
                     );
                 }
             }
@@ -171,9 +173,10 @@ impl DocumentWorkspace {
                         self.activate_thumbnail_page(document_id, page, cx);
                     }
                     None => {
-                        self.annotation_statuses.insert(
+                        self.set_status(
                             document_id,
                             "The page this link goes to has been deleted.".into(),
+                            StatusSeverity::Notice,
                         );
                     }
                 }

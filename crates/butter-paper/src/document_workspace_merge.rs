@@ -470,7 +470,7 @@ impl DocumentWorkspace {
 
     fn report_merge_error(&mut self, error: String, cx: &mut Context<Self>) {
         if let Some(document_id) = self.active_document_id {
-            self.annotation_statuses.insert(document_id, error);
+            self.set_status(document_id, error, StatusSeverity::Error);
         }
         cx.notify();
     }
@@ -584,8 +584,11 @@ impl DocumentWorkspace {
         );
         let count = paths.len();
         if let Some(document_id) = self.active_document_id {
-            self.annotation_statuses
-                .insert(document_id, format!("Merging {count} documents…"));
+            self.set_status(
+                document_id,
+                format!("Merging {count} documents…"),
+                StatusSeverity::Info,
+            );
         }
         cx.notify();
         let task = cx.background_executor().spawn({

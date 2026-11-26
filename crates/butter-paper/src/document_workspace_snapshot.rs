@@ -3,6 +3,7 @@
 //! open PDF, keeping the box's content as vector where the page allows; other
 //! apps get a picture of it on the system clipboard.
 
+use super::StatusSeverity;
 use super::*;
 use crate::annotation_model::{DecodedRgbaAsset, SnapshotAnnotation, SnapshotVector};
 use gpui::BorrowAppContext as _;
@@ -136,8 +137,11 @@ impl DocumentWorkspace {
                 media_box,
             )
         };
-        self.annotation_statuses
-            .insert(document_id, "Copying snapshot…".into());
+        self.set_status(
+            document_id,
+            "Copying snapshot…".into(),
+            StatusSeverity::Info,
+        );
         cx.notify();
         let task = cx.background_executor().spawn(async move {
             let size = (rect.width, rect.height);
@@ -221,6 +225,7 @@ impl DocumentWorkspace {
         cx.spawn(async move |workspace, cx| {
             let copied = task.await;
             let _ = workspace.update(cx, |workspace, cx| {
+                let mut severity = StatusSeverity::Info;
                 let status = match copied {
                     Ok(copied) => {
                         let vector = copied.snapshot.vector().is_some();
@@ -246,9 +251,12 @@ impl DocumentWorkspace {
                         }
                         snapshot_copied_status(vector, other_apps)
                     }
-                    Err(error) => error,
+                    Err(error) => {
+                        severity = StatusSeverity::Error;
+                        error
+                    }
                 };
-                workspace.annotation_statuses.insert(document_id, status);
+                workspace.set_status(document_id, status, severity);
                 cx.notify();
             });
         })
@@ -284,8 +292,7 @@ impl DocumentWorkspace {
             )
         };
         let system_pdf = crate::pdf_page_base::page_base_id(&pdf);
-        self.annotation_statuses
-            .insert(document_id, "Pasting…".into());
+        self.set_status(document_id, "Pasting…".into(), StatusSeverity::Info);
         cx.notify();
         let task = cx.background_executor().spawn(async move {
             let (region, width, height) = crate::pdf_page_base::page_region_pdf(&pdf)?;
@@ -328,7 +335,7 @@ impl DocumentWorkspace {
                     workspace.paste_annotations_at(document_id, page_index, at, cx)
                 });
                 if let Err(error) = result {
-                    workspace.annotation_statuses.insert(document_id, error);
+                    workspace.set_status(document_id, error, StatusSeverity::Error);
                 }
                 cx.notify();
             });

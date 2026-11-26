@@ -5,14 +5,14 @@
 
 use crate::annotation_model::{MarkupId, TextAlignment, TextBoxStyle};
 use crate::property_controls::{
-    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    PropertySliderInput, PropertyTextEditEvent, PropertyTextField, canonical_picker_opacity,
-    format_property_number, format_property_percentage, parse_property_percentage, property_body,
-    property_color_and_size, property_lock_toggle, property_row, property_slider_row,
-    subscribe_property_color,
+    FieldPhase, PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyPreviewEvent,
+    PropertySliderInput, PropertyStepInput, PropertyTextEditEvent, PropertyTextField,
+    canonical_picker_opacity, format_property_number, format_property_percentage,
+    parse_property_percentage, property_body, property_lock_toggle, property_row,
+    property_slider_row, subscribe_property_color,
 };
 use gpui::{
-    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
@@ -87,7 +87,6 @@ impl TextBoxPropertyInspector {
                 .default_value("12")
                 .min(6.)
                 .max(72.)
-                .step(1.)
         });
         let opacity = cx.new(|_| {
             SliderState::new()
@@ -111,6 +110,7 @@ impl TextBoxPropertyInspector {
                 &content,
                 window,
                 |this, content, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => this.preview_content(cx),
                     InputEvent::Blur => this.emit_content(cx),
                     InputEvent::PressEnter {
                         secondary: true, ..
@@ -128,16 +128,16 @@ impl TextBoxPropertyInspector {
                 },
             ),
             cx.subscribe_in(&size, window, |this, input, event: &InputEvent, _, cx| {
-                if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                    return;
-                }
-                let Ok(value) = input.read(cx).value().parse::<f64>() else {
+                let Some(phase) = FieldPhase::of(event) else {
                     return;
                 };
-                if (6. ..=72.).contains(&value) {
-                    this.edit_style(cx, |style| {
-                        rebuild_style(style, None, Some(value), None, None)
-                    });
+                match input.read(cx).value().parse::<f64>() {
+                    Ok(value) if (6. ..=72.).contains(&value) => {
+                        this.edit_style_phase(phase, cx, |style| {
+                            rebuild_style(style, None, Some(value), None, None)
+                        });
+                    }
+                    _ => this.field_unparsed(phase, cx),
                 }
             }),
             cx.subscribe_in(
@@ -152,23 +152,40 @@ impl TextBoxPropertyInspector {
                                 cx,
                             )
                         });
+                        let opacity = value.start() as f64 / 100.;
+                        this.preview_style(cx, |style| {
+                            rebuild_style(style, None, None, Some(opacity), None)
+                        });
                         cx.notify();
                     }
                     SliderEvent::Change(_) => {}
-                    SliderEvent::Release(value) => this.edit_style(cx, |style| {
-                        rebuild_style(style, None, None, Some(value.start() as f64 / 100.), None)
-                    }),
+                    SliderEvent::Release(value) => {
+                        this.end_preview(cx);
+                        this.edit_style(cx, |style| {
+                            rebuild_style(
+                                style,
+                                None,
+                                None,
+                                Some(value.start() as f64 / 100.),
+                                None,
+                            )
+                        })
+                    }
                 },
             ),
             cx.subscribe_in(
                 &opacity_input,
                 window,
                 |this, input, event: &InputEvent, window, cx| {
-                    if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    let Some(phase) = FieldPhase::of(event) else {
                         return;
-                    }
+                    };
                     let Some(opacity) = parse_property_percentage(input.read(cx).value().as_ref())
                     else {
+                        this.field_unparsed(phase, cx);
+                        if phase == FieldPhase::Preview {
+                            return;
+                        }
                         let canonical = this
                             .snapshot
                             .as_ref()
@@ -179,12 +196,15 @@ impl TextBoxPropertyInspector {
                         });
                         return;
                     };
-                    this.edit_style(cx, |style| {
+                    this.edit_style_phase(phase, cx, |style| {
                         rebuild_style(style, None, None, Some(opacity), None)
                     });
                 },
             ),
         ];
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &size, 1., 6., 72., window, cx,
+        ));
         subscriptions.extend(subscribe_property_color(
             &color,
             cx,
@@ -243,10 +263,10 @@ impl TextBoxPropertyInspector {
     pub fn content_input(&self) -> gpui::Entity<TextareaState> {
         self.content.clone()
     }
-    fn emit_content(&mut self, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// The edit that the Text field now holds, unless it changes nothing or
+    /// the markup cannot be edited.
+    fn content_event(&self, cx: &App) -> Option<PropertyTextEditEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         let content = self.content.read(cx).value().to_string();
         if self.syncing
             || snapshot.mutation_disabled
@@ -256,15 +276,31 @@ impl TextBoxPropertyInspector {
                 .as_deref()
                 .is_none_or(|baseline| baseline == content)
         {
-            return;
+            return None;
         }
-        self.content_baseline = Some(content.clone());
-        cx.emit(PropertyTextEditEvent {
+        Some(PropertyTextEditEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_revision: snapshot.expected_revision,
             content,
+        })
+    }
+
+    /// Shows the typed text on the markup, without committing it.
+    fn preview_content(&mut self, cx: &mut Context<Self>) {
+        cx.emit(match self.content_event(cx) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
         });
+    }
+
+    /// Commits the typed text as one change.
+    fn emit_content(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<PropertyTextEditEvent>::Clear);
+        if let Some(event) = self.content_event(cx) {
+            self.content_baseline = Some(event.content.clone());
+            cx.emit(event);
+        }
     }
     pub fn sync(
         &mut self,
@@ -339,10 +375,10 @@ impl TextBoxPropertyInspector {
         };
         self.emit_patch(TextBoxPropertyPatch::Style(style), cx);
     }
-    fn emit_patch(&mut self, patch: TextBoxPropertyPatch, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// The event that applies `patch`, unless it changes nothing or the
+    /// markup cannot be edited.
+    fn patch_event(&self, patch: TextBoxPropertyPatch) -> Option<TextBoxPropertyEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         if !(self.open || self.embedded)
             || self.syncing
             || snapshot.mutation_disabled
@@ -350,19 +386,82 @@ impl TextBoxPropertyInspector {
             || matches!(&patch, TextBoxPropertyPatch::Locked(value) if *value == snapshot.locked)
             || matches!(&patch, TextBoxPropertyPatch::Style(style) if style == &snapshot.style)
         {
-            return;
+            return None;
         }
-        cx.emit(TextBoxPropertyEvent {
+        Some(TextBoxPropertyEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_revision: snapshot.expected_revision,
             patch,
+        })
+    }
+
+    /// A typed style value: shown on the markup as it is typed, committed
+    /// when the field is left or Enter is pressed.
+    fn edit_style_phase(
+        &mut self,
+        phase: FieldPhase,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&TextBoxStyle) -> Option<TextBoxStyle>,
+    ) {
+        match phase {
+            FieldPhase::Preview => self.preview_style(cx, edit),
+            FieldPhase::Commit => {
+                self.end_preview(cx);
+                self.edit_style(cx, edit);
+            }
+        }
+    }
+
+    /// Typed text that is not a valid value: a partial one keeps the last
+    /// preview, and leaving the field ends it.
+    fn field_unparsed(&mut self, phase: FieldPhase, cx: &mut Context<Self>) {
+        match phase {
+            FieldPhase::Preview => cx.emit(PropertyPreviewEvent::<TextBoxPropertyEvent>::Pending),
+            FieldPhase::Commit => self.end_preview(cx),
+        }
+    }
+
+    /// Shows a dragged slider's style on the canvas, without committing it.
+    fn preview_style(
+        &mut self,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&TextBoxStyle) -> Option<TextBoxStyle>,
+    ) {
+        let style = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| edit(&snapshot.style));
+        match style {
+            Some(style) => self.preview_patch(TextBoxPropertyPatch::Style(style), cx),
+            None => self.end_preview(cx),
+        }
+    }
+
+    fn emit_patch(&mut self, patch: TextBoxPropertyPatch, cx: &mut Context<Self>) {
+        if let Some(event) = self.patch_event(patch) {
+            cx.emit(event);
+        }
+    }
+
+    /// Shows `patch` on the canvas while a slider is dragged.
+    fn preview_patch(&mut self, patch: TextBoxPropertyPatch, cx: &mut Context<Self>) {
+        cx.emit(match self.patch_event(patch) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
         });
+    }
+
+    /// Shows the committed markup again, as a drag ends.
+    fn end_preview(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<TextBoxPropertyEvent>::Clear);
     }
 }
 
 impl EventEmitter<TextBoxPropertyEvent> for TextBoxPropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<TextBoxPropertyEvent>> for TextBoxPropertyInspector {}
 impl EventEmitter<PropertyTextEditEvent> for TextBoxPropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<PropertyTextEditEvent>> for TextBoxPropertyInspector {}
 
 impl Render for TextBoxPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -389,19 +488,20 @@ impl Render for TextBoxPropertyInspector {
             .align_top()
             .into_any_element()
         });
-        let font = property_row(
-            "Font",
-            property_color_and_size(
-                PropertyColor::new(
-                    TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID,
-                    "Text colour",
-                    &self.color,
-                )
+        let font_colour = property_row(
+            "Font colour",
+            PropertyColor::new(
+                TEXT_BOX_INSPECTOR_COLOR_TRIGGER_ID,
+                "Text colour",
+                &self.color,
+            )
+            .disabled(disabled),
+        );
+        let font_size = property_row(
+            "Font size",
+            PropertyStepInput::new(TEXT_BOX_INSPECTOR_SIZE_ID, &self.size)
+                .suffix("pt")
                 .disabled(disabled),
-                PropertyNumericInput::new(TEXT_BOX_INSPECTOR_SIZE_ID, "Font size", &self.size)
-                    .suffix("pt")
-                    .disabled(disabled),
-            ),
         );
         let opacity = property_slider_row(
             "Opacity",
@@ -480,7 +580,7 @@ impl Render for TextBoxPropertyInspector {
                 });
             },
         ))
-        .child(property_body().child(rows.row(font).row(opacity).row(align)))
+        .child(property_body().child(rows.row(font_colour).row(font_size).row(opacity).row(align)))
         .into_any_element()
     }
 }

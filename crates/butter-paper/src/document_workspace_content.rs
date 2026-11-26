@@ -2,6 +2,7 @@
 //! and moves the page's own content (text, drawings and images) where no
 //! markup or form field takes a press.
 
+use super::StatusSeverity;
 use gpui::{App, BorrowAppContext as _, Context, CursorStyle, Modifiers, Pixels, Window};
 
 use super::{
@@ -587,15 +588,19 @@ impl DocumentWorkspace {
                 self.content_selection = None;
                 self.content_hover = None;
                 self.release_content_sprite(cx);
-                self.annotation_statuses.insert(
+                self.set_status(
                     document_id,
                     "Exploded the block: its parts can now be selected on their own".into(),
+                    StatusSeverity::Info,
                 );
             }
             Ok(false) => {}
             Err(error) => {
-                self.annotation_statuses
-                    .insert(document_id, format!("The block was not exploded: {error}"));
+                self.set_status(
+                    document_id,
+                    format!("The block was not exploded: {error}"),
+                    StatusSeverity::Error,
+                );
             }
         }
         self.sync_document_edits(document_id, cx);
@@ -2433,9 +2438,10 @@ impl DocumentWorkspace {
                 self.annotation_statuses.remove(&selection.document_id);
             }
             Err(error) => {
-                self.annotation_statuses.insert(
+                self.set_status(
                     selection.document_id,
                     format!("The content was not changed: {error}"),
+                    StatusSeverity::Error,
                 );
             }
         }
@@ -2844,8 +2850,11 @@ impl DocumentWorkspace {
                 self.annotation_statuses.remove(&document_id);
             }
             Err(error) => {
-                self.annotation_statuses
-                    .insert(document_id, format!("The content was not pasted: {error}"));
+                self.set_status(
+                    document_id,
+                    format!("The content was not pasted: {error}"),
+                    StatusSeverity::Error,
+                );
             }
         }
         self.sync_document_edits(document_id, cx);
@@ -2863,8 +2872,11 @@ impl DocumentWorkspace {
         at: Option<PdfPoint>,
         cx: &mut Context<Self>,
     ) {
-        let say = |workspace: &mut Self, message: String, cx: &mut Context<Self>| {
-            workspace.annotation_statuses.insert(document_id, message);
+        let say = |workspace: &mut Self,
+                   message: String,
+                   severity: StatusSeverity,
+                   cx: &mut Context<Self>| {
+            workspace.set_status(document_id, message, severity);
             cx.notify();
         };
         let Some(copied) = cx.try_global::<CopiedContent>() else {
@@ -2874,6 +2886,7 @@ impl DocumentWorkspace {
             say(
                 self,
                 "Save this document first to paste its edited text elsewhere.".into(),
+                StatusSeverity::Notice,
                 cx,
             );
             return;
@@ -2881,7 +2894,12 @@ impl DocumentWorkspace {
         let clip = match copied.clip.clone() {
             ClipState::Ready(clip) => clip,
             ClipState::Failed(error) => {
-                say(self, format!("The content was not pasted: {error}"), cx);
+                say(
+                    self,
+                    format!("The content was not pasted: {error}"),
+                    StatusSeverity::Error,
+                    cx,
+                );
                 return;
             }
             ClipState::Making => {
@@ -2894,7 +2912,12 @@ impl DocumentWorkspace {
                         at,
                     });
                 });
-                say(self, "Copying the content…".into(), cx);
+                say(
+                    self,
+                    "Copying the content…".into(),
+                    StatusSeverity::Info,
+                    cx,
+                );
                 return;
             }
         };
@@ -2950,7 +2973,12 @@ impl DocumentWorkspace {
             },
         );
         if let Err(error) = result {
-            say(self, format!("The content was not pasted: {error}"), cx);
+            say(
+                self,
+                format!("The content was not pasted: {error}"),
+                StatusSeverity::Error,
+                cx,
+            );
             return;
         }
         self.set_content_edit_mode(document_id, true, cx);

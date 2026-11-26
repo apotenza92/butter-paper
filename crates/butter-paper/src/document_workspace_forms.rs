@@ -7,6 +7,7 @@
 //! is one undoable change; the PDF worker renders the field's new
 //! appearance, and saving writes the value.
 
+use super::StatusSeverity;
 use super::*;
 use crate::pdf_forms::{FormField, FormFieldEdit, FormFieldKind, FormLayer, FormValue, XfaForm};
 use crate::pdf_page_structure::SourcePagePlaces;
@@ -414,9 +415,10 @@ impl DocumentWorkspace {
                 .form_layer(interaction.document_id, cx)
                 .is_some_and(|(layer, _)| layer.xfa == XfaForm::Dynamic)
             {
-                self.annotation_statuses.insert(
+                self.set_status(
                     interaction.document_id,
                     "This PDF's form uses XFA, which Butter Paper cannot fill.".into(),
+                    StatusSeverity::Notice,
                 );
             }
             return false;
@@ -441,8 +443,11 @@ impl DocumentWorkspace {
                 FormFieldKind::PushButton => "Form buttons and their actions are not supported.",
                 _ => "This field is read-only.",
             };
-            self.annotation_statuses
-                .insert(interaction.document_id, message.into());
+            self.set_status(
+                interaction.document_id,
+                message.into(),
+                StatusSeverity::Notice,
+            );
             cx.notify();
             return true;
         }
@@ -511,11 +516,10 @@ impl DocumentWorkspace {
                     owner
                         .update(cx, |workspace, cx| {
                             workspace.page_text_signed_confirmed.insert(document_id);
-                            workspace.annotation_statuses.insert(
+                            workspace.set_status(
                                 document_id,
                                 "Click a field to fill it. Saving invalidates the signatures."
-                                    .into(),
-                            );
+                                    .into(), StatusSeverity::Info);
                             cx.notify();
                         })
                         .is_ok()
@@ -675,9 +679,10 @@ impl DocumentWorkspace {
         if let FormValue::Text(text) = &value
             && !crate::pdf_forms::text_is_drawable(text)
         {
-            self.annotation_statuses.insert(
+            self.set_status(
                 document_id,
                 "No available font can draw a character of this text".into(),
+                StatusSeverity::Notice,
             );
             cx.notify();
             return;
@@ -695,9 +700,10 @@ impl DocumentWorkspace {
             },
         );
         if let Err(error) = result {
-            self.annotation_statuses.insert(
+            self.set_status(
                 document_id,
                 format!("The field value was not kept: {error}"),
+                StatusSeverity::Error,
             );
         }
         self.sync_document_edits(document_id, cx);

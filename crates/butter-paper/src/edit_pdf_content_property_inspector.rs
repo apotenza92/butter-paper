@@ -6,9 +6,8 @@
 
 use crate::pdf_text_blocks::TextBlockAlignment;
 use crate::property_controls::{
-    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    format_property_number, property_body, property_color_and_size, property_number, property_row,
-    subscribe_property_color,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput, PropertyStepInput,
+    format_property_number, property_body, property_number, property_row, subscribe_property_color,
 };
 use gpui::{
     AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
@@ -155,7 +154,6 @@ impl EditPdfContentPropertyInspector {
                 .default_value("12")
                 .min(MIN_FONT_SIZE)
                 .max(MAX_FONT_SIZE)
-                .step(1.)
         });
         let line_spacing = cx.new(|cx| {
             InputState::new(window, cx)
@@ -205,6 +203,21 @@ impl EditPdfContentPropertyInspector {
                 },
             ),
         ];
+        crate::property_wheel::register_number_wheel(
+            &line_spacing,
+            0.1,
+            MIN_LINE_SPACING,
+            MAX_LINE_SPACING,
+            cx,
+        );
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &size,
+            1.,
+            MIN_FONT_SIZE,
+            MAX_FONT_SIZE,
+            window,
+            cx,
+        ));
         subscriptions.extend(subscribe_property_color(
             &color,
             cx,
@@ -396,20 +409,16 @@ impl EditPdfContentPropertyInspector {
                     .child(Select::new(&self.font).search_placeholder("Search fonts")),
             ))
             .row(property_row(
-                "Font",
-                property_color_and_size(
-                    PropertyColor::new(
-                        EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID,
-                        "Text colour",
-                        &self.color,
-                    ),
-                    PropertyNumericInput::new(
-                        EDIT_PDF_CONTENT_INSPECTOR_SIZE_ID,
-                        "Font size",
-                        &self.size,
-                    )
-                    .suffix("pt"),
+                "Font colour",
+                PropertyColor::new(
+                    EDIT_PDF_CONTENT_INSPECTOR_COLOR_TRIGGER_ID,
+                    "Text colour",
+                    &self.color,
                 ),
+            ))
+            .row(property_row(
+                "Font size",
+                PropertyStepInput::new(EDIT_PDF_CONTENT_INSPECTOR_SIZE_ID, &self.size).suffix("pt"),
             ))
             .row(property_row(
                 "Style",

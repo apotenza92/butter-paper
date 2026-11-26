@@ -7,9 +7,9 @@
 use crate::accessible_button::close_icon_button;
 use crate::document_workspace::{DocumentId, PenAnnotationDefaults};
 use crate::property_controls::{
-    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    PropertyResetConfirm, PropertyResetIds, PropertySliderInput, property_body,
-    property_color_and_size, property_row, property_slider_row, subscribe_property_color,
+    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyResetConfirm, PropertyResetIds,
+    PropertySliderInput, PropertyStepInput, property_body, property_row, property_slider_row,
+    subscribe_property_color,
 };
 use gpui::{
     App, AppContext as _, ClickEvent, Context, EventEmitter, Hsla, InteractiveElement as _,
@@ -108,14 +108,16 @@ impl HighlightDefaultsPanel {
                 &width,
                 window,
                 |this, input, event: &InputEvent, window, cx| {
-                    if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    let Some(phase) = crate::property_controls::FieldPhase::of(event) else {
                         return;
-                    }
+                    };
                     let Some(width_pt) = parse_positive_finite(input.read(cx).value().as_ref())
                     else {
-                        input.update(cx, |input, cx| {
-                            input.set_value(format_number(this.defaults.width_pt), window, cx)
-                        });
+                        if phase == crate::property_controls::FieldPhase::Commit {
+                            input.update(cx, |input, cx| {
+                                input.set_value(format_number(this.defaults.width_pt), window, cx)
+                            });
+                        }
                         return;
                     };
                     let mut defaults = this.defaults.clone();
@@ -127,14 +129,20 @@ impl HighlightDefaultsPanel {
                 &opacity,
                 window,
                 |this, input, event: &InputEvent, window, cx| {
-                    if !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                    let Some(phase) = crate::property_controls::FieldPhase::of(event) else {
                         return;
-                    }
+                    };
                     let Some(opacity) = parse_opacity_percent(input.read(cx).value().as_ref())
                     else {
-                        input.update(cx, |input, cx| {
-                            input.set_value(format_percentage(this.defaults.opacity), window, cx)
-                        });
+                        if phase == crate::property_controls::FieldPhase::Commit {
+                            input.update(cx, |input, cx| {
+                                input.set_value(
+                                    format_percentage(this.defaults.opacity),
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }
                         return;
                     };
                     let mut defaults = this.defaults.clone();
@@ -155,6 +163,9 @@ impl HighlightDefaultsPanel {
                 this.emit_change(defaults, cx);
             }),
         ];
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &width, 0.5, 1., 48., window, cx,
+        ));
         subscriptions.extend(subscribe_property_color(
             &colour,
             cx,
@@ -202,15 +213,21 @@ impl HighlightDefaultsPanel {
         self.defaults = defaults.clone();
         self.disabled = disabled;
 
-        self.width.update(cx, |input, cx| {
-            input.set_value(format_number(defaults.width_pt), window, cx);
-        });
+        crate::property_controls::set_number_text(
+            &self.width,
+            format_number(defaults.width_pt),
+            window,
+            cx,
+        );
         self.width_slider.update(cx, |slider, cx| {
             slider.set_value(defaults.width_pt as f32, window, cx)
         });
-        self.opacity.update(cx, |input, cx| {
-            input.set_value(format_percentage(defaults.opacity), window, cx);
-        });
+        crate::property_controls::set_number_text(
+            &self.opacity,
+            format_percentage(defaults.opacity),
+            window,
+            cx,
+        );
         self.opacity_slider.update(cx, |slider, cx| {
             slider.set_value(opacity_percentage(defaults.opacity), window, cx);
         });
@@ -283,32 +300,29 @@ impl Render for HighlightDefaultsPanel {
 
         let appearance = PropertyGroup::new()
             .row(property_row(
-                "Line",
-                property_color_and_size(
-                    div()
-                        .id(HIGHLIGHT_DEFAULTS_COLOUR_ID)
-                        .debug_selector(|| HIGHLIGHT_DEFAULTS_COLOUR_ID.into())
-                        .child(
-                            PropertyColor::new(
-                                HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID,
-                                "Highlight colour",
-                                &self.colour,
-                            )
-                            .disabled(controls_disabled),
-                        ),
-                    div()
-                        .id(HIGHLIGHT_DEFAULTS_WIDTH_ID)
-                        .debug_selector(|| HIGHLIGHT_DEFAULTS_WIDTH_ID.into())
-                        .child(
-                            PropertyNumericInput::new(
-                                "highlight-defaults-panel-width-input",
-                                "Line width",
-                                &self.width,
-                            )
+                "Line colour",
+                div()
+                    .id(HIGHLIGHT_DEFAULTS_COLOUR_ID)
+                    .debug_selector(|| HIGHLIGHT_DEFAULTS_COLOUR_ID.into())
+                    .child(
+                        PropertyColor::new(
+                            HIGHLIGHT_DEFAULTS_COLOUR_TRIGGER_ID,
+                            "Highlight colour",
+                            &self.colour,
+                        )
+                        .disabled(controls_disabled),
+                    ),
+            ))
+            .row(property_row(
+                "Line width",
+                div()
+                    .id(HIGHLIGHT_DEFAULTS_WIDTH_ID)
+                    .debug_selector(|| HIGHLIGHT_DEFAULTS_WIDTH_ID.into())
+                    .child(
+                        PropertyStepInput::new("highlight-defaults-panel-width-input", &self.width)
                             .suffix("pt")
                             .disabled(controls_disabled),
-                        ),
-                ),
+                    ),
             ))
             .row(property_slider_row(
                 "Opacity",

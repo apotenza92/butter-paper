@@ -70,9 +70,11 @@ impl DocumentWorkspace {
                         workspace.place_dropped_image(document_id, page_index, decoded, point, cx)
                     });
                     if let Err(error) = result {
-                        workspace
-                            .annotation_statuses
-                            .insert(document_id, format!("The image was not added: {error}"));
+                        workspace.set_status(
+                            document_id,
+                            format!("The image was not added: {error}"),
+                            StatusSeverity::Error,
+                        );
                         cx.notify();
                     }
                 });
@@ -122,9 +124,11 @@ impl DocumentWorkspace {
                     workspace.place_dropped_image(document_id, page_index, decoded, point, cx)
                 });
                 if let Err(error) = result {
-                    workspace
-                        .annotation_statuses
-                        .insert(document_id, format!("The image was not pasted: {error}"));
+                    workspace.set_status(
+                        document_id,
+                        format!("The image was not pasted: {error}"),
+                        StatusSeverity::Error,
+                    );
                     cx.notify();
                 }
             });

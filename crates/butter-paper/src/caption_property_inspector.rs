@@ -11,15 +11,14 @@ use crate::annotation_model::{
 };
 use crate::cloud_plus_routing::CLOUD_PLUS_MAX_LANDING_PT;
 use crate::property_controls::{
-    PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyNumericInput,
-    PropertySliderInput, PropertyTextEditEvent, PropertyTextField, canonical_picker_opacity,
-    format_property_geometry, format_property_number, format_property_percentage,
-    parse_property_percentage, property_body, property_color_and_size, property_lock_toggle,
-    property_number, property_row, property_slider_row, subscribe_property_color,
-    subscribe_property_slider,
+    FieldPhase, PropertyColor, PropertyGroup, PropertyInspectorPanel, PropertyPreviewEvent,
+    PropertySliderInput, PropertyStepInput, PropertyTextEditEvent, PropertyTextField,
+    canonical_picker_opacity, format_property_geometry, format_property_number,
+    format_property_percentage, parse_property_percentage, property_body, property_lock_toggle,
+    property_row, property_slider_row, subscribe_property_color, subscribe_property_slider,
 };
 use gpui::{
-    AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
@@ -287,14 +286,12 @@ impl CaptionPropertyInspector {
                 .default_value("1")
                 .min(0.25)
                 .max(24.)
-                .step(0.25)
         });
         let font_size = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value("12")
                 .min(6.)
                 .max(72.)
-                .step(1.)
         });
         let percent_slider = |cx: &mut Context<Self>| {
             cx.new(|_| {
@@ -333,6 +330,7 @@ impl CaptionPropertyInspector {
                 &content,
                 window,
                 |this, content, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => this.preview_content(cx),
                     InputEvent::Blur => this.emit_content(cx),
                     InputEvent::PressEnter {
                         secondary: true, ..
@@ -356,6 +354,16 @@ impl CaptionPropertyInspector {
                 cx,
                 |this| !this.syncing,
                 |this, value, cx| {
+                    this.preview_style(
+                        CaptionStyleEdit {
+                            opacity: Some(value / 100.),
+                            ..Default::default()
+                        },
+                        cx,
+                    )
+                },
+                |this, value, cx| {
+                    this.end_preview(cx);
                     this.edit_style(
                         CaptionStyleEdit {
                             opacity: Some(value / 100.),
@@ -372,6 +380,16 @@ impl CaptionPropertyInspector {
                 cx,
                 |this| !this.syncing,
                 |this, value, cx| {
+                    this.preview_style(
+                        CaptionStyleEdit {
+                            fill_opacity: Some(value / 100.),
+                            ..Default::default()
+                        },
+                        cx,
+                    )
+                },
+                |this, value, cx| {
+                    this.end_preview(cx);
                     this.edit_style(
                         CaptionStyleEdit {
                             fill_opacity: Some(value / 100.),
@@ -388,6 +406,16 @@ impl CaptionPropertyInspector {
                 cx,
                 |this| !this.syncing,
                 |this, value, cx| {
+                    this.preview_style(
+                        CaptionStyleEdit {
+                            intensity: Some(value),
+                            ..Default::default()
+                        },
+                        cx,
+                    )
+                },
+                |this, value, cx| {
+                    this.end_preview(cx);
                     this.edit_style(
                         CaptionStyleEdit {
                             intensity: Some(value),
@@ -404,6 +432,25 @@ impl CaptionPropertyInspector {
             percent_subscription(&opacity_input, window, cx, PercentField::Opacity),
             percent_subscription(&fill_opacity_input, window, cx, PercentField::FillOpacity),
         ];
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &line_width,
+            0.5,
+            0.25,
+            24.,
+            window,
+            cx,
+        ));
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &font_size, 1., 6., 72., window, cx,
+        ));
+        subscriptions.push(crate::property_controls::subscribe_number_steps(
+            &landing,
+            1.,
+            0.,
+            CLOUD_PLUS_MAX_LANDING_PT,
+            window,
+            cx,
+        ));
         subscriptions.extend(subscribe_property_color(
             &line_color,
             cx,
@@ -562,10 +609,10 @@ impl CaptionPropertyInspector {
         cx.notify();
     }
 
-    fn emit_content(&mut self, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// The edit that the Text field now holds, unless it changes nothing or
+    /// the markup cannot be edited.
+    fn content_event(&self, cx: &App) -> Option<PropertyTextEditEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         let content = self.content.read(cx).value().to_string();
         if self.syncing
             || snapshot.mutation_disabled
@@ -575,15 +622,31 @@ impl CaptionPropertyInspector {
                 .as_deref()
                 .is_none_or(|baseline| baseline == content)
         {
-            return;
+            return None;
         }
-        self.content_baseline = Some(content.clone());
-        cx.emit(PropertyTextEditEvent {
+        Some(PropertyTextEditEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_revision: snapshot.expected_revision,
             content,
+        })
+    }
+
+    /// Shows the typed text on the markup, without committing it.
+    fn preview_content(&mut self, cx: &mut Context<Self>) {
+        cx.emit(match self.content_event(cx) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
         });
+    }
+
+    /// Commits the typed text as one change.
+    fn emit_content(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<PropertyTextEditEvent>::Clear);
+        if let Some(event) = self.content_event(cx) {
+            self.content_baseline = Some(event.content.clone());
+            cx.emit(event);
+        }
     }
 
     fn apply_color(&mut self, field: ColorField, cx: &mut Context<Self>) {
@@ -651,10 +714,27 @@ impl CaptionPropertyInspector {
         }
     }
 
-    fn emit_patch(&mut self, patch: CaptionPropertyPatch, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
+    /// Shows a dragged slider's edit on the canvas, without committing it.
+    fn preview_style(&mut self, edit: CaptionStyleEdit, cx: &mut Context<Self>) {
+        let patch = self.snapshot.as_ref().and_then(|snapshot| {
+            edit_caption_values(&snapshot.values, &edit)
+                .map(|values| CaptionPropertyPatch::Values(Box::new(values)))
+        });
+        cx.emit(match patch.and_then(|patch| self.patch_event(patch)) {
+            Some(event) => PropertyPreviewEvent::Show(event),
+            None => PropertyPreviewEvent::Clear,
+        });
+    }
+
+    /// Shows the committed markup again, as a drag ends.
+    fn end_preview(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PropertyPreviewEvent::<CaptionPropertyEvent>::Clear);
+    }
+
+    /// The event that applies `patch`, unless it changes nothing or the
+    /// markup cannot be edited.
+    fn patch_event(&self, patch: CaptionPropertyPatch) -> Option<CaptionPropertyEvent> {
+        let snapshot = self.snapshot.as_ref()?;
         if !(self.open || self.embedded)
             || self.syncing
             || snapshot.mutation_disabled
@@ -664,19 +744,27 @@ impl CaptionPropertyInspector {
                 CaptionPropertyPatch::Values(values) => **values == snapshot.values,
             }
         {
-            return;
+            return None;
         }
-        cx.emit(CaptionPropertyEvent {
+        Some(CaptionPropertyEvent {
             document_id: snapshot.document_id,
             annotation_id: snapshot.annotation_id.clone(),
             expected_revision: snapshot.expected_revision,
             patch,
-        });
+        })
+    }
+
+    fn emit_patch(&mut self, patch: CaptionPropertyPatch, cx: &mut Context<Self>) {
+        if let Some(event) = self.patch_event(patch) {
+            cx.emit(event);
+        }
     }
 }
 
 impl EventEmitter<CaptionPropertyEvent> for CaptionPropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<CaptionPropertyEvent>> for CaptionPropertyInspector {}
 impl EventEmitter<PropertyTextEditEvent> for CaptionPropertyInspector {}
+impl EventEmitter<PropertyPreviewEvent<PropertyTextEditEvent>> for CaptionPropertyInspector {}
 
 impl Render for CaptionPropertyInspector {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -700,40 +788,34 @@ impl Render for CaptionPropertyInspector {
         }
         rows = rows
             .row(property_row(
-                "Line",
-                property_color_and_size(
-                    PropertyColor::new(
-                        CAPTION_INSPECTOR_LINE_COLOR_ID,
-                        "Line colour",
-                        &self.line_color,
-                    )
-                    .disabled(disabled),
-                    PropertyNumericInput::new(
-                        CAPTION_INSPECTOR_LINE_WIDTH_ID,
-                        "Line width",
-                        &self.line_width,
-                    )
-                    .suffix("pt")
-                    .disabled(disabled),
-                ),
+                "Line colour",
+                PropertyColor::new(
+                    CAPTION_INSPECTOR_LINE_COLOR_ID,
+                    "Line colour",
+                    &self.line_color,
+                )
+                .disabled(disabled),
             ))
             .row(property_row(
-                "Font",
-                property_color_and_size(
-                    PropertyColor::new(
-                        CAPTION_INSPECTOR_TEXT_COLOR_ID,
-                        "Text colour",
-                        &self.text_color,
-                    )
-                    .disabled(disabled),
-                    PropertyNumericInput::new(
-                        CAPTION_INSPECTOR_FONT_SIZE_ID,
-                        "Font size",
-                        &self.font_size,
-                    )
+                "Line width",
+                PropertyStepInput::new(CAPTION_INSPECTOR_LINE_WIDTH_ID, &self.line_width)
                     .suffix("pt")
                     .disabled(disabled),
-                ),
+            ))
+            .row(property_row(
+                "Font colour",
+                PropertyColor::new(
+                    CAPTION_INSPECTOR_TEXT_COLOR_ID,
+                    "Text colour",
+                    &self.text_color,
+                )
+                .disabled(disabled),
+            ))
+            .row(property_row(
+                "Font size",
+                PropertyStepInput::new(CAPTION_INSPECTOR_FONT_SIZE_ID, &self.font_size)
+                    .suffix("pt")
+                    .disabled(disabled),
             ));
         rows = rows.row(property_slider_row(
             "Opacity",
@@ -821,15 +903,9 @@ impl Render for CaptionPropertyInspector {
         if snapshot.values.landing_pt().is_some() {
             rows = rows.row(property_row(
                 "Landing",
-                property_number(
-                    PropertyNumericInput::new(
-                        CAPTION_INSPECTOR_LANDING_ID,
-                        "Landing length",
-                        &self.landing,
-                    )
+                PropertyStepInput::new(CAPTION_INSPECTOR_LANDING_ID, &self.landing)
                     .suffix("pt")
                     .disabled(disabled),
-                ),
             ));
         }
         let lock = cx.entity().downgrade();
@@ -889,7 +965,10 @@ fn number_subscription(
         input,
         window,
         move |this, input, event: &InputEvent, window, cx| {
-            if this.syncing || !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+            let Some(phase) = FieldPhase::of(event) else {
+                return;
+            };
+            if this.syncing {
                 return;
             }
             let text = input.read(cx).value();
@@ -902,6 +981,7 @@ fn number_subscription(
                     .and_then(|snapshot| snapshot.values.landing_pt())
                     .is_some_and(|landing| text.trim() == format_property_geometry(landing))
             {
+                this.end_preview(cx);
                 return;
             }
             let value = text.trim().parse::<f64>().ok();
@@ -934,10 +1014,21 @@ fn number_subscription(
                 }
                 _ => None,
             };
-            match edit {
-                Some(edit) => this.edit_style(edit, cx),
+            match (edit, phase) {
+                (Some(edit), FieldPhase::Preview) => this.preview_style(edit, cx),
+                (Some(edit), FieldPhase::Commit) => {
+                    this.end_preview(cx);
+                    this.edit_style(edit, cx);
+                }
+                // Partial text: keep the last preview.
+                (None, FieldPhase::Preview) => {
+                    cx.emit(PropertyPreviewEvent::<CaptionPropertyEvent>::Pending)
+                }
                 // Out of range: show the markup's value again.
-                None => this.resync_inputs(window, cx),
+                (None, FieldPhase::Commit) => {
+                    this.end_preview(cx);
+                    this.resync_inputs(window, cx);
+                }
             }
         },
     )
@@ -953,12 +1044,18 @@ fn percent_subscription(
         input,
         window,
         move |this, input, event: &InputEvent, window, cx| {
-            if this.syncing || !matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+            let Some(phase) = FieldPhase::of(event) else {
+                return;
+            };
+            if this.syncing {
                 return;
             }
-            match parse_property_percentage(input.read(cx).value().as_ref()) {
-                Some(value) => this.edit_style(
-                    match field {
+            match (
+                parse_property_percentage(input.read(cx).value().as_ref()),
+                phase,
+            ) {
+                (Some(value), phase) => {
+                    let edit = match field {
                         PercentField::Opacity => CaptionStyleEdit {
                             opacity: Some(value),
                             ..Default::default()
@@ -967,10 +1064,22 @@ fn percent_subscription(
                             fill_opacity: Some(value),
                             ..Default::default()
                         },
-                    },
-                    cx,
-                ),
-                None => this.resync_inputs(window, cx),
+                    };
+                    match phase {
+                        FieldPhase::Preview => this.preview_style(edit, cx),
+                        FieldPhase::Commit => {
+                            this.end_preview(cx);
+                            this.edit_style(edit, cx);
+                        }
+                    }
+                }
+                (None, FieldPhase::Preview) => {
+                    cx.emit(PropertyPreviewEvent::<CaptionPropertyEvent>::Pending)
+                }
+                (None, FieldPhase::Commit) => {
+                    this.end_preview(cx);
+                    this.resync_inputs(window, cx);
+                }
             }
         },
     )

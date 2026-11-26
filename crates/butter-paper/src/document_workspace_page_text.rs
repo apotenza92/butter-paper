@@ -7,6 +7,7 @@
 //! ones arrive. The workspace only draws the hover outline, the caret and
 //! the selection over it.
 
+use super::StatusSeverity;
 use super::*;
 use crate::page_text_editor::{
     Backspace, CopyText, CutText, DeleteForward, DeleteToLineStart, DeleteWordBackward,
@@ -948,9 +949,11 @@ impl DocumentWorkspace {
                     }
                     Err(error) => {
                         state.rejected = Some(desired);
-                        workspace
-                            .annotation_statuses
-                            .insert(document_id, format!("Edits cannot be shown: {error}"));
+                        workspace.set_status(
+                            document_id,
+                            format!("Edits cannot be shown: {error}"),
+                            StatusSeverity::Error,
+                        );
                     }
                 }
                 // Catch up with changes made while this update ran.
@@ -1550,12 +1553,11 @@ impl DocumentWorkspace {
                 }
                 PageTextInputEvent::Rejected(character) => {
                     if let Some(editing) = workspace.page_text_editing {
-                        workspace.annotation_statuses.insert(
+                        workspace.set_status(
                             editing.document_id,
                             format!(
                                 "No available font can draw \u{201c}{character}\u{201d} in this text"
-                            ),
-                        );
+                            ), StatusSeverity::Notice);
                     }
                     cx.notify();
                 }
@@ -1604,10 +1606,9 @@ impl DocumentWorkspace {
                     owner
                         .update(cx, |workspace, cx| {
                             workspace.page_text_signed_confirmed.insert(document_id);
-                            workspace.annotation_statuses.insert(
+                            workspace.set_status(
                                 document_id,
-                                "Click text to edit it. Saving invalidates the signatures.".into(),
-                            );
+                                "Click text to edit it. Saving invalidates the signatures.".into(), StatusSeverity::Info);
                             cx.notify();
                         })
                         .is_ok()
@@ -1711,9 +1712,10 @@ impl DocumentWorkspace {
                 .get(&interaction.document_id)
                 .and_then(|state| state.layers.get(&interaction.page_index))
             {
-                self.annotation_statuses.insert(
+                self.set_status(
                     interaction.document_id,
                     format!("Text on this page cannot be edited: {error}"),
+                    StatusSeverity::Notice,
                 );
             }
             self.workspace_focus.focus(window, cx);
@@ -1727,9 +1729,10 @@ impl DocumentWorkspace {
                 .read_only
                 .clone()
                 .unwrap_or_else(|| "the text has no visible characters".into());
-            self.annotation_statuses.insert(
+            self.set_status(
                 interaction.document_id,
                 format!("This text cannot be edited: {reason}"),
+                StatusSeverity::Notice,
             );
             cx.notify();
             return true;
@@ -1801,8 +1804,11 @@ impl DocumentWorkspace {
             ) {
                 Ok(state) => state,
                 Err(error) => {
-                    self.annotation_statuses
-                        .insert(interaction.document_id, error.to_string());
+                    self.set_status(
+                        interaction.document_id,
+                        error.to_string(),
+                        StatusSeverity::Error,
+                    );
                     cx.notify();
                     return true;
                 }
@@ -2162,9 +2168,10 @@ impl DocumentWorkspace {
             .map(|session| session.read(cx).resource_epoch);
         if current_epoch != Some(editing.epoch) {
             // The document was reopened under the editor; its lines moved.
-            self.annotation_statuses.insert(
+            self.set_status(
                 editing.document_id,
                 "The edited text was discarded because the document was reloaded".into(),
+                StatusSeverity::Notice,
             );
             self.sync_document_edits(editing.document_id, cx);
             return;
@@ -2192,9 +2199,10 @@ impl DocumentWorkspace {
             },
         );
         if let Err(error) = result {
-            self.annotation_statuses.insert(
+            self.set_status(
                 editing.document_id,
                 format!("Edited text was not kept: {error}"),
+                StatusSeverity::Error,
             );
         }
         self.sync_document_edits(editing.document_id, cx);

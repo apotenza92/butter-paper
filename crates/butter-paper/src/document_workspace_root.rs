@@ -267,6 +267,10 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::undo_document_from_toolbar))
             .on_action(cx.listener(Self::redo_document_from_toolbar))
             .on_action(cx.listener(|workspace, _: &Escape, window, cx| {
+                // Escape during a property slider's drag puts its value back.
+                if workspace.cancel_property_slider_drag(window, cx) {
+                    return;
+                }
                 let pending_editor_focused = workspace
                     .pending_text_box_focus(cx)
                     .is_some_and(|focus| focus.is_focused(window));
@@ -323,9 +327,11 @@ impl DocumentWorkspace {
                         // and the status bar says why.
                         Err(error) if caption => {
                             if let Some(editor) = workspace.pending_text_box_editor.take() {
-                                workspace
-                                    .annotation_statuses
-                                    .insert(editor.document_id, error);
+                                workspace.set_status(
+                                    editor.document_id,
+                                    error,
+                                    StatusSeverity::Error,
+                                );
                             }
                             workspace.pending_text_box_subscriptions.clear();
                             workspace.text_box_commit_error = None;

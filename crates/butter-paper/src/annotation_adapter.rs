@@ -1209,10 +1209,32 @@ pub struct ContentPreview<'a> {
     )>,
 }
 
+/// A property edit shown on the canvas while a slider is dragged, before it
+/// is committed: the committed document with the edit applied, and the
+/// revision it was made from.
+struct PropertyPreview {
+    document: AnnotationDocument,
+    base_revision: u64,
+    /// The committed selection it was made for: a preview never outlives a
+    /// change of selection.
+    base_selection: Vec<MarkupId>,
+}
+
+impl PropertyPreview {
+    /// Whether the preview was made for `document` as it is now.
+    fn matches(&self, document: &AnnotationDocument) -> bool {
+        self.base_revision == document.revision()
+            && self.base_selection.as_slice() == document.selected_ids()
+    }
+}
+
 #[derive(Default)]
 pub struct AnnotationAdapter {
     tool: AnnotationTool,
     documents: HashMap<u64, AnnotationDocument>,
+    /// Property edits previewed by a dragged slider, by document. The
+    /// committed document, its history and its revision stay unchanged.
+    property_previews: HashMap<u64, PropertyPreview>,
     active: Option<ActivePointer>,
     vertex_path_draft: Option<VertexPathDraft>,
     cloud_draft: Option<VertexPathDraft>,
@@ -12835,6 +12857,57 @@ impl AnnotationAdapter {
         Ok(())
     }
 
+    /// Starts a preview edit: puts a copy of the document in its place, for
+    /// the edit that follows to change, and returns the committed document.
+    /// Hand it back to [`Self::end_property_preview`] when the edit is done.
+    /// `None` when there is no such document.
+    pub fn begin_property_preview(&mut self, document_id: u64) -> Option<AnnotationDocument> {
+        let committed = self.documents.remove(&document_id)?;
+        self.property_previews.remove(&document_id);
+        self.documents.insert(document_id, committed.preview_copy());
+        Some(committed)
+    }
+
+    /// Ends a preview edit: puts the committed document back and, when the
+    /// edit succeeded, keeps its result as the document's preview. The
+    /// committed document, its history and its revision are as before.
+    pub fn end_property_preview(
+        &mut self,
+        document_id: u64,
+        committed: AnnotationDocument,
+        edited: bool,
+    ) {
+        let base_revision = committed.revision();
+        let base_selection = committed.selected_ids().to_vec();
+        let preview = self.documents.insert(document_id, committed);
+        if edited && let Some(document) = preview {
+            self.property_previews.insert(
+                document_id,
+                PropertyPreview {
+                    document,
+                    base_revision,
+                    base_selection,
+                },
+            );
+        }
+    }
+
+    /// Drops every property preview, so the canvas shows the committed
+    /// markup again. True when there was one.
+    pub fn clear_property_previews(&mut self) -> bool {
+        let had_preview = !self.property_previews.is_empty();
+        self.property_previews.clear();
+        had_preview
+    }
+
+    /// Whether `document_id` shows a property edit that is not committed.
+    pub fn property_preview_active(&self, document_id: u64) -> bool {
+        self.documents
+            .get(&document_id)
+            .zip(self.property_previews.get(&document_id))
+            .is_some_and(|(document, preview)| preview.matches(document))
+    }
+
     pub fn set_selected_ink_opacity(
         &mut self,
         document_id: u64,
@@ -13286,7 +13359,19 @@ impl AnnotationAdapter {
                         document.with_moved_markups(page_index, groups, markups, delta)
                     })
                     .map_or_else(
-                        || document.document_scene(page_index),
+                        || {
+                            // A property preview draws with the committed
+                            // revision, which the panels' edits are checked
+                            // against.
+                            let mut scene = self
+                                .property_previews
+                                .get(&document_id)
+                                .filter(|preview| preview.matches(document))
+                                .map_or(document, |preview| &preview.document)
+                                .document_scene(page_index);
+                            scene.revision = document.revision();
+                            scene
+                        },
                         |preview| preview.document_scene(page_index),
                     )
             })
@@ -15039,6 +15124,13 @@ impl AnnotationAdapter {
         self.documents
             .get(&document_id)
             .map(AnnotationDocument::canonical_json_snapshot)
+    }
+
+    /// The revision of the committed annotations, without copying them.
+    pub fn revision(&self, document_id: u64) -> Option<u64> {
+        self.documents
+            .get(&document_id)
+            .map(AnnotationDocument::revision)
     }
 
     pub fn is_dirty(&self, document_id: u64) -> bool {

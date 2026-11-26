@@ -156,7 +156,7 @@ impl DocumentWorkspace {
             return;
         };
         if let Some(reason) = crate::table_editing::row_change_blocked(table) {
-            self.annotation_statuses.insert(document_id, reason);
+            self.set_status(document_id, reason, StatusSeverity::Notice);
             cx.notify();
             return;
         }
@@ -192,8 +192,11 @@ impl DocumentWorkspace {
             },
         );
         if let Err(error) = result {
-            self.annotation_statuses
-                .insert(document_id, format!("The table was not changed: {error}"));
+            self.set_status(
+                document_id,
+                format!("The table was not changed: {error}"),
+                StatusSeverity::Error,
+            );
         }
         self.sync_document_edits(document_id, cx);
         cx.notify();
@@ -412,8 +415,11 @@ impl DocumentWorkspace {
             },
         );
         if let Err(error) = result {
-            self.annotation_statuses
-                .insert(document_id, format!("The table was not changed: {error}"));
+            self.set_status(
+                document_id,
+                format!("The table was not changed: {error}"),
+                StatusSeverity::Error,
+            );
         }
         self.sync_document_edits(document_id, cx);
     }

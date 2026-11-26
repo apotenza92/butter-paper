@@ -451,27 +451,34 @@ impl DocumentWorkspace {
         event: &crate::property_controls::PropertyTextEditEvent,
         cx: &mut Context<Self>,
     ) {
+        if let Err(error) = self.try_property_text_edit(event, cx) {
+            self.set_status(event.document_id, error, StatusSeverity::Error);
+            cx.notify();
+        }
+    }
+
+    /// [`Self::apply_property_text_edit`] that returns the reason it did not
+    /// apply, instead of showing it.
+    pub(super) fn try_property_text_edit(
+        &mut self,
+        event: &crate::property_controls::PropertyTextEditEvent,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
         let current = self.session(event.document_id, cx).and_then(|session| {
             session
                 .read(cx)
                 .annotations
-                .snapshot(event.document_id.value())
-                .map(|snapshot| snapshot.revision)
+                .revision(event.document_id.value())
         });
-        let result = if current != Some(event.expected_revision) {
-            Err("The markup changed while its text was being edited".to_owned())
-        } else {
-            self.set_markup_content(
-                event.document_id,
-                &event.annotation_id,
-                event.content.clone(),
-                cx,
-            )
-        };
-        if let Err(error) = result {
-            self.annotation_statuses.insert(event.document_id, error);
-            cx.notify();
+        if current != Some(event.expected_revision) {
+            return Err("The markup changed while its text was being edited".to_owned());
         }
+        self.set_markup_content(
+            event.document_id,
+            &event.annotation_id,
+            event.content.clone(),
+            cx,
+        )
     }
 
     /// Sets a markup's text from its properties' Text field, as one undoable
