@@ -14,6 +14,9 @@ alone do not establish these behaviours.
   submenus, Settings ▸ Appearance, Match App, and on macOS the native
   window frames and menus under a forced App Appearance. Dark pages'
   menu and highlights are verified on both; the page edge ring is not.
+- Settings window behind the main window on macOS: after a change from
+  the View menu, it showed the old Page Appearance until it came to the
+  front. Check whether an inactive Settings window repaints.
 - Find in Documents after a click on the search panel's Visual mode
   button: in the test harness the shortcut did nothing until the page got
   focus. Check whether the real app has the same dead shortcut.

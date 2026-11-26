@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.6.1]
+
 ### Appearance
 
 - Settings > Appearance has two settings: App (Light, Dark, Match
