@@ -217,8 +217,8 @@ expect-hidden 0 document-search-panel
 # page clears the highlight and starts no selection box; the next click on
 # empty page starts one, and Escape ends it. Points are in PDF points on
 # page 1, so they hold at every window size: the drag runs along the line
-# "Thank you for referring Sam…", and the clicks fall on blank page below
-# the last line.
+# "Thank you for referring Sam…", and the clicks fall on blank page right
+# of the heading lines, which stay in view at every Fit Width zoom.
 key 0 v
 wait 400
 expect-tool 0 Select
@@ -228,12 +228,12 @@ page-drag 0 1 60 690.5 400 690.5
 wait 600
 expect-text-selected 0 yes
 shot text-highlighted
-page-click 0 1 300 462
+page-click 0 1 480 740
 wait 600
 expect-text-selected 0 no
 expect-box 0 none
 shot text-click-out
-page-click 0 1 300 462
+page-click 0 1 480 740
 wait 600
 expect-box 0 armed
 key 0 escape
@@ -252,12 +252,12 @@ wait 600
 expect-shown 0 viewer-page-input
 type 0 1
 wait 300
-page-click 0 1 300 462
+page-click 0 1 480 740
 wait 600
 expect-hidden-if-active 0 viewer-page-input
 expect-box 0 none
 shot page-field-click-out
-page-click 0 1 300 462
+page-click 0 1 480 740
 wait 600
 expect-box 0 armed
 key 0 escape

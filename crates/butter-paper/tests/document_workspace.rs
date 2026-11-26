@@ -13015,6 +13015,11 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // Its drags run at free angles: angle snap (on at 15° by default, also
+    // for dragged ends) would turn them to a multiple of 15°.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let document_id =
         workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
@@ -13138,6 +13143,9 @@ fn real_engineering_visual_properties_create_edit_save_and_fresh_workspace_reope
     scroll_annotation_target_into_view(cx, DOCUMENT_SNAPSHOT_TOOL_ID);
     let tool = cx.debug_bounds(DOCUMENT_SNAPSHOT_TOOL_ID).unwrap();
     cx.simulate_click(tool.center(), Modifiers::default());
+    // The page takes the keyboard from the inspector's last field: a press
+    // that only moves the focus out of a field starts no Snapshot box.
+    cx.update(|window, cx| focus.focus(window, cx));
     cx.update(|window, cx| window.draw(cx).clear(cx));
     let to_view = projection(cx);
     cx.simulate_click(to_view(72., 72.), Modifiers::default());
@@ -32152,6 +32160,11 @@ fn real_polylength_area_edit_save_close_and_fresh_workspace_reopen(cx: &mut Test
     });
     cx.simulate_resize(size(px(1920.), px(1600.)));
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // Its drags run at free angles: angle snap (on at 15° by default, also
+    // for dragged ends) would turn them to a multiple of 15°.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let document_id =
         workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
@@ -34343,6 +34356,11 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // Its drags run at free angles: angle snap (on at 15° by default, also
+    // for dragged ends) would turn them to a multiple of 15°.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     // The drawn length is checked exactly: Snap dimensions (on at 1 mm by
     // default) would round it to whole millimetres on the paper.
     workspace.update(cx, |workspace, cx| {
@@ -34512,7 +34530,10 @@ fn real_dimension_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppCon
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(cx.debug_bounds("dimension.body").is_some());
     // On the dimension line, clear of its caption: a press on a selected
-    // markup's text edits the text.
+    // markup's text edits the text. The page takes the keyboard first: a
+    // press that only moves the focus out of a field starts no edit.
+    let focus = workspace.read_with(cx, |workspace, _| workspace.focus_handle());
+    cx.update(|window, cx| focus.focus(window, cx));
     let body_start = to_view(270., 352.);
     let body_end = to_view(282., 360.);
     cx.simulate_mouse_down(body_start, MouseButton::Left, Modifiers::default());
@@ -34748,6 +34769,11 @@ fn real_arc_edit_save_close_and_fresh_workspace_reopen(cx: &mut TestAppContext) 
         }
     });
     let workspace = workspace_slot.borrow_mut().take().unwrap();
+    // Its drags run at free angles: angle snap (on at 15° by default, also
+    // for dragged ends) would turn them to a multiple of 15°.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     cx.update(|window, _| window.activate_window());
     let document_id =
         workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
@@ -44103,6 +44129,11 @@ fn real_pdfium_worker_opens_navigates_and_exits_without_an_orphan(cx: &mut TestA
         .borrow_mut()
         .take()
         .expect("the real workspace entity must be retained");
+    // Its drags run at free angles: angle snap (on at 15° by default, also
+    // for dragged ends) would turn them to a multiple of 15°.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_semantic_snap_angle_enabled(false, cx)
+    });
     let live_document =
         workspace.update(cx, |workspace, cx| workspace.open_path(fixture.clone(), cx));
     cx.run_until_parked();
