@@ -333,6 +333,20 @@ impl Fixture<'_> {
         self.draw();
     }
 
+    /// Select all in the field with the platform's own key, then delete. On
+    /// macOS, Ctrl+A moves to the line start and drops the selection, so
+    /// the two keys must not follow each other.
+    fn clear_query(&mut self) {
+        let select_all = if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        };
+        self.cx.simulate_keystrokes(select_all);
+        self.cx.simulate_keystrokes("backspace");
+        self.draw();
+    }
+
     fn search(&mut self, text: &str) -> SearchPanelSummary {
         self.open_panel();
         self.type_text(text);
@@ -542,7 +556,7 @@ fn a_markup_row_shows_subject_author_text_and_replies(cx: &mut TestAppContext) {
     assert_eq!(markup.0, "Text Box · Alex");
     assert_eq!(markup.1, ["Sam: Agreed, 60 min"]);
     // A match in a reply says which reply.
-    f.cx.simulate_keystrokes("cmd-a ctrl-a backspace");
+    f.clear_query();
     f.type_text("agreed");
     let summary = f.wait_for("the reply search", |summary| {
         summary.finished && summary.searched == "agreed"
@@ -801,7 +815,7 @@ fn the_query_language_reaches_the_panel(cx: &mut TestAppContext) {
     let explanation = summary.explanation.unwrap();
     assert!(explanation.contains("plan"), "{explanation}");
     // An invalid regular expression says so and finds nothing.
-    f.cx.simulate_keystrokes("cmd-a ctrl-a backspace");
+    f.clear_query();
     f.type_text("/(/");
     let summary = f.wait_for("bad regex", |summary| {
         summary.finished && summary.searched == "/(/"

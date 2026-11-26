@@ -688,7 +688,8 @@ impl DocumentWorkspace {
     }
 
     /// Cmd+Shift+F or Ctrl+Shift+F, and Edit ▸ Find in Documents: the panel
-    /// opens (in place of Page Thumbnails) with the focus in the query field.
+    /// opens (in place of Page Thumbnails) in the Text mode, with the focus in
+    /// the query field, also when the panel was left in the Visual mode.
     /// Selected page text becomes the query.
     pub(super) fn open_search_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_document_id.is_none() {
@@ -701,6 +702,8 @@ impl DocumentWorkspace {
         });
         self.left_panel = Some(LeftPanel::Search);
         self.ensure_search_panel(window, cx);
+        // The Visual mode has no field: the shortcut always shows Text.
+        self.set_search_mode(SearchMode::Text, cx);
         if let Some(seed) = seed
             && let Some(panel) = self.search_panel.as_ref()
         {

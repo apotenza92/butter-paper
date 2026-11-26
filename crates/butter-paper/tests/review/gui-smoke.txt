@@ -242,7 +242,9 @@ expect-box 0 none
 
 # A click-out only dismisses: with the page field open, a click on empty
 # page closes the field and starts no selection box; the next click on
-# empty page starts one, and Escape ends it.
+# empty page starts one, and Escape ends it. The field closes on its blur
+# event, which an inactive window never gets (the macOS runner), so the
+# closed state is checked only in an active window.
 key 0 v
 wait 400
 os-click-id 0 viewer-page-indicator
@@ -252,7 +254,7 @@ type 0 1
 wait 300
 page-click 0 1 300 462
 wait 600
-expect-hidden 0 viewer-page-input
+expect-hidden-if-active 0 viewer-page-input
 expect-box 0 none
 shot page-field-click-out
 page-click 0 1 300 462

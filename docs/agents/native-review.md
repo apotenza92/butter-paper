@@ -130,10 +130,14 @@ coordinates, so they survive layout changes and window margins:
   does; `@document` names the window's active document's file, so a script
   needs no machine path. That file is open, so its drop only brings its tab
   forward; `@copy` drops a new copy of it, made in `BP_REVIEW_OUT`.
-- `activate W` makes window W active and fails if it is not. Under Xvfb
-  with no window manager the window that opens is never active (the macOS
-  runner showed the same failure): GPUI then sends no focus or blur events,
-  so a text field never closes on a click-out.
+- `activate W` makes window W active (it asks again for up to 5 s) and
+  fails if it is not. Under Xvfb with no window manager the window that
+  opens is never active: GPUI then sends no focus or blur events, so a text
+  field never closes on a click-out. The macOS CI runner refuses too: there
+  `activate` logs that the window stays inactive and passes.
+- `expect-hidden-if-active W SELECTOR` is `expect-hidden` in an active
+  window and logs a skipped check in an inactive one. Use it for a state
+  that needs a blur event, such as a field that closes on a click-out.
 
 A failure is logged as `FAIL:`; at `quit` the app writes `FAILED` beside
 the log and exits 1.

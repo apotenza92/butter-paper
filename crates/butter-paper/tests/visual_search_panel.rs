@@ -24,13 +24,13 @@ use std::{
 use butter_paper::annotation_adapter::AnnotationTool;
 use butter_paper::annotation_model::PageRotation;
 use butter_paper::document_workspace::{
-    DOCUMENT_SEARCH_FOOTER_ID, DOCUMENT_SEARCH_MODE_TEXT_ID, DOCUMENT_SEARCH_MODE_VISUAL_ID,
-    DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_SCOPE_THIS_ID, DOCUMENT_SEARCH_TRY_VISUAL_ID,
-    DOCUMENT_VISUAL_CLEAR_ID, DOCUMENT_VISUAL_DRAW_BOX_ID, DOCUMENT_VISUAL_MIRRORED_ID,
-    DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_SIMILARITY_ID, DOCUMENT_VISUAL_STOP_ID,
-    DOCUMENT_VISUAL_TEMPLATE_ID, DocumentId, DocumentWorkspace, NativeDocumentResource,
-    OpenedNativeDocument, RasterSurface, SearchMode, TemplateOrigin, ThumbnailSurface,
-    VisualPanelRow, VisualPanelSummary, document_annotation_layer_id,
+    DOCUMENT_LEFT_RAIL_SEARCH_ID, DOCUMENT_SEARCH_FOOTER_ID, DOCUMENT_SEARCH_MODE_TEXT_ID,
+    DOCUMENT_SEARCH_MODE_VISUAL_ID, DOCUMENT_SEARCH_PANEL_ID, DOCUMENT_SEARCH_SCOPE_THIS_ID,
+    DOCUMENT_SEARCH_TRY_VISUAL_ID, DOCUMENT_VISUAL_CLEAR_ID, DOCUMENT_VISUAL_DRAW_BOX_ID,
+    DOCUMENT_VISUAL_MIRRORED_ID, DOCUMENT_VISUAL_PASTE_ID, DOCUMENT_VISUAL_SIMILARITY_ID,
+    DOCUMENT_VISUAL_STOP_ID, DOCUMENT_VISUAL_TEMPLATE_ID, DocumentId, DocumentWorkspace,
+    NativeDocumentResource, OpenedNativeDocument, RasterSurface, SearchMode, TemplateOrigin,
+    ThumbnailSurface, VisualPanelRow, VisualPanelSummary, document_annotation_layer_id,
     init_document_workspace_actions, search_panel_shortcut, visual_tile_id,
 };
 use butter_paper::page_view_control::PageViewMode;
@@ -858,5 +858,42 @@ fn the_text_footer_offers_visual_search_for_pages_without_text(cx: &mut TestAppC
     }
     assert!(f.cx.debug_bounds(DOCUMENT_SEARCH_FOOTER_ID).is_some());
     f.click(DOCUMENT_SEARCH_TRY_VISUAL_ID);
+    assert_eq!(f.summary().mode, SearchMode::Visual);
+}
+
+/// Find in Documents always opens the Text mode and its field, also when
+/// the panel was left in the Visual mode. The keys that follow reach the
+/// field, not the tool shortcuts. A click on the rail button keeps the mode.
+#[gpui::test]
+fn find_in_documents_shows_the_text_mode_and_focuses_its_field(cx: &mut TestAppContext) {
+    let mut f = setup(cx, 1, Duration::ZERO);
+    f.cx.simulate_keystrokes(search_panel_shortcut(cfg!(target_os = "macos")));
+    f.draw();
+    f.click(DOCUMENT_SEARCH_MODE_VISUAL_ID);
+    // A click on the page gives it the focus.
+    f.click(butter_paper::document_workspace::DOCUMENT_VIEWPORT_ID);
+    assert_eq!(f.summary().mode, SearchMode::Visual);
+    f.cx.simulate_keystrokes(search_panel_shortcut(cfg!(target_os = "macos")));
+    f.draw();
+    assert_eq!(f.summary().mode, SearchMode::Text);
+    let workspace = f.workspace.clone();
+    assert!(
+        f.cx.update(|window, cx| workspace.read(cx).search_query_focused(window, cx)),
+        "the shortcut focuses the field"
+    );
+    f.cx.simulate_keystrokes("s e c o n d");
+    f.draw();
+    assert_eq!(f.tool(), Some(AnnotationTool::Select));
+    let text = f.workspace.read_with(f.cx, |workspace, cx| {
+        workspace
+            .search_panel_summary(cx)
+            .map(|summary| summary.text)
+    });
+    assert_eq!(text.as_deref(), Some("second"));
+
+    // The rail button keeps the last-used mode.
+    f.click(DOCUMENT_SEARCH_MODE_VISUAL_ID);
+    f.click(DOCUMENT_LEFT_RAIL_SEARCH_ID);
+    f.click(DOCUMENT_LEFT_RAIL_SEARCH_ID);
     assert_eq!(f.summary().mode, SearchMode::Visual);
 }

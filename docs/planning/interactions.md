@@ -432,8 +432,9 @@ every open document, in every window, with a query language.
   open panel's button closes the sidebar; a click on the other button
   switches the panel. In the empty window the button is disabled.
 - Cmd+Shift+F (Ctrl+Shift+F on Windows and Linux) opens the panel, also with
-  the focus in another text field, puts the focus in the query field and
-  selects its text. Selected page text becomes the query. While the sidebar
+  the focus in another text field. It always shows the Text mode, also when
+  the panel was left in the Visual mode, puts the focus in the query field
+  and selects its text. The rail button keeps the last-used mode. Selected page text becomes the query. While the sidebar
   yields to properties, the panel is open but hidden and the focus stays
   where it was; the panel shows when the window widens or properties close.
 - From the top: the header "Search", the Text and Visual switch, the query
