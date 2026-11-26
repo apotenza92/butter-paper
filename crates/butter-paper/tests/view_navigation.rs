@@ -2579,13 +2579,23 @@ fn single_page_view_remembers_each_pages_zoom_and_position(cx: &mut TestAppConte
     assert_eq!(refitted.zoom, fitted.zoom);
 }
 
+/// `path` as an absolute path on this platform. Page memory keeps only
+/// files with an absolute path, and on Windows that path needs a drive.
+fn absolute_path(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{path}")
+    } else {
+        path.to_owned()
+    }
+}
+
 #[gpui::test]
 fn a_file_gets_its_remembered_pages_back_when_it_opens_again(cx: &mut TestAppContext) {
-    let (mut h, documents) = setup_tabs(
-        cx,
-        &UNIFORM_PAGES,
-        &["/documents/memory-a.pdf", "/documents/memory-b.pdf"],
+    let (memory_a, memory_b) = (
+        absolute_path("/documents/memory-a.pdf"),
+        absolute_path("/documents/memory-b.pdf"),
     );
+    let (mut h, documents) = setup_tabs(cx, &UNIFORM_PAGES, &[&memory_a, &memory_b]);
     let (first, second) = (documents[0], documents[1]);
     h.switch_to(first);
     h.action(SinglePageView);
@@ -2612,10 +2622,7 @@ fn a_file_gets_its_remembered_pages_back_when_it_opens_again(cx: &mut TestAppCon
     h.cx.run_until_parked();
     h.workspace.update(h.cx, |workspace, cx| {
         workspace.open_documents(
-            DocumentOpenBatchRequest::new(
-                DocumentOpenOrigin::Menu,
-                [PathBuf::from("/documents/memory-a.pdf")],
-            ),
+            DocumentOpenBatchRequest::new(DocumentOpenOrigin::Menu, [PathBuf::from(&memory_a)]),
             cx,
         )
     });
@@ -2640,7 +2647,7 @@ fn a_file_gets_its_remembered_pages_back_when_it_opens_again(cx: &mut TestAppCon
 
     // A file never seen opens with no memory.
     let fresh = h.workspace.update(h.cx, |workspace, cx| {
-        workspace.open_path(PathBuf::from("/documents/memory-c.pdf"), cx)
+        workspace.open_path(PathBuf::from(absolute_path("/documents/memory-c.pdf")), cx)
     });
     h.cx.run_until_parked();
     h.document = fresh;
@@ -2649,11 +2656,8 @@ fn a_file_gets_its_remembered_pages_back_when_it_opens_again(cx: &mut TestAppCon
 
 #[gpui::test]
 fn quitting_keeps_the_pages_of_every_open_tab(cx: &mut TestAppContext) {
-    let (mut h, documents) = setup_tabs(
-        cx,
-        &UNIFORM_PAGES,
-        &["/documents/quit-a.pdf", "/documents/quit-b.pdf"],
-    );
+    let names = ["/documents/quit-a.pdf", "/documents/quit-b.pdf"].map(absolute_path);
+    let (mut h, documents) = setup_tabs(cx, &UNIFORM_PAGES, &names.each_ref().map(String::as_str));
     let memory =
         h.cx.update(|_, cx| cx.new(|_| butter_paper::page_memory::PageMemory::default()));
     h.workspace.update(h.cx, |workspace, cx| {
@@ -2670,7 +2674,7 @@ fn quitting_keeps_the_pages_of_every_open_tab(cx: &mut TestAppContext) {
     assert!(memory.read_with(h.cx, |memory, _| memory.paths().count()) == 0);
     h.workspace
         .update(h.cx, |workspace, cx| workspace.keep_all_page_memory(cx));
-    for name in ["/documents/quit-a.pdf", "/documents/quit-b.pdf"] {
+    for name in &names {
         let view = memory
             .read_with(h.cx, |memory, _| {
                 memory.restart_view(std::path::Path::new(name))

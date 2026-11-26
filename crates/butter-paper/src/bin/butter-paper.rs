@@ -4866,6 +4866,29 @@ mod review_driver {
                             writeln!(log, "FAIL: {} {selector}: shown={shown:?}", words[0]).unwrap();
                         }
                     }
+                    "activate" => {
+                        // activate W: makes window W the active window, as a
+                        // click does under a window manager. Under Xvfb with
+                        // none, the window that opens is never active, so no
+                        // field gets its focus or blur events.
+                        let window = number(1) as usize;
+                        cx.update(|cx| {
+                            if let Some(entry) = document_window_entries(cx).get(window).cloned() {
+                                let _ = entry.handle.update(cx, |_, window, _| window.activate_window());
+                            }
+                        });
+                        pause(cx, 500).await;
+                        let active = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            entry.handle.update(cx, |_, window, _| window.is_window_active()).ok()
+                        });
+                        if active == Some(true) {
+                            writeln!(log, "ok: window {window} active").unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: window {window} not active: {active:?}").unwrap();
+                        }
+                    }
                     "expect-tabs" => {
                         // expect-tabs W N: window W holds N documents.
                         let window = number(1) as usize;
@@ -5247,7 +5270,9 @@ mod review_driver {
                         // drop-files W X Y PATH...: files dragged in from the
                         // system and dropped at window point (X, Y), through
                         // the same events a real drop sends. `@document`
-                        // names the window's active document's file.
+                        // names the window's active document's file, which
+                        // only brings its open tab forward; `@copy` names a
+                        // new copy of that file in BP_REVIEW_OUT, which opens.
                         let window = number(1) as usize;
                         let position = point(px(number(2)), px(number(3)));
                         let active_path = cx.update(|cx| {
@@ -5261,6 +5286,20 @@ mod review_driver {
                             .iter()
                             .filter_map(|word| match *word {
                                 "@document" => active_path.clone(),
+                                "@copy" => {
+                                    let source = active_path.as_ref()?;
+                                    let copy = out.join(format!(
+                                        "dropped-{}",
+                                        source.file_name()?.to_string_lossy()
+                                    ));
+                                    match std::fs::copy(source, &copy) {
+                                        Ok(_) => Some(copy),
+                                        Err(error) => {
+                                            writeln!(log, "drop-files: {copy:?} not made: {error}").unwrap();
+                                            None
+                                        }
+                                    }
+                                }
                                 path => Some(PathBuf::from(path)),
                             })
                             .collect::<Vec<_>>();

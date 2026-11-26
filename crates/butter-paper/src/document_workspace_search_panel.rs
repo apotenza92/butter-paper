@@ -663,9 +663,15 @@ impl DocumentWorkspace {
         cx.notify();
     }
 
-    /// Puts the focus in the query field, its text selected.
+    /// Puts the focus in the query field, its text selected. While the
+    /// sidebar yields to the properties panel, the field is not drawn: the
+    /// focus stays where it is, so the keyboard keeps working.
     pub(super) fn focus_search_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_search_panel(window, cx);
+        if !self.left_sidebar_fits {
+            self.release_search_query_focus();
+            return;
+        }
         let Some(panel) = self.search_panel.as_mut() else {
             return;
         };
@@ -737,7 +743,7 @@ impl DocumentWorkspace {
     /// than the page.
     fn keep_search_query_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let workspace_focus = self.workspace_focus.clone();
-        let shown = self.left_panel == Some(LeftPanel::Search);
+        let shown = self.left_panel == Some(LeftPanel::Search) && self.left_sidebar_fits;
         let Some(panel) = self
             .search_panel
             .as_mut()

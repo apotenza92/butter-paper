@@ -433,7 +433,9 @@ every open document, in every window, with a query language.
   switches the panel. In the empty window the button is disabled.
 - Cmd+Shift+F (Ctrl+Shift+F on Windows and Linux) opens the panel, also with
   the focus in another text field, puts the focus in the query field and
-  selects its text. Selected page text becomes the query.
+  selects its text. Selected page text becomes the query. While the sidebar
+  yields to properties, the panel is open but hidden and the focus stays
+  where it was; the panel shows when the window widens or properties close.
 - From the top: the header "Search", the Text and Visual switch, the query
   field (search icon, clear button), the toggles Match case, Explain
   search, Collapse results, More context and the Sort menu, then the scope:

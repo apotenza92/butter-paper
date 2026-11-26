@@ -13,8 +13,11 @@ wait 4000
 shot start
 expect-dialog 0 closed
 # Without a window manager (Xvfb) the window has no focus until clicked, and
-# the first press only gives it focus: click the status bar first.
+# the first press only gives it focus: click the status bar first. A window
+# never made active gets no focus or blur events: a text field then never
+# closes on a click-out. Make it active as a user's click does.
 os-click-id 0 document-status-bar
+activate 0
 
 # Merge documents: Cancel, a press beside it and Escape each close it.
 merge-documents
@@ -187,6 +190,13 @@ expect-tool 0 Select
 # Search panel: Ctrl+Shift+F (Cmd+Shift+F on macOS) opens it in the left
 # sidebar with the focus in its field; typing searches every open document,
 # and a click on a result goes to it. The rail button closes the panel.
+# The left sidebar yields to the properties panel that Reset to defaults
+# opened, and the macOS and Windows runners open a 1024-point window that
+# cannot hold both: close properties first.
+os-click-id 0 tool-defaults-panel-close
+wait 600
+expect-hidden 0 tool-defaults-panel
+os-click-id 0 document-status-bar
 key 0 secondary-shift-f
 wait 800
 expect-shown 0 document-search-panel
@@ -268,9 +278,10 @@ page-appearance light
 expect-paper 0 real
 
 # A PDF dropped on the page opens as a new tab in the window it is dropped
-# on, not elsewhere. The page is under window point 600, 450.
+# on, not elsewhere. The page is under window point 600, 450. The PDF is a
+# copy: the open file itself only brings its tab forward.
 expect-tabs 0 1
-drop-files 0 600 450 @document
+drop-files 0 600 450 @copy
 wait 2000
 expect-tabs 0 2
 shot dropped-on-page

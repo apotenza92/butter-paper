@@ -128,8 +128,15 @@ coordinates, so they survive layout changes and window margins:
   exits with "leaked handles" and status 101.
 - `drop-files W X Y PATH...` drops files at a window point as the system
   does; `@document` names the window's active document's file, so a script
-  needs no machine path. A failure is logged as
-  `FAIL:`; at `quit` the app writes `FAILED` beside the log and exits 1.
+  needs no machine path. That file is open, so its drop only brings its tab
+  forward; `@copy` drops a new copy of it, made in `BP_REVIEW_OUT`.
+- `activate W` makes window W active and fails if it is not. Under Xvfb
+  with no window manager the window that opens is never active (the macOS
+  runner showed the same failure): GPUI then sends no focus or blur events,
+  so a text field never closes on a click-out.
+
+A failure is logged as `FAIL:`; at `quit` the app writes `FAILED` beside
+the log and exits 1.
 
 `cargo test` rebuilds `target/debug/butter-paper` without the driver, which
 then ignores the script and runs until the timeout: rebuild with

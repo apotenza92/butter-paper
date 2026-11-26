@@ -414,6 +414,42 @@ fn the_shortcut_opens_search_in_place_of_thumbnails_at_the_same_width(cx: &mut T
     assert_eq!(tool, Some(AnnotationTool::Select));
 }
 
+/// The sidebar yields to properties in a narrow window. The shortcut then
+/// keeps the keyboard on the page: a field that is not drawn must not take
+/// it, or typed keys reach nothing. The panel shows when properties close.
+#[gpui::test]
+fn the_shortcut_leaves_the_keyboard_on_the_page_while_the_sidebar_yields(cx: &mut TestAppContext) {
+    let mut f = setup(cx);
+    f.cx.simulate_resize(gpui::size(gpui::px(1024.), gpui::px(700.)));
+    f.draw();
+    f.click("document-workspace-rail-actions");
+    f.draw();
+    f.open_panel();
+    f.draw();
+    assert_eq!(f.left_panel(), Some(LeftPanel::Search));
+    assert!(
+        f.cx.debug_bounds(DOCUMENT_SEARCH_PANEL_ID).is_none(),
+        "the sidebar yields to properties"
+    );
+    // A tool key still reaches the page.
+    f.cx.simulate_keystrokes("r");
+    f.draw();
+    let plan = f.plan;
+    let tool = f
+        .workspace
+        .read_with(f.cx, |workspace, cx| workspace.annotation_tool(plan, cx));
+    assert_eq!(tool, Some(AnnotationTool::Rectangle));
+    assert_eq!(f.summary().unwrap().text, "");
+
+    f.click("document-workspace-rail-actions");
+    f.draw();
+    f.draw();
+    assert!(
+        f.cx.debug_bounds(DOCUMENT_SEARCH_PANEL_ID).is_some(),
+        "the panel shows when properties close"
+    );
+}
+
 #[gpui::test]
 fn the_rail_buttons_open_close_and_switch_the_sidebar(cx: &mut TestAppContext) {
     let mut f = setup(cx);

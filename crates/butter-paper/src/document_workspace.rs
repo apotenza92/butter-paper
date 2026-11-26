@@ -3066,6 +3066,9 @@ pub struct DocumentWorkspace {
     search_panel_requested: bool,
     /// The same for the find bar (Edit ▸ Find).
     find_bar_requested: bool,
+    /// Whether the last frame had room for the left sidebar beside an open
+    /// properties panel (the yield rule). A hidden sidebar takes no focus.
+    left_sidebar_fits: bool,
     /// Finds the system's signing identities.
     system_identity_source: fn() -> Vec<crate::system_certificates::SystemIdentity>,
     session_tab_focus_handles: HashMap<DocumentId, FocusHandle>,
@@ -5020,6 +5023,7 @@ impl DocumentWorkspace {
             search_marks: None,
             search_panel_requested: false,
             find_bar_requested: false,
+            left_sidebar_fits: true,
             session_tab_focus_handles: HashMap::new(),
             session_tab_bounds: HashMap::new(),
             new_tab_open: false,
@@ -29552,6 +29556,7 @@ impl Render for DocumentWorkspace {
             properties_visible.then(|| self.right_sidebar_sizing.preferred_width(rem)),
         );
         let thumbnails_fit = side_panel_room.thumbnails.is_some();
+        self.left_sidebar_fits = thumbnails_fit;
         // Properties yield only when even their least width would squeeze
         // the toolbar (never at the default interface size); they return
         // when the window widens.

@@ -676,7 +676,7 @@ mod tests {
     };
     use std::{
         sync::{Mutex, mpsc},
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     /// A document of `pages` pages whose page text comes from `text`.
@@ -689,6 +689,43 @@ mod tests {
         text: Box<dyn Fn(u32) -> Result<Vec<&'static str>, String> + Send + Sync>,
         markups: Vec<MarkupSearchRecord>,
         read: Mutex<Vec<u32>>,
+        /// When set, the first page read waits here for the other documents.
+        meeting: Option<Arc<Meeting>>,
+        /// Whether the first page read found every document reading.
+        met: AtomicBool,
+    }
+
+    /// A place where documents being read wait until all have arrived, so a
+    /// test knows they were read at the same time without a clock.
+    struct Meeting {
+        expected: usize,
+        arrived: Mutex<usize>,
+        all_arrived: std::sync::Condvar,
+    }
+
+    impl Meeting {
+        fn new(expected: usize) -> Arc<Self> {
+            Arc::new(Self {
+                expected,
+                arrived: Mutex::new(0),
+                all_arrived: std::sync::Condvar::new(),
+            })
+        }
+
+        /// Waits until every document has arrived. `false` when they did not
+        /// all arrive in a long time: they are read one after the other.
+        fn arrive(&self) -> bool {
+            let mut arrived = self.arrived.lock().unwrap();
+            *arrived += 1;
+            self.all_arrived.notify_all();
+            let (arrived, timeout) = self
+                .all_arrived
+                .wait_timeout_while(arrived, Duration::from_secs(10), |arrived| {
+                    *arrived < self.expected
+                })
+                .unwrap();
+            !timeout.timed_out() || *arrived >= self.expected
+        }
     }
 
     impl FakeDocument {
@@ -702,6 +739,8 @@ mod tests {
                 text: Box::new(|_| Ok(vec!["nothing here"])),
                 markups: Vec::new(),
                 read: Mutex::default(),
+                meeting: None,
+                met: AtomicBool::new(false),
             }
         }
 
@@ -728,6 +767,11 @@ mod tests {
             self.start
         }
         fn page_text(&self, page_index: u32) -> Result<Arc<PageSearchText>, String> {
+            if page_index == self.start
+                && let Some(meeting) = &self.meeting
+            {
+                self.met.store(meeting.arrive(), Ordering::Release);
+            }
             std::thread::sleep(self.delay);
             self.read.lock().unwrap().push(page_index);
             let lines = (self.text)(page_index)?;
@@ -992,19 +1036,32 @@ mod tests {
 
     #[test]
     fn documents_run_at_the_same_time_and_each_keeps_its_page_order() {
+        // Each document waits at its first page until all four read: only
+        // documents read at the same time all get past it at once.
+        let meeting = Meeting::new(4);
         let documents = (0..4)
             .map(|id| {
                 let mut document =
                     FakeDocument::new(id, &format!("d{id}.pdf"), 6).with_text(|_| Ok(vec!["door"]));
-                document.delay = Duration::from_millis(15);
-                Arc::new(document) as Arc<dyn SearchDocument>
+                document.meeting = Some(meeting.clone());
+                Arc::new(document)
             })
             .collect::<Vec<_>>();
-        let started = Instant::now();
-        let (events, results) = run_to_end(documents, "door", Default::default());
-        // Four documents of six 15 ms pages: well under the 360 ms that
-        // reading them one after the other takes.
-        assert!(started.elapsed() < Duration::from_millis(300));
+        let (events, results) = run_to_end(
+            documents
+                .iter()
+                .map(|document| document.clone() as Arc<dyn SearchDocument>)
+                .collect(),
+            "door",
+            Default::default(),
+        );
+        for document in &documents {
+            assert!(
+                document.met.load(Ordering::Acquire),
+                "{} was read while the others were",
+                document.name
+            );
+        }
         assert_eq!(results.hit_count(), 24);
         for id in 0..4 {
             let pages = events

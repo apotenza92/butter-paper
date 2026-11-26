@@ -3825,4 +3825,14 @@ fn pdfs_dropped_on_a_window_open_as_tabs_in_that_window(cx: &mut TestAppContext)
         [PathBuf::from("/tmp/other-window.pdf")],
         "the other window keeps its tabs"
     );
+    // A drag from another app sends the window no mouse moves: a drop
+    // after a key press must open as well.
+    window_cx.simulate_keystrokes("escape");
+    window_cx.run_until_parked();
+    drop(&mut window_cx, page, &["/tmp/after-key.pdf"]);
+    assert_eq!(
+        paths(&workspace, &mut window_cx).last(),
+        Some(&PathBuf::from("/tmp/after-key.pdf")),
+        "a drop after a key press opens"
+    );
 }
