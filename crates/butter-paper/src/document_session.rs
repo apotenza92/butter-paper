@@ -498,6 +498,10 @@ pub struct NativeDocumentSession {
     /// laid out wider, its page (in Two Pages its row) is centred across,
     /// as a fit centres it, and the height in view stays.
     pub(crate) pending_center_x: Option<f32>,
+    /// Split View went on or off with this page current and the active
+    /// pane this wide: once laid out at its new width, the pane brings the
+    /// page's row to the top, as a go-to-page does, and keeps it current.
+    pub(crate) pending_keep_page: Option<(u32, f32)>,
 }
 
 /// Which side of the canvas a Split View pane is on.
@@ -682,6 +686,7 @@ impl NativeDocumentSession {
             source_place_asked: false,
             split: None,
             pending_center_x: None,
+            pending_keep_page: None,
         }
     }
 
@@ -832,13 +837,12 @@ impl NativeDocumentSession {
             current_page: self.current_page,
             requested_page: self.current_page,
             picked_page_scroll: None,
-            pending_navigation_scroll: self
-                .viewport_centre_anchor()
-                .is_none()
-                .then_some(self.current_page),
+            // The new pane shows the current page's row from its top, as a
+            // go-to-page does, and keeps that page current.
+            pending_navigation_scroll: Some(self.current_page),
             navigation_from_below: None,
             pending_page_view_scroll: None,
-            pending_zoom_anchor: self.viewport_centre_anchor(),
+            pending_zoom_anchor: None,
             // A fit in force frames the page (in Two Pages its row) in the
             // pane's own width.
             pending_page_frame: match self.view_state.zoom_preset() {

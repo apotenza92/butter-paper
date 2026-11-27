@@ -1566,11 +1566,12 @@ with it.
   (it is a tab stop between the panes, ringed in the focus colour while it
   has the focus; or a press on it) Left and Right move it 16 px, Home and End to
   either least width, and Enter or a double-click back to the middle. Each
-  pane keeps at least 240 px. A new pane shows the point that was at
-  the view centre at its own centre, and with a fit in force frames the
-  page or row in its own width. Turning Split View off keeps the active
-  pane's zoom and height in view and centres its page (or row) across, as
-  a fit does. The session restores Split View, both panes showing the
+  pane keeps at least 240 px. Turning Split View on or off keeps the
+  current page in both panes: laid out at its new width (and refitted when
+  a fit is in force), each pane brings that page's row to the top, as going
+  to a page does, and the page stays current until the view scrolls. Off,
+  the remaining pane also centres its page (or row) across, as a fit
+  does. The session restores Split View, both panes showing the
   active pane's view.
 - The viewport meets the toolbar and rails with no frame, and the pages meet
   its edges: only the space between pages (24pt at 100%) is blank. The
@@ -1587,7 +1588,9 @@ with it.
   its thumbnail, Rotate and the Scale follow it) and moves nothing, even
   when the click only dismisses; the next scroll makes the page level with
   the view centre current again. Single Page view shows only the current
-  page.
+  page. A fit that
+  moves the view (Fit Width or Fit Page chosen, or refitted after a resize)
+  keeps the current page; only scrolling makes another page current.
 - Each tab keeps its own page, zoom, fit and scroll.
 - The Signature panel's Image tab takes a signature from wherever it is:
   From the page (the panel steps aside and the Snapshot tool draws a box

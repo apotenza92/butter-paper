@@ -684,10 +684,10 @@ fn centre_point(h: &mut Harness<'_>, viewport_id: &'static str, prefix: &str) ->
 }
 
 /// Split View on in Two Pages with the cover alone at a free zoom: the new
-/// pane shows the page point that was at the view centre at its own
-/// centre, not shifted by the old, wider view's centre.
+/// pane shows the current page's row from its top and the page in its own
+/// width, not shifted by the old, wider view's centre.
 #[gpui::test]
-fn the_new_pane_centres_the_point_the_view_had_at_its_centre(cx: &mut TestAppContext) {
+fn the_new_pane_shows_the_current_row_in_its_own_width(cx: &mut TestAppContext) {
     let mut h = setup(cx, &UNIFORM_PAGES);
     h.action(TwoPagesView);
     h.action(ToggleCoverPageAlone);
@@ -705,13 +705,29 @@ fn the_new_pane_centres_the_point_the_view_had_at_its_centre(cx: &mut TestAppCon
         ..Default::default()
     });
     h.settle();
+    let current = h.current_page();
     let before = centre_point(&mut h, DOCUMENT_VIEWPORT_ID, "");
+    assert_eq!(before.0, current);
     h.action(ToggleSplitView);
-    let other = centre_point(&mut h, SPLIT_OTHER_VIEWPORT_ID, "other-");
-    assert_eq!(other.0, before.0, "{before:?} → {other:?}");
+    assert_eq!(h.other().1, current, "the new pane shows the current page");
+    let other = h.cx.debug_bounds(SPLIT_OTHER_VIEWPORT_ID).unwrap();
+    let id: &'static str = Box::leak(
+        format!(
+            "other-{}",
+            document_viewer_page_id(document, current as usize)
+        )
+        .into_boxed_str(),
+    );
+    let page =
+        h.cx.debug_bounds(id)
+            .expect("the current page paints in the new pane");
     assert!(
-        (other.1 - before.1).abs() < 0.02 && (other.2 - before.2).abs() < 0.02,
-        "{before:?} → {other:?}"
+        near(page.top(), other.top()),
+        "its row is at the top: {page:?} in {other:?}"
+    );
+    assert!(
+        page.left() < other.right() && page.right() > other.left(),
+        "the page is in the pane's width: {page:?} in {other:?}"
     );
     // And at Fit Width the new pane frames its row across its own width.
     h.action(FitWidth);
@@ -807,4 +823,79 @@ fn tab_reaches_the_split_view_divider(cx: &mut TestAppContext) {
     h.settle();
     let after = h.cx.debug_bounds(SPLIT_PANE_LEFT_ID).unwrap().size.width;
     assert!((f32::from(after - before) - 16.).abs() <= TOLERANCE);
+}
+
+/// Split View on and off keeps the current page in both panes: each pane
+/// refits to its width and brings the current page's row to the top, as a
+/// go-to-page does, rather than taking the page under its new centre.
+/// Two Pages, Cover page alone, Fit Page, the least window with Page
+/// Thumbnails open; from page 1 and from page 5.
+#[gpui::test]
+fn split_view_keeps_the_current_page_in_both_panes(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.cx.simulate_resize(size(px(918.), px(760.)));
+    h.settle();
+    let rail =
+        h.cx.debug_bounds("document-left-rail-pages")
+            .unwrap()
+            .center();
+    h.cx.simulate_click(rail, Modifiers::default());
+    h.settle();
+    assert!(h.cx.debug_bounds("document-thumbnail-strip").is_some());
+    h.action(TwoPagesView);
+    h.action(ToggleCoverPageAlone);
+    h.action(FitPage);
+    let document = h.document;
+    for page in [0_u32, 4] {
+        let navigator = h
+            .workspace
+            .read_with(h.cx, |workspace, _| workspace.page_navigator().clone());
+        navigator.update(h.cx, |_, cx| {
+            cx.emit(butter_paper::page_navigator::PageNavigatorEvent::GoTo(page))
+        });
+        h.settle();
+        assert_eq!(h.current_page(), page, "before Split View");
+        h.action(ToggleSplitView);
+        assert_eq!(
+            h.current_page(),
+            page,
+            "the active pane keeps page {}",
+            page + 1
+        );
+        assert_eq!(h.other().1, page, "the new pane shows page {}", page + 1);
+        // Each pane shows the page's row in view.
+        let viewport = h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+        let shown = h.page(page);
+        assert!(
+            shown.top() >= viewport.top() - px(TOLERANCE) && shown.top() < viewport.bottom(),
+            "page {} is not in view: {shown:?} in {viewport:?}",
+            page + 1
+        );
+        let other = h.cx.debug_bounds(SPLIT_OTHER_VIEWPORT_ID).unwrap();
+        let id: &'static str = Box::leak(
+            format!("other-{}", document_viewer_page_id(document, page as usize)).into_boxed_str(),
+        );
+        let other_shown =
+            h.cx.debug_bounds(id)
+                .expect("the page paints in the new pane");
+        assert!(
+            other_shown.top() >= other.top() - px(TOLERANCE) && other_shown.top() < other.bottom(),
+            "page {} is not in view in the new pane",
+            page + 1
+        );
+        h.action(ToggleSplitView);
+        assert_eq!(
+            h.current_page(),
+            page,
+            "Split View off keeps page {}",
+            page + 1
+        );
+        let viewport = h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+        let shown = h.page(page);
+        assert!(
+            shown.top() >= viewport.top() - px(TOLERANCE) && shown.top() < viewport.bottom(),
+            "page {} is not in view after Split View off",
+            page + 1
+        );
+    }
 }

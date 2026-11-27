@@ -13738,6 +13738,19 @@ impl DocumentWorkspace {
             // Resolve explicit navigation against this frame's page geometry
             // before the continuous viewport chooses its current page.
             let mut picked_target = None;
+            // Split View went on or off: laid out at its new width, the pane
+            // goes to its current page, which stays current.
+            let mut keep_target = false;
+            // A fit framed the view or Split View went off: the layout moved
+            // the view, not the reader, so the current page stays.
+            let mut layout_moved = false;
+            if let Some((page, old_width)) = session.pending_keep_page
+                && (viewport_width - old_width).abs() > 1.
+            {
+                session.pending_keep_page = None;
+                session.pending_navigation_scroll = Some(page);
+                keep_target = true;
+            }
             if let Some(target) = session.pending_navigation_scroll
                 && let Some(layout) = plan
                     .page_layouts
@@ -13785,6 +13798,9 @@ impl DocumentWorkspace {
                 }
                 if cad_layout.is_some() {
                     scroll_x = layout.logical_rect.x.max(0.);
+                }
+                if keep_target && session.view_state.mode() != PageViewMode::TwoPages {
+                    picked_target = Some(target);
                 }
                 if session.view_state.mode() == PageViewMode::TwoPages {
                     // The row comes to the top; a page off the view across
@@ -13846,6 +13862,7 @@ impl DocumentWorkspace {
                 session.view_state.set_scroll(scroll_x, scroll_y);
                 session.viewer.set_scroll(scroll_x, scroll_y);
                 session.pending_page_frame = None;
+                layout_moved = true;
                 plan = session.viewer.plan_at(
                     document_id.value(),
                     &session.page_sizes,
@@ -13875,6 +13892,7 @@ impl DocumentWorkspace {
                     scroll_x = rect.x + rect.width / 2. - viewport_width / 2.;
                     session.view_state.set_scroll(scroll_x, scroll_y);
                     session.viewer.set_scroll(scroll_x, scroll_y);
+                    layout_moved = true;
                     plan = session.viewer.plan_at(
                         document_id.value(),
                         &session.page_sizes,
@@ -13894,6 +13912,9 @@ impl DocumentWorkspace {
             // current again.
             if let Some(target) = picked_target {
                 session.current_page = target;
+                session.requested_page = target;
+                session.picked_page_scroll = Some(session.viewer.logical_scroll());
+            } else if layout_moved && session.view_state.mode().scrolls() {
                 session.picked_page_scroll = Some(session.viewer.logical_scroll());
             } else {
                 session.picked_page_scroll = session

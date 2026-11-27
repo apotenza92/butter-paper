@@ -58,6 +58,10 @@ impl DocumentWorkspace {
             return false;
         }
         let on = session.update(cx, |session, cx| {
+            // The active pane changes width: it keeps its current page.
+            session.pending_keep_page = session
+                .viewport_size
+                .map(|(width, _)| (session.current_page, width));
             let on = if session.split.is_some() {
                 session.close_split();
                 false
@@ -388,14 +392,27 @@ impl DocumentWorkspace {
                 scroll_y = anchored_y;
                 plan = plan_at(other, other.current_page, (scroll_x, scroll_y))?;
             }
+            let mut navigated = false;
+            // A fit framing the view keeps the current page, as navigation
+            // does: the layout moved the view, not the reader.
+            let mut framed = false;
             if let Some(target) = other.pending_navigation_scroll.take()
                 && let Some(layout) = plan
                     .page_layouts
                     .iter()
                     .find(|layout| layout.page == target as usize)
             {
-                scroll_y = layout.logical_rect.y.max(0.);
+                let rect = layout.logical_rect;
+                scroll_y = rect.y.max(0.);
+                // A page off the view across comes into it.
+                if rect.x < scroll_x || rect.width > viewport_width {
+                    scroll_x = rect.x;
+                } else if rect.x + rect.width > scroll_x + viewport_width {
+                    scroll_x = rect.x + rect.width - viewport_width;
+                }
                 other.current_page = target;
+                other.requested_page = target;
+                navigated = true;
                 plan = plan_at(other, target, (scroll_x, scroll_y))?;
             }
             if let Some((page, preset)) = other.pending_page_frame.take()
@@ -424,6 +441,7 @@ impl DocumentWorkspace {
                 } else {
                     (plan.total_height - viewport_height) / 2.
                 };
+                framed = true;
                 plan = plan_at(other, page, (scroll_x, scroll_y))?;
             }
             let cover = other.view_state.cover_alone();
@@ -432,7 +450,14 @@ impl DocumentWorkspace {
                     && crate::viewer::two_page_slot(page, cover).0
                         == crate::viewer::two_page_slot(current as usize, cover).0
             };
+            // The page gone to stays current until the pane scrolls.
+            if navigated || framed {
+                other.picked_page_scroll = Some(other.viewer.logical_scroll());
+            } else if other.picked_page_scroll != Some(other.viewer.logical_scroll()) {
+                other.picked_page_scroll = None;
+            }
             if other.view_state.mode().scrolls()
+                && other.picked_page_scroll.is_none()
                 && let Some(visible) = plan.current_page
                 && !(same_row(visible, other.current_page)
                     && plan.visible_pages.contains(&(other.current_page as usize)))
