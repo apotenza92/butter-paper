@@ -4,6 +4,33 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.6.4]
+
+### Two Pages view
+
+- A third page view shows pages in pairs. Its menu has Cover page alone,
+  which shows the first page by itself, then 2-3, 4-5 and so on. A page
+  alone in its row keeps its book column.
+- Next and Previous page move one pair at a time. Fit Width and Fit Page
+  fit the whole pair.
+
+### Split View
+
+- A new button shows the same document in two panes side by side. Each
+  pane has its own scroll, zoom, page and page view. Markups, undo and
+  saving are shared. Drag the divider, or use the keyboard on it.
+- The first click in the other pane makes it the active pane.
+
+### Toolbar and views
+
+- In narrow windows the page views and Split View merge into one View
+  menu. At the narrowest width Redo hides, and Shift+click on Undo
+  redoes.
+- The View menu on Windows and Linux lists the page views, Cover Page
+  Alone and Split View.
+- A file opens again in the page view, cover and Split View it had.
+- A fit after a window resize keeps the current page.
+
 ## [0.6.3]
 
 ### Clouds
