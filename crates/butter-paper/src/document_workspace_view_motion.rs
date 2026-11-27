@@ -126,7 +126,8 @@ impl DocumentWorkspace {
                 ViewMotionEnd::WheelZoom { .. } => return false,
                 ViewMotionEnd::Fit(preset) => {
                     let page = session.current_page as usize;
-                    let Some(page_size) = session.page_sizes.get(page).copied() else {
+                    // In Two Pages a fit fits the row.
+                    let Some(page_size) = session.fit_size(page as u32) else {
                         return false;
                     };
                     let Some(from_fraction) = fraction_on(page) else {

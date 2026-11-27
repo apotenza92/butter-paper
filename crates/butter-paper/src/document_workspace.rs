@@ -5151,7 +5151,8 @@ impl DocumentWorkspace {
             split_other_refresh_scheduled: None,
             split_drag: None,
             split_canvas_bounds: std::rc::Rc::new(std::cell::Cell::new(None)),
-            split_divider_focus: cx.focus_handle(),
+            // A tab stop: Tab reaches the divider between the panes.
+            split_divider_focus: cx.focus_handle().tab_stop(true),
             split_other_quality_task: None,
             render_replanned: None,
             window_viewport: None,
@@ -5422,8 +5423,14 @@ impl DocumentWorkspace {
         let path = session.path.clone();
         let current_page = session.current_page;
         let page_views = session.view_state.page_views_for_memory(current_page);
+        // CAD View is Continuous's own arrangement; it reopens as Continuous.
+        let layout = crate::page_memory::FileLayout {
+            mode: session.view_state.mode(),
+            cover_alone: session.view_state.cover_alone(),
+            split_view: session.split.is_some(),
+        };
         self.page_memory.update(cx, |memory, cx| {
-            memory.remember(path, current_page, page_views, cx)
+            memory.remember(path, current_page, page_views, layout, cx)
         });
     }
 
@@ -12336,6 +12343,13 @@ impl DocumentWorkspace {
                 .configure(session.view_state.mode(), session.view_state.zoom_percent());
             let (scroll_x, scroll_y) = session.view_state.scroll();
             session.viewer.set_scroll(scroll_x, scroll_y);
+            // A view from the file memory (Two Pages or Continuous, no
+            // scroll kept) goes to the page left once laid out.
+            if view.mode().scrolls() && view.scroll() == (0., 0.) && page_index > 0 {
+                session.current_page = page_index;
+                session.requested_page = page_index;
+                session.pending_navigation_scroll = Some(page_index);
+            }
             if view.split_view() {
                 session.open_split();
             } else {
@@ -13815,8 +13829,17 @@ impl DocumentWorkspace {
                 // Zooming out about the view centre can leave the view above
                 // the first page (or below the last): a refit stays on the
                 // pages and their margins, centred when they fit.
+                // Fit Page in Two Pages keeps the row's paper edges in view,
+                // the first and last rows too.
+                let edge = if preset == ViewerFitPreset::Page
+                    && session.view_state.mode() == PageViewMode::TwoPages
+                {
+                    crate::native_document_view_state::FIT_PAGE_EDGE_ROOM
+                } else {
+                    0.
+                };
                 scroll_y = if plan.total_height > viewport_height {
-                    scroll_y.clamp(0., plan.total_height - viewport_height)
+                    scroll_y.clamp(-edge, plan.total_height - viewport_height + edge)
                 } else {
                     (plan.total_height - viewport_height) / 2.
                 };
@@ -13835,6 +13858,36 @@ impl DocumentWorkspace {
                     device_scale,
                     now,
                 )?;
+            }
+            // Split View went off: the wider view centres its page (or row)
+            // across once it is laid out at its new width.
+            if let Some(old_width) = session.pending_center_x
+                && (viewport_width - old_width).abs() > 1.
+            {
+                session.pending_center_x = None;
+                let page = session.current_page;
+                if let Some(rect) = crate::document_viewer::frame_rect(
+                    &plan.page_layouts,
+                    page as usize,
+                    session.view_state.mode(),
+                    plan.total_width,
+                ) {
+                    scroll_x = rect.x + rect.width / 2. - viewport_width / 2.;
+                    session.view_state.set_scroll(scroll_x, scroll_y);
+                    session.viewer.set_scroll(scroll_x, scroll_y);
+                    plan = session.viewer.plan_at(
+                        document_id.value(),
+                        &session.page_sizes,
+                        &rotations,
+                        page as usize,
+                        viewport_width,
+                        viewport_height,
+                        scroll_x,
+                        scroll_y,
+                        device_scale,
+                        now,
+                    )?;
+                }
             }
             // A page picked by a click stays current while the view stays
             // where the click left it; a scroll makes the page in view

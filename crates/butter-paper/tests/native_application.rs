@@ -466,6 +466,14 @@ fn in_window_application_menu_is_the_four_menu_projection() {
         ]
     );
     let mut view = vec![
+        // The page views and Split View, as the native View menu has them.
+        "Continuous View",
+        "Single Page View",
+        "Two Pages View",
+        "Cover Page Alone",
+        "<separator>",
+        "Split View",
+        "<separator>",
         "Show Menu Bar in App Windows",
         "<separator>",
         "Reverse Scroll Zoom",
@@ -3895,4 +3903,59 @@ fn pdfs_dropped_on_a_window_open_as_tabs_in_that_window(cx: &mut TestAppContext)
         Some(&PathBuf::from("/tmp/after-key.pdf")),
         "a drop after a key press opens"
     );
+}
+
+/// The native menu bar and the in-window menu (Windows and Linux) list the
+/// same page views, Cover Page Alone and Split View, checked alike.
+#[test]
+fn both_view_menus_list_the_same_page_view_items() {
+    let state = NativeApplicationMenuState {
+        has_active_document: true,
+        document_ready: true,
+        two_pages_view_checked: true,
+        cover_page_alone_checked: true,
+        split_view_checked: true,
+        ..Default::default()
+    };
+    let shell = ApplicationMenuShellState::default();
+    let native = build_native_application_menus_with_shell(state, shell);
+    let in_window = build_in_window_application_menus(state, shell);
+    let view_items = |menus: &[Menu]| {
+        let names = menu_item_names(menu(menus, "View"));
+        let start = names
+            .iter()
+            .position(|name| *name == "Continuous View")
+            .expect("the View menu lists Continuous View");
+        let end = names
+            .iter()
+            .position(|name| *name == "Split View")
+            .expect("the View menu lists Split View");
+        names[start..=end]
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>()
+    };
+    let expected = [
+        "Continuous View",
+        "Single Page View",
+        "Two Pages View",
+        "Cover Page Alone",
+        "<separator>",
+        "Split View",
+    ];
+    assert_eq!(view_items(&native), expected);
+    assert_eq!(view_items(&in_window), expected);
+    for menus in [&native, &in_window] {
+        let view = menu(menus, "View");
+        assert!(!item(view, "Continuous View").is_checked());
+        assert!(item(view, "Two Pages View").is_checked());
+        assert!(item(view, "Cover Page Alone").is_checked());
+        assert!(item(view, "Split View").is_checked());
+        assert_action(item(view, "Two Pages View"), |action| {
+            action.as_any().is::<TwoPagesView>()
+        });
+        assert_action(item(view, "Split View"), |action| {
+            action.as_any().is::<ToggleSplitView>()
+        });
+    }
 }

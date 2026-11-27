@@ -31,11 +31,38 @@ const LOCATORS_NAME: &str = "page-memory-locators.json";
 /// One page's remembered view: its zero-based page index and its view.
 pub type PageViews = Vec<(u32, RememberedPageView)>;
 
+/// How a file's last tab showed its pages: the page view, Two Pages view's
+/// "Cover page alone" and Split View. Continuous, one pane, is the default
+/// and is not remembered on its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileLayout {
+    pub mode: PageViewMode,
+    pub cover_alone: bool,
+    pub split_view: bool,
+}
+
+impl Default for FileLayout {
+    fn default() -> Self {
+        Self {
+            mode: PageViewMode::Continuous,
+            cover_alone: false,
+            split_view: false,
+        }
+    }
+}
+
+impl FileLayout {
+    fn is_default(self) -> bool {
+        self == Self::default()
+    }
+}
+
 struct Entry {
     path: PathBuf,
     /// The page that was shown when the tab closed.
     current_page: u32,
     page_views: PageViews,
+    layout: FileLayout,
 }
 
 #[derive(Default)]
@@ -65,9 +92,15 @@ impl PageMemory {
                 .map(|document| Entry {
                     current_page: document.view().current_page(),
                     page_views: document.view().page_views().to_vec(),
+                    // A memory from 0.6.3 holds Continuous and no flags.
+                    layout: FileLayout {
+                        mode: document.view().mode(),
+                        cover_alone: document.view().cover_alone(),
+                        split_view: document.view().split_view(),
+                    },
                     path: document.into_path(),
                 })
-                .filter(|entry| !entry.page_views.is_empty())
+                .filter(|entry| !entry.page_views.is_empty() || !entry.layout.is_default())
                 .collect::<Vec<_>>(),
             Err(error) => {
                 eprintln!("Page memory could not be loaded: {error:?}");
@@ -105,46 +138,67 @@ impl PageMemory {
 
     /// The view that reopens the file at `path` where its last tab left it:
     /// the page shown then, in Single Page view, with that page's zoom and
-    /// scroll and the other pages remembered. `None` when that page has no
-    /// remembered view (it was left in Continuous view), so the file opens
-    /// as usual with its pages remembered.
+    /// scroll and the other pages remembered; or the page shown in Two Pages
+    /// view, with the cover setting and Split View as they were. `None` when
+    /// it was left in Continuous view in one pane, so the file opens as
+    /// usual with its pages remembered.
     pub fn restart_view(&self, path: &Path) -> Option<RestartView> {
         let entry = &self.entries[self.position(path)?];
-        let (_, shown) = entry
+        let layout = entry.layout;
+        let shown = entry
             .page_views
             .iter()
-            .find(|(page, _)| *page == entry.current_page)?;
-        let (scroll_x, scroll_y) = shown.scroll();
-        Some(
-            RestartView::new(
+            .find(|(page, _)| *page == entry.current_page);
+        let view = match shown {
+            Some((_, shown)) => {
+                let (scroll_x, scroll_y) = shown.scroll();
+                RestartView::new(
+                    entry.current_page,
+                    PageViewMode::SinglePage,
+                    shown.zoom(),
+                    scroll_x,
+                    scroll_y,
+                )
+                .with_page_views(
+                    entry
+                        .page_views
+                        .iter()
+                        .filter(|(page, _)| *page != entry.current_page)
+                        .copied()
+                        .collect(),
+                )
+            }
+            // Left in Two Pages, with the cover alone or in Split View: that
+            // view, on the page left, at the usual zoom.
+            None if !layout.is_default() => RestartView::new(
                 entry.current_page,
-                PageViewMode::SinglePage,
-                shown.zoom(),
-                scroll_x,
-                scroll_y,
+                layout.mode,
+                RestartZoom::FitWidth,
+                0.,
+                0.,
             )
-            .with_page_views(
-                entry
-                    .page_views
-                    .iter()
-                    .filter(|(page, _)| *page != entry.current_page)
-                    .copied()
-                    .collect(),
-            ),
+            .with_page_views(entry.page_views.clone()),
+            None => return None,
+        };
+        Some(
+            view.with_cover_alone(layout.cover_alone)
+                .with_split_view(layout.split_view),
         )
     }
 
-    /// Remembers `page_views` for the file at `path` as its latest use, with
-    /// the page shown. No pages forgets the file. A file found by identity
-    /// at a new path takes that path.
+    /// Remembers `page_views` and `layout` for the file at `path` as its
+    /// latest use, with the page shown. No pages and the default layout
+    /// forget the file. A file found by identity at a new path takes that
+    /// path.
     pub fn remember(
         &mut self,
         path: PathBuf,
         current_page: u32,
         page_views: PageViews,
+        layout: FileLayout,
         cx: &mut Context<Self>,
     ) {
-        if self.record_at(path, current_page, page_views) {
+        if self.record_with(path, current_page, page_views, layout) {
             cx.notify();
             self.publish(cx);
         }
@@ -157,14 +211,27 @@ impl PageMemory {
         self.record_at(path, 0, page_views)
     }
 
+    #[cfg(test)]
     fn record_at(&mut self, path: PathBuf, current_page: u32, page_views: PageViews) -> bool {
+        self.record_with(path, current_page, page_views, FileLayout::default())
+    }
+
+    fn record_with(
+        &mut self,
+        path: PathBuf,
+        current_page: u32,
+        page_views: PageViews,
+        layout: FileLayout,
+    ) -> bool {
+        let forget = page_views.is_empty() && layout.is_default();
         let existing = self.position(&path);
         if let Some(index) = existing
             && index + 1 == self.entries.len()
             && self.entries[index].path == path
             && self.entries[index].current_page == current_page
             && self.entries[index].page_views == page_views
-            && !page_views.is_empty()
+            && self.entries[index].layout == layout
+            && !forget
         {
             return false;
         }
@@ -177,7 +244,7 @@ impl PageMemory {
                 }
             }
         }
-        if page_views.is_empty() {
+        if forget {
             self.locators.remove(&locator_key(&path));
             return existing.is_some();
         }
@@ -185,6 +252,7 @@ impl PageMemory {
             path,
             current_page,
             page_views,
+            layout,
         });
         self.trim();
         true
@@ -231,12 +299,14 @@ impl PageMemory {
                     entry.path.clone(),
                     RestartView::new(
                         entry.current_page,
-                        PageViewMode::Continuous,
+                        entry.layout.mode,
                         RestartZoom::FitWidth,
                         0.,
                         0.,
                     )
-                    .with_page_views(entry.page_views.clone()),
+                    .with_page_views(entry.page_views.clone())
+                    .with_cover_alone(entry.layout.cover_alone)
+                    .with_split_view(entry.layout.split_view),
                 )
             })
             .unzip();
@@ -473,5 +543,74 @@ mod tests {
         memory.record_at(path("b.pdf"), 7, views(&[1]));
         assert_eq!(memory.restart_view(&path("b.pdf")), None);
         assert_eq!(memory.restart_view(&path("c.pdf")), None);
+    }
+
+    #[test]
+    fn a_file_reopens_in_two_pages_with_its_cover_and_split_view() {
+        let mut memory = PageMemory::default();
+        let layout = FileLayout {
+            mode: PageViewMode::TwoPages,
+            cover_alone: true,
+            split_view: true,
+        };
+        assert!(memory.record_with(path("a.pdf"), 5, Vec::new(), layout));
+        let view = memory.restart_view(&path("a.pdf")).unwrap();
+        assert_eq!(view.mode(), PageViewMode::TwoPages);
+        assert_eq!(view.current_page(), 5);
+        assert!(view.cover_alone() && view.split_view());
+        // Single Page with Split View keeps the page's own view and the split.
+        let split_single = FileLayout {
+            mode: PageViewMode::SinglePage,
+            cover_alone: false,
+            split_view: true,
+        };
+        memory.record_with(path("b.pdf"), 2, views(&[2]), split_single);
+        let view = memory.restart_view(&path("b.pdf")).unwrap();
+        assert_eq!(view.mode(), PageViewMode::SinglePage);
+        assert!(view.split_view() && !view.cover_alone());
+        // Continuous in one pane, with no pages: forgotten.
+        assert!(memory.record_with(path("a.pdf"), 0, Vec::new(), FileLayout::default()));
+        assert_eq!(memory.restart_view(&path("a.pdf")), None);
+    }
+
+    #[test]
+    fn the_layout_is_read_back_and_a_0_6_3_memory_still_loads() {
+        let root =
+            std::env::temp_dir().join(format!("bp-page-memory-layout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut memory = PageMemory::open(root.clone()).unwrap();
+        // As 0.6.3 wrote it: Continuous, no flags, pages remembered.
+        memory.record_at(path("old.pdf"), 1, views(&[1]));
+        memory.record_with(
+            path("new.pdf"),
+            3,
+            Vec::new(),
+            FileLayout {
+                mode: PageViewMode::TwoPages,
+                cover_alone: true,
+                split_view: false,
+            },
+        );
+        memory
+            .store
+            .as_ref()
+            .unwrap()
+            .replace(&memory.snapshot())
+            .unwrap();
+        let text =
+            std::fs::read_to_string(root.join(crate::session_manifest::MANIFEST_NAME)).unwrap();
+        assert_eq!(text.matches("twoPages").count(), 1, "{text}");
+        assert_eq!(text.matches("coverAlone").count(), 1, "{text}");
+        assert!(!text.contains("splitView"), "written only when on: {text}");
+        let reread = PageMemory::open(root.clone()).unwrap();
+        assert_eq!(reread.lookup(&path("old.pdf")), views(&[1]));
+        assert_eq!(
+            reread.restart_view(&path("old.pdf")).unwrap().mode(),
+            PageViewMode::SinglePage
+        );
+        let view = reread.restart_view(&path("new.pdf")).unwrap();
+        assert_eq!(view.mode(), PageViewMode::TwoPages);
+        assert!(view.cover_alone() && !view.split_view());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

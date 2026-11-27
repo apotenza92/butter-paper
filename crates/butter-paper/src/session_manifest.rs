@@ -19,7 +19,7 @@ use crate::{
     page_view_control::PageViewMode,
 };
 
-const MANIFEST_NAME: &str = "session-manifest.json";
+pub(crate) const MANIFEST_NAME: &str = "session-manifest.json";
 const RECOVERY_MARKER_NAME: &str = "session-recovery.json";
 /// Version 3 adds window groups. Versions 1 and 2 load as a single window.
 const MANIFEST_VERSION: u64 = 3;

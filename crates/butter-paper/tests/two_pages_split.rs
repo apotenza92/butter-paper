@@ -375,6 +375,18 @@ fn two_pages_fits_the_pair_and_aligns_mixed_sizes_at_their_tops(cx: &mut TestApp
         letter.left() - viewport.left(),
         viewport.right() - tabloid.right()
     ));
+    // The paper edges stay in view, with room for the outline round the
+    // current page: at least 2 px clear on every side.
+    let clear = [
+        f32::from(letter.left() - viewport.left()),
+        f32::from(viewport.right() - tabloid.right()),
+        f32::from(letter.top() - viewport.top()),
+        f32::from(viewport.bottom() - letter.bottom().max(tabloid.bottom())),
+    ];
+    assert!(
+        clear.iter().all(|room| *room >= 1.5),
+        "the row's edges are clipped: {clear:?}"
+    );
 }
 
 #[gpui::test]
@@ -641,4 +653,158 @@ fn the_split_view_divider_drags_and_moves_from_the_keyboard(cx: &mut TestAppCont
     assert!(near(left.size.width, right.size.width));
     // The pages did not move because of the keys: the divider took them.
     assert_eq!(h.split().map(|(side, _)| side), Some(PaneSide::Left));
+}
+
+/// The page point at the view centre and its page, read from where the
+/// pages of a viewport paint (`prefix` "other-" for the other pane).
+fn centre_point(h: &mut Harness<'_>, viewport_id: &'static str, prefix: &str) -> (u32, f32, f32) {
+    let viewport = h.cx.debug_bounds(viewport_id).unwrap();
+    let centre = viewport.center();
+    let document = h.document;
+    (0..h.page_count())
+        .filter_map(|page| {
+            let id: &'static str = Box::leak(
+                format!(
+                    "{prefix}{}",
+                    document_viewer_page_id(document, page as usize)
+                )
+                .into_boxed_str(),
+            );
+            h.cx.debug_bounds(id).map(|bounds| (page, bounds))
+        })
+        .find(|(_, bounds)| bounds.contains(&centre))
+        .map(|(page, bounds)| {
+            (
+                page,
+                f32::from(centre.x - bounds.left()) / f32::from(bounds.size.width),
+                f32::from(centre.y - bounds.top()) / f32::from(bounds.size.height),
+            )
+        })
+        .unwrap_or_else(|| panic!("no page at the centre of {viewport_id}"))
+}
+
+/// Split View on in Two Pages with the cover alone at a free zoom: the new
+/// pane shows the page point that was at the view centre at its own
+/// centre, not shifted by the old, wider view's centre.
+#[gpui::test]
+fn the_new_pane_centres_the_point_the_view_had_at_its_centre(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(TwoPagesView);
+    h.action(ToggleCoverPageAlone);
+    let document = h.document;
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace.set_view_configuration(document, PageViewMode::TwoPages, 150., cx);
+    });
+    h.settle();
+    // A page under the centre: pan right onto the right column.
+    let viewport = h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    h.cx.simulate_mouse_move(viewport.center(), None, Modifiers::default());
+    h.cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(-200.), px(0.))),
+        ..Default::default()
+    });
+    h.settle();
+    let before = centre_point(&mut h, DOCUMENT_VIEWPORT_ID, "");
+    h.action(ToggleSplitView);
+    let other = centre_point(&mut h, SPLIT_OTHER_VIEWPORT_ID, "other-");
+    assert_eq!(other.0, before.0, "{before:?} → {other:?}");
+    assert!(
+        (other.1 - before.1).abs() < 0.02 && (other.2 - before.2).abs() < 0.02,
+        "{before:?} → {other:?}"
+    );
+    // And at Fit Width the new pane frames its row across its own width.
+    h.action(FitWidth);
+    h.action(ToggleSplitView);
+    h.action(ToggleSplitView);
+    let right = h.cx.debug_bounds(SPLIT_OTHER_VIEWPORT_ID).unwrap();
+    let document = h.document;
+    let other_pages = (0..h.page_count())
+        .filter_map(|page| {
+            let id: &'static str = Box::leak(
+                format!("other-{}", document_viewer_page_id(document, page as usize))
+                    .into_boxed_str(),
+            );
+            h.cx.debug_bounds(id)
+        })
+        .collect::<Vec<_>>();
+    assert!(!other_pages.is_empty());
+    for page in other_pages {
+        assert!(
+            page.left() >= right.left() - px(TOLERANCE)
+                && page.right() <= right.right() + px(TOLERANCE),
+            "a page of the new pane is off its width: {page:?} in {right:?}"
+        );
+    }
+}
+
+/// Split View off at a free zoom: the wider view centres the pair across,
+/// as a fit would, and keeps the height in view.
+#[gpui::test]
+fn split_view_off_centres_the_pair_across(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(TwoPagesView);
+    let document = h.document;
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace.set_view_configuration(document, PageViewMode::TwoPages, 60., cx);
+    });
+    h.settle();
+    h.action(ToggleSplitView);
+    // The narrower pane is scrolled across, as the reader leaves it.
+    let pane = h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    h.wheel(pane.center(), 0.);
+    h.cx.simulate_event(ScrollWheelEvent {
+        position: pane.center(),
+        delta: ScrollDelta::Pixels(point(px(-150.), px(0.))),
+        ..Default::default()
+    });
+    h.settle();
+    let scroll_y = h.view().scroll().1;
+    h.action(ToggleSplitView);
+    let viewport = h.cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    let current = h.current_page();
+    let row = if current.is_multiple_of(2) {
+        current
+    } else {
+        current - 1
+    };
+    let (left, right) = (h.page(row), h.page(row + 1));
+    assert!(
+        near(
+            left.left() - viewport.left(),
+            viewport.right() - right.right()
+        ),
+        "the pair is not centred: {left:?} {right:?} in {viewport:?}"
+    );
+    assert!(
+        (h.view().scroll().1 - scroll_y).abs() <= TOLERANCE,
+        "the height in view stays"
+    );
+}
+
+/// Tab reaches the Split View divider, and the divider then takes the
+/// arrow keys.
+#[gpui::test]
+fn tab_reaches_the_split_view_divider(cx: &mut TestAppContext) {
+    let mut h = setup(cx, &UNIFORM_PAGES);
+    h.action(ToggleSplitView);
+    let focused = |h: &mut Harness<'_>| {
+        let workspace = h.workspace.clone();
+        h.cx.update(|window, cx| workspace.read(cx).split_divider_focused(window))
+    };
+    let mut reached = false;
+    for _ in 0..80 {
+        h.cx.simulate_keystrokes("tab");
+        h.cx.update(|window, cx| window.draw(cx).clear(cx));
+        if focused(&mut h) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "Tab never reached the divider");
+    let before = h.cx.debug_bounds(SPLIT_PANE_LEFT_ID).unwrap().size.width;
+    h.cx.simulate_keystrokes("right");
+    h.settle();
+    let after = h.cx.debug_bounds(SPLIT_PANE_LEFT_ID).unwrap().size.width;
+    assert!((f32::from(after - before) - 16.).abs() <= TOLERANCE);
 }

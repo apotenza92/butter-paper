@@ -22,6 +22,8 @@ alone do not establish these behaviours.
   the lock button keeps the keyboard.
 - The Cloud+ text box shows no border at line width 1 but shows one at 2
   or more (seen on Windows). Check the border rule.
+- A red rectangle briefly showed a thin black outline while the Split
+  View divider was dragged on Windows. Not reproduced.
 - A properties slider's accessibility Increment and Decrement change the
   value without saving it.
 - Find in Documents after a click on the search panel's Visual mode

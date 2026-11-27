@@ -78,6 +78,11 @@ impl DocumentWorkspace {
         true
     }
 
+    /// Whether the divider between the panes has the keyboard focus.
+    pub fn split_divider_focused(&self, window: &Window) -> bool {
+        self.split_divider_focus.is_focused(window)
+    }
+
     /// Which pane is active and the left pane's share of the canvas, while
     /// `document_id` shows in Split View.
     pub fn split_view_state(&self, document_id: DocumentId, cx: &App) -> Option<(PaneSide, f32)> {
@@ -291,6 +296,9 @@ impl DocumentWorkspace {
                 );
             });
         });
+        // Asked for, so the pane is laid out at its new size at once, not
+        // at the next input.
+        window.request_animation_frame();
     }
 
     /// Lays the other pane out at its scroll, resolving any navigation it
@@ -362,9 +370,14 @@ impl DocumentWorkspace {
                 )
             };
             let mut plan = plan_at(other, other.current_page, (scroll_x, scroll_y))?;
-            if let Some(anchor) = other.pending_zoom_anchor.take()
+            // The anchor was taken at the centre of the view the pane was
+            // copied from: it holds at this pane's centre.
+            if let Some(mut anchor) = other.pending_zoom_anchor.take()
                 && let Some((anchored_x, anchored_y)) = crate::zoom_anchor::anchored_scroll(
-                    anchor,
+                    {
+                        anchor.viewport_point = (viewport_width / 2., viewport_height / 2.);
+                        anchor
+                    },
                     &plan.page_layouts,
                     (plan.total_width, plan.total_height),
                     viewport,
@@ -397,8 +410,17 @@ impl DocumentWorkspace {
                 if preset == ViewerFitPreset::Page {
                     scroll_y = rect.y + rect.height / 2. - viewport_height / 2.;
                 }
+                // Fit Page in Two Pages keeps the row's paper edges in view,
+                // the first and last rows too.
+                let edge = if preset == ViewerFitPreset::Page
+                    && other.view_state.mode() == PageViewMode::TwoPages
+                {
+                    crate::native_document_view_state::FIT_PAGE_EDGE_ROOM
+                } else {
+                    0.
+                };
                 scroll_y = if plan.total_height > viewport_height {
-                    scroll_y.clamp(0., plan.total_height - viewport_height)
+                    scroll_y.clamp(-edge, plan.total_height - viewport_height + edge)
                 } else {
                     (plan.total_height - viewport_height) / 2.
                 };
@@ -711,6 +733,10 @@ impl DocumentWorkspace {
             .justify_center()
             .cursor(CursorStyle::ResizeLeftRight)
             .bg(theme.secondary)
+            // The focus ring, round the whole divider, as Tab brings it.
+            .when(divider_focused, |divider| {
+                divider.border_2().border_color(ring).rounded(theme.radius)
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |workspace, event: &MouseDownEvent, window, cx| {

@@ -2742,6 +2742,59 @@ fn absolute_path(path: &str) -> String {
     }
 }
 
+/// Two Pages, Cover page alone and Split View are part of the file's
+/// memory: closing the tab and opening the file again brings them back.
+#[gpui::test]
+fn a_file_reopens_in_two_pages_with_its_cover_and_split_view(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{ToggleCoverPageAlone, ToggleSplitView, TwoPagesView};
+    let name = absolute_path("/documents/memory-two-pages.pdf");
+    let (mut h, documents) = setup_tabs(cx, &UNIFORM_PAGES, &[&name]);
+    let document = documents[0];
+    h.action(TwoPagesView);
+    h.action(ToggleCoverPageAlone);
+    h.action(NavigateNextPage);
+    h.action(ToggleSplitView);
+    assert_eq!(h.frame().current_page, 1, "pages 2–3");
+    let workspace = h.workspace.clone();
+    h.cx.update(|_, cx| {
+        workspace.update(cx, |workspace, cx| workspace.close_document(document, cx));
+    });
+    h.cx.run_until_parked();
+    h.workspace.update(h.cx, |workspace, cx| {
+        workspace.open_documents(
+            DocumentOpenBatchRequest::new(DocumentOpenOrigin::Menu, [PathBuf::from(&name)]),
+            cx,
+        )
+    });
+    h.cx.run_until_parked();
+    let reopened = h.workspace.read_with(h.cx, |workspace, cx| {
+        *workspace.session_order(cx).last().unwrap()
+    });
+    h.document = reopened;
+    h.settle();
+    let opened = h.frame();
+    assert_eq!(opened.mode, PageViewMode::TwoPages, "{opened:?}");
+    assert_eq!(opened.current_page, 1, "{opened:?}");
+    let (cover, split) = h.workspace.read_with(h.cx, |workspace, cx| {
+        (
+            workspace
+                .document_view_state(reopened, cx)
+                .unwrap()
+                .cover_alone(),
+            workspace.split_view_state(reopened, cx).is_some(),
+        )
+    });
+    assert!(cover, "Cover page alone comes back");
+    assert!(split, "Split View comes back");
+    assert!(
+        opened.page(1).is_some_and(|page| {
+            page.top() >= opened.viewport.top() - px(TOLERANCE)
+                && page.top() < opened.viewport.bottom()
+        }),
+        "the row left is in view: {opened:?}"
+    );
+}
+
 #[gpui::test]
 fn a_file_gets_its_remembered_pages_back_when_it_opens_again(cx: &mut TestAppContext) {
     let (memory_a, memory_b) = (

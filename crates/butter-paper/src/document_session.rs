@@ -494,6 +494,10 @@ pub struct NativeDocumentSession {
     /// Split View: the document shows in two panes. The fields above hold
     /// the active pane's view; this holds the other pane's.
     pub(crate) split: Option<SplitView>,
+    /// Split View went off with the active pane this wide: once the view is
+    /// laid out wider, its page (in Two Pages its row) is centred across,
+    /// as a fit centres it, and the height in view stays.
+    pub(crate) pending_center_x: Option<f32>,
 }
 
 /// Which side of the canvas a Split View pane is on.
@@ -677,6 +681,7 @@ impl NativeDocumentSession {
             source_place: None,
             source_place_asked: false,
             split: None,
+            pending_center_x: None,
         }
     }
 
@@ -834,7 +839,19 @@ impl NativeDocumentSession {
             navigation_from_below: None,
             pending_page_view_scroll: None,
             pending_zoom_anchor: self.viewport_centre_anchor(),
-            pending_page_frame: None,
+            // A fit in force frames the page (in Two Pages its row) in the
+            // pane's own width.
+            pending_page_frame: match self.view_state.zoom_preset() {
+                crate::native_document_view_state::ViewerZoomPreset::FitWidth => Some((
+                    self.current_page,
+                    crate::document_viewer::ViewerFitPreset::Width,
+                )),
+                crate::native_document_view_state::ViewerZoomPreset::FitPage => Some((
+                    self.current_page,
+                    crate::document_viewer::ViewerFitPreset::Page,
+                )),
+                crate::native_document_view_state::ViewerZoomPreset::Manual => None,
+            },
             viewport_size: None,
             adaptive_performance: AdaptiveViewerPerformance::default(),
             adaptive_last_evaluated_at: None,
@@ -850,6 +867,7 @@ impl NativeDocumentSession {
     /// images are released.
     pub(crate) fn close_split(&mut self) {
         if let Some(mut split) = self.split.take() {
+            self.pending_center_x = self.viewport_size.map(|(width, _)| width);
             split.other.viewer.close();
             self.retired_images
                 .extend(split.other.viewer.take_retired_images());

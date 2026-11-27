@@ -149,6 +149,13 @@ changes it; history is in git.
   (decided 2026-11-27 by the owner). Off, the active
   pane's view stays. Split View is kept per document in the session; it
   reopens with both panes on the active pane's view.
+- A file's memory after its tab closes (decided 2026-11-27 by the owner)
+  keeps the page view, Cover page alone and Split View with the pages
+  remembered, so the file opens again as it was left, not only through a
+  restored session. The memory is written in the session manifest's form:
+  a 0.6.3 memory (Continuous, no flags) still loads. A 0.6.3 build cannot
+  read a memory that holds Two Pages, a cover or Split View, and starts
+  with none: the accepted downgrade risk of `pageViews`.
 - Find in document (decided 2026-11-25 by the owner): Cmd+F (Ctrl+F on
   Windows and Linux) opens a find bar that floats at the top right of the
   canvas, 8 px from the top and right edges, so nothing on the page moves.

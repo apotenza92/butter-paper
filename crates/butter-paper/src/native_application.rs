@@ -293,6 +293,15 @@ fn build_native_view_menu(
             .checked(state.fit_page_checked)
             .disabled(!state.document_ready),
         MenuItem::separator(),
+    ]);
+    items.extend(page_view_items(state));
+    Menu::new("View").items(items)
+}
+
+/// The page views, Cover Page Alone and Split View: the same items in the
+/// native menu bar and the in-window menu.
+pub fn page_view_items(state: NativeApplicationMenuState) -> Vec<MenuItem> {
+    vec![
         MenuItem::action("Continuous View", ContinuousView)
             .checked(state.continuous_view_checked)
             .disabled(!state.document_ready),
@@ -309,15 +318,19 @@ fn build_native_view_menu(
         MenuItem::action("Split View", ToggleSplitView)
             .checked(state.split_view_checked)
             .disabled(!state.document_ready),
-    ]);
-    Menu::new("View").items(items)
+    ]
 }
 
+/// The in-window View menu: the page views and Split View first, as the
+/// toolbar's View button lists them, then the window's own settings.
 fn build_in_window_view_menu(
     state: NativeApplicationMenuState,
     shell: ApplicationMenuShellState,
 ) -> Menu {
-    Menu::new("View").items(build_in_window_view_items(state, shell))
+    let mut items = page_view_items(state);
+    items.push(MenuItem::separator());
+    items.extend(build_in_window_view_items(state, shell));
+    Menu::new("View").items(items)
 }
 
 fn build_in_window_view_items(

@@ -1379,11 +1379,12 @@ with it.
   that page's view; moved pages keep theirs. Continuous view keeps one zoom
   and scroll for the document, and switching views keeps the memory. The
   memory is saved with the session, for the last 100 pages seen. Closing a
-  file's tab keeps its memory (the page left too), for the last 50 files in
-  the app's data; the file's next tab opens on the page left, in Single Page
-  view, with that page's view, unless a restored session view brings its
-  own. A file left in Continuous view opens as usual, with its pages
-  remembered. Quitting keeps the memory of every open tab the same way.
+  file's tab keeps its memory (the page left too, and the page view, Cover
+  page alone and Split View), for the last 50 files in the app's data; the
+  file's next tab opens on the page left, in Single Page view with that
+  page's view, or in Two Pages view with its cover setting, in one or two
+  panes as left, unless a restored session view brings its own. A file left
+  in Continuous view in one pane opens as usual, with its pages remembered. Quitting keeps the memory of every open tab the same way.
 - Settings ▸ Mouse wheel ▸ Page turning sets how the discrete mouse wheel
   turns pages in Single Page view. A notch is three lines on Linux, one on
   macOS, and the system's lines per notch on Windows (three by default), so
@@ -1536,7 +1537,9 @@ with it.
   column. The pages of a row meet at their tops; each page keeps its own
   size and rotation, so a turned page turns alone. Fit Width fits the full
   two-column row's width and Fit Page the whole row, and a fit frames the
-  row. Next and Previous page (the page navigator's buttons, the Document
+  row; Fit Page leaves 2 px round the row, so the paper edges, a dark
+  page's ring and the current page's outline stay in view. Next and
+  Previous page (the page navigator's buttons, the Document
   menu and their keys) turn a spread: to the first page of the next or
   previous row, which becomes the current page; First and Last page (and
   Home and End) go to the first and last rows, and the navigator's buttons
@@ -1547,7 +1550,8 @@ with it.
   shows; a page gone to brings its row to the top and stays current until
   the view scrolls. Every tool draws on either page. Two Pages keeps one
   zoom and scroll for the document, as Continuous does; the session
-  restores the view and the cover setting. Its mouse-wheel setting is its
+  restores the view and the cover setting, and so does the file's memory
+  when the file opens again after its tab closed. Its mouse-wheel setting is its
   own, Scroll by default.
 - Split View (the icon toggle after the page views, View ▸ Split View)
   shows the document in two panes side by side, each with its own scroll,
@@ -1559,10 +1563,14 @@ with it.
   markups only, with the arrow cursor: a press or wheel there makes it
   active and does nothing else (a text or form field being edited is
   committed first). The divider between the panes drags; with the focus
-  (Tab, or a press on it) Left and Right move it 16 px, Home and End to
+  (it is a tab stop between the panes, ringed in the focus colour while it
+  has the focus; or a press on it) Left and Right move it 16 px, Home and End to
   either least width, and Enter or a double-click back to the middle. Each
-  pane keeps at least 240 px. Turning Split View off keeps the active
-  pane's view. The session restores Split View, both panes showing the
+  pane keeps at least 240 px. A new pane shows the point that was at
+  the view centre at its own centre, and with a fit in force frames the
+  page or row in its own width. Turning Split View off keeps the active
+  pane's zoom and height in view and centres its page (or row) across, as
+  a fit does. The session restores Split View, both panes showing the
   active pane's view.
 - The viewport meets the toolbar and rails with no frame, and the pages meet
   its edges: only the space between pages (24pt at 100%) is blank. The

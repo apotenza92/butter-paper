@@ -36,6 +36,11 @@ impl PartialEq for RestartZoom {
 
 impl Eq for RestartZoom {}
 
+/// The room Fit Page in Two Pages view leaves on each side of the row, in
+/// pixels: the current page's outline (2 px outside the paper) and a dark
+/// page's 1 px ring stay in view.
+pub const FIT_PAGE_EDGE_ROOM: f32 = 2.;
+
 /// The most pages whose Single Page view one document remembers. The oldest
 /// visit is forgotten first.
 pub const MAX_REMEMBERED_PAGE_VIEWS: usize = 100;
@@ -642,8 +647,20 @@ impl NativeDocumentViewState {
             ViewerZoomPreset::FitWidth => ViewerFitPreset::Width,
             ViewerZoomPreset::FitPage => ViewerFitPreset::Page,
         };
-        self.zoom_percent =
-            resolve_fit_zoom_percent(preset, width, height, page_size.0, page_size.1);
+        // Fit Page in Two Pages keeps the row's paper edges in view: the
+        // current page's outline and a dark page's ring lie outside them.
+        let room = if self.mode == PageViewMode::TwoPages && preset == ViewerFitPreset::Page {
+            2. * FIT_PAGE_EDGE_ROOM
+        } else {
+            0.
+        };
+        self.zoom_percent = resolve_fit_zoom_percent(
+            preset,
+            (width - room).max(1.),
+            (height - room).max(1.),
+            page_size.0,
+            page_size.1,
+        );
     }
 
     /// Scroll is negative while the viewport is panned past the first page.
