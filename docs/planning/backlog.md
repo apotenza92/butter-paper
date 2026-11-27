@@ -17,18 +17,13 @@ alone do not establish these behaviours.
 - Settings window behind the main window on macOS: after a change from
   the View menu, it showed the old Page Appearance until it came to the
   front. Check whether an inactive Settings window repaints.
-- Delete on a locked markup right after a click on its lock button
-  showed no toast three times on Windows, then always did. Check whether
-  the lock button keeps the keyboard.
-- The Cloud+ text box shows no border at line width 1 but shows one at 2
-  or more (seen on Windows). Check the border rule.
+- Decide on a 1 pt box border for Cloud+ and Callout. At line width 1 the
+  text box has no border, on screen and in the file, and at any other
+  width it has one. This follows Revu: `/BS /W 0` is the 1 pt leader with
+  no box border ([pdf-format.md](pdf-format.md)). A 1 pt border needs a
+  separate border setting, or imported borderless callouts gain a border.
 - A red rectangle briefly showed a thin black outline while the Split
   View divider was dragged on Windows. Not reproduced.
-- A properties slider's accessibility Increment and Decrement change the
-  value without saving it.
-- Find in Documents after a click on the search panel's Visual mode
-  button: in the test harness the shortcut did nothing until the page got
-  focus. Check whether the real app has the same dead shortcut.
 - Installed update download/restart on macOS, Windows and Linux: preserve
   open documents, view positions and unsaved work, and check relaunch focus.
 - Phone signing with a physical phone (the relay is verified with synthetic
@@ -219,8 +214,6 @@ tables and images. Not handled yet, so their text flows as plain paragraphs
 - Remove the unused local phone helper (`local_phone_signature`,
   `xtask/src/phone.rs`, `crates/butter-paper/phone-helper/`, its packaging and
   notices) once relay phone signing is confirmed on a phone.
-- `release.yml`: bump `actions/create-github-app-token`, which still targets
-  Node.js 20.
 - Windows: qualify the native save and file pickers by hand.
 - Windows: the real-PDFium (`--ignored`) tests are not maintained there; many
   build fixture paths without canonicalising them.

@@ -1844,6 +1844,77 @@ fn the_wheel_over_a_slider_steps_it(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn the_accessibility_steps_of_a_slider_commit_one_undo_step_each(cx: &mut TestAppContext) {
+    let (workspace, document_id, cx) = line_fixture(cx);
+    let slider = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .straight_line_property_inspector()
+            .unwrap()
+            .read(cx)
+            .opacity_slider()
+    });
+    let opacity = |cx: &mut gpui::VisualTestContext| {
+        snapshot(&workspace, document_id, cx).straight_lines[0]
+            .appearance
+            .opacity()
+    };
+    near(opacity(cx), 1., 0.0001, "the line starts opaque");
+    let start = history(&workspace, document_id, cx);
+
+    // Decrement: one step down saves the value.
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.step_by_a11y(-1., window, cx));
+    });
+    cx.run_until_parked();
+    near(opacity(cx), 0.99, 0.0001, "a decrement is saved");
+    let stepped = history(&workspace, document_id, cx);
+    assert_eq!(
+        (stepped.undo_depth, stepped.dirty),
+        (start.undo_depth + 1, true),
+        "a decrement is one undo step and marks the document unsaved"
+    );
+    near(
+        scene(&workspace, document_id, cx).straight_lines[0]
+            .appearance
+            .opacity(),
+        0.99,
+        0.0001,
+        "the page shows the decrement",
+    );
+
+    // Increment: one step up saves the value as its own undo step.
+    cx.update(|window, cx| {
+        slider.update(cx, |slider, cx| slider.step_by_a11y(1., window, cx));
+    });
+    cx.run_until_parked();
+    near(opacity(cx), 1., 0.0001, "an increment is saved");
+    assert_eq!(
+        history(&workspace, document_id, cx).undo_depth,
+        start.undo_depth + 2,
+        "an increment is one more undo step"
+    );
+
+    // One Undo reverts one step each time.
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(document_id, cx)
+        })
+        .unwrap();
+    near(opacity(cx), 0.99, 0.0001, "undo reverts the increment");
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.undo_annotations(document_id, cx)
+        })
+        .unwrap();
+    near(opacity(cx), 1., 0.0001, "undo restores the original value");
+    assert_eq!(
+        history(&workspace, document_id, cx).undo_depth,
+        start.undo_depth,
+        "both steps are undone"
+    );
+}
+
 fn width_number(workspace: &Workspace, cx: &gpui::VisualTestContext) -> String {
     workspace.read_with(cx, |workspace, cx| {
         workspace
@@ -1928,6 +1999,63 @@ fn a_refused_action_shows_its_reason_as_a_toast(cx: &mut TestAppContext) {
         Some(StatusSeverity::Notice)
     );
     assert_eq!(toast_count(cx), 1, "the reason shows as a toast");
+}
+
+/// Delete right after a click on the properties panel's lock button refuses
+/// with the same notice and toast as Delete at any other time: the focused
+/// lock button must not keep the key from the workspace.
+#[gpui::test]
+fn delete_after_a_click_on_the_lock_button_shows_the_locked_notice(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::StatusSeverity;
+    use butter_paper::ink_property_inspector::{INK_INSPECTOR_LOCKED_ID, INK_INSPECTOR_WIDTH_ID};
+    use gpui::Focusable as _;
+    let (workspace, document_id, cx) = pen_fixture(cx, false);
+    // A properties field has the keyboard: a width is typed in it.
+    let field = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .ink_property_inspector()
+            .unwrap()
+            .read(cx)
+            .width_input()
+    });
+    let width = cx
+        .debug_bounds(INK_INSPECTOR_WIDTH_ID)
+        .expect("the properties panel shows Line width");
+    cx.simulate_click(width.center(), Modifiers::default());
+    assert!(cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)));
+    let select_all = if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    };
+    cx.simulate_keystrokes(&format!("{select_all} 3"));
+    cx.run_until_parked();
+    let lock = cx
+        .debug_bounds(INK_INSPECTOR_LOCKED_ID)
+        .expect("the properties panel shows the lock button");
+    cx.simulate_click(lock.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(
+        snapshot(&workspace, document_id, cx).pens[0].locked,
+        "the click locks the markup"
+    );
+    assert!(
+        !cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)),
+        "the field gives the keyboard to the page"
+    );
+    assert_eq!(toast_count(cx), 0, "a lock is no toast");
+    cx.simulate_keystrokes("delete");
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status()),
+        Some("Annotation is locked".to_owned()),
+        "Delete reaches the workspace after the lock click"
+    );
+    assert_eq!(
+        workspace.read_with(cx, |workspace, _| workspace.annotation_status_severity()),
+        Some(StatusSeverity::Notice)
+    );
+    assert_eq!(toast_count(cx), 1, "the refusal shows as a toast");
+    assert_eq!(snapshot(&workspace, document_id, cx).pens.len(), 1);
 }
 
 #[gpui::test]

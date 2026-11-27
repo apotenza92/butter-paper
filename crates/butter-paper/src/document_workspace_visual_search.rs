@@ -772,6 +772,23 @@ impl DocumentWorkspace {
         cx.notify();
     }
 
+    /// A click on Text or Visual, or on Try Visual search. The Visual mode
+    /// has no field: when the query field has the keyboard, the page takes
+    /// it, or no element holds it and the app shortcuts (Find in Documents)
+    /// do not act.
+    pub(super) fn choose_search_mode(
+        &mut self,
+        mode: SearchMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let field_focused = self.search_query_focused(window, cx);
+        self.set_search_mode(mode, cx);
+        if mode == SearchMode::Visual && field_focused {
+            self.workspace_focus.focus(window, cx);
+        }
+    }
+
     /// Draw box: the Snapshot tool's next box on the page in view is the
     /// picture to find.
     pub(super) fn begin_visual_search_box(&mut self, window: &mut Window, cx: &mut Context<Self>) {

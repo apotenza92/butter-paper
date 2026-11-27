@@ -740,9 +740,23 @@ pub fn property_lock_toggle(
                     "Lock to stop changes"
                 })
                 .disabled(disabled)
-                .on_click(move |_, window, cx| on_toggle(!locked, window, cx)),
+                .on_click(move |_, window, cx| {
+                    give_keyboard_to_page(window, cx);
+                    on_toggle(!locked, window, cx)
+                }),
             label,
         ))
+}
+
+/// A stock button takes no focus on a press, so a properties field keeps
+/// the keyboard, and a Delete after the press edits the field instead of
+/// acting on the markup. The page takes the keyboard (`FocusPage`), as a
+/// press on the page does.
+fn give_keyboard_to_page(window: &mut Window, cx: &mut App) {
+    use gpui_component::WindowExt as _;
+    if window.has_focused_input(cx) {
+        window.dispatch_action(Box::new(crate::document_workspace::FocusPage), cx);
+    }
 }
 
 /// Text typed in a properties panel's Text field for one markup, to replace

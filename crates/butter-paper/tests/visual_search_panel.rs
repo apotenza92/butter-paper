@@ -1005,10 +1005,17 @@ fn find_in_documents_shows_the_text_mode_and_focuses_its_field(cx: &mut TestAppC
     let mut f = setup(cx, 1, Duration::ZERO);
     f.cx.simulate_keystrokes(search_panel_shortcut(cfg!(target_os = "macos")));
     f.draw();
+    // The Visual mode has no field: the page takes the keyboard from it, so
+    // the shortcut acts with no click on the page first.
     f.click(DOCUMENT_SEARCH_MODE_VISUAL_ID);
-    // A click on the page gives it the focus.
-    f.click(butter_paper::document_workspace::DOCUMENT_VIEWPORT_ID);
     assert_eq!(f.summary().mode, SearchMode::Visual);
+    let page_focus = f
+        .workspace
+        .read_with(f.cx, |workspace, _| workspace.focus_handle());
+    assert!(
+        f.cx.update(|window, _| page_focus.is_focused(window)),
+        "the page has the keyboard"
+    );
     f.cx.simulate_keystrokes(search_panel_shortcut(cfg!(target_os = "macos")));
     f.draw();
     assert_eq!(f.summary().mode, SearchMode::Text);

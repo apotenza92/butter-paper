@@ -1634,8 +1634,8 @@ impl DocumentWorkspace {
                     .flex_1()
                     .min_w_0()
                     .selected(panel.mode == mode)
-                    .on_click(cx.listener(move |workspace, _: &ClickEvent, _, cx| {
-                        workspace.set_search_mode(mode, cx)
+                    .on_click(cx.listener(move |workspace, _: &ClickEvent, window, cx| {
+                        workspace.choose_search_mode(mode, window, cx)
                     }))
             };
         ButtonGroup::new(visual::DOCUMENT_SEARCH_MODE_ID)
@@ -1851,8 +1851,8 @@ impl DocumentWorkspace {
             .accessibility_id(DOCUMENT_SEARCH_TRY_VISUAL_ID)
             .outline()
             .label("Try Visual search")
-            .on_click(cx.listener(|workspace, _: &ClickEvent, _, cx| {
-                workspace.set_search_mode(SearchMode::Visual, cx)
+            .on_click(cx.listener(|workspace, _: &ClickEvent, window, cx| {
+                workspace.choose_search_mode(SearchMode::Visual, window, cx)
             }));
         let theme = cx.theme();
         let query = gpui::div()

@@ -400,7 +400,8 @@ gpui::actions!(
         FinishVertexPath,
         PasteHere,
         SizeEntryNextField,
-        SizeEntryPreviousField
+        SizeEntryPreviousField,
+        FocusPage
     ]
 );
 

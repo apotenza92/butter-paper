@@ -271,6 +271,12 @@ impl DocumentWorkspace {
             .on_action(cx.listener(Self::paste_annotations_from_action))
             .on_action(cx.listener(Self::paste_here_from_action))
             .on_action(cx.listener(Self::delete_annotations_from_action))
+            // A panel control that leaves the typing (the lock) gives the
+            // keyboard to the page, so Delete and the other page keys act.
+            .on_action(cx.listener(|workspace, _: &FocusPage, window, cx| {
+                workspace.release_search_query_focus();
+                workspace.workspace_focus.focus(window, cx);
+            }))
             .on_action(cx.listener(Self::undo_annotations_from_action))
             .on_action(cx.listener(Self::redo_annotations_from_action))
             .on_action(cx.listener(Self::undo_document_from_toolbar))
