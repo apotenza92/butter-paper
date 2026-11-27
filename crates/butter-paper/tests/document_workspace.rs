@@ -7092,7 +7092,10 @@ fn side_panels_give_way_before_the_viewer_toolbar_gets_narrower_than_its_narrowe
     // Alone at the least window, either panel opens at its greatest
     // preferred width, narrowed to what the page column leaves.
     let alone = side_panel_room(least, rem, rail, Some(px(384.)), None);
-    assert_eq!(alone.thumbnails, Some(least - px(48.) - rail - page));
+    assert_eq!(
+        alone.thumbnails,
+        Some((least - px(48.) - rail - page).min(px(384.)))
+    );
     assert!(alone.thumbnails.unwrap() >= px(256.), "{alone:?}");
     let alone = side_panel_room(least, rem, rail, None, Some(px(420.)));
     assert_eq!(alone.properties, Some(least - px(48.) - rail - page));

@@ -63,6 +63,19 @@ pub(super) struct ViewportInputs {
     pub viewer_scroll: ScrollHandle,
     pub viewport_cursor_style: CursorStyle,
     pub viewport_observer: Canvas<gpui::Hitbox>,
+    /// Split View's other pane: it draws the pages and their markups only,
+    /// and a press or wheel there makes it the active pane.
+    pub other_pane: bool,
+}
+
+/// An element id in the other pane of Split View, apart from the active
+/// pane's.
+fn pane_id(id: String, other_pane: bool) -> String {
+    if other_pane {
+        format!("other-{id}")
+    } else {
+        id
+    }
 }
 
 impl DocumentWorkspace {
@@ -103,7 +116,13 @@ impl DocumentWorkspace {
             viewer_scroll,
             viewport_cursor_style,
             viewport_observer,
+            other_pane,
         } = inputs;
+        let viewport_id = if other_pane {
+            super::split::SPLIT_OTHER_VIEWPORT_ID
+        } else {
+            DOCUMENT_VIEWPORT_ID
+        };
         let page_text_input = page_text_overlays
             .iter()
             .find_map(|overlay| overlay.input.clone())
@@ -123,25 +142,33 @@ impl DocumentWorkspace {
             })
         });
         gpui::div()
-                                .id(DOCUMENT_VIEWPORT_ID)
-                                .debug_selector(|| DOCUMENT_VIEWPORT_ID.into())
+                                .id(viewport_id)
+                                .debug_selector(move || viewport_id.into())
                                 .relative()
                                 .size_full()
                                 .children(page_text_input)
-                                .child(form_focus)
+                                .when(!other_pane, |viewport| viewport.child(form_focus))
                                 .cursor(viewport_cursor_style)
                                 .overflow_scroll()
                                 .track_scroll(&viewer_scroll)
                                 .on_scroll_wheel(cx.listener(
                                     move |workspace, event: &ScrollWheelEvent, window, cx| {
-                                        if workspace.handle_viewport_wheel(document_id, event, window, cx) {
+                                        if other_pane {
+                                            // The wheel only makes the pane active.
+                                            workspace.activate_other_pane(document_id, window, cx);
+                                            window.prevent_default();
+                                        } else if workspace.handle_viewport_wheel(document_id, event, window, cx) {
                                             window.prevent_default();
                                         }
                                     },
                                 ))
                                 .on_pinch(cx.listener(
                                     move |workspace, event: &gpui::PinchEvent, window, cx| {
-                                        workspace.handle_viewport_pinch(document_id, event, window, cx);
+                                        if other_pane {
+                                            workspace.activate_other_pane(document_id, window, cx);
+                                        } else {
+                                            workspace.handle_viewport_pinch(document_id, event, window, cx);
+                                        }
                                     },
                                 ))
                                 .child(viewport_observer)
@@ -172,17 +199,20 @@ impl DocumentWorkspace {
                                             .flex_none()
                                             .children(viewer_pages.into_iter().map(
                                                 |(layout, page_size, (pdf_page_size, rotation), coordinate_space, scene, highlights_precomposed, tiles, painted_viewer, quality, render_error)| {
-                                                    let page_id = document_viewer_page_id(
-                                                        document_id,
-                                                        layout.page,
+                                                    let page_id = pane_id(
+                                                        document_viewer_page_id(document_id, layout.page),
+                                                        other_pane,
                                                     );
                                                     let page_selector = page_id.clone();
                                                     let page_index = layout.page as u32;
                                                     let quality_marker = quality.map(|quality| {
-                                                        let quality_id = document_viewer_quality_id(
-                                                            document_id,
-                                                            layout.page,
-                                                            quality,
+                                                        let quality_id = pane_id(
+                                                            document_viewer_quality_id(
+                                                                document_id,
+                                                                layout.page,
+                                                                quality,
+                                                            ),
+                                                            other_pane,
                                                         );
                                                         let quality_selector = quality_id.clone();
                                                         gpui::div()
@@ -304,11 +334,14 @@ impl DocumentWorkspace {
                                                                 as f32
                                                                 / 1_000.)
                                                                 .max(0.1);
-                                                            let tile_id = document_viewer_tile_id(
-                                                                document_id,
-                                                                plan.generation,
-                                                                layout.page,
-                                                                tile_index,
+                                                            let tile_id = pane_id(
+                                                                document_viewer_tile_id(
+                                                                    document_id,
+                                                                    plan.generation,
+                                                                    layout.page,
+                                                                    tile_index,
+                                                                ),
+                                                                other_pane,
                                                             );
                                                             let tile_selector = tile_id.clone();
                                                             let width = request.crop.width as f32 / scale;
@@ -470,7 +503,7 @@ impl DocumentWorkspace {
                                                                     *active_page == page_index
                                                                 })
                                                                 .map(|(_, marquee)| marquee.clone()),
-                                                            Some(cx.entity().downgrade()),
+                                                            (!other_pane).then(|| cx.entity().downgrade()),
                                                             painted_viewer,
                                                             calibration_preview.clone().filter(|preview| {
                                                                 preview.document_id == document_id

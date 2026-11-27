@@ -1657,12 +1657,15 @@ fn the_viewport_stays_inside_the_window_in_every_mode(cx: &mut TestAppContext) {
 fn the_viewer_settles_on_one_layout_in_every_mode(cx: &mut TestAppContext) {
     let mut h = setup(cx, &MIXED_PAGES);
     let mut unsettled = Vec::new();
-    for mode in [PageViewMode::Continuous, PageViewMode::SinglePage] {
+    for mode in PageViewMode::ALL {
         match mode {
             PageViewMode::Continuous => h.action(ContinuousView),
             PageViewMode::SinglePage => h.action(SinglePageView),
+            PageViewMode::TwoPages => h.action(butter_paper::document_workspace::TwoPagesView),
         }
-        for page in 0..MIXED_PAGES.len() as u32 {
+        // Two Pages turns a spread: its pages are the rows' first pages.
+        let step = if mode == PageViewMode::TwoPages { 2 } else { 1 };
+        for page in (0..MIXED_PAGES.len() as u32).step_by(step) {
             h.go_to_page(page);
             for fit in ["width", "page", "manual"] {
                 match fit {
@@ -2124,7 +2127,7 @@ static PAGES_12: [(f32, f32); 12] = [(612., 792.); 12];
 const HALF_1080P_MAC_WIDTH: f32 = 960.;
 
 #[gpui::test]
-fn a_960_px_window_shows_the_middle_toolbar(cx: &mut TestAppContext) {
+fn a_960_px_window_keeps_the_fit_buttons_and_merges_the_views(cx: &mut TestAppContext) {
     use butter_paper::page_navigator::{
         PAGE_FIRST_ID, PAGE_INDICATOR_ID, PAGE_LAST_ID, PAGE_NEXT_ID, PAGE_PREVIOUS_ID,
     };
@@ -2144,12 +2147,34 @@ fn a_960_px_window_shows_the_middle_toolbar(cx: &mut TestAppContext) {
         content.size.width, toolbar.size.width,
         "the toolbar scrolls at 960 px"
     );
-    // The middle form: the page field alone, with the zoom steps and the
-    // fit and page-view buttons.
-    for id in [PAGE_FIRST_ID, PAGE_PREVIOUS_ID, PAGE_NEXT_ID, PAGE_LAST_ID] {
+    // The page field alone, the zoom menu holding Zoom Out and In, Fit
+    // Width and Fit Page, and one View menu holding the three page views
+    // and Split View, since Two Pages and Split View joined the toolbar.
+    let form = butter_paper::viewer_toolbar_strip::viewer_toolbar_fit(
+        toolbar.size.width,
+        px(16.),
+        false,
+        2,
+        true,
+    );
+    assert_eq!(
+        form,
+        butter_paper::viewer_toolbar_strip::ViewerToolbarFit::ViewMenu
+    );
+    for id in [
+        PAGE_FIRST_ID,
+        PAGE_PREVIOUS_ID,
+        PAGE_NEXT_ID,
+        PAGE_LAST_ID,
+        butter_paper::zoom_control::ZOOM_OUT_ID,
+        butter_paper::page_view_control::TWO_PAGES_SPLIT_ID,
+    ] {
         assert!(h.cx.debug_bounds(id).is_none(), "{id} shows at 960 px");
     }
-    for id in [butter_paper::zoom_control::ZOOM_OUT_ID, FIT_WIDTH_ID] {
+    for id in [
+        FIT_WIDTH_ID,
+        butter_paper::viewer_toolbar_strip::VIEWER_PAGE_VIEW_MENU_ID,
+    ] {
         assert!(h.cx.debug_bounds(id).is_some(), "{id} hidden at 960 px");
     }
     // Every group shows whole, in order, inside the toolbar.

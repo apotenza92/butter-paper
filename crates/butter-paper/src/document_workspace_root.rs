@@ -182,6 +182,15 @@ impl DocumentWorkspace {
             .on_action(cx.listener(|workspace, _: &SinglePageView, _, cx| {
                 workspace.set_active_page_view_mode(PageViewMode::SinglePage, cx);
             }))
+            .on_action(cx.listener(|workspace, _: &TwoPagesView, _, cx| {
+                workspace.set_active_page_view_mode(PageViewMode::TwoPages, cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &ToggleCoverPageAlone, _, cx| {
+                workspace.toggle_active_cover_alone(cx);
+            }))
+            .on_action(cx.listener(|workspace, _: &ToggleSplitView, _, cx| {
+                workspace.toggle_active_split_view(cx);
+            }))
             .on_action(cx.listener(|workspace, _: &SelectTool, window, cx| {
                 workspace.select_available_annotation_tool(AnnotationTool::Select, window, cx);
             }))

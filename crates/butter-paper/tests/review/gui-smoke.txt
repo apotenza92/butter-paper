@@ -286,6 +286,27 @@ app-appearance match
 page-appearance original
 expect-paper 0 real
 
+# Two Pages and Split View, as the View menu sends them. A press in the
+# other pane makes it the active one, and Split View off keeps the view.
+dispatch 0 two-pages
+wait 600
+expect-view 0 two
+dispatch 0 split-view
+wait 800
+expect-view 0 two split-left
+expect-shown 0 document-split-divider
+os-click-id 0 document-split-pane-right
+wait 600
+expect-view 0 two split-right
+shot split-view
+dispatch 0 split-view
+wait 600
+expect-view 0 two
+expect-hidden 0 document-split-divider
+dispatch 0 continuous
+wait 600
+expect-view 0 continuous
+
 # A PDF dropped on the page opens as a new tab in the window it is dropped
 # on, not elsewhere. The page is under window point 600, 450. The PDF is a
 # copy: the open file itself only brings its tab forward.

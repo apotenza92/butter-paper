@@ -108,6 +108,10 @@ pub enum CadOrganisation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RenderLayout {
     Continuous,
+    /// Pages side by side in pairs, scrolled as rows (Two Pages view).
+    TwoPages {
+        cover_alone: bool,
+    },
     Cad {
         organisation: CadOrganisation,
         pages_per_lane: usize,
@@ -551,6 +555,85 @@ impl RenderPlanner {
     }
 }
 
+/// The row and column of page `page` in Two Pages view. Without the cover
+/// alone, row r holds pages 2r and 2r + 1; with it, page 0 is alone in row
+/// 0, in the right column as a book's cover, and row r holds pages 2r - 1
+/// and 2r. A last page with no partner stays in the left column.
+pub const fn two_page_slot(page: usize, cover_alone: bool) -> (usize, usize) {
+    if cover_alone {
+        if page == 0 {
+            (0, 1)
+        } else {
+            (page.div_ceil(2), (page + 1) % 2)
+        }
+    } else {
+        (page / 2, page % 2)
+    }
+}
+
+/// The pages of row `row` in Two Pages view, of a document of `page_count`
+/// pages: the first and, when it has one, the second.
+pub fn two_page_row(row: usize, cover_alone: bool, page_count: usize) -> (usize, Option<usize>) {
+    let first = match (cover_alone, row) {
+        (true, 0) => return (0, None),
+        (true, row) => row * 2 - 1,
+        (false, row) => row * 2,
+    };
+    let second = first + 1;
+    (first, (second < page_count).then_some(second))
+}
+
+/// The first page of the row holding `page` in Two Pages view.
+pub const fn two_page_row_first(page: usize, cover_alone: bool) -> usize {
+    let (row, _) = two_page_slot(page, cover_alone);
+    match (cover_alone, row) {
+        (true, 0) => 0,
+        (true, row) => row * 2 - 1,
+        (false, row) => row * 2,
+    }
+}
+
+/// The first page of the row before (`forward` false) or after the row
+/// holding `page`, in a document of `page_count` pages: Previous and Next
+/// in Two Pages view move a spread. `None` at either end.
+pub fn two_page_spread_step(
+    page: usize,
+    cover_alone: bool,
+    page_count: usize,
+    forward: bool,
+) -> Option<usize> {
+    if page_count == 0 {
+        return None;
+    }
+    let (row, _) = two_page_slot(page.min(page_count - 1), cover_alone);
+    let last_row = two_page_slot(page_count - 1, cover_alone).0;
+    let target = if forward {
+        (row < last_row).then_some(row + 1)?
+    } else {
+        row.checked_sub(1)?
+    };
+    Some(two_page_row(target, cover_alone, page_count).0)
+}
+
+/// The size of the row holding `page` in Two Pages view, at 100%: two
+/// column slots with `gap` between them, as tall as the taller page. A page
+/// alone in its row keeps an empty slot as wide as itself. A fit in Two
+/// Pages fits this.
+pub fn two_page_row_size(
+    page_sizes: &[(f32, f32)],
+    page: usize,
+    cover_alone: bool,
+    gap: f32,
+) -> Option<(f32, f32)> {
+    let (row, _) = two_page_slot(page, cover_alone);
+    let (first, second) = two_page_row(row, cover_alone, page_sizes.len());
+    let first = *page_sizes.get(first)?;
+    Some(match second.and_then(|second| page_sizes.get(second)) {
+        Some(second) => (first.0 + gap + second.0, first.1.max(second.1)),
+        None => (first.0 * 2. + gap, first.1),
+    })
+}
+
 fn build_page_layouts(
     pages: &[PageGeometry],
     zoom: f32,
@@ -588,6 +671,74 @@ fn build_page_layouts(
             } else {
                 page_y - gap
             };
+            (layouts, total_width, total_height)
+        }
+        RenderLayout::TwoPages { cover_alone } => {
+            // Each row's pages meet at their tops and the row is centred
+            // as two column slots: a page alone in its row (the cover, an
+            // odd last page) keeps its column beside an empty slot as wide
+            // as itself, as a book shows it.
+            let scaled = pages
+                .iter()
+                .enumerate()
+                .map(|(position, page)| {
+                    let (row, column) = two_page_slot(position, cover_alone);
+                    let width = finite_positive(page.width_points, 1.) * zoom;
+                    let height = finite_positive(page.height_points, 1.) * zoom;
+                    (page, width, height, column, row)
+                })
+                .collect::<Vec<_>>();
+            let row_count = scaled.iter().map(|(.., row)| row + 1).max().unwrap_or(0);
+            let mut row_widths = vec![0_f32; row_count];
+            let mut row_heights = vec![0_f32; row_count];
+            let mut row_pages = vec![0_usize; row_count];
+            for (_, width, height, _, row) in &scaled {
+                row_widths[*row] += if row_widths[*row] > 0. {
+                    gap + width
+                } else {
+                    *width
+                };
+                row_heights[*row] = row_heights[*row].max(*height);
+                row_pages[*row] += 1;
+            }
+            // A lone page's empty slot.
+            for (width, pages) in row_widths.iter_mut().zip(&row_pages) {
+                if *pages == 1 {
+                    *width = *width * 2. + gap;
+                }
+            }
+            let total_width = row_widths.iter().copied().fold(viewport_width, f32::max);
+            let mut row_tops = Vec::with_capacity(row_count);
+            let mut top = 0.;
+            for height in &row_heights {
+                row_tops.push(top);
+                top += height + gap;
+            }
+            let mut row_lefts = row_widths
+                .iter()
+                .map(|width| (total_width - width) / 2.)
+                .collect::<Vec<_>>();
+            let layouts = scaled
+                .into_iter()
+                .map(|(page, width, height, column_index, row_index)| {
+                    // A lone page in the right column sits past its empty
+                    // left slot.
+                    if row_pages[row_index] == 1 && column_index == 1 {
+                        row_lefts[row_index] += width + gap;
+                    }
+                    let left = row_lefts[row_index];
+                    row_lefts[row_index] += width + gap;
+                    PageLayout {
+                        page: page.page,
+                        logical_rect: Rect::new(left, row_tops[row_index], width, height),
+                        device_width: (width * device_scale).ceil() as usize,
+                        device_height: (height * device_scale).ceil() as usize,
+                        column_index,
+                        row_index,
+                    }
+                })
+                .collect();
+            let total_height = if row_count == 0 { 0. } else { top - gap };
             (layouts, total_width, total_height)
         }
         RenderLayout::Cad {
@@ -764,5 +915,151 @@ mod tests {
         assert_eq!(evicted, ["first", "third", "second", "third again"]);
         assert!(cache.is_empty());
         assert_eq!(cache.bytes(), 0);
+    }
+
+    fn two_pages(
+        pages: &[(f32, f32)],
+        cover_alone: bool,
+        viewport: f32,
+    ) -> (Vec<PageLayout>, f32, f32) {
+        let pages = pages
+            .iter()
+            .enumerate()
+            .map(|(page, (width, height))| PageGeometry::new(page, *width, *height))
+            .collect::<Vec<_>>();
+        build_page_layouts(
+            &pages,
+            1.,
+            1.,
+            24.,
+            viewport,
+            RenderLayout::TwoPages { cover_alone },
+        )
+    }
+
+    fn rects(layouts: &[PageLayout]) -> Vec<(usize, f32, f32, f32, f32)> {
+        layouts
+            .iter()
+            .map(|layout| {
+                let rect = layout.logical_rect;
+                (layout.page, rect.x, rect.y, rect.width, rect.height)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_pages_pairs_odd_and_even_pages_or_puts_the_cover_alone() {
+        assert_eq!(
+            (0..5)
+                .map(|page| two_page_slot(page, false))
+                .collect::<Vec<_>>(),
+            [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0)]
+        );
+        assert_eq!(
+            (0..5)
+                .map(|page| two_page_slot(page, true))
+                .collect::<Vec<_>>(),
+            [(0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
+        );
+        assert_eq!(two_page_row(0, false, 5), (0, Some(1)));
+        assert_eq!(two_page_row(2, false, 5), (4, None));
+        assert_eq!(two_page_row(0, true, 5), (0, None));
+        assert_eq!(two_page_row(1, true, 5), (1, Some(2)));
+        assert_eq!(two_page_row(2, true, 4), (3, None));
+
+        // Five letter pages in a 1,400 pt view: pairs side by side, the
+        // last alone in the left column, every row centred as two slots,
+        // rows 24 pt apart.
+        let letter = (612., 792.);
+        let (layouts, width, height) = two_pages(&[letter; 5], false, 1_400.);
+        assert_eq!(width, 1_400.);
+        assert_eq!(height, 792. * 3. + 48.);
+        let left = (1_400. - 1_248.) / 2.;
+        assert_eq!(
+            rects(&layouts),
+            [
+                (0, left, 0., 612., 792.),
+                (1, left + 636., 0., 612., 792.),
+                (2, left, 816., 612., 792.),
+                (3, left + 636., 816., 612., 792.),
+                (4, left, 1_632., 612., 792.),
+            ]
+        );
+        assert_eq!(
+            layouts
+                .iter()
+                .map(|layout| (layout.row_index, layout.column_index))
+                .collect::<Vec<_>>(),
+            [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0)]
+        );
+
+        // With the cover alone: page 1 alone in the right column, then
+        // 2–3, then 4 alone in the left column.
+        let (layouts, _, height) = two_pages(&[letter; 4], true, 1_400.);
+        assert_eq!(height, 792. * 3. + 48.);
+        assert_eq!(
+            rects(&layouts),
+            [
+                (0, left + 636., 0., 612., 792.),
+                (1, left, 816., 612., 792.),
+                (2, left + 636., 816., 612., 792.),
+                (3, left, 1_632., 612., 792.),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_pages_of_mixed_sizes_meet_at_their_tops_in_a_centred_row() {
+        // A letter page beside a tabloid landscape, then a turned page
+        // (its rotated size) beside a letter page, in a view narrower than
+        // the widest row: the content widens to that row.
+        let (layouts, width, height) = two_pages(
+            &[(612., 792.), (1_224., 792.), (792., 612.), (612., 792.)],
+            false,
+            1_000.,
+        );
+        assert_eq!(width, 612. + 24. + 1_224.);
+        assert_eq!(height, 792. + 24. + 792.);
+        assert_eq!(
+            rects(&layouts),
+            [
+                (0, 0., 0., 612., 792.),
+                (1, 636., 0., 1_224., 792.),
+                (2, (1_860. - 1_428.) / 2., 816., 792., 612.),
+                (3, (1_860. - 1_428.) / 2. + 816., 816., 612., 792.),
+            ]
+        );
+        assert_eq!(
+            two_page_row_size(&[(612., 792.), (1_224., 900.)], 1, false, 24.),
+            Some((1_860., 900.))
+        );
+        assert_eq!(
+            two_page_row_size(&[(612., 792.)], 0, false, 24.),
+            Some((1_248., 792.)),
+            "a lone page fits as a two-column row"
+        );
+        assert_eq!(
+            two_page_row_size(&[(612., 792.), (500., 700.), (600., 800.)], 0, true, 24.),
+            Some((1_248., 792.))
+        );
+    }
+
+    #[test]
+    fn two_pages_steps_a_spread_to_the_first_page_of_the_next_or_previous_row() {
+        // Nine pages, no cover: rows 1–2, 3–4, 5–6, 7–8, 9.
+        assert_eq!(two_page_spread_step(0, false, 9, true), Some(2));
+        assert_eq!(two_page_spread_step(1, false, 9, true), Some(2));
+        assert_eq!(two_page_spread_step(7, false, 9, true), Some(8));
+        assert_eq!(two_page_spread_step(8, false, 9, true), None);
+        assert_eq!(two_page_spread_step(3, false, 9, false), Some(0));
+        assert_eq!(two_page_spread_step(1, false, 9, false), None);
+        // The cover alone: rows 1, 2–3, 4–5, 6–7, 8–9.
+        assert_eq!(two_page_spread_step(0, true, 9, true), Some(1));
+        assert_eq!(two_page_spread_step(2, true, 9, true), Some(3));
+        assert_eq!(two_page_spread_step(2, true, 9, false), Some(0));
+        assert_eq!(two_page_spread_step(8, true, 9, true), None);
+        assert_eq!(two_page_row_first(8, true), 7);
+        assert_eq!(two_page_row_first(8, false), 8);
+        assert_eq!(two_page_spread_step(0, false, 0, true), None);
     }
 }

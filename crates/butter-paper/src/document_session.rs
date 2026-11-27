@@ -491,6 +491,72 @@ pub struct NativeDocumentSession {
     pub(crate) source_place: Option<crate::save_places::SourcePlace>,
     /// The prompt for a place to save it has been shown.
     pub(crate) source_place_asked: bool,
+    /// Split View: the document shows in two panes. The fields above hold
+    /// the active pane's view; this holds the other pane's.
+    pub(crate) split: Option<SplitView>,
+}
+
+/// Which side of the canvas a Split View pane is on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaneSide {
+    Left,
+    Right,
+}
+
+impl PaneSide {
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
+/// The least width of a Split View pane, in pixels.
+pub const MIN_PANE_WIDTH: f32 = 240.;
+
+/// What one view of a document holds: its viewer (layout, tiles and
+/// scroll), view settings, page and the navigation waiting for its next
+/// layout. In Split View the session holds the active pane's in its own
+/// fields and the other pane's here; making the other pane active swaps
+/// them.
+pub(crate) struct PaneView {
+    pub(crate) viewer: DocumentViewerState,
+    pub(crate) view_state: NativeDocumentViewState,
+    pub(crate) current_page: u32,
+    pub(crate) requested_page: u32,
+    pub(crate) picked_page_scroll: Option<(f32, f32)>,
+    pub(crate) pending_navigation_scroll: Option<u32>,
+    pub(crate) navigation_from_below: Option<u32>,
+    pub(crate) pending_page_view_scroll: Option<(u32, (f32, f32))>,
+    pub(crate) pending_zoom_anchor: Option<crate::zoom_anchor::ZoomAnchor>,
+    pub(crate) pending_page_frame: Option<(u32, crate::document_viewer::ViewerFitPreset)>,
+    pub(crate) viewport_size: Option<(f32, f32)>,
+    pub(crate) adaptive_performance: AdaptiveViewerPerformance,
+    pub(crate) adaptive_last_evaluated_at: Option<Instant>,
+}
+
+/// Split View's state: the other pane's view, which side is active and
+/// how the canvas divides.
+pub(crate) struct SplitView {
+    pub(crate) other: PaneView,
+    pub(crate) active: PaneSide,
+    /// The left pane's share of the canvas width, from 0 to 1.
+    pub(crate) ratio: f32,
+}
+
+/// The left pane's width for a `ratio` of a canvas `width` wide with a
+/// `divider` between the panes, each pane at least [`MIN_PANE_WIDTH`]
+/// while there is room.
+pub fn split_left_width(ratio: f32, width: f32, divider: f32) -> f32 {
+    let room = (width - divider).max(0.);
+    let ratio = if ratio.is_finite() {
+        ratio.clamp(0., 1.)
+    } else {
+        0.5
+    };
+    let least = MIN_PANE_WIDTH.min(room / 2.);
+    (room * ratio).clamp(least, room - least)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -610,6 +676,7 @@ impl NativeDocumentSession {
             save_as_required: false,
             source_place: None,
             source_place_asked: false,
+            split: None,
         }
     }
 
@@ -729,6 +796,129 @@ impl NativeDocumentSession {
         let (scroll_x, scroll_y) = self.viewer.logical_scroll();
         self.view_state.set_scroll(scroll_x, scroll_y);
         self.view_state.remember_page_view(self.current_page);
+    }
+
+    /// Whether tiles can be rendered now: a worker and every page's
+    /// coordinate space.
+    pub(crate) fn can_render_viewer_jobs(&self, _document_id: DocumentId) -> bool {
+        self.resource.is_some()
+            && (0..self.page_sizes.len()).all(|page_index| {
+                self.annotation_page_coordinate_space(page_index as u32)
+                    .is_some()
+            })
+    }
+
+    /// Split View on: the other pane starts as a copy of this view, with a
+    /// viewer of its own, holding the point at the view centre.
+    pub(crate) fn open_split(&mut self) {
+        if self.split.is_some() {
+            return;
+        }
+        let mut viewer = DocumentViewerState::default();
+        viewer.set_paper(self.paper);
+        viewer.configure(self.view_state.mode(), self.view_state.zoom_percent());
+        viewer.configure_cover_alone(self.view_state.cover_alone());
+        let (scroll_x, scroll_y) = self.viewer.logical_scroll();
+        let mut view_state = self.view_state.clone();
+        view_state.set_scroll(scroll_x, scroll_y);
+        let other = PaneView {
+            viewer,
+            view_state,
+            current_page: self.current_page,
+            requested_page: self.current_page,
+            picked_page_scroll: None,
+            pending_navigation_scroll: self
+                .viewport_centre_anchor()
+                .is_none()
+                .then_some(self.current_page),
+            navigation_from_below: None,
+            pending_page_view_scroll: None,
+            pending_zoom_anchor: self.viewport_centre_anchor(),
+            pending_page_frame: None,
+            viewport_size: None,
+            adaptive_performance: AdaptiveViewerPerformance::default(),
+            adaptive_last_evaluated_at: None,
+        };
+        self.split = Some(SplitView {
+            other,
+            active: PaneSide::Left,
+            ratio: 0.5,
+        });
+    }
+
+    /// Split View off: the active pane's view stays; the other pane's
+    /// images are released.
+    pub(crate) fn close_split(&mut self) {
+        if let Some(mut split) = self.split.take() {
+            split.other.viewer.close();
+            self.retired_images
+                .extend(split.other.viewer.take_retired_images());
+        }
+    }
+
+    /// Makes the other pane active: its view and this one change places.
+    pub(crate) fn swap_panes(&mut self) {
+        let Some(mut split) = self.split.take() else {
+            return;
+        };
+        let other = &mut split.other;
+        std::mem::swap(&mut self.viewer, &mut other.viewer);
+        std::mem::swap(&mut self.view_state, &mut other.view_state);
+        std::mem::swap(&mut self.current_page, &mut other.current_page);
+        std::mem::swap(&mut self.requested_page, &mut other.requested_page);
+        std::mem::swap(&mut self.picked_page_scroll, &mut other.picked_page_scroll);
+        std::mem::swap(
+            &mut self.pending_navigation_scroll,
+            &mut other.pending_navigation_scroll,
+        );
+        std::mem::swap(
+            &mut self.navigation_from_below,
+            &mut other.navigation_from_below,
+        );
+        std::mem::swap(
+            &mut self.pending_page_view_scroll,
+            &mut other.pending_page_view_scroll,
+        );
+        std::mem::swap(
+            &mut self.pending_zoom_anchor,
+            &mut other.pending_zoom_anchor,
+        );
+        std::mem::swap(&mut self.pending_page_frame, &mut other.pending_page_frame);
+        std::mem::swap(&mut self.viewport_size, &mut other.viewport_size);
+        std::mem::swap(
+            &mut self.adaptive_performance,
+            &mut other.adaptive_performance,
+        );
+        std::mem::swap(
+            &mut self.adaptive_last_evaluated_at,
+            &mut other.adaptive_last_evaluated_at,
+        );
+        split.active = split.active.other();
+        self.split = Some(split);
+    }
+
+    /// Runs `f` on every viewer of this document: the active pane's and,
+    /// in Split View, the other pane's.
+    pub(crate) fn for_each_viewer(&mut self, mut f: impl FnMut(&mut DocumentViewerState)) {
+        f(&mut self.viewer);
+        if let Some(split) = &mut self.split {
+            f(&mut split.other.viewer);
+        }
+    }
+
+    /// The size a fit of `page` fits, in points at 100%: the page, or in
+    /// Two Pages view the row holding it (both pages and the gap between).
+    pub(crate) fn fit_size(&self, page: u32) -> Option<(f32, f32)> {
+        if self.view_state.mode() == crate::page_view_control::PageViewMode::TwoPages {
+            crate::viewer::two_page_row_size(
+                &self.page_sizes,
+                page as usize,
+                self.view_state.cover_alone(),
+                crate::document_viewer::PAGE_GAP,
+            )
+        } else {
+            self.page_sizes.get(page as usize).copied()
+        }
     }
 
     pub fn page_count(&self) -> usize {
@@ -1116,12 +1306,22 @@ impl NativeDocumentSession {
                 (before.get(page as usize)? == after.get(to)?).then_some(to as u32)
             });
         }
-        self.viewer.invalidate_raster(|page| {
-            let to = moved(page)?;
-            Some(ShownPage {
-                page: to,
-                quarter_turns: (after.get(to)? + 4 - before.get(page)?) % 4,
-            })
+        if !before.is_empty()
+            && let Some(split) = &mut self.split
+        {
+            split.other.view_state.remap_page_views(|page| {
+                let to = moved(page as usize)?;
+                (before.get(page as usize)? == after.get(to)?).then_some(to as u32)
+            });
+        }
+        self.for_each_viewer(|viewer| {
+            viewer.invalidate_raster(|page| {
+                let to = moved(page)?;
+                Some(ShownPage {
+                    page: to,
+                    quarter_turns: (after.get(to)? + 4 - before.get(page)?) % 4,
+                })
+            });
         });
         self.shown_quarter_turns = after;
     }
@@ -1312,7 +1512,9 @@ impl NativeDocumentSession {
             return false;
         }
         self.paper = paper;
-        self.viewer.set_paper(paper);
+        self.for_each_viewer(|viewer| {
+            viewer.set_paper(paper);
+        });
         // The page image stays on screen with its own paper
         // (`current_base_paper`) until the workspace draws it again.
         self.prune_adjacent_page_images();
@@ -1504,6 +1706,10 @@ impl NativeDocumentSession {
     pub(crate) fn take_releasable_images(&mut self) -> Vec<Arc<RenderImage>> {
         self.retired_images
             .extend(self.viewer.take_retired_images());
+        if let Some(split) = &mut self.split {
+            self.retired_images
+                .extend(split.other.viewer.take_retired_images());
+        }
         if self.retired_images.is_empty() {
             return Vec::new();
         }
@@ -1599,7 +1805,7 @@ impl NativeDocumentSession {
                 // highlights are rejected; the tiles on screen stay until
                 // their replacements arrive rather than blanking the page.
                 self.highlight_composite.viewer_tile_pixels = 0;
-                self.viewer.refresh_highlights();
+                self.for_each_viewer(DocumentViewerState::refresh_highlights);
                 self.composed_highlights = Some(highlights);
             }
             Ok(())
@@ -1687,6 +1893,7 @@ impl NativeDocumentSession {
         self.resource.take();
         self.release_temporary_source()?;
         self.generation = self.generation.saturating_add(1);
+        self.close_split();
         self.viewer.close();
         Ok(self.image_assets.drain().map(|(_, image)| image).collect())
     }

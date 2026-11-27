@@ -21,7 +21,7 @@ use crate::paper_appearance::PaperAppearance;
 /// While panned into blank space, at least this much of the pages stays in view.
 pub const PAN_KEEP_VISIBLE_PX: f32 = 48.;
 /// The space between pages; the pages meet the viewport's edges.
-const PAGE_GAP: f32 = 24.;
+pub const PAGE_GAP: f32 = 24.;
 const MAX_ACTIVE_TILE_JOBS: usize = 2;
 /// Fits round down to a tenth of a percent, so a fitted page fills the view
 /// to within a pixel.
@@ -64,6 +64,45 @@ impl From<TileRequest> for ViewerTileJob {
             quality: ViewerRenderQuality::Full,
         }
     }
+}
+
+/// What a fit of `page` frames in a laid-out view: the page, or in Two
+/// Pages view its whole row as two column slots (the pages, the gap between
+/// and a lone page's empty slot), centred in the content `total_width`
+/// wide.
+pub fn frame_rect(
+    layouts: &[PageLayout],
+    page: usize,
+    mode: PageViewMode,
+    total_width: f32,
+) -> Option<crate::viewer::Rect> {
+    let layout = layouts.iter().find(|layout| layout.page == page)?;
+    if mode != PageViewMode::TwoPages {
+        return Some(layout.logical_rect);
+    }
+    let row = layouts
+        .iter()
+        .filter(|other| other.row_index == layout.row_index)
+        .map(|other| other.logical_rect);
+    let (left, top, right, bottom) = row.fold(
+        (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+        |(left, top, right, bottom), rect| {
+            (
+                left.min(rect.x),
+                top.min(rect.y),
+                right.max(rect.x + rect.width),
+                bottom.max(rect.y + rect.height),
+            )
+        },
+    );
+    // Rows are centred: a lone page's empty slot mirrors it.
+    let (left, right) = (left.min(total_width - right), right.max(total_width - left));
+    Some(crate::viewer::Rect::new(
+        left,
+        top,
+        right - left,
+        bottom - top,
+    ))
 }
 
 pub fn resolve_fit_zoom_percent(
@@ -213,6 +252,8 @@ pub(crate) struct DocumentViewerState {
     covered_page: Option<(usize, u32)>,
     viewport_key: Option<ViewportKey>,
     cad_layout: Option<(CadOrganisation, usize)>,
+    /// Two Pages view's "Cover page alone".
+    cover_alone: bool,
     /// The painted viewport, which sizes the pan margin.
     viewport_size: (f32, f32),
     /// An offset placed before the scrolled content could hold it (GPUI clamps
@@ -349,6 +390,7 @@ impl Default for DocumentViewerState {
             covered_page: None,
             viewport_key: None,
             cad_layout: None,
+            cover_alone: false,
         }
     }
 }
@@ -390,6 +432,15 @@ impl DocumentViewerState {
         }
         self.mode = mode;
         self.zoom_percent = zoom_percent;
+        self.cancel_plan();
+    }
+
+    /// Two Pages view: whether the first page shows alone.
+    pub fn configure_cover_alone(&mut self, cover_alone: bool) {
+        if self.cover_alone == cover_alone {
+            return;
+        }
+        self.cover_alone = cover_alone;
         self.cancel_plan();
     }
 
@@ -763,7 +814,7 @@ impl DocumentViewerState {
             return Ok(plan);
         }
         let pages = match self.mode {
-            PageViewMode::Continuous => page_sizes
+            PageViewMode::Continuous | PageViewMode::TwoPages => page_sizes
                 .iter()
                 .enumerate()
                 .map(|(page, (width, height))| PageGeometry::new(page, *width, *height))
@@ -796,6 +847,13 @@ impl DocumentViewerState {
                 RenderLayout::Cad {
                     organisation,
                     pages_per_lane,
+                },
+            )
+        } else if self.mode == PageViewMode::TwoPages {
+            self.planner.plan_with_layout(
+                input,
+                RenderLayout::TwoPages {
+                    cover_alone: self.cover_alone,
                 },
             )
         } else {
@@ -1038,6 +1096,12 @@ impl DocumentViewerState {
         } else {
             self.queue.push_back(job);
         }
+    }
+
+    /// Whether `job` was claimed from this viewer and is still rendering:
+    /// its result belongs here.
+    pub fn is_claimed(&self, job: &ViewerTileJob) -> bool {
+        self.active.contains(job)
     }
 
     pub fn claim_jobs(&mut self) -> Vec<ViewerTileJob> {

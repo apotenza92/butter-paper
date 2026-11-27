@@ -92,8 +92,14 @@ mod click_out;
 mod page_turn;
 #[path = "space_pan.rs"]
 mod space_pan;
+#[path = "document_workspace_split.rs"]
+mod split;
 #[path = "document_workspace_tables.rs"]
 mod tables;
+pub use split::{
+    SPLIT_ACTIVE_RING_ID, SPLIT_CANVAS_ID, SPLIT_DIVIDER_ID, SPLIT_OTHER_VIEWPORT_ID,
+    SPLIT_PANE_LEFT_ID, SPLIT_PANE_RIGHT_ID,
+};
 #[path = "document_workspace_text_selection.rs"]
 mod text_selection;
 #[path = "document_workspace_thumbnails.rs"]
@@ -359,6 +365,9 @@ gpui::actions!(
         FitPage,
         ContinuousView,
         SinglePageView,
+        TwoPagesView,
+        ToggleCoverPageAlone,
+        ToggleSplitView,
         FindInDocument,
         FindInDocuments,
         FindNext,
@@ -630,6 +639,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
     forms::init_form_field_actions(cx);
     pages::init_page_actions(cx);
     search_panel::init_search_panel_actions(cx);
+    split::init_split_actions(cx);
 }
 
 pub fn register_document_workspace_global_actions(
@@ -1527,6 +1537,9 @@ pub struct DocumentCommandState {
     pub fit_page_checked: bool,
     pub continuous_view_checked: bool,
     pub single_page_view_checked: bool,
+    pub two_pages_view_checked: bool,
+    pub cover_page_alone_checked: bool,
+    pub split_view_checked: bool,
 }
 
 pub trait NativeDocumentSaver: Send + Sync {
@@ -3168,6 +3181,16 @@ pub struct DocumentWorkspace {
     session_tab_reorder_events: Vec<DocumentTabReorderEvent>,
     session_tab_reorder_announcement: String,
     viewport_refresh_scheduled: Option<DocumentId>,
+    /// Split View: the other pane's layout waits for the next frame.
+    split_other_refresh_scheduled: Option<DocumentId>,
+    /// Split View: the divider being dragged, in this document.
+    split_drag: Option<DocumentId>,
+    /// Split View: where the two panes and divider were last laid out.
+    split_canvas_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// Split View: the divider takes the keyboard focus to move it.
+    split_divider_focus: FocusHandle,
+    /// Split View: promotes the other pane's tiles when due.
+    split_other_quality_task: Option<Task<()>>,
     /// The document and viewer scheduling revision a frame last laid out
     /// before it painted, so a layout that fails is not tried each frame.
     render_replanned: Option<(DocumentId, u64)>,
@@ -4970,6 +4993,7 @@ impl DocumentWorkspace {
         );
         let continuous_control = cx.new(|_| ContinuousViewControl::continuous());
         let single_page_control = cx.new(|_| PageViewControl::single_page());
+        let two_pages_control = cx.new(|_| PageViewControl::two_pages());
         let zoom_control = cx.new(|_| ZoomControl::new());
         let viewer_toolbar = cx.new(|cx| {
             ViewerToolbarStrip::new_with_zoom(
@@ -4983,6 +5007,7 @@ impl DocumentWorkspace {
         let viewer_resizable = cx.new(|_| ResizableState::default());
         let scale_owner = cx.entity().downgrade();
         viewer_toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_two_pages_control(two_pages_control.clone(), cx);
             toolbar.set_page_navigator(page_navigator.clone(), cx);
             toolbar.set_disabled(true, cx);
             toolbar.set_scale_handler(std::rc::Rc::new(move |request, window, cx| {
@@ -5000,6 +5025,12 @@ impl DocumentWorkspace {
             ),
             cx.subscribe(
                 &single_page_control,
+                |workspace, _, event: &PageViewControlEvent, cx| {
+                    workspace.handle_page_view_control_event(*event, cx);
+                },
+            ),
+            cx.subscribe(
+                &two_pages_control,
                 |workspace, _, event: &PageViewControlEvent, cx| {
                     workspace.handle_page_view_control_event(*event, cx);
                 },
@@ -5117,6 +5148,11 @@ impl DocumentWorkspace {
             session_tab_reorder_events: Vec::new(),
             session_tab_reorder_announcement: String::new(),
             viewport_refresh_scheduled: None,
+            split_other_refresh_scheduled: None,
+            split_drag: None,
+            split_canvas_bounds: std::rc::Rc::new(std::cell::Cell::new(None)),
+            split_divider_focus: cx.focus_handle(),
+            split_other_quality_task: None,
             render_replanned: None,
             window_viewport: None,
             viewer_quality_tasks: HashMap::new(),
@@ -6412,7 +6448,12 @@ impl DocumentWorkspace {
                 active_index = Some(paths.len());
             }
             paths.push(session.path.clone());
-            restart_views.push(session.view_state.restart_view(session.current_page));
+            restart_views.push(
+                session
+                    .view_state
+                    .restart_view(session.current_page)
+                    .with_split_view(session.split.is_some()),
+            );
         }
         SessionSnapshot::new(paths, active_index).with_restart_views(restart_views)
     }
@@ -12295,6 +12336,11 @@ impl DocumentWorkspace {
                 .configure(session.view_state.mode(), session.view_state.zoom_percent());
             let (scroll_x, scroll_y) = session.view_state.scroll();
             session.viewer.set_scroll(scroll_x, scroll_y);
+            if view.split_view() {
+                session.open_split();
+            } else {
+                session.close_split();
+            }
             cx.notify();
         });
         self.ensure_visible_page_content_snap_geometry(document_id, true, cx);
@@ -12339,6 +12385,9 @@ impl DocumentWorkspace {
                 )
             });
             session.viewer.configure_cad(cad_layout);
+            session
+                .viewer
+                .configure_cover_alone(session.view_state.cover_alone());
             let rotations = session.page_rotation_quarter_turns();
             let plan = session.viewer.plan(
                 document_id.value(),
@@ -12462,11 +12511,7 @@ impl DocumentWorkspace {
             (None, Some((width, height, scale))) => {
                 session.update(cx, |session, _| {
                     session.viewport_size = Some((width, height));
-                    if let Some(page_size) = session
-                        .page_sizes
-                        .get(session.current_page as usize)
-                        .copied()
-                    {
+                    if let Some(page_size) = session.fit_size(session.current_page) {
                         session.view_state.update_viewport(width, height, page_size);
                         session.viewer.configure(
                             session.view_state.mode(),
@@ -12517,10 +12562,12 @@ impl DocumentWorkspace {
 
         let view = &session.view_state;
         let zoom = f64::from(view.zoom_percent()) / 100.;
-        state.can_previous_page = session.current_page > 0;
-        state.can_next_page = usize::try_from(session.current_page)
-            .ok()
-            .is_some_and(|page| page + 1 < session.page_sizes.len());
+        state.can_previous_page = view
+            .page_step(session.current_page, session.page_sizes.len(), false)
+            .is_some();
+        state.can_next_page = view
+            .page_step(session.current_page, session.page_sizes.len(), true)
+            .is_some();
         state.can_zoom_out = zoom > MIN_VIEWER_ZOOM + f64::EPSILON;
         state.can_zoom_in = zoom < MAX_VIEWER_ZOOM - f64::EPSILON;
         state.actual_size_checked = view.zoom_preset() == ViewerZoomPreset::Manual
@@ -12529,6 +12576,9 @@ impl DocumentWorkspace {
         state.fit_page_checked = view.zoom_preset() == ViewerZoomPreset::FitPage;
         state.continuous_view_checked = view.mode() == PageViewMode::Continuous;
         state.single_page_view_checked = view.mode() == PageViewMode::SinglePage;
+        state.two_pages_view_checked = view.mode() == PageViewMode::TwoPages;
+        state.cover_page_alone_checked = view.cover_alone();
+        state.split_view_checked = session.split.is_some();
         state
     }
 
@@ -12618,6 +12668,20 @@ impl DocumentWorkspace {
         }
     }
 
+    fn toggle_active_cover_alone(&mut self, cx: &mut Context<Self>) {
+        if let Some(document_id) = self.active_ready_document_id(cx)
+            && let Some(state) = self.document_view_state(document_id, cx)
+        {
+            self.set_cover_alone(document_id, !state.cover_alone(), cx);
+        }
+    }
+
+    fn toggle_active_split_view(&mut self, cx: &mut Context<Self>) {
+        if let Some(document_id) = self.active_ready_document_id(cx) {
+            self.toggle_split_view(document_id, cx);
+        }
+    }
+
     fn set_active_page_view_mode(&mut self, mode: PageViewMode, cx: &mut Context<Self>) {
         if let Some(document_id) = self.active_ready_document_id(cx) {
             self.set_page_view_mode(document_id, mode, cx);
@@ -12641,12 +12705,15 @@ impl DocumentWorkspace {
                 self.set_page_view_mode(document_id, mode, cx);
                 let preset = match mode {
                     PageViewMode::Continuous => ViewerFitPreset::Width,
-                    PageViewMode::SinglePage => ViewerFitPreset::Page,
+                    PageViewMode::SinglePage | PageViewMode::TwoPages => ViewerFitPreset::Page,
                 };
                 self.set_fit_preset(document_id, preset, cx);
             }
             PageViewControlEvent::WheelBehaviorChanged(mode, behavior) => {
                 self.set_document_wheel_behavior(document_id, mode, behavior, cx);
+            }
+            PageViewControlEvent::CoverAloneChanged(cover_alone) => {
+                self.set_cover_alone(document_id, cover_alone, cx);
             }
         }
     }
@@ -12685,18 +12752,27 @@ impl DocumentWorkspace {
         let Some(document_id) = self.active_ready_document_id(cx) else {
             return;
         };
-        let Some((requested, page_count)) = self.session(document_id, cx).map(|session| {
+        let Some((requested, page_count, view)) = self.session(document_id, cx).map(|session| {
             let session = session.read(cx);
-            (session.requested_page, session.page_sizes.len() as u32)
+            (
+                session.requested_page,
+                session.page_sizes.len() as u32,
+                session.view_state.clone(),
+            )
         }) else {
             return;
         };
         let last = page_count.saturating_sub(1);
+        // In Two Pages view Previous, Next and Last turn a spread.
         let target = match event {
             PageNavigatorEvent::First => 0,
-            PageNavigatorEvent::Previous => requested.saturating_sub(1),
-            PageNavigatorEvent::Next => requested.saturating_add(1).min(last),
-            PageNavigatorEvent::Last => last,
+            PageNavigatorEvent::Previous => view
+                .page_step(requested, page_count as usize, false)
+                .unwrap_or(requested),
+            PageNavigatorEvent::Next => view
+                .page_step(requested, page_count as usize, true)
+                .unwrap_or(requested),
+            PageNavigatorEvent::Last => view.last_page_target(page_count as usize),
             PageNavigatorEvent::GoTo(page) => page.min(last),
         };
         self.activate_thumbnail_page(document_id, target, cx);
@@ -12728,6 +12804,10 @@ impl DocumentWorkspace {
                 self.request_signatures_dialog(document_id, cx);
                 return;
             }
+            ViewerToolbarStripEvent::SplitViewToggled => {
+                self.toggle_split_view(document_id, cx);
+                return;
+            }
         };
         self.set_fit_preset(
             document_id,
@@ -12749,6 +12829,10 @@ impl DocumentWorkspace {
         let signatures = self
             .active_ready_document_id(cx)
             .and_then(|document_id| self.signature_status(document_id));
+        let split_view = self
+            .active_ready_document_id(cx)
+            .and_then(|document_id| self.split_view_state(document_id, cx))
+            .is_some();
         let pages = self
             .active_ready_document_id(cx)
             .and_then(|document_id| self.session(document_id, cx))
@@ -12759,9 +12843,19 @@ impl DocumentWorkspace {
         self.viewer_toolbar.update(cx, |toolbar, cx| {
             let (current_page, page_count) = pages.unwrap_or((0, 0));
             toolbar.sync_pages(current_page, page_count, cx);
+            toolbar.sync_spreads(
+                state
+                    .as_ref()
+                    .filter(|state| {
+                        state.mode() == PageViewMode::TwoPages && !state.cad_view_active()
+                    })
+                    .map(|state| state.cover_alone()),
+                cx,
+            );
             // The switch shows while a document is open, disabled until
             // one is ready.
             toolbar.set_edit_pdf(Some(edit_pdf.unwrap_or(false)), cx);
+            toolbar.set_split_view(Some(split_view), cx);
             toolbar.set_signatures(signatures, cx);
             let Some(state) = state else {
                 toolbar.set_disabled(true, cx);
@@ -12772,6 +12866,11 @@ impl DocumentWorkspace {
                 ViewerZoomPreset::FitWidth => Some(FitPreset::Width),
                 ViewerZoomPreset::FitPage => Some(FitPreset::Page),
             };
+            toolbar.sync_two_pages(
+                state.wheel_behavior(PageViewMode::TwoPages),
+                state.cover_alone(),
+                cx,
+            );
             toolbar.sync_document_state(
                 state.mode(),
                 fit_preset,
@@ -12829,15 +12928,27 @@ impl DocumentWorkspace {
         if session.read(cx).view_state.mode() == mode {
             return false;
         }
-        session.update(cx, |session, cx| {
+        let refit = session.update(cx, |session, cx| {
+            let pairs_changed = (session.view_state.mode() == PageViewMode::TwoPages)
+                != (mode == PageViewMode::TwoPages);
             session.hold_current_page_across_mode_change();
             session.view_state.set_mode(mode);
             session
                 .viewer
                 .configure(mode, session.view_state.zoom_percent());
             cx.notify();
+            // A fit in force fits the row in Two Pages and the page
+            // elsewhere, so a switch to or from it fits again.
+            match session.view_state.zoom_preset() {
+                ViewerZoomPreset::FitWidth if pairs_changed => Some(ViewerFitPreset::Width),
+                ViewerZoomPreset::FitPage if pairs_changed => Some(ViewerFitPreset::Page),
+                _ => None,
+            }
         });
-        self.replan_viewport_now(document_id, cx);
+        match refit {
+            Some(preset) => self.apply_fit_preset_now(document_id, &session, preset, cx),
+            None => self.replan_viewport_now(document_id, cx),
+        }
         cx.notify();
         true
     }
@@ -12877,10 +12988,7 @@ impl DocumentWorkspace {
             // A fit chosen for the page replaces the view it was left at.
             session.view_state.forget_page_view(session.current_page);
             if let Some((width, height)) = session.view_state.viewport_size()
-                && let Some(page_size) = session
-                    .page_sizes
-                    .get(session.current_page as usize)
-                    .copied()
+                && let Some(page_size) = session.fit_size(session.current_page)
             {
                 session.view_state.update_viewport(width, height, page_size);
             }
@@ -12949,6 +13057,45 @@ impl DocumentWorkspace {
             session.view_state.set_wheel_behavior(mode, behavior);
             cx.notify();
         });
+        cx.notify();
+        true
+    }
+
+    /// Two Pages view's "Cover page alone" for `document_id`: the pairs
+    /// shift by one page, keeping the current page in view (refitted when
+    /// a fit is in force, as its row changed).
+    pub fn set_cover_alone(
+        &mut self,
+        document_id: DocumentId,
+        cover_alone: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return false;
+        };
+        if session.read(cx).view_state.cover_alone() == cover_alone {
+            return false;
+        }
+        let preset = session.update(cx, |session, cx| {
+            if session.viewer.plan_snapshot().is_some() {
+                session.pending_navigation_scroll = Some(session.current_page);
+            }
+            session.view_state.set_cover_alone(cover_alone);
+            session.viewer.configure_cover_alone(cover_alone);
+            cx.notify();
+            match session.view_state.zoom_preset() {
+                ViewerZoomPreset::FitWidth => Some(ViewerFitPreset::Width),
+                ViewerZoomPreset::FitPage => Some(ViewerFitPreset::Page),
+                ViewerZoomPreset::Manual => None,
+            }
+        });
+        match preset {
+            Some(preset) if session.read(cx).view_state.mode() == PageViewMode::TwoPages => {
+                self.apply_fit_preset_now(document_id, &session, preset, cx);
+            }
+            _ => self.replan_viewport_now(document_id, cx),
+        }
+        self.sync_active_viewer_toolbar(cx);
         cx.notify();
         true
     }
@@ -13507,6 +13654,7 @@ impl DocumentWorkspace {
         };
         let (mut scroll_x, mut scroll_y) = session.read(cx).viewer.logical_scroll();
         let previous_page = session.read(cx).current_page;
+        let navigating = self.navigation_in_flight.contains(&document_id);
         let now = cx.background_executor().now();
         session.update(cx, |session, _| {
             if !matches!(session.status, NativeDocumentStatus::Ready) {
@@ -13523,6 +13671,9 @@ impl DocumentWorkspace {
                 )
             });
             session.viewer.configure_cad(cad_layout);
+            session
+                .viewer
+                .configure_cover_alone(session.view_state.cover_alone());
             let covered = session
                 .current_image
                 .as_ref()
@@ -13572,6 +13723,7 @@ impl DocumentWorkspace {
             }
             // Resolve explicit navigation against this frame's page geometry
             // before the continuous viewport chooses its current page.
+            let mut picked_target = None;
             if let Some(target) = session.pending_navigation_scroll
                 && let Some(layout) = plan
                     .page_layouts
@@ -13620,6 +13772,18 @@ impl DocumentWorkspace {
                 if cad_layout.is_some() {
                     scroll_x = layout.logical_rect.x.max(0.);
                 }
+                if session.view_state.mode() == PageViewMode::TwoPages {
+                    // The row comes to the top; a page off the view across
+                    // comes into it.
+                    if rect.x < scroll_x || rect.width > viewport_width {
+                        scroll_x = rect.x;
+                    } else if rect.x + rect.width > scroll_x + viewport_width {
+                        scroll_x = rect.x + rect.width - viewport_width;
+                    }
+                    // The page gone to stays current, though the view centre
+                    // may be on its neighbour, until the view scrolls.
+                    picked_target = Some(target);
+                }
                 session.view_state.set_scroll(scroll_x, scroll_y);
                 session.viewer.set_scroll(scroll_x, scroll_y);
                 session.pending_navigation_scroll = None;
@@ -13637,12 +13801,13 @@ impl DocumentWorkspace {
                 )?;
             }
             if let Some((page, preset)) = session.pending_page_frame
-                && let Some(layout) = plan
-                    .page_layouts
-                    .iter()
-                    .find(|layout| layout.page == page as usize)
+                && let Some(rect) = crate::document_viewer::frame_rect(
+                    &plan.page_layouts,
+                    page as usize,
+                    session.view_state.mode(),
+                    plan.total_width,
+                )
             {
-                let rect = layout.logical_rect;
                 scroll_x = rect.x + rect.width / 2. - viewport_width / 2.;
                 if preset == ViewerFitPreset::Page {
                     scroll_y = rect.y + rect.height / 2. - viewport_height / 2.;
@@ -13674,19 +13839,42 @@ impl DocumentWorkspace {
             // A page picked by a click stays current while the view stays
             // where the click left it; a scroll makes the page in view
             // current again.
-            session.picked_page_scroll = session
-                .picked_page_scroll
-                .filter(|picked| *picked == (scroll_x, scroll_y));
-            if session.view_state.mode() == PageViewMode::Continuous
+            if let Some(target) = picked_target {
+                session.current_page = target;
+                session.picked_page_scroll = Some(session.viewer.logical_scroll());
+            } else {
+                session.picked_page_scroll = session
+                    .picked_page_scroll
+                    .filter(|picked| *picked == (scroll_x, scroll_y));
+            }
+            // In Two Pages a row's pages share the view centre: the current
+            // page stays while its row is the one in view.
+            let same_row = |page: usize, other: usize| {
+                let cover = session.view_state.cover_alone();
+                session.view_state.mode() == PageViewMode::TwoPages
+                    && crate::viewer::two_page_slot(page, cover).0
+                        == crate::viewer::two_page_slot(other, cover).0
+            };
+            if session.view_state.mode().scrolls()
                 && session.picked_page_scroll.is_none()
                 && let Some(visible_page) = plan.current_page
                 && visible_page != session.current_page as usize
+                && !(same_row(visible_page, session.current_page as usize)
+                    && plan
+                        .visible_pages
+                        .contains(&(session.current_page as usize)))
             {
                 // A fit is resolved when it is chosen or the window resizes,
                 // not refitted to each page scrolled past: that would change
                 // the zoom under the reader in a file of mixed page sizes.
+                let previous_current = session.current_page;
                 session.current_page = u32::try_from(visible_page)
                     .map_err(|_| "visible page index overflowed".to_owned())?;
+                // Next and Previous count from the page the view settled on,
+                // unless a page asked for is still on its way.
+                if !navigating && session.requested_page == previous_current {
+                    session.requested_page = session.current_page;
+                }
             }
             Ok::<(), String>(())
         })?;
@@ -13742,11 +13930,7 @@ impl DocumentWorkspace {
                         session.pending_page_frame = Some((session.current_page, preset));
                     }
                     session.viewport_size = next;
-                    if let Some(page_size) = session
-                        .page_sizes
-                        .get(session.current_page as usize)
-                        .copied()
-                    {
+                    if let Some(page_size) = session.fit_size(session.current_page) {
                         session.view_state.update_viewport(
                             viewport_width,
                             viewport_height,
@@ -13816,6 +14000,27 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return;
         };
+        if !session.read(cx).can_render_viewer_jobs(document_id) {
+            return;
+        }
+        let jobs = session.update(cx, |session, _| session.viewer.claim_jobs());
+        self.spawn_viewer_jobs(document_id, jobs, cx);
+    }
+
+    /// Renders `jobs` of `document_id`'s viewers in the background; each
+    /// result goes back to the viewer that claimed it.
+    fn spawn_viewer_jobs(
+        &mut self,
+        document_id: DocumentId,
+        jobs: Vec<ViewerTileJob>,
+        cx: &mut Context<Self>,
+    ) {
+        if jobs.is_empty() {
+            return;
+        }
+        let Some(session) = self.session(document_id, cx).cloned() else {
+            return;
+        };
         let Some(resource) = session.read(cx).resource.clone() else {
             return;
         };
@@ -13834,7 +14039,6 @@ impl DocumentWorkspace {
             };
             (session.page_sizes.clone(), coordinate_spaces, pens)
         };
-        let jobs = session.update(cx, |session, _| session.viewer.claim_jobs());
         for job in jobs {
             let resource = resource.clone();
             let page_sizes = page_sizes.clone();
@@ -13944,13 +14148,24 @@ impl DocumentWorkspace {
         };
         session.update(cx, |session, cx| {
             let result = result;
-            let accepted = session.viewer.finish_at(
+            let now = cx.background_executor().now();
+            // The result goes to the viewer that claimed the job, wherever
+            // Split View has put it since.
+            let viewer = match &mut session.split {
+                Some(split)
+                    if !session.viewer.is_claimed(&job) && split.other.viewer.is_claimed(&job) =>
+                {
+                    &mut split.other.viewer
+                }
+                _ => &mut session.viewer,
+            };
+            let accepted = viewer.finish_at(
                 job,
                 result
                     .as_ref()
                     .map(|(image, bytes, _)| (image.clone(), *bytes))
                     .map_err(Clone::clone),
-                cx.background_executor().now(),
+                now,
             );
             match result {
                 Ok((_, _, highlight_pixels)) if accepted => {
@@ -13975,6 +14190,7 @@ impl DocumentWorkspace {
             cx.notify();
         });
         self.dispatch_viewer_jobs(document_id, cx);
+        self.dispatch_other_pane_jobs(document_id, cx);
         self.arm_viewer_quality_timer(document_id, cx);
         self.render_adjacent_pages(document_id, cx);
         cx.notify();
@@ -15656,9 +15872,9 @@ impl DocumentWorkspace {
             session.presentation_error = None;
             // The new worker draws the same pages: the old tiles stay on
             // screen until it does.
-            session
-                .viewer
-                .invalidate_raster(crate::document_viewer::ShownPage::same);
+            session.for_each_viewer(|viewer| {
+                viewer.invalidate_raster(crate::document_viewer::ShownPage::same);
+            });
             session.status = NativeDocumentStatus::Ready;
             if let Some(image) = old_current {
                 cx.drop_image(image, None);
@@ -16046,9 +16262,9 @@ impl DocumentWorkspace {
             // document identity, annotation revision, zoom, and crop match.
             // The saved file shows the pages as they were shown, so the old
             // tiles stay on screen until the new resource draws them.
-            session
-                .viewer
-                .invalidate_raster(crate::document_viewer::ShownPage::same);
+            session.for_each_viewer(|viewer| {
+                viewer.invalidate_raster(crate::document_viewer::ShownPage::same);
+            });
             session.status = NativeDocumentStatus::Ready;
             session.save_status = NativeDocumentSaveStatus::Idle;
             session.publication_durability_warning = retained_publication_warning;
@@ -20212,7 +20428,7 @@ impl DocumentWorkspace {
         {
             let preset = match session.read(cx).view_state.mode() {
                 PageViewMode::Continuous => ViewerFitPreset::Width,
-                PageViewMode::SinglePage => ViewerFitPreset::Page,
+                PageViewMode::SinglePage | PageViewMode::TwoPages => ViewerFitPreset::Page,
             };
             self.set_fit_preset(document_id, preset, cx);
             return true;
@@ -30282,6 +30498,7 @@ impl Render for DocumentWorkspace {
                 viewer_scroll: viewer_scroll.clone(),
                 viewport_cursor_style,
                 viewport_observer,
+                other_pane: false,
             },
             cx,
         );
@@ -30293,6 +30510,23 @@ impl Render for DocumentWorkspace {
             .unwrap_or_else(|| {
                 crate::document_viewer::DocumentViewerState::default().scrollbar_handle()
             });
+        let active_pane = gpui::div()
+            .relative()
+            .size_full()
+            .child(viewport)
+            .child(
+                gpui::div()
+                    .absolute()
+                    .inset_0()
+                    .debug_selector(|| DOCUMENT_VIEWPORT_SCROLLBARS_ID.into())
+                    .child(
+                        gpui_component::scroll::Scrollbar::new(&viewer_scrollbar)
+                            .id("document-viewport-scrollbars")
+                            .axis(gpui_component::scroll::ScrollbarAxis::Both),
+                    ),
+            )
+            .into_any_element();
+        let split_canvas = self.render_split_canvas(document_id, active_pane, window, cx);
         let canvas = h_resizable("document-workspace-canvas-inspector").child(
             resizable_panel().child(
                 gpui::div()
@@ -30307,18 +30541,7 @@ impl Render for DocumentWorkspace {
                         gpui::div()
                             .relative()
                             .size_full()
-                            .child(viewport)
-                            .child(
-                                gpui::div()
-                                    .absolute()
-                                    .inset_0()
-                                    .debug_selector(|| DOCUMENT_VIEWPORT_SCROLLBARS_ID.into())
-                                    .child(
-                                        gpui_component::scroll::Scrollbar::new(&viewer_scrollbar)
-                                            .id("document-viewport-scrollbars")
-                                            .axis(gpui_component::scroll::ScrollbarAxis::Both),
-                                    ),
-                            )
+                            .child(split_canvas)
                             .children(self.render_signature_box_prompt(cx))
                             .children(self.render_find_bar(cx)),
                     ),

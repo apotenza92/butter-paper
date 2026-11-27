@@ -82,15 +82,23 @@ const SCALE_LABEL_REMS: f32 = 6.625;
 /// The slot of the signatures button, a shield alone, in rems.
 pub const TOOLBAR_ICON_SLOT_REMS: f32 = 2.5;
 /// The zoom, fit and page-view controls other than the page navigator, with
-/// the frames of the zoom and page groups and the gap before the zoom.
-const VIEW_CONTROLS_REMS: f32 = 26.625;
+/// the frames of the zoom and page groups and the gap before the zoom:
+/// Continuous and Single Page, then Two Pages and the Split View toggle.
+const VIEW_CONTROLS_REMS: f32 = 26.625 + VIEW_ADDITIONS_REMS;
+/// The room Two Pages View's split button and the Split View toggle take,
+/// each with its gap, in rems.
+const VIEW_ADDITIONS_REMS: f32 = TWO_PAGES_SPLIT_REMS + SPLIT_TOGGLE_REMS;
+const TWO_PAGES_SPLIT_REMS: f32 = 4.875;
+const SPLIT_TOGGLE_REMS: f32 = 2.875;
+/// The room Redo takes, which the narrowest form gives back.
+const REDO_REMS: f32 = 2.;
 /// The room Zoom Out and Zoom In take as buttons, in rems.
 const ZOOM_STEPS_REMS: f32 = 4.625;
 /// The room the Fit Width and Fit Page group takes, with its gap, in rems.
 const FIT_GROUP_REMS: f32 = 5.1875;
-/// The room merging the two page-view controls into one menu button gives
-/// back, in rems.
-const PAGE_VIEW_MERGE_REMS: f32 = 5.375;
+/// The room merging the three page-view controls and the Split View toggle
+/// into one menu button gives back, in rems.
+const PAGE_VIEW_MERGE_REMS: f32 = 5.375 + VIEW_ADDITIONS_REMS;
 /// The room the zoom menu gives back showing a magnifier for the zoom, in
 /// rems.
 const ZOOM_ICON_SAVING_REMS: f32 = 2.125;
@@ -100,8 +108,10 @@ const ZOOM_ICON_SAVING_REMS: f32 = 2.125;
 /// Scale.
 const HALF_GAPS_SAVING_REMS: f32 = 1.75;
 
-/// The merged page-view menu button of the narrower forms.
+/// The merged View menu button of the narrower forms.
 pub const VIEWER_PAGE_VIEW_MENU_ID: &str = "viewer-page-view-menu";
+/// The Split View toggle, after the page views.
+pub const VIEWER_SPLIT_VIEW_ID: &str = "viewer-split-view";
 
 /// What a toolbar of a given width has room for. The whole toolbar changes
 /// form at once, from the widest to the narrowest. Each step gives up the
@@ -113,9 +123,9 @@ pub const VIEWER_PAGE_VIEW_MENU_ID: &str = "viewer-page-view-menu";
 ///   field and page keys turn pages).
 /// - StepsInMenu: Zoom Out and Zoom In move into the zoom menu (their keys
 ///   still work).
+/// - ViewMenu: the three page views, their mouse-wheel menus and Split
+///   View merge into one View menu button.
 /// - FitInMenu: Fit Width and Fit Page move into the zoom menu too.
-/// - ViewMenu: Continuous View, Single Page View and their mouse-wheel
-///   menus merge into one menu button.
 /// - Compact: the scale shown goes (the status bar and the Scale's tooltip
 ///   name it).
 /// - Narrowest: the zoom menu shows a magnifier for the zoom, the page
@@ -127,8 +137,8 @@ pub enum ViewerToolbarFit {
     Full,
     Middle,
     StepsInMenu,
-    FitInMenu,
     ViewMenu,
+    FitInMenu,
     Compact,
     Narrowest,
 }
@@ -139,8 +149,8 @@ impl ViewerToolbarFit {
         Self::Full,
         Self::Middle,
         Self::StepsInMenu,
-        Self::FitInMenu,
         Self::ViewMenu,
+        Self::FitInMenu,
         Self::Compact,
         Self::Narrowest,
     ];
@@ -178,6 +188,11 @@ impl ViewerToolbarFit {
     pub fn narrowest(self) -> bool {
         self == Self::Narrowest
     }
+
+    /// Whether Redo is hidden, and Shift+click on Undo redoes.
+    pub fn redo_in_undo(self) -> bool {
+        self == Self::Narrowest
+    }
 }
 
 /// The right slot's room in `fit`, in rems: Edit PDF and the Scale, with
@@ -198,8 +213,11 @@ pub const fn viewer_toolbar_rems(fit: ViewerToolbarFit, signed: bool, digits: u3
         ViewerToolbarFit::Full => (2., VIEW_CONTROLS_REMS),
         ViewerToolbarFit::Middle => (0., VIEW_CONTROLS_REMS),
         ViewerToolbarFit::StepsInMenu => (0., VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS),
-        ViewerToolbarFit::FitInMenu => (0., VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - FIT_GROUP_REMS),
-        ViewerToolbarFit::ViewMenu | ViewerToolbarFit::Compact => (
+        ViewerToolbarFit::ViewMenu => (
+            0.,
+            VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - PAGE_VIEW_MERGE_REMS,
+        ),
+        ViewerToolbarFit::FitInMenu | ViewerToolbarFit::Compact => (
             0.,
             VIEW_CONTROLS_REMS - ZOOM_STEPS_REMS - FIT_GROUP_REMS - PAGE_VIEW_MERGE_REMS,
         ),
@@ -219,7 +237,12 @@ pub const fn viewer_toolbar_rems(fit: ViewerToolbarFit, signed: bool, digits: u3
     } else {
         indicator_room_rems(digits)
     };
-    HISTORY_SLOT_REMS
+    let history = if matches!(fit, ViewerToolbarFit::Narrowest) {
+        HISTORY_SLOT_REMS - REDO_REMS
+    } else {
+        HISTORY_SLOT_REMS
+    };
+    history
         + edit_scale_slot_rems(fit)
         + view_controls
         + page_field
@@ -295,6 +318,8 @@ pub enum ViewerToolbarStripEvent {
     ScaleHovered(bool),
     /// The signatures button was pressed.
     SignaturesRequested,
+    /// The Split View toggle (or its item in the View menu) was pressed.
+    SplitViewToggled,
 }
 
 /// Owns the representative viewer-toolbar feature state while GPUI Component
@@ -302,6 +327,11 @@ pub enum ViewerToolbarStripEvent {
 pub struct ViewerToolbarStrip {
     continuous_control: Entity<ContinuousViewControl>,
     single_page_control: Option<Entity<PageViewControl>>,
+    /// Two Pages view, after Single Page.
+    two_pages_control: Option<Entity<PageViewControl>>,
+    /// The Split View toggle after the page views, and whether it is on;
+    /// `None` hides it.
+    split_view: Option<bool>,
     zoom_control: Option<Entity<ZoomControl>>,
     /// The page navigator, right of the zoom percentage.
     page_navigator: Option<Entity<PageNavigator>>,
@@ -337,6 +367,8 @@ impl ViewerToolbarStrip {
         Self {
             continuous_control,
             single_page_control: None,
+            two_pages_control: None,
+            split_view: None,
             zoom_control: None,
             page_navigator: None,
             page_digits: 1,
@@ -418,6 +450,8 @@ impl ViewerToolbarStrip {
         Self {
             continuous_control,
             single_page_control: Some(single_page_control),
+            two_pages_control: None,
+            split_view: None,
             zoom_control: None,
             page_navigator: None,
             page_digits: 1,
@@ -509,6 +543,97 @@ impl ViewerToolbarStrip {
         toolbar
     }
 
+    /// Shows Two Pages view after Single Page. The three page views select
+    /// one another out.
+    pub fn set_two_pages_control(
+        &mut self,
+        two_pages_control: Entity<PageViewControl>,
+        cx: &mut Context<Self>,
+    ) {
+        let others = [
+            Some(self.continuous_control.clone()),
+            self.single_page_control.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        for other in others.clone() {
+            let two_pages = two_pages_control.clone();
+            cx.subscribe(&other, move |_, _, event: &PageViewControlEvent, cx| {
+                if matches!(
+                    event,
+                    PageViewControlEvent::Activated(_) | PageViewControlEvent::FitActivated(_)
+                ) {
+                    two_pages.update(cx, |control, cx| control.set_selected(false, cx));
+                }
+            })
+            .detach();
+        }
+        cx.subscribe(
+            &two_pages_control,
+            move |toolbar, _, event: &PageViewControlEvent, cx| {
+                match event {
+                    PageViewControlEvent::Activated(PageViewMode::TwoPages) => {
+                        toolbar.page_view_mode = PageViewMode::TwoPages;
+                    }
+                    PageViewControlEvent::FitActivated(PageViewMode::TwoPages) => {
+                        toolbar.page_view_mode = PageViewMode::TwoPages;
+                        toolbar.fit_preset = FitPreset::Page;
+                        toolbar.fit_selected = true;
+                        toolbar.fit_changes = toolbar.fit_changes.saturating_add(1);
+                    }
+                    _ => return,
+                }
+                for other in &others {
+                    other.update(cx, |control, cx| control.set_selected(false, cx));
+                }
+                cx.notify();
+            },
+        )
+        .detach();
+        two_pages_control.update(cx, |control, cx| {
+            control.set_disabled(self.disabled, cx);
+            control.set_selected(
+                !self.disabled && self.page_view_mode == PageViewMode::TwoPages,
+                cx,
+            );
+        });
+        self.two_pages_control = Some(two_pages_control);
+        cx.notify();
+    }
+
+    pub fn two_pages_control(&self) -> Option<&Entity<PageViewControl>> {
+        self.two_pages_control.as_ref()
+    }
+
+    /// Shows the Split View toggle, on or off, or hides it.
+    pub fn set_split_view(&mut self, split_view: Option<bool>, cx: &mut Context<Self>) {
+        if self.split_view != split_view {
+            self.split_view = split_view;
+            cx.notify();
+        }
+    }
+
+    pub fn split_view(&self) -> Option<bool> {
+        self.split_view
+    }
+
+    /// Synchronizes Two Pages view's wheel and cover settings from the
+    /// document without reporting them back.
+    pub fn sync_two_pages(
+        &mut self,
+        wheel: WheelBehavior,
+        cover_alone: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(control) = &self.two_pages_control {
+            control.update(cx, |control, cx| {
+                control.sync_wheel_behavior(wheel, cx);
+                control.sync_cover_alone(cover_alone, cx);
+            });
+        }
+    }
+
     /// Shows `navigator` right of the zoom percentage.
     pub fn set_page_navigator(&mut self, navigator: Entity<PageNavigator>, cx: &mut Context<Self>) {
         navigator.update(cx, |navigator, cx| {
@@ -516,6 +641,14 @@ impl ViewerToolbarStrip {
         });
         self.page_navigator = Some(navigator);
         cx.notify();
+    }
+
+    /// Two Pages view (with whether the cover shows alone), or `None`: the
+    /// page navigator's Previous and Next turn a spread.
+    pub fn sync_spreads(&mut self, spreads: Option<bool>, cx: &mut Context<Self>) {
+        if let Some(navigator) = &self.page_navigator {
+            navigator.update(cx, |navigator, cx| navigator.set_spreads(spreads, cx));
+        }
     }
 
     /// Follows the active document's page and page count.
@@ -555,6 +688,12 @@ impl ViewerToolbarStrip {
                 .single_page_control
                 .as_ref()
                 .map_or(WheelBehavior::Zoom, |control| {
+                    control.read(cx).wheel_behavior()
+                }),
+            PageViewMode::TwoPages => self
+                .two_pages_control
+                .as_ref()
+                .map_or(WheelBehavior::Scroll, |control| {
                     control.read(cx).wheel_behavior()
                 }),
         }
@@ -741,40 +880,65 @@ impl ViewerToolbarStrip {
 
     /// Undo and Redo of the document: they send [`UndoDocument`] and
     /// [`RedoDocument`] from the toolbar, so a focused text field never
-    /// takes them. A toolbar button takes no focus when pressed.
-    fn render_history(&self) -> ButtonGroup {
+    /// takes them. A toolbar button takes no focus when pressed. In the
+    /// narrowest form Redo goes, and Shift+click on Undo redoes; only then
+    /// does Undo's tooltip say so.
+    fn render_history(&self, fit: ViewerToolbarFit) -> ButtonGroup {
         let history = self.history;
         let focus = self.focus_handle.clone();
         let redo_focus = self.focus_handle.clone();
-        ButtonGroup::new("viewer-history-buttons")
-            .outline()
-            // `children` keeps each button's own disabled state.
-            .children([
-                accessible_icon_button(
-                    Button::new(VIEWER_UNDO_ID)
-                        .debug_selector(|| VIEWER_UNDO_ID.into())
-                        .accessibility_id(VIEWER_UNDO_ID)
-                        .icon(Icon::default().path(UNDO_ICON))
-                        .tooltip_with_action("Undo", &Undo, Some(HISTORY_BINDING_CONTEXT))
-                        .disabled(!history.can_undo)
-                        .on_click(move |_, window, cx| {
-                            focus.dispatch_action(&UndoDocument, window, cx);
-                        }),
-                    "Undo",
-                ),
-                accessible_icon_button(
-                    Button::new(VIEWER_REDO_ID)
-                        .debug_selector(|| VIEWER_REDO_ID.into())
-                        .accessibility_id(VIEWER_REDO_ID)
-                        .icon(Icon::default().path(REDO_ICON))
-                        .tooltip_with_action("Redo", &Redo, Some(HISTORY_BINDING_CONTEXT))
-                        .disabled(!history.can_redo)
-                        .on_click(move |_, window, cx| {
-                            redo_focus.dispatch_action(&RedoDocument, window, cx);
-                        }),
-                    "Redo",
-                ),
-            ])
+        let redo_in_undo = fit.redo_in_undo();
+        let undo = Button::new(VIEWER_UNDO_ID)
+            .debug_selector(|| VIEWER_UNDO_ID.into())
+            .accessibility_id(VIEWER_UNDO_ID)
+            .icon(Icon::default().path(UNDO_ICON))
+            .map(|button| {
+                if redo_in_undo {
+                    button.tooltip_with_action(
+                        "Undo. Shift+click to redo.",
+                        &Undo,
+                        Some(HISTORY_BINDING_CONTEXT),
+                    )
+                } else {
+                    button.tooltip_with_action("Undo", &Undo, Some(HISTORY_BINDING_CONTEXT))
+                }
+            })
+            .disabled(!history.can_undo && !(redo_in_undo && history.can_redo))
+            .on_click(move |event: &ClickEvent, window, cx| {
+                if redo_in_undo && event.modifiers().shift {
+                    focus.dispatch_action(&RedoDocument, window, cx);
+                } else if history.can_undo {
+                    focus.dispatch_action(&UndoDocument, window, cx);
+                }
+            });
+        let undo = accessible_icon_button(
+            undo,
+            if redo_in_undo {
+                "Undo, Shift+click to redo"
+            } else {
+                "Undo"
+            },
+        );
+        let group = ButtonGroup::new("viewer-history-buttons").outline();
+        if redo_in_undo {
+            return group.child(undo);
+        }
+        // `children` keeps each button's own disabled state.
+        group.children([
+            undo,
+            accessible_icon_button(
+                Button::new(VIEWER_REDO_ID)
+                    .debug_selector(|| VIEWER_REDO_ID.into())
+                    .accessibility_id(VIEWER_REDO_ID)
+                    .icon(Icon::default().path(REDO_ICON))
+                    .tooltip_with_action("Redo", &Redo, Some(HISTORY_BINDING_CONTEXT))
+                    .disabled(!history.can_redo)
+                    .on_click(move |_, window, cx| {
+                        redo_focus.dispatch_action(&RedoDocument, window, cx);
+                    }),
+                "Redo",
+            ),
+        ])
     }
 
     /// Shows the signatures button for a signed document, or hides it.
@@ -799,6 +963,11 @@ impl ViewerToolbarStrip {
         });
         if let Some(single_page_control) = &self.single_page_control {
             single_page_control.update(cx, |control, cx| {
+                control.set_disabled(disabled, cx);
+            });
+        }
+        if let Some(two_pages_control) = &self.two_pages_control {
+            two_pages_control.update(cx, |control, cx| {
                 control.set_disabled(disabled, cx);
             });
         }
@@ -829,6 +998,11 @@ impl ViewerToolbarStrip {
             if let Some(single_page_control) = &self.single_page_control {
                 single_page_control.update(cx, |control, cx| {
                     control.set_selected(self.page_view_mode == PageViewMode::SinglePage, cx);
+                });
+            }
+            if let Some(two_pages_control) = &self.two_pages_control {
+                two_pages_control.update(cx, |control, cx| {
+                    control.set_selected(self.page_view_mode == PageViewMode::TwoPages, cx);
                 });
             }
         }
@@ -867,6 +1041,11 @@ impl ViewerToolbarStrip {
                 control.sync_wheel_behavior(single_page_wheel, cx);
             });
         }
+        if let Some(two_pages_control) = &self.two_pages_control {
+            two_pages_control.update(cx, |control, cx| {
+                control.set_selected(!disabled && mode == PageViewMode::TwoPages, cx);
+            });
+        }
         if let Some(zoom_control) = &self.zoom_control {
             zoom_control.update(cx, |control, cx| control.set_zoom(zoom, cx));
         }
@@ -891,33 +1070,58 @@ impl ViewerToolbarStrip {
         }
     }
 
-    /// The narrow forms' one page-view button: the view in use, and a menu
-    /// of both views and each view's mouse-wheel behaviour.
+    /// The narrow forms' one View button: the view in use, and a menu of
+    /// the three page views, Cover page alone, Split View and each view's
+    /// mouse-wheel behaviour.
     fn render_page_view_menu(&self, disabled: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let continuous = self.continuous_control.clone();
         let Some(single_page) = self.single_page_control.clone() else {
             return div().into_any_element();
         };
+        let two_pages = self.two_pages_control.clone();
         let mode = self.page_view_mode;
         let icon_color = if disabled {
             cx.theme().muted_foreground.opacity(0.5)
         } else {
             cx.theme().button_foreground
         };
-        let (icon, label) = match mode {
-            PageViewMode::Continuous => (
-                crate::viewer_icons::continuous_icon(icon_color).into_any_element(),
-                "Continuous View",
-            ),
-            PageViewMode::SinglePage => (
-                crate::viewer_icons::single_page_icon(icon_color).into_any_element(),
-                "Single Page View",
-            ),
+        let icon = match mode {
+            PageViewMode::Continuous => {
+                crate::viewer_icons::continuous_icon(icon_color).into_any_element()
+            }
+            PageViewMode::SinglePage => {
+                crate::viewer_icons::single_page_icon(icon_color).into_any_element()
+            }
+            PageViewMode::TwoPages => {
+                crate::viewer_icons::two_pages_icon(icon_color).into_any_element()
+            }
         };
-        let continuous_wheel = continuous.read(cx).wheel_behavior();
-        let single_page_wheel = single_page.read(cx).wheel_behavior();
-        let selected = continuous.read(cx).is_selected() || single_page.read(cx).is_selected();
-        let tooltip = format!("{label}: page view and mouse wheel");
+        let label = mode.label();
+        let selected = continuous.read(cx).is_selected()
+            || single_page.read(cx).is_selected()
+            || two_pages
+                .as_ref()
+                .is_some_and(|control| control.read(cx).is_selected());
+        let cover_alone = two_pages
+            .as_ref()
+            .is_some_and(|control| control.read(cx).cover_alone());
+        let split_view = self.split_view;
+        let tooltip: SharedString = match split_view {
+            Some(true) => format!("View: {label}, Split View on"),
+            _ => format!("View: {label}"),
+        }
+        .into();
+        let accessible: SharedString = match split_view {
+            Some(true) => format!("View, {label}, Split View on"),
+            _ => format!("View, {label}"),
+        }
+        .into();
+        let toolbar = cx.entity().downgrade();
+        let controls = [
+            (PageViewMode::Continuous, Some(continuous)),
+            (PageViewMode::SinglePage, Some(single_page)),
+            (PageViewMode::TwoPages, two_pages),
+        ];
         accessible_icon_button(
             Button::new(VIEWER_PAGE_VIEW_MENU_ID)
                 .debug_selector(|| VIEWER_PAGE_VIEW_MENU_ID.into())
@@ -927,56 +1131,112 @@ impl ViewerToolbarStrip {
                 .dropdown_caret(true)
                 .tooltip(tooltip)
                 .disabled(disabled),
-            label,
+            accessible,
         )
-        .dropdown_menu(move |menu, _, _| {
+        .dropdown_menu(move |menu, window, cx| {
             let view = |control: Entity<PageViewControl>| {
                 move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
                     control.update(cx, |control, cx| control.activate(cx));
                 }
             };
-            let wheel = |control: Entity<PageViewControl>, behavior| {
-                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                    control.update(cx, |control, cx| control.set_wheel_behavior(behavior, cx));
+            let mut menu = menu.check_side(gpui_component::Side::Right);
+            for (view_mode, control) in controls.iter() {
+                if let Some(control) = control {
+                    menu = menu.item(
+                        PopupMenuItem::new(view_mode.label())
+                            .checked(selected && mode == *view_mode)
+                            .on_click(view(control.clone())),
+                    );
                 }
-            };
-            menu.check_side(gpui_component::Side::Right)
-                .item(
-                    PopupMenuItem::new("Continuous View")
-                        .checked(selected && mode == PageViewMode::Continuous)
-                        .on_click(view(continuous.clone())),
-                )
-                .item(
-                    PopupMenuItem::new("Single Page View")
-                        .checked(selected && mode == PageViewMode::SinglePage)
-                        .on_click(view(single_page.clone())),
-                )
-                .separator()
-                .label("Mouse wheel in Continuous View")
-                .item(
-                    PopupMenuItem::new("Zoom")
-                        .checked(continuous_wheel == WheelBehavior::Zoom)
-                        .on_click(wheel(continuous.clone(), WheelBehavior::Zoom)),
-                )
-                .item(
-                    PopupMenuItem::new("Scroll")
-                        .checked(continuous_wheel == WheelBehavior::Scroll)
-                        .on_click(wheel(continuous.clone(), WheelBehavior::Scroll)),
-                )
-                .separator()
-                .label("Mouse wheel in Single Page View")
-                .item(
-                    PopupMenuItem::new("Zoom")
-                        .checked(single_page_wheel == WheelBehavior::Zoom)
-                        .on_click(wheel(single_page.clone(), WheelBehavior::Zoom)),
-                )
-                .item(
-                    PopupMenuItem::new("Scroll")
-                        .checked(single_page_wheel == WheelBehavior::Scroll)
-                        .on_click(wheel(single_page.clone(), WheelBehavior::Scroll)),
-                )
+            }
+            menu = menu.separator();
+            if let Some((_, Some(two_pages))) = controls.get(2) {
+                let two_pages = two_pages.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("Cover page alone")
+                        .checked(cover_alone)
+                        .on_click(move |_, _, cx| {
+                            two_pages.update(cx, |control, cx| {
+                                control.set_cover_alone(!cover_alone, cx);
+                            });
+                        }),
+                );
+            }
+            if let Some(on) = split_view {
+                let toolbar = toolbar.clone();
+                menu = menu.item(PopupMenuItem::new("Split View").checked(on).on_click(
+                    move |_, _, cx| {
+                        let _ = toolbar.update(cx, |_, cx| {
+                            cx.emit(ViewerToolbarStripEvent::SplitViewToggled);
+                        });
+                    },
+                ));
+            }
+            menu = menu.separator();
+            for (view_mode, control) in controls.iter() {
+                let Some(control) = control.clone() else {
+                    continue;
+                };
+                let behavior = control.read(cx).wheel_behavior();
+                let label = format!("Mouse wheel in {}", view_mode.label());
+                menu = menu.submenu(label, window, cx, move |submenu, _, _| {
+                    let wheel = |control: Entity<PageViewControl>, behavior| {
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            control
+                                .update(cx, |control, cx| control.set_wheel_behavior(behavior, cx));
+                        }
+                    };
+                    submenu
+                        .check_side(gpui_component::Side::Right)
+                        .item(
+                            PopupMenuItem::new("Zoom")
+                                .checked(behavior == WheelBehavior::Zoom)
+                                .on_click(wheel(control.clone(), WheelBehavior::Zoom)),
+                        )
+                        .item(
+                            PopupMenuItem::new("Scroll")
+                                .checked(behavior == WheelBehavior::Scroll)
+                                .on_click(wheel(control.clone(), WheelBehavior::Scroll)),
+                        )
+                });
+            }
+            menu
         })
         .into_any_element()
+    }
+
+    /// The Split View toggle: an icon button, selected while the document
+    /// shows in two panes.
+    fn render_split_view(&self, on: bool, disabled: bool, cx: &mut Context<Self>) -> Button {
+        let icon_color = if disabled {
+            cx.theme().muted_foreground.opacity(0.5)
+        } else {
+            cx.theme().button_foreground
+        };
+        let button = Button::new(VIEWER_SPLIT_VIEW_ID)
+            .debug_selector(|| VIEWER_SPLIT_VIEW_ID.into())
+            .accessibility_id(VIEWER_SPLIT_VIEW_ID)
+            .outline()
+            .child(crate::viewer_icons::split_view_icon(icon_color))
+            .selected(on)
+            .toggled(on)
+            .disabled(disabled)
+            .tooltip(if on {
+                "Split View: two panes of this document. Click for one."
+            } else {
+                "Split View: show this document in two panes"
+            })
+            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
+                cx.emit(ViewerToolbarStripEvent::SplitViewToggled);
+            }));
+        accessible_icon_button(
+            button,
+            if on {
+                "Split View, on"
+            } else {
+                "Split View, off"
+            },
+        )
     }
 
     fn select_fit_preset(&mut self, preset: FitPreset, cx: &mut Context<Self>) {
@@ -1122,6 +1382,10 @@ impl Render for ViewerToolbarStrip {
         }
         let page_view_menu = (fit.view_menu() && self.single_page_control.is_some())
             .then(|| self.render_page_view_menu(disabled || cad_active, cx));
+        let split_toggle = self
+            .split_view
+            .filter(|_| page_view_menu.is_none())
+            .map(|on| self.render_split_view(on, disabled, cx));
 
         // Edit PDF and the page's Scale sit at the trailing edge, then the
         // signatures button; Undo and Redo at the leading edge. Flexible
@@ -1148,7 +1412,7 @@ impl Render for ViewerToolbarStrip {
                 .children(scale)
         });
         let has_right_controls = edit_pdf.is_some() || self.signatures.is_some();
-        let history = self.render_history();
+        let history = self.render_history(fit);
 
         // The shield alone, coloured by the verdict; its tooltip says what
         // it means, and a click lists the signatures.
@@ -1352,7 +1616,22 @@ impl Render for ViewerToolbarStrip {
                                                                     .child(control),
                                                             )
                                                         },
-                                                    ),
+                                                    )
+                                                    .when_some(
+                                                        self.two_pages_control.clone(),
+                                                        |toolbar, control| {
+                                                            toolbar.child(
+                                                                h_flex()
+                                                                    .flex_shrink_0()
+                                                                    .child(control),
+                                                            )
+                                                        },
+                                                    )
+                                                    .when_some(split_toggle, |toolbar, toggle| {
+                                                        toolbar.child(
+                                                            h_flex().flex_shrink_0().child(toggle),
+                                                        )
+                                                    }),
                                             })
                                             .when_some(
                                                 self.cad_view_control.clone(),

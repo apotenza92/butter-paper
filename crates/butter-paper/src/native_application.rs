@@ -20,7 +20,8 @@ use crate::{
         DocumentOpenOrigin, ExplodeBlock, FindInDocument, FindInDocuments, FitPage, FitWidth,
         MergeDocuments, NavigateNextPage, NavigatePreviousPage, NewFromTemplate, OpenPdf,
         RotateAllPagesLeft, RotateAllPagesRight, RotatePageLeft, RotatePageRight, Save, SaveAs,
-        SaveDocumentAsTemplate, SignWithCertificate, SinglePageView, ZoomIn, ZoomOut,
+        SaveDocumentAsTemplate, SignWithCertificate, SinglePageView, ToggleCoverPageAlone,
+        ToggleSplitView, TwoPagesView, ZoomIn, ZoomOut,
     },
 };
 
@@ -49,6 +50,9 @@ pub struct NativeApplicationMenuState {
     pub fit_page_checked: bool,
     pub continuous_view_checked: bool,
     pub single_page_view_checked: bool,
+    pub two_pages_view_checked: bool,
+    pub cover_page_alone_checked: bool,
+    pub split_view_checked: bool,
     pub can_move_document_to_new_window: bool,
     /// More than one document window is open.
     pub can_merge_all_windows: bool,
@@ -294,6 +298,16 @@ fn build_native_view_menu(
             .disabled(!state.document_ready),
         MenuItem::action("Single Page View", SinglePageView)
             .checked(state.single_page_view_checked)
+            .disabled(!state.document_ready),
+        MenuItem::action("Two Pages View", TwoPagesView)
+            .checked(state.two_pages_view_checked)
+            .disabled(!state.document_ready),
+        MenuItem::action("Cover Page Alone", ToggleCoverPageAlone)
+            .checked(state.cover_page_alone_checked)
+            .disabled(!state.document_ready),
+        MenuItem::separator(),
+        MenuItem::action("Split View", ToggleSplitView)
+            .checked(state.split_view_checked)
             .disabled(!state.document_ready),
     ]);
     Menu::new("View").items(items)

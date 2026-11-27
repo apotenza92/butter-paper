@@ -35,11 +35,15 @@ use gpui_component::Root;
 // The toolbar keeps the GPUI Component controls at their intrinsic size. It
 // fills ordinary widths without distributing the groups across the strip and
 // scrolls only once that intrinsic content no longer fits.
-const NORMAL_WIDTH: f32 = 720.;
+const NORMAL_WIDTH: f32 = 720. + NEW_VIEW_CONTROLS_WIDTH;
+/// Two Pages View's split button (70 px) and the Split View toggle (38 px),
+/// each with its 8 px gap, beside the original two page views.
+const NEW_VIEW_CONTROLS_WIDTH: f32 = 124.;
 /// The centre controls' strip, with Undo and Redo at the leading edge (72
 /// px with the edge inset and gap) and the page field's room for
 /// four-digit page counts.
 const MINIMUM_CENTER_STRIP_WIDTH: f32 = 480.
+    + NEW_VIEW_CONTROLS_WIDTH
     + 72.
     + 16.
         * butter_paper::page_navigator::indicator_room_rems(
@@ -74,6 +78,7 @@ struct HarnessEntities {
     toolbar: Entity<ViewerToolbarStrip>,
     continuous: Entity<ContinuousViewControl>,
     single_page: Entity<PageViewControl>,
+    two_pages: Entity<PageViewControl>,
     zoom: Entity<ZoomControl>,
 }
 
@@ -89,6 +94,7 @@ fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, Harne
         move |window, cx| {
             let continuous = cx.new(|_| ContinuousViewControl::new());
             let single_page = cx.new(|_| PageViewControl::single_page());
+            let two_pages = cx.new(|_| PageViewControl::two_pages());
             let zoom = cx.new(|_| ZoomControl::new());
             let toolbar = cx.new(|cx| {
                 let mut toolbar = ViewerToolbarStrip::new_with_zoom(
@@ -97,6 +103,9 @@ fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, Harne
                     zoom.clone(),
                     cx,
                 );
+                // As the workspace has it: Two Pages and Split View.
+                toolbar.set_two_pages_control(two_pages.clone(), cx);
+                toolbar.set_split_view(Some(false), cx);
                 // The widest page field a document is budgeted for.
                 let navigator = cx.new(|_| butter_paper::page_navigator::PageNavigator::new());
                 toolbar.set_page_navigator(navigator, cx);
@@ -112,6 +121,7 @@ fn open_harness(cx: &mut TestAppContext) -> (&mut gpui::VisualTestContext, Harne
                 toolbar,
                 continuous,
                 single_page,
+                two_pages,
                 zoom,
             }));
             Root::new(harness, window, cx)
@@ -1416,12 +1426,12 @@ fn form_shown(cx: &mut gpui::VisualTestContext) -> ViewerToolbarFit {
         ViewerToolbarFit::Full
     } else if shown(cx, ZOOM_OUT_ID) {
         ViewerToolbarFit::Middle
-    } else if shown(cx, FIT_WIDTH_ID) {
-        ViewerToolbarFit::StepsInMenu
     } else if !shown(cx, VIEWER_PAGE_VIEW_MENU_ID) {
-        ViewerToolbarFit::FitInMenu
-    } else if shown(cx, VIEWER_SCALE_VALUE_ID) {
+        ViewerToolbarFit::StepsInMenu
+    } else if shown(cx, FIT_WIDTH_ID) {
         ViewerToolbarFit::ViewMenu
+    } else if shown(cx, VIEWER_SCALE_VALUE_ID) {
+        ViewerToolbarFit::FitInMenu
     } else if bounds(cx, ZOOM_MENU_ID).size.width >= px(80.) {
         ViewerToolbarFit::Compact
     } else {
@@ -1658,13 +1668,17 @@ fn toolbar_icon_buttons_keep_room_for_their_focus_ring(cx: &mut TestAppContext) 
         let (cx, entities) = worst_case_toolbar(&mut app, true);
         lay_out_at(cx, &entities, 16. * viewer_toolbar_rems(fit, true, 4));
         let toolbar = bounds(cx, VIEWER_TOOLBAR_SCROLL_ID);
+        // The narrowest form hides Redo (Shift+click on Undo redoes).
+        let redo = (!fit.redo_in_undo()).then_some(VIEWER_REDO_ID);
         for id in [
             VIEWER_UNDO_ID,
-            VIEWER_REDO_ID,
             EDIT_PDF_ID,
             VIEWER_SCALE_TOGGLE_ID,
             VIEWER_SCALE_MENU_ID,
-        ] {
+        ]
+        .into_iter()
+        .chain(redo)
+        {
             let ring = bounds(cx, id).dilate(px(3.));
             assert!(
                 ring.left() >= toolbar.left()
@@ -2205,4 +2219,198 @@ fn the_page_field_opens_in_place_in_every_toolbar_form_and_at_the_least_window(
             }
         }
     }
+}
+
+/// In the narrowest form Redo goes: Shift+click on Undo redoes, a plain
+/// click undoes, and only that form's Undo tooltip says so.
+#[gpui::test]
+fn shift_click_on_undo_redoes_in_the_narrowest_form(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{
+        HistoryState, RedoDocument, UndoDocument, VIEWER_REDO_ID, VIEWER_UNDO_ID,
+    };
+    let (cx, entities) = worst_case_toolbar(cx, false);
+    let sent = Rc::new(RefCell::new(Vec::<&'static str>::new()));
+    cx.update(|_, cx| {
+        let undo = sent.clone();
+        cx.on_action(move |_: &UndoDocument, _| undo.borrow_mut().push("undo"));
+        let redo = sent.clone();
+        cx.on_action(move |_: &RedoDocument, _| redo.borrow_mut().push("redo"));
+    });
+    let shift_click = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+        let at = bounds(cx, id).center();
+        cx.simulate_click(
+            at,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        cx.run_until_parked();
+    };
+    // Redo alone available: Undo stays enabled for its Shift+click.
+    entities.toolbar.update(cx, |toolbar, cx| {
+        toolbar.set_history(
+            HistoryState {
+                can_undo: false,
+                can_redo: true,
+            },
+            cx,
+        );
+    });
+    let narrowest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Narrowest, false, 4);
+    lay_out_at(cx, &entities, narrowest);
+    assert_eq!(form_shown(cx), ViewerToolbarFit::Narrowest);
+    assert!(cx.debug_bounds(VIEWER_REDO_ID).is_none(), "Redo is hidden");
+    shift_click(cx, VIEWER_UNDO_ID);
+    assert_eq!(*sent.borrow(), ["redo"]);
+    // Nothing to undo: a plain click does nothing.
+    click_target(cx, VIEWER_UNDO_ID);
+    cx.run_until_parked();
+    assert_eq!(*sent.borrow(), ["redo"]);
+    entities.toolbar.update(cx, |toolbar, cx| {
+        toolbar.set_history(
+            HistoryState {
+                can_undo: true,
+                can_redo: true,
+            },
+            cx,
+        );
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    click_target(cx, VIEWER_UNDO_ID);
+    cx.run_until_parked();
+    assert_eq!(*sent.borrow(), ["redo", "undo"]);
+    if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+        assert!(tree.contains("Shift+click to redo"), "{tree}");
+    }
+    // Wider, Redo is back and a Shift+click on Undo only undoes.
+    lay_out_at(cx, &entities, 1400.);
+    assert!(cx.debug_bounds(VIEWER_REDO_ID).is_some());
+    shift_click(cx, VIEWER_UNDO_ID);
+    assert_eq!(*sent.borrow(), ["redo", "undo", "undo"]);
+    if let Some(tree) = cx.update(|window, _| window.debug_a11y_tree_json()) {
+        assert!(!tree.contains("Shift+click to redo"), "{tree}");
+    }
+}
+
+/// Every form shows every control or the menu that holds it: the three
+/// page views and Split View as buttons in the wider forms, one View menu
+/// in the narrower, whole and inside the toolbar.
+#[gpui::test]
+fn every_form_reaches_the_page_views_and_split_view(cx: &mut TestAppContext) {
+    use butter_paper::page_view_control::TWO_PAGES_SPLIT_ID;
+    use butter_paper::viewer_toolbar_strip::{VIEWER_PAGE_VIEW_MENU_ID, VIEWER_SPLIT_VIEW_ID};
+    for signed in [false, true] {
+        let mut app = cx.clone();
+        let (cx, entities) = worst_case_toolbar(&mut app, signed);
+        let narrowest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Narrowest, signed, 4);
+        let mut width = narrowest;
+        while width <= 1600. {
+            lay_out_at(cx, &entities, width);
+            let toolbar = bounds(cx, VIEWER_TOOLBAR_ID);
+            let fit = form_shown(cx);
+            let ids: &[&'static str] = if fit.view_menu() {
+                &[VIEWER_PAGE_VIEW_MENU_ID]
+            } else {
+                &[
+                    CONTINUOUS_SPLIT_ID,
+                    SINGLE_PAGE_SPLIT_ID,
+                    TWO_PAGES_SPLIT_ID,
+                    VIEWER_SPLIT_VIEW_ID,
+                ]
+            };
+            for id in ids {
+                let control = cx
+                    .debug_bounds(id)
+                    .unwrap_or_else(|| panic!("{id} missing at {width} ({fit:?})"));
+                assert!(
+                    control.left() >= toolbar.left() && control.right() <= toolbar.right(),
+                    "{id} clipped at {width} ({fit:?})"
+                );
+            }
+            if fit.view_menu() {
+                for id in [TWO_PAGES_SPLIT_ID, VIEWER_SPLIT_VIEW_ID] {
+                    assert!(
+                        cx.debug_bounds(id).is_none(),
+                        "{id} beside the menu at {width}"
+                    );
+                }
+            }
+            width += 8.;
+        }
+    }
+}
+
+/// The View menu holds the three views, Cover page alone, Split View and
+/// each view's mouse wheel, and its items act.
+#[gpui::test]
+fn the_view_menu_holds_every_view_cover_and_split_view(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{VIEWER_PAGE_VIEW_MENU_ID, ViewerToolbarStripEvent};
+    let (cx, entities) = worst_case_toolbar(cx, false);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        let events = events.clone();
+        cx.subscribe(
+            &entities.toolbar,
+            move |_, event: &ViewerToolbarStripEvent, _| {
+                events.borrow_mut().push(*event);
+            },
+        )
+        .detach();
+    });
+    let narrowest = 16. * viewer_toolbar_rems(ViewerToolbarFit::Narrowest, false, 4);
+    lay_out_at(cx, &entities, narrowest);
+    click_target(cx, VIEWER_PAGE_VIEW_MENU_ID);
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let tree = cx
+        .update(|window, _| window.debug_a11y_tree_json())
+        .unwrap_or_default();
+    if !tree.is_empty() {
+        for label in [
+            "Continuous View",
+            "Single Page View",
+            "Two Pages View",
+            "Cover page alone",
+            "Split View",
+            "Mouse wheel in Two Pages View",
+        ] {
+            assert!(tree.contains(label), "{label} missing from the View menu");
+        }
+    }
+    // Choosing Two Pages View from the menu selects it.
+    entities
+        .two_pages
+        .update(cx, |control, cx| control.activate(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        entities
+            .toolbar
+            .read_with(cx, |toolbar, _| toolbar.page_view_mode()),
+        PageViewMode::TwoPages
+    );
+    assert!(
+        entities
+            .two_pages
+            .read_with(cx, |control, _| control.is_selected())
+    );
+    assert!(
+        !entities
+            .continuous
+            .read_with(cx, |control, _| control.is_selected())
+    );
+    assert!(
+        !entities
+            .single_page
+            .read_with(cx, |control, _| control.is_selected())
+    );
+    entities
+        .single_page
+        .update(cx, |control, cx| control.activate(cx));
+    cx.run_until_parked();
+    assert!(
+        !entities
+            .two_pages
+            .read_with(cx, |control, _| control.is_selected())
+    );
 }

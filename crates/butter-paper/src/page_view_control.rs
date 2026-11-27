@@ -15,11 +15,35 @@ pub const CONTINUOUS_SPLIT_ID: &str = "continuous-view-split";
 pub const CONTINUOUS_PRIMARY_ID: &str = "continuous-view-primary";
 pub const SINGLE_PAGE_SPLIT_ID: &str = "single-page-view-split";
 pub const SINGLE_PAGE_PRIMARY_ID: &str = "single-page-view-primary";
+pub const TWO_PAGES_SPLIT_ID: &str = "two-pages-view-split";
+pub const TWO_PAGES_PRIMARY_ID: &str = "two-pages-view-primary";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PageViewMode {
     Continuous,
     SinglePage,
+    /// Pages side by side in pairs, scrolled continuously as rows.
+    TwoPages,
+}
+
+impl PageViewMode {
+    /// Every mode, in the toolbar's order.
+    pub const ALL: [Self; 3] = [Self::Continuous, Self::SinglePage, Self::TwoPages];
+
+    /// Whether the view scrolls through every page (Continuous and Two
+    /// Pages), rather than showing one page at a time.
+    pub const fn scrolls(self) -> bool {
+        !matches!(self, Self::SinglePage)
+    }
+
+    /// The command's name, as the toolbar and menus give it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Continuous => "Continuous View",
+            Self::SinglePage => "Single Page View",
+            Self::TwoPages => "Two Pages View",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +57,8 @@ pub enum PageViewControlEvent {
     Activated(PageViewMode),
     FitActivated(PageViewMode),
     WheelBehaviorChanged(PageViewMode, WheelBehavior),
+    /// Two Pages view's "Cover page alone" was turned on or off.
+    CoverAloneChanged(bool),
 }
 
 /// Retains one page-view control's presentation and interaction state. The
@@ -44,6 +70,8 @@ pub struct PageViewControl {
     wheel_behavior: WheelBehavior,
     selected: bool,
     disabled: bool,
+    /// Two Pages view: whether the first page shows alone.
+    cover_alone: bool,
 }
 
 impl PageViewControl {
@@ -61,6 +89,7 @@ impl PageViewControl {
             wheel_behavior: WheelBehavior::Scroll,
             selected: true,
             disabled: false,
+            cover_alone: false,
         }
     }
 
@@ -72,7 +101,42 @@ impl PageViewControl {
             wheel_behavior: WheelBehavior::Zoom,
             selected: false,
             disabled: false,
+            cover_alone: false,
         }
+    }
+
+    pub fn two_pages() -> Self {
+        Self {
+            mode: PageViewMode::TwoPages,
+            primary_activations: 0,
+            fit_activations: 0,
+            wheel_behavior: WheelBehavior::Scroll,
+            selected: false,
+            disabled: false,
+            cover_alone: false,
+        }
+    }
+
+    pub fn cover_alone(&self) -> bool {
+        self.cover_alone
+    }
+
+    /// Synchronizes the document's cover setting without reporting it back.
+    pub fn sync_cover_alone(&mut self, cover_alone: bool, cx: &mut Context<Self>) {
+        if self.cover_alone != cover_alone {
+            self.cover_alone = cover_alone;
+            cx.notify();
+        }
+    }
+
+    /// "Cover page alone" chosen in the menu.
+    pub fn set_cover_alone(&mut self, cover_alone: bool, cx: &mut Context<Self>) {
+        if self.disabled || self.cover_alone == cover_alone {
+            return;
+        }
+        self.cover_alone = cover_alone;
+        cx.emit(PageViewControlEvent::CoverAloneChanged(cover_alone));
+        cx.notify();
     }
 
     pub fn mode(&self) -> PageViewMode {
@@ -100,7 +164,7 @@ impl PageViewControl {
     }
 
     pub fn fit_page_activations(&self) -> usize {
-        if self.mode == PageViewMode::SinglePage {
+        if self.mode != PageViewMode::Continuous {
             self.fit_activations
         } else {
             0
@@ -179,6 +243,7 @@ impl PageViewControl {
         match self.mode {
             PageViewMode::Continuous => CONTINUOUS_SPLIT_ID,
             PageViewMode::SinglePage => SINGLE_PAGE_SPLIT_ID,
+            PageViewMode::TwoPages => TWO_PAGES_SPLIT_ID,
         }
     }
 
@@ -186,14 +251,12 @@ impl PageViewControl {
         match self.mode {
             PageViewMode::Continuous => CONTINUOUS_PRIMARY_ID,
             PageViewMode::SinglePage => SINGLE_PAGE_PRIMARY_ID,
+            PageViewMode::TwoPages => TWO_PAGES_PRIMARY_ID,
         }
     }
 
     fn label(&self) -> &'static str {
-        match self.mode {
-            PageViewMode::Continuous => "Continuous View",
-            PageViewMode::SinglePage => "Single Page View",
-        }
+        self.mode.label()
     }
 }
 
@@ -220,6 +283,7 @@ impl Render for PageViewControl {
         let probe_id = match self.mode {
             PageViewMode::Continuous => "continuous-view-split-probe",
             PageViewMode::SinglePage => "single-page-view-split-probe",
+            PageViewMode::TwoPages => "two-pages-view-split-probe",
         };
         let label = self.label();
         let icon = match self.mode {
@@ -229,9 +293,15 @@ impl Render for PageViewControl {
             PageViewMode::SinglePage => {
                 crate::viewer_icons::single_page_icon(icon_color).into_any_element()
             }
+            PageViewMode::TwoPages => {
+                crate::viewer_icons::two_pages_icon(icon_color).into_any_element()
+            }
         };
         let zoom_control = cx.entity().clone();
         let scroll_control = cx.entity().clone();
+        let cover_control = cx.entity().clone();
+        let mode = self.mode;
+        let cover_alone = self.cover_alone;
 
         h_flex()
             .id(probe_id)
@@ -251,6 +321,9 @@ impl Render for PageViewControl {
                                 PageViewMode::SinglePage => {
                                     "Single Page View. Double-click to fit page."
                                 }
+                                PageViewMode::TwoPages => {
+                                    "Two Pages View. Double-click to fit page."
+                                }
                             })
                             .child(icon)
                             .selected(selected)
@@ -269,7 +342,20 @@ impl Render for PageViewControl {
                     .dropdown_menu(move |menu, _, _| {
                         let zoom_control = zoom_control.clone();
                         let scroll_control = scroll_control.clone();
+                        let cover_control = cover_control.clone();
                         menu.check_side(gpui_component::Side::Right)
+                            .when(mode == PageViewMode::TwoPages, |menu| {
+                                menu.item(
+                                    PopupMenuItem::new("Cover page alone")
+                                        .checked(cover_alone)
+                                        .on_click(move |_, _, cx| {
+                                            cover_control.update(cx, |control, cx| {
+                                                control.set_cover_alone(!cover_alone, cx);
+                                            });
+                                        }),
+                                )
+                                .separator()
+                            })
                             .label("Mouse wheel")
                             .item(
                                 PopupMenuItem::new("Zoom")

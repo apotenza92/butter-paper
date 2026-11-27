@@ -120,6 +120,35 @@ changes it; history is in git.
   keep the real colours. Paper-relative colours follow the dark pages
   setting, never the app theme, and annotation colours stay document data
   (AGENTS.md). Dark pages have a one-pixel grey ring outside the page edge.
+- Two Pages view (decided 2026-11-27 by the owner): a third page view, a
+  split button after Continuous and Single Page with its own ▾ menu:
+  "Cover page alone" (a check item) and its mouse-wheel setting. Pages
+  show side by side in pairs (1–2, 3–4; with the cover alone, 1, then 2–3,
+  4–5) and scroll continuously as rows. It works with Fit Width and Fit
+  Page (each fits the row), zoom, each page's own rotation, mixed page
+  sizes (a row's pages meet at their tops; the row is centred), the page
+  navigator, thumbnails, search, every markup tool on either page and dark
+  pages. Print and export do not change. The mode and the cover setting
+  are kept per document in the session, as other view state; Single Page's
+  per-page memory does not apply to it. Rows keep two column slots and
+  are centred as two-column rows, as a book: the cover (with Cover page
+  alone) sits in the right column and an odd last page in the left, and
+  Fit Width and Fit Page fit the full two-column row. Next and Previous
+  page (buttons, menu and keys) turn a spread, to the first page of the
+  next or previous row, which becomes current; First and Last go to the
+  first and last rows; the page field still goes to any page and shows its
+  row. A double-click on its button fits the page (the whole row).
+- Split View (decided 2026-11-27 by the owner): an icon toggle after the
+  page views shows the document in two panes side by side, one document
+  session and two views. Each pane has its own scroll, zoom, page, fit and
+  page view; markups, edits, history, unsaved state and saving are shared.
+  One pane is active (a ring in the focus colour) and the toolbar, menus,
+  thumbnails, find and search act on it. A draggable divider, also moved
+  by the keyboard, separates the panes; each pane keeps at least 240 px.
+  A press or wheel in the other pane makes it active and does nothing else
+  (decided 2026-11-27 by the owner). Off, the active
+  pane's view stays. Split View is kept per document in the session; it
+  reopens with both panes on the active pane's view.
 - Find in document (decided 2026-11-25 by the owner): Cmd+F (Ctrl+F on
   Windows and Linux) opens a find bar that floats at the top right of the
   canvas, 8 px from the top and right edges, so nothing on the page moves.
@@ -234,21 +263,26 @@ changes it; history is in git.
   - Full: the whole page navigator, and the page's scale beside the
     Scale's ruler.
   - Middle: the First, Previous, Next and Last buttons go (the page field
-    and page keys turn pages). A 960-pixel window (half a 1080p screen on
-    macOS) with Page Thumbnails collapsed shows it for an unsigned document
-    of up to 99 pages; a longer page count or a signed document's shield
-    takes the next form there.
+    and page keys turn pages).
   - Zoom Out and Zoom In move into the zoom menu (their keys still work).
+  - Continuous View, Single Page View, Two Pages View, their mouse-wheel
+    menus and the Split View toggle merge into one View menu button
+    showing the view in use: the three views as checked items, Cover page
+    alone and Split View as check items, and each view's mouse wheel in a
+    submenu (decided 2026-11-27 by the owner). This step comes before the
+    fit buttons go, as those are used more than a change of page view
+    (decided 2026-11-27 by the owner). A 960-pixel window (half a 1080p screen on macOS) with Page Thumbnails
+    collapsed shows this form for an unsigned document of up to 99 pages.
   - Fit Width and Fit Page move into the zoom menu too, as Acrobat and Revu
     keep them.
-  - Continuous View, Single Page View and their mouse-wheel menus merge
-    into one menu button showing the view in use.
   - Compact: the scale shown beside the ruler goes (the Scale's tooltip and
     the status bar name it).
   - Narrowest: the zoom menu shows a magnifier for the zoom (its tooltip
     and menu give the zoom), the page field the page in view alone (its
-    tooltip gives the page count), and the gaps are halved. It shows only
-    between side panels in a narrow band of widths: the panels keep it 415
+    tooltip gives the page count), the gaps are halved, and Redo is hidden:
+    Shift+click on Undo redoes, which Undo's tooltip says in this form
+    only (decided 2026-11-27 by the owner). It shows only
+    between side panels in a narrow band of widths: the panels keep it 383
     points wide for a signed document of a four-digit page count, the
     widest case.
   Every form lays its groups out alike (decided 2026-11-25): Undo and Redo
@@ -270,7 +304,8 @@ changes it; history is in git.
   rail and the two-column tool rail (the tool rail folds into its overflow
   menu when short), Settings 600 × 420. Side panels give way before the
   viewer toolbar gets narrower than its narrowest form (decided
-  2026-11-23): the page column between them keeps that width (25.9375 rem,
+  2026-11-23): the page column between them keeps that width (23.9375 rem
+  since Redo leaves the narrowest form, decided 2026-11-27 by the owner;
   never less than 15 rem). So a 1200-point window holds Page Thumbnails
   and the properties panel side by side at their usual widths. Alone, Page Thumbnails or the properties panel opens at any
   window width, narrower than its preferred width when it must (down to

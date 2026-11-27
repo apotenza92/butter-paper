@@ -157,6 +157,9 @@ pub struct PageNavigator {
     editing: bool,
     /// Where focus returns when the entry ends.
     restore_focus: Option<FocusHandle>,
+    /// Two Pages view, with whether the cover shows alone: Previous and
+    /// Next turn a spread, so they end at the first and last rows.
+    spreads: Option<bool>,
 }
 
 impl PageNavigator {
@@ -169,6 +172,15 @@ impl PageNavigator {
             field: None,
             editing: false,
             restore_focus: None,
+            spreads: None,
+        }
+    }
+
+    /// Two Pages view (with whether the cover shows alone), or `None`.
+    pub fn set_spreads(&mut self, spreads: Option<bool>, cx: &mut Context<Self>) {
+        if self.spreads != spreads {
+            self.spreads = spreads;
+            cx.notify();
         }
     }
 
@@ -277,12 +289,25 @@ impl PageNavigator {
 
     /// Whether First and Previous page are available.
     pub fn can_go_back(&self) -> bool {
-        !self.disabled && self.page_count > 0 && self.current > 0
+        !self.disabled
+            && self.page_count > 0
+            && match self.spreads {
+                Some(cover) => crate::viewer::two_page_slot(self.current as usize, cover).0 > 0,
+                None => self.current > 0,
+            }
     }
 
     /// Whether Next and Last page are available.
     pub fn can_go_forward(&self) -> bool {
-        !self.disabled && self.current + 1 < self.page_count
+        !self.disabled
+            && match self.spreads {
+                Some(cover) => {
+                    self.page_count > 0
+                        && crate::viewer::two_page_slot(self.current as usize, cover).0
+                            < crate::viewer::two_page_slot(self.page_count as usize - 1, cover).0
+                }
+                None => self.current + 1 < self.page_count,
+            }
     }
 
     fn request(&mut self, event: PageNavigatorEvent, cx: &mut Context<Self>) {

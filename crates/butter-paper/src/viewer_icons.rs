@@ -7,6 +7,8 @@ pub const FIT_WIDTH_ICON_ID: &str = "viewer-fit-width-icon";
 pub const FIT_PAGE_ICON_ID: &str = "viewer-fit-page-icon";
 pub const CONTINUOUS_ICON_ID: &str = "viewer-continuous-icon";
 pub const SINGLE_PAGE_ICON_ID: &str = "viewer-single-page-icon";
+pub const TWO_PAGES_ICON_ID: &str = "viewer-two-pages-icon";
+pub const SPLIT_VIEW_ICON_ID: &str = "viewer-split-view-icon";
 pub const ZOOM_OUT_ICON_ID: &str = "viewer-zoom-out-icon";
 pub const ZOOM_IN_ICON_ID: &str = "viewer-zoom-in-icon";
 pub const FIRST_PAGE_ICON_ID: &str = "viewer-first-page-icon";
@@ -44,6 +46,13 @@ const CHEVRON_FIRST: [(f32, f32); 3] = [(17., 18.), (11., 12.), (17., 6.)];
 const FIRST_BAR: Segment = ((7., 6.), (7., 18.));
 const RECTANGLE_VERTICAL: (f32, f32, f32, f32, f32) = (6., 2., 12., 20., 2.);
 const ZOOM_LENS: (f32, f32, f32) = (11., 11., 8.);
+/// Two pages side by side: the single page's rounded rectangle, narrowed
+/// and drawn twice about the centre.
+const TWO_PAGES_RECTANGLES: [(f32, f32, f32, f32, f32); 2] =
+    [(2., 4., 9., 16., 2.), (13., 4., 9., 16., 2.)];
+/// Lucide's columns-2: a rounded square split down its middle.
+const SPLIT_VIEW_RECTANGLE: (f32, f32, f32, f32, f32) = (3., 3., 18., 18., 2.);
+const SPLIT_VIEW_DIVIDER: Segment = ((12., 3.), (12., 21.));
 
 #[derive(Clone, Copy)]
 enum ViewerIconKind {
@@ -51,6 +60,8 @@ enum ViewerIconKind {
     FitPage,
     Continuous,
     SinglePage,
+    TwoPages,
+    SplitView,
     ZoomOut,
     ZoomIn,
     FirstPage,
@@ -73,6 +84,14 @@ pub fn continuous_icon(color: Hsla) -> impl IntoElement {
 
 pub fn single_page_icon(color: Hsla) -> impl IntoElement {
     viewer_icon(SINGLE_PAGE_ICON_ID, ViewerIconKind::SinglePage, color)
+}
+
+pub fn two_pages_icon(color: Hsla) -> impl IntoElement {
+    viewer_icon(TWO_PAGES_ICON_ID, ViewerIconKind::TwoPages, color)
+}
+
+pub fn split_view_icon(color: Hsla) -> impl IntoElement {
+    viewer_icon(SPLIT_VIEW_ICON_ID, ViewerIconKind::SplitView, color)
 }
 
 pub fn zoom_out_icon(color: Hsla) -> impl IntoElement {
@@ -128,7 +147,38 @@ fn paint_icon(
     let origin = bounds.origin;
     let at = |x: f32, y: f32| point(origin.x + px(x * scale), origin.y + px(y * scale));
     let mut path = PathBuilder::stroke(px((2. * scale).max(1.)));
+    let rounded_rect =
+        |path: &mut PathBuilder, (x, y, width, height, radius): (f32, f32, f32, f32, f32)| {
+            let radii = point(px(radius * scale), px(radius * scale));
+            path.move_to(at(x + radius, y));
+            path.line_to(at(x + width - radius, y));
+            path.arc_to(radii, px(0.), false, true, at(x + width, y + radius));
+            path.line_to(at(x + width, y + height - radius));
+            path.arc_to(
+                radii,
+                px(0.),
+                false,
+                true,
+                at(x + width - radius, y + height),
+            );
+            path.line_to(at(x + radius, y + height));
+            path.arc_to(radii, px(0.), false, true, at(x, y + height - radius));
+            path.line_to(at(x, y + radius));
+            path.arc_to(radii, px(0.), false, true, at(x + radius, y));
+            path.close();
+        };
     match kind {
+        ViewerIconKind::TwoPages => {
+            for rectangle in TWO_PAGES_RECTANGLES {
+                rounded_rect(&mut path, rectangle);
+            }
+        }
+        ViewerIconKind::SplitView => {
+            rounded_rect(&mut path, SPLIT_VIEW_RECTANGLE);
+            let (from, to) = SPLIT_VIEW_DIVIDER;
+            path.move_to(at(from.0, from.1));
+            path.line_to(at(to.0, to.1));
+        }
         ViewerIconKind::FitWidth => {
             for (from, to) in FIT_WIDTH_SEGMENTS {
                 path.move_to(at(from.0, from.1));

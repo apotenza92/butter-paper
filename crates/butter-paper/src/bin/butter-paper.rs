@@ -1341,6 +1341,9 @@ impl ComponentStory {
                 fit_page_checked: commands.fit_page_checked,
                 continuous_view_checked: commands.continuous_view_checked,
                 single_page_view_checked: commands.single_page_view_checked,
+                two_pages_view_checked: commands.two_pages_view_checked,
+                cover_page_alone_checked: commands.cover_page_alone_checked,
+                split_view_checked: commands.split_view_checked,
                 can_move_document_to_new_window: shared_application(cx).multi_window
                     && workspace.session_count() > 1
                     && active_document.is_some_and(|document_id| {
@@ -4955,6 +4958,40 @@ mod review_driver {
                             writeln!(log, "FAIL: expected {} tabs, found {found:?}", words[2]).unwrap();
                         }
                     }
+                    "expect-view" => {
+                        // expect-view W continuous|single|two[-cover] [split-left|split-right]:
+                        // the active document's page view, its cover setting
+                        // and which Split View pane is active (none named:
+                        // Split View off).
+                        let window = number(1) as usize;
+                        let found = cx.update(|cx| {
+                            let entry = document_window_entries(cx).get(window).cloned()?;
+                            let workspace = entry.workspace.upgrade()?;
+                            let workspace = workspace.read(cx);
+                            let document_id = workspace.active_document_id()?;
+                            let view = workspace.document_view_state(document_id, cx)?;
+                            let mode = match view.mode() {
+                                butter_paper::page_view_control::PageViewMode::Continuous => "continuous",
+                                butter_paper::page_view_control::PageViewMode::SinglePage => "single",
+                                butter_paper::page_view_control::PageViewMode::TwoPages => {
+                                    if view.cover_alone() { "two-cover" } else { "two" }
+                                }
+                            };
+                            let split = match workspace.split_view_state(document_id, cx) {
+                                Some((butter_paper::document_session::PaneSide::Left, _)) => " split-left",
+                                Some((butter_paper::document_session::PaneSide::Right, _)) => " split-right",
+                                None => "",
+                            };
+                            Some(format!("{mode}{split}"))
+                        });
+                        let expected = words[2..].join(" ");
+                        if found.as_deref() == Some(expected.as_str()) {
+                            writeln!(log, "ok: view {expected}").unwrap();
+                        } else {
+                            failures += 1;
+                            writeln!(log, "FAIL: expected view {expected}, found {found:?}").unwrap();
+                        }
+                    }
                     "expect-tool" => {
                         // expect-tool W TOOL: the active document's tool, as the
                         // shot log names it (Select, Snapshot…).
@@ -5423,12 +5460,13 @@ mod review_driver {
                     }
                     "dispatch" => {
                         // dispatch W ACTION: a save, table row, page
-                        // rotation or Rotate All Pages action, as its menu
-                        // item sends it.
+                        // rotation, Rotate All Pages or view action, as its
+                        // menu item sends it.
                         use butter_paper::document_workspace::{
-                            DeleteTableRow, InsertTableRowAbove, InsertTableRowBelow,
-                            RotateAllPagesLeft, RotateAllPagesRight, RotatePageLeft,
-                            RotatePageRight, Save,
+                            ContinuousView, DeleteTableRow, InsertTableRowAbove,
+                            InsertTableRowBelow, RotateAllPagesLeft, RotateAllPagesRight,
+                            RotatePageLeft, RotatePageRight, Save, ToggleCoverPageAlone,
+                            ToggleSplitView, TwoPagesView,
                         };
                         let action: Box<dyn gpui::Action> = match words[2] {
                             "rotate-left" => Box::new(RotatePageLeft),
@@ -5439,6 +5477,10 @@ mod review_driver {
                             "insert-row-below" => Box::new(InsertTableRowBelow),
                             "delete-row" => Box::new(DeleteTableRow),
                             "save" => Box::new(Save),
+                            "continuous" => Box::new(ContinuousView),
+                            "two-pages" => Box::new(TwoPagesView),
+                            "cover-alone" => Box::new(ToggleCoverPageAlone),
+                            "split-view" => Box::new(ToggleSplitView),
                             other => {
                                 writeln!(log, "unknown action {other}").unwrap();
                                 continue;
@@ -5855,7 +5897,12 @@ mod review_driver {
                         // page-view W single|continuous: the active
                         // document's page view, as the toolbar's pair of
                         // buttons sets it.
-                        let single = words.get(2) == Some(&"single");
+                        // page-view W two: Two Pages.
+                        let mode = match words.get(2) {
+                            Some(&"single") => butter_paper::page_view_control::PageViewMode::SinglePage,
+                            Some(&"two") => butter_paper::page_view_control::PageViewMode::TwoPages,
+                            _ => butter_paper::page_view_control::PageViewMode::Continuous,
+                        };
                         cx.update(|cx| {
                             if let Some(workspace) = document_window_entries(cx)
                                 .get(number(1) as usize)
@@ -5863,15 +5910,7 @@ mod review_driver {
                             {
                                 workspace.update(cx, |workspace, cx| {
                                     if let Some(id) = workspace.active_document_id() {
-                                        workspace.set_page_view_mode(
-                                            id,
-                                            if single {
-                                                butter_paper::page_view_control::PageViewMode::SinglePage
-                                            } else {
-                                                butter_paper::page_view_control::PageViewMode::Continuous
-                                            },
-                                            cx,
-                                        );
+                                        workspace.set_page_view_mode(id, mode, cx);
                                     }
                                 });
                             }

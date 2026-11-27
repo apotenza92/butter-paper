@@ -21,7 +21,7 @@ reference; entries marked *native* are deliberate departures from it.
 - Holding the middle button is Pan while held: the Pan tool shows active and
   the cursor is a closed hand. The current tool and a markup being drawn are
   kept. A middle double-click fits the view as Revu does: Fit Width in
-  Continuous, Fit Page in Single Page.
+  Continuous, Fit Page in Single Page and in Two Pages.
 - A rail click selects a tool; clicking the selected tool again (or
   double-clicking) toggles its properties.
 - After placing a markup the tool returns to Select with the new markup
@@ -1466,8 +1466,8 @@ with it.
   quick presses keep going while pages render.
 - Every joined group of controls in the view toolbar (Undo | Redo; First |
   Previous | the page number | Next | Last; Zoom Out | Zoom In | the zoom
-  menu; Fit Width | Fit Page; the page-view and Page Scale splits; the CAD
-  view and its settings) shows a 1 px divider between every pair of adjacent
+  menu; Fit Width | Fit Page; the three page-view splits and the Page Scale
+  split; the CAD view and its settings) shows a 1 px divider between every pair of adjacent
   members, the group's full height, in the outline buttons' border colour,
   in every form of the toolbar. A stock button group draws it with its
   buttons' borders; the groups of other controls draw it with the shared
@@ -1475,7 +1475,9 @@ with it.
   two halves fill with the divider's colour, shows its seam in a slightly
   stronger line.
 - Undo and Redo, at the toolbar's left, do what the Edit menu's Undo and
-  Redo do, and are enabled as they are.
+  Redo do, and are enabled as they are. In the narrowest toolbar Redo is
+  hidden: Shift+click on Undo redoes, and only there does Undo's tooltip
+  say so (Undo is then enabled while either can act).
 - A press on anything drawn over the page (a menu of the in-window menu
   bar, a popup, a notification, a dialog, the find bar) acts only there or
   dismisses it; it never also selects, draws or edits on the page beneath.
@@ -1522,8 +1524,46 @@ with it.
   its old render scaled to the new size until its new render is complete; a
   zoomed page skips the low-resolution preview pass, so it never turns
   blurry in between.
-- Switching Continuous and Single Page keeps the current page, and the point
-  at the view centre when it is on that page.
+- Switching between Continuous, Single Page and Two Pages keeps the current
+  page, and the point at the view centre when it is on that page.
+- Two Pages view (the third page-view button, View ▸ Two Pages View) shows
+  the pages side by side in pairs, pages 1–2, 3–4 and so on, and scrolls
+  through the rows as Continuous does. Its ▾ menu (and View ▸ Cover Page
+  Alone) has "Cover page alone": page 1 alone, then 2–3, 4–5. Every row has
+  two column slots and is centred as a two-column row, as a book is laid
+  out: the cover sits in the right column and an odd last page in the left,
+  beside an empty slot as wide as itself, so pages never leave their
+  column. The pages of a row meet at their tops; each page keeps its own
+  size and rotation, so a turned page turns alone. Fit Width fits the full
+  two-column row's width and Fit Page the whole row, and a fit frames the
+  row. Next and Previous page (the page navigator's buttons, the Document
+  menu and their keys) turn a spread: to the first page of the next or
+  previous row, which becomes the current page; First and Last page (and
+  Home and End) go to the first and last rows, and the navigator's buttons
+  are disabled at the first and last rows. The page field still goes to
+  any page and shows its row. Arrows and Page Up/Page Down scroll, as in
+  Continuous. The current page is the one under the view centre or the one
+  clicked, and stays current while its row is the one in view and it
+  shows; a page gone to brings its row to the top and stays current until
+  the view scrolls. Every tool draws on either page. Two Pages keeps one
+  zoom and scroll for the document, as Continuous does; the session
+  restores the view and the cover setting. Its mouse-wheel setting is its
+  own, Scroll by default.
+- Split View (the icon toggle after the page views, View ▸ Split View)
+  shows the document in two panes side by side, each with its own scroll,
+  zoom, fit, page and page view. Markups, edits, Undo and Redo, the
+  unsaved state and saving are the document's, shared by both panes. One
+  pane is active: it has a ring in the focus colour, the tool cursor and
+  the selection, and the toolbar, menus, keys, page navigator, thumbnails,
+  find and search act on it. The other pane draws its pages and their
+  markups only, with the arrow cursor: a press or wheel there makes it
+  active and does nothing else (a text or form field being edited is
+  committed first). The divider between the panes drags; with the focus
+  (Tab, or a press on it) Left and Right move it 16 px, Home and End to
+  either least width, and Enter or a double-click back to the middle. Each
+  pane keeps at least 240 px. Turning Split View off keeps the active
+  pane's view. The session restores Split View, both panes showing the
+  active pane's view.
 - The viewport meets the toolbar and rails with no frame, and the pages meet
   its edges: only the space between pages (24pt at 100%) is blank. The
   scroll bars float over the pages.

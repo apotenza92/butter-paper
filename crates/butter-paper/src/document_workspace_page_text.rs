@@ -921,7 +921,9 @@ impl DocumentWorkspace {
                                         );
                                     }
                                 }
-                                session.viewer.refresh_content();
+                                session.for_each_viewer(
+                                    crate::document_viewer::DocumentViewerState::refresh_content,
+                                );
                                 cx.notify();
                                 changed_pages
                                     .into_iter()

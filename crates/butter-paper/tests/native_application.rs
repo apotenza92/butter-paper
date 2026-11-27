@@ -20,8 +20,8 @@ use butter_paper::{
         NativeDocumentOpener, NativeDocumentResource, NativeDocumentSaver, NavigateNextPage,
         NavigatePreviousPage, NewFromTemplate, OpenDocumentRequest, OpenPdf, OpenedNativeDocument,
         RasterSurface, RotatePageLeft, RotatePageRight, Save, SaveAs, SaveDocumentAsTemplate,
-        SaveDocumentRequest, SavedNativeDocument, SinglePageView, ThumbnailSurface, ZoomIn,
-        ZoomOut,
+        SaveDocumentRequest, SavedNativeDocument, SinglePageView, ThumbnailSurface,
+        ToggleCoverPageAlone, ToggleSplitView, TwoPagesView, ZoomIn, ZoomOut,
     },
     native_application::{
         ApplicationMenuShellState, NativeApplicationMenuState, NativeDocumentIngress,
@@ -64,6 +64,9 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
         fit_page_checked: false,
         continuous_view_checked: true,
         single_page_view_checked: false,
+        two_pages_view_checked: false,
+        cover_page_alone_checked: true,
+        split_view_checked: true,
         can_move_document_to_new_window: true,
         can_merge_all_windows: true,
     });
@@ -217,6 +220,10 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
             "<separator>",
             "Continuous View",
             "Single Page View",
+            "Two Pages View",
+            "Cover Page Alone",
+            "<separator>",
+            "Split View",
         ]
     );
     assert_action(item(view, "Zoom In"), |action| {
@@ -244,6 +251,18 @@ fn native_application_menu_uses_document_actions_and_never_exposes_raw_quit() {
     assert!(!item(view, "Fit Page").is_checked());
     assert!(item(view, "Continuous View").is_checked());
     assert!(!item(view, "Single Page View").is_checked());
+    assert_action(item(view, "Two Pages View"), |action| {
+        action.as_any().is::<TwoPagesView>()
+    });
+    assert_action(item(view, "Cover Page Alone"), |action| {
+        action.as_any().is::<ToggleCoverPageAlone>()
+    });
+    assert_action(item(view, "Split View"), |action| {
+        action.as_any().is::<ToggleSplitView>()
+    });
+    assert!(!item(view, "Two Pages View").is_checked());
+    assert!(item(view, "Cover Page Alone").is_checked());
+    assert!(item(view, "Split View").is_checked());
 
     let disabled = build_native_application_menus(NativeApplicationMenuState::default());
     let file = menu(&disabled, "File");

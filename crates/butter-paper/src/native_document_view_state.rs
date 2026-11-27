@@ -101,6 +101,10 @@ pub struct RestartView {
     scroll_y: f32,
     /// Single Page view's remembered pages, the oldest visit first.
     page_views: Vec<(u32, RememberedPageView)>,
+    /// Two Pages view shows the first page alone.
+    cover_alone: bool,
+    /// The document shows in two panes side by side.
+    split_view: bool,
 }
 
 impl PartialEq for RestartView {
@@ -111,6 +115,8 @@ impl PartialEq for RestartView {
             && self.scroll_x.to_bits() == other.scroll_x.to_bits()
             && self.scroll_y.to_bits() == other.scroll_y.to_bits()
             && self.page_views == other.page_views
+            && self.cover_alone == other.cover_alone
+            && self.split_view == other.split_view
     }
 }
 
@@ -125,6 +131,8 @@ impl Default for RestartView {
             scroll_x: 0.,
             scroll_y: 0.,
             page_views: Vec::new(),
+            cover_alone: false,
+            split_view: false,
         }
     }
 }
@@ -144,7 +152,29 @@ impl RestartView {
             scroll_x,
             scroll_y,
             page_views: Vec::new(),
+            cover_alone: false,
+            split_view: false,
         }
+    }
+
+    /// Two Pages view's "Cover page alone".
+    pub const fn with_cover_alone(mut self, cover_alone: bool) -> Self {
+        self.cover_alone = cover_alone;
+        self
+    }
+
+    /// Whether the document shows in two panes.
+    pub const fn with_split_view(mut self, split_view: bool) -> Self {
+        self.split_view = split_view;
+        self
+    }
+
+    pub const fn cover_alone(&self) -> bool {
+        self.cover_alone
+    }
+
+    pub const fn split_view(&self) -> bool {
+        self.split_view
     }
 
     /// Single Page view's remembered pages, the oldest visit first. Only the
@@ -293,6 +323,9 @@ pub struct NativeDocumentViewState {
     zoom_percent: f32,
     continuous_wheel: WheelBehavior,
     single_page_wheel: WheelBehavior,
+    two_pages_wheel: WheelBehavior,
+    /// Two Pages view shows the first page alone, as a book's cover.
+    cover_alone: bool,
     viewport_size: Option<(f32, f32)>,
     scroll: (f32, f32),
     wheel_turns: WheelTurns,
@@ -312,6 +345,8 @@ impl Default for NativeDocumentViewState {
             zoom_percent: 100.,
             continuous_wheel: WheelBehavior::Scroll,
             single_page_wheel: WheelBehavior::Zoom,
+            two_pages_wheel: WheelBehavior::Scroll,
+            cover_alone: false,
             viewport_size: None,
             scroll: (0., 0.),
             wheel_turns: WheelTurns::default(),
@@ -353,6 +388,7 @@ impl NativeDocumentViewState {
             scroll_y,
         )
         .with_page_views(self.page_views.clone())
+        .with_cover_alone(self.cover_alone)
     }
 
     fn zoom_intent(&self) -> RestartZoom {
@@ -371,6 +407,7 @@ impl NativeDocumentViewState {
 
     pub fn apply_restart_view(&mut self, view: &RestartView, page_count: usize) -> u32 {
         self.set_mode(view.mode());
+        self.cover_alone = view.cover_alone();
         self.apply_zoom_intent(view.zoom());
         let (scroll_x, scroll_y) = view.scroll();
         self.set_scroll(scroll_x, scroll_y);
@@ -522,7 +559,49 @@ impl NativeDocumentViewState {
         match mode {
             PageViewMode::Continuous => self.continuous_wheel,
             PageViewMode::SinglePage => self.single_page_wheel,
+            PageViewMode::TwoPages => self.two_pages_wheel,
         }
+    }
+
+    /// Two Pages view shows the first page alone.
+    pub const fn cover_alone(&self) -> bool {
+        self.cover_alone
+    }
+
+    /// Where Previous (`forward` false) or Next page goes from `page`: one
+    /// page on, or in Two Pages view the first page of the row before or
+    /// after. `None` at either end.
+    pub fn page_step(&self, page: u32, page_count: usize, forward: bool) -> Option<u32> {
+        if self.mode == PageViewMode::TwoPages && !self.cad_view_active {
+            return crate::viewer::two_page_spread_step(
+                page as usize,
+                self.cover_alone,
+                page_count,
+                forward,
+            )
+            .and_then(|page| u32::try_from(page).ok());
+        }
+        if forward {
+            let next = page.checked_add(1)?;
+            ((next as usize) < page_count).then_some(next)
+        } else {
+            page.checked_sub(1)
+        }
+    }
+
+    /// Where Last page goes: the last page, or in Two Pages view the first
+    /// page of the last row.
+    pub fn last_page_target(&self, page_count: usize) -> u32 {
+        let last = page_count.saturating_sub(1);
+        if self.mode == PageViewMode::TwoPages && !self.cad_view_active {
+            crate::viewer::two_page_row_first(last, self.cover_alone) as u32
+        } else {
+            last as u32
+        }
+    }
+
+    pub fn set_cover_alone(&mut self, cover_alone: bool) {
+        self.cover_alone = cover_alone;
     }
 
     pub fn set_mode(&mut self, mode: PageViewMode) {
@@ -539,6 +618,7 @@ impl NativeDocumentViewState {
         match mode {
             PageViewMode::Continuous => self.continuous_wheel = behavior,
             PageViewMode::SinglePage => self.single_page_wheel = behavior,
+            PageViewMode::TwoPages => self.two_pages_wheel = behavior,
         }
         self.wheel_turns.reset();
     }
@@ -600,7 +680,7 @@ impl NativeDocumentViewState {
             self.set_manual_zoom(next);
             return WheelOutcome::Zoom(self.zoom_percent);
         }
-        if self.mode == PageViewMode::Continuous {
+        if self.mode.scrolls() {
             self.wheel_turns.reset();
             return WheelOutcome::NativeScroll;
         }
@@ -725,6 +805,33 @@ impl NativeDocumentViewState {
     ) -> DocumentNavigationOutcome {
         if page_count == 0 {
             return DocumentNavigationOutcome::None;
+        }
+        // Two Pages view turns a spread: to the first page of the row
+        // before or after, and End to the first page of the last row.
+        if self.mode == PageViewMode::TwoPages && !self.cad_view_active {
+            let spread = |forward| {
+                crate::viewer::two_page_spread_step(
+                    current_page,
+                    self.cover_alone,
+                    page_count,
+                    forward,
+                )
+                .map_or(
+                    DocumentNavigationOutcome::None,
+                    DocumentNavigationOutcome::Page,
+                )
+            };
+            match action {
+                DocumentNavigationAction::PreviousPage => return spread(false),
+                DocumentNavigationAction::NextPage => return spread(true),
+                DocumentNavigationAction::End => {
+                    return DocumentNavigationOutcome::Page(crate::viewer::two_page_row_first(
+                        page_count - 1,
+                        self.cover_alone,
+                    ));
+                }
+                _ => {}
+            }
         }
         match action {
             DocumentNavigationAction::Home => DocumentNavigationOutcome::Page(0),

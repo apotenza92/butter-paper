@@ -122,8 +122,13 @@ coordinates, so they survive layout changes and window margins:
   SELECTOR`, `expect-tool W TOOL` and `expect-tabs W N` (window W holds N
   documents) check state. `expect-find W COUNT` checks that the find bar is
   open and its finished search reads COUNT (`1 of 3`, `No results`);
-  `log-find W` logs what the bar shows. `page-view W single|continuous` sets
+  `log-find W` logs what the bar shows. `page-view W single|continuous|two` sets
   the page view where the toolbar's buttons are not drawn (a narrow window).
+  `dispatch W ACTION` sends a menu command, among them `two-pages`,
+  `cover-alone`, `split-view` and `continuous`.
+  `expect-view W MODE [split-left|split-right]` checks the active
+  document's page view (`continuous`, `single`, `two`, `two-cover`) and
+  which Split View pane is active (nothing more when Split View is off).
 - Press Escape before `quit` when a text field has focus: a debug build then
   exits with "leaked handles" and status 101.
 - `drop-files W X Y PATH...` drops files at a window point as the system

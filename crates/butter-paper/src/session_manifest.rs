@@ -1010,6 +1010,7 @@ fn encode_restart_view(encoded: &mut String, view: &RestartView) {
     let mode = match view.mode() {
         PageViewMode::Continuous => "continuous",
         PageViewMode::SinglePage => "singlePage",
+        PageViewMode::TwoPages => "twoPages",
     };
     encoded.push_str("{\"currentPage\":");
     encoded.push_str(&view.current_page().to_string());
@@ -1032,6 +1033,13 @@ fn encode_restart_view(encoded: &mut String, view: &RestartView) {
             encoded.push('}');
         }
         encoded.push(']');
+    }
+    // Written only when on, as `pageViews` is.
+    if view.cover_alone() {
+        encoded.push_str(",\"coverAlone\":true");
+    }
+    if view.split_view() {
+        encoded.push_str(",\"splitView\":true");
     }
     encoded.push('}');
 }
@@ -1299,17 +1307,27 @@ fn decode_restart_view(value: &Value) -> Result<RestartView, SessionManifestErro
     ];
     let object = value.as_object().ok_or_else(invalid_shape)?;
     let with_page_views = object.contains_key("pageViews");
-    if with_page_views {
-        let mut fields = FIELDS.to_vec();
-        fields.push("pageViews");
-        require_exact_fields(object.keys().map(String::as_str), &fields)?;
-    } else {
-        require_exact_fields(object.keys().map(String::as_str), &FIELDS)?;
+    // Optional fields, written only when in use.
+    let mut fields = FIELDS.to_vec();
+    for optional in ["pageViews", "coverAlone", "splitView"] {
+        if object.contains_key(optional) {
+            fields.push(optional);
+        }
     }
+    require_exact_fields(object.keys().map(String::as_str), &fields)?;
+    let flag = |name: &str| -> Result<bool, SessionManifestError> {
+        match object.get(name) {
+            None => Ok(false),
+            Some(value) => value.as_bool().ok_or_else(invalid_shape),
+        }
+    };
+    let cover_alone = flag("coverAlone")?;
+    let split_view = flag("splitView")?;
     let current_page = decode_page_index(object.get("currentPage"))?;
     let mode = match object.get("mode").and_then(Value::as_str) {
         Some("continuous") => PageViewMode::Continuous,
         Some("singlePage") => PageViewMode::SinglePage,
+        Some("twoPages") => PageViewMode::TwoPages,
         _ => return Err(invalid_shape()),
     };
     let (zoom, scroll_x, scroll_y) = decode_zoom_and_scroll(object)?;
@@ -1330,8 +1348,10 @@ fn decode_restart_view(value: &Value) -> Result<RestartView, SessionManifestErro
             page_views.push((page, RememberedPageView::new(zoom, scroll_x, scroll_y)));
         }
     }
-    let view =
-        RestartView::new(current_page, mode, zoom, scroll_x, scroll_y).with_page_views(page_views);
+    let view = RestartView::new(current_page, mode, zoom, scroll_x, scroll_y)
+        .with_page_views(page_views)
+        .with_cover_alone(cover_alone)
+        .with_split_view(split_view);
     if !view.is_finite() {
         return Err(SessionManifestError::Corruption(
             SessionManifestCorruptionError::InvalidSnapshot(
@@ -1556,6 +1576,37 @@ mod tests {
         assert_eq!(documents[0].view(), remembered);
         assert_eq!(documents[1].view(), plain);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn two_pages_cover_and_split_view_round_trip_and_are_written_only_when_on() {
+        let two_pages = RestartView::new(3, PageViewMode::TwoPages, RestartZoom::FitPage, 4., 900.)
+            .with_cover_alone(true)
+            .with_split_view(true);
+        let mut encoded = String::new();
+        encode_restart_view(&mut encoded, &two_pages);
+        assert!(encoded.contains("\"mode\":\"twoPages\""), "{encoded}");
+        assert!(encoded.contains("\"coverAlone\":true"), "{encoded}");
+        assert!(encoded.contains("\"splitView\":true"), "{encoded}");
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decode_restart_view(&value).unwrap(), two_pages);
+
+        // Off, neither is written, so 0.6.3 still reads the manifest.
+        let plain = RestartView::new(0, PageViewMode::TwoPages, RestartZoom::FitWidth, 0., 0.);
+        let mut encoded = String::new();
+        encode_restart_view(&mut encoded, &plain);
+        assert!(!encoded.contains("coverAlone") && !encoded.contains("splitView"));
+        let value: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decode_restart_view(&value).unwrap(), plain);
+
+        for bad in [
+            r#"{"currentPage":0,"mode":"twoPages","zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0,"coverAlone":1}"#,
+            r#"{"currentPage":0,"mode":"threePages","zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0}"#,
+            r#"{"currentPage":0,"mode":"twoPages","zoom":"fitPage","manualPercent":null,"scrollX":0,"scrollY":0,"splitView":"yes"}"#,
+        ] {
+            let value: Value = serde_json::from_str(bad).unwrap();
+            assert!(decode_restart_view(&value).is_err(), "{bad}");
+        }
     }
 
     #[test]

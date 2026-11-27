@@ -15,7 +15,7 @@ use gpui_component::WindowExt as _;
 
 use super::{
     AnnotationTool, DocumentId, DocumentWorkspace, NativeDocumentSaveStatus, NativeDocumentStatus,
-    PageInteraction, PageViewMode, PendingTextEditorTarget,
+    PageInteraction, PendingTextEditorTarget,
 };
 use crate::annotation_model::PdfPoint;
 
@@ -510,7 +510,7 @@ impl DocumentWorkspace {
             return;
         };
         let picked = session.update(cx, |session, cx| {
-            if session.view_state.mode() != PageViewMode::Continuous
+            if !session.view_state.mode().scrolls()
                 || !matches!(session.status, NativeDocumentStatus::Ready)
                 || interaction.page_index as usize >= session.page_count()
             {
