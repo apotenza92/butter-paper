@@ -4,6 +4,20 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.6.5]
+
+### Fixes
+
+- Delete after a click on a markup's lock button acts on the markup
+  again. Before, a properties field kept the keyboard.
+- Find in Documents works after a click on Visual in the search panel.
+- A screen reader's Increment and Decrement on a properties slider now
+  save the change as one undo step.
+
+### Maintenance
+
+- Updated dependencies with security fixes.
+
 ## [0.6.4]
 
 ### Two Pages view
