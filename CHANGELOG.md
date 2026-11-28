@@ -4,6 +4,8 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+## [0.6.7]
+
 ### Edit PDF
 
 - Lists edit as in a word processor. Enter in a list item starts the next

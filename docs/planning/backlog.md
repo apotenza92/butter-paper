@@ -149,6 +149,11 @@ inspected captures. Steps are in priority order.
    - A list that runs through two columns keeps its lines' places after
      Enter or a join, so its item spacing can become uneven there. In one
      column, the lines below an edit take the list's own pitches.
+   - Undo in an open paragraph removes one typed letter at a time (each
+     key is its own step in `page_text_editor.rs`). Word groups a run of
+     typing into one step. Decide whether to group typing here.
+   - "Cover page alone" in the page-view menu sets the option only; it
+     does not switch to Two Pages view. Decide whether it must.
 
 1. **Linux review workflow.** Edit PDF, lists, columns and edge resize
     pass the native review on Windows and on Linux under WSLg. The manual
