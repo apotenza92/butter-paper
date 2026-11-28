@@ -54,6 +54,9 @@ pub use crate::pdf_text_lists::{ListMarker, NumberStyle};
 
 /// The most list levels a block knows.
 pub const MAX_LIST_LEVELS: usize = 6;
+/// Markers this far apart along the lines, as a share of the list's
+/// narrowest indent, start at one depth.
+const SAME_DEPTH_SHARE: f64 = 0.4;
 
 /// One level of a list: its marker, and where its items' marker and text
 /// start, from the list's marker edge.
@@ -123,6 +126,39 @@ impl TextList {
             *slot = Some(*level);
         }
         self
+    }
+
+    /// The list's levels as indents, shallowest first: the markers that
+    /// start at one place (within a share of the narrowest indent) are one
+    /// level, as a word processor shows a sub-list of letters and one of
+    /// bullets at the same depth.
+    pub fn depths(&self) -> Vec<Vec<ListLevel>> {
+        let levels = self.levels();
+        let narrowest = levels
+            .iter()
+            .map(|level| level.indent)
+            .filter(|indent| *indent > 0.)
+            .fold(f64::MAX, f64::min);
+        let tolerance = if narrowest == f64::MAX {
+            1.
+        } else {
+            (SAME_DEPTH_SHARE * narrowest).max(1.)
+        };
+        let mut depths: Vec<Vec<ListLevel>> = Vec::new();
+        for level in levels {
+            match depths.last_mut() {
+                Some(depth) if level.offset - depth[0].offset <= tolerance => depth.push(level),
+                _ => depths.push(vec![level]),
+            }
+        }
+        depths
+    }
+
+    /// The depth ([`Self::depths`]) of the level whose marker is `marker`.
+    pub fn depth_of(&self, marker: ListMarker) -> Option<usize> {
+        self.depths()
+            .iter()
+            .position(|depth| depth.iter().any(|level| level.marker == marker))
     }
 
     /// The markers of its levels.

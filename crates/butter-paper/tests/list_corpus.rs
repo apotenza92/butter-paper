@@ -284,3 +284,177 @@ fn an_edited_list_reopens_with_its_items_in_order() {
     let reopened = PageTextEditState::new(paragraph, &current, &breaks, &added, 0).unwrap();
     assert_eq!(reopened.text(), text);
 }
+
+/// The editor on the first list of page 1 of fixture `name` that `pick`
+/// accepts, with the list's block.
+fn fixture_list_editor(
+    name: &str,
+    pick: impl Fn(&butter_paper::pdf_text_blocks::TextList) -> bool,
+) -> (
+    butter_paper::page_text_editor::PageTextEditState,
+    butter_paper::pdf_text_blocks::PageTextBlock,
+) {
+    use butter_paper::page_text_editor::PageTextEditState;
+    use butter_paper::pdf_text_reflow::Paragraph;
+    use std::sync::Arc;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/text-edit/lists")
+        .join(name);
+    let document = lopdf::Document::load(&path).unwrap();
+    let layer = Arc::new(extract_page_text(&document, 0, &TextEditLimits::default()).unwrap());
+    let block = paragraph_blocks(&layer)
+        .into_iter()
+        .find(|block| block.list.as_ref().is_some_and(&pick))
+        .unwrap();
+    let paragraph = Paragraph::new(layer, &block).unwrap();
+    (
+        PageTextEditState::new(paragraph, &[], &[], &[], 0).unwrap(),
+        block,
+    )
+}
+
+/// The caret moved four characters into the text that starts `text`.
+fn caret_into(state: &mut butter_paper::page_text_editor::PageTextEditState, text: &str) {
+    let at = state.text().find(text).unwrap();
+    state.move_to(state.text()[..at].chars().count() + 4, false);
+}
+
+/// Each line of `state`'s text.
+fn item_lines(state: &butter_paper::page_text_editor::PageTextEditState) -> Vec<String> {
+    state.text().lines().map(str::to_owned).collect()
+}
+
+/// The wrapped line that starts with `start`: where its first glyph is
+/// drawn on the page, and that glyph's style.
+fn marker_drawn(
+    state: &mut butter_paper::page_text_editor::PageTextEditState,
+    start: &str,
+) -> (f64, butter_paper::pdf_text_edit::TextRunStyle) {
+    let text = state.text().chars().collect::<Vec<_>>();
+    let line = state
+        .wrapped()
+        .iter()
+        .find(|line| {
+            text[line.range.clone()]
+                .iter()
+                .collect::<String>()
+                .starts_with(start)
+        })
+        .unwrap_or_else(|| panic!("no line starts with {start}"));
+    let first = line.layout.chars[0].x;
+    let x = line.line.matrix[0] * first + line.line.matrix[4];
+    let index = line.range.start;
+    state.move_to(index, false);
+    state.move_to(index + 1, true);
+    (x, state.current_style().unwrap().clone())
+}
+
+/// Tab and Shift+Tab move an item an indent deeper or shallower, as a
+/// word processor does: markers at one indent are one level, and the item
+/// takes the marker of its neighbour at the new level, drawn as that
+/// marker is. A numbered level counts on.
+#[test]
+fn tab_steps_through_indents_and_takes_the_neighbouring_marker() {
+    let (mut state, _) = fixture_list_editor("lo-nested.pdf", |list| list.levels().len() == 5);
+    // Numbers; letters and white bullets; roman numerals and squares.
+    assert_eq!(
+        state
+            .paragraph()
+            .list()
+            .unwrap()
+            .depths()
+            .iter()
+            .map(Vec::len)
+            .collect::<Vec<_>>(),
+        [1, 2, 2]
+    );
+    let (page_square_x, page_square) = marker_drawn(&mut state, "\u{25aa} Connect power");
+    let (_, letter) = marker_drawn(&mut state, "c. Agree");
+    assert_ne!(
+        letter, page_square,
+        "the page draws its squares in a font of their own"
+    );
+
+    // "c." under item 1 goes in to the squares above it, not to the white
+    // bullets at its own indent; drawn as they are.
+    caret_into(&mut state, "c. Agree");
+    assert!(state.change_level(true));
+    assert!(
+        item_lines(&state).contains(&"\u{25aa} Agree the traffic plan".to_owned()),
+        "{:#?}",
+        item_lines(&state)
+    );
+    let (x, style) = marker_drawn(&mut state, "\u{25aa} Agree");
+    assert!((x - page_square_x).abs() < 0.01, "{x} {page_square_x}");
+    assert_eq!(style, page_square);
+    // No deeper indent.
+    caret_into(&mut state, "Agree");
+    assert!(!state.change_level(true));
+    // Shift+Tab: back to the letters, counting on from "b.".
+    assert!(state.change_level(false));
+    assert!(item_lines(&state).contains(&"c. Agree the traffic plan".to_owned()));
+    // Again: a number after item 1; the numbers below count on.
+    caret_into(&mut state, "Agree");
+    assert!(state.change_level(false));
+    let lines = item_lines(&state);
+    assert!(lines.contains(&"2. Agree the traffic plan".to_owned()));
+    assert!(lines.contains(&"3. Demolish the extension".to_owned()));
+    assert!(lines.contains(&"4. Build the new structure".to_owned()));
+
+    // A roman level counts on from the item above at its indent.
+    let (mut state, _) = fixture_list_editor("lo-nested.pdf", |list| list.levels().len() == 5);
+    caret_into(&mut state, "b. Install");
+    assert!(state.change_level(true));
+    assert!(item_lines(&state).contains(&"iv. Install the welfare unit".to_owned()));
+    // With no item above at that indent, the item below gives the marker.
+    let (mut state, _) = fixture_list_editor("lo-nested.pdf", |list| list.levels().len() == 5);
+    caret_into(&mut state, "a. Erect");
+    assert!(state.change_level(true));
+    let lines = item_lines(&state);
+    assert!(
+        lines.contains(&"i. Erect the hoarding".to_owned()),
+        "{lines:#?}"
+    );
+    assert!(
+        lines.contains(&"ii. Set out the line".to_owned()),
+        "{lines:#?}"
+    );
+    // Under the white bullets of item 2, Shift+Tab from the numerals
+    // gives a white bullet.
+    let (mut state, _) = fixture_list_editor("lo-nested.pdf", |list| list.levels().len() == 5);
+    caret_into(&mut state, "ii. Sanitary");
+    assert!(state.change_level(false));
+    assert!(item_lines(&state).contains(&"\u{25e6} Sanitaryware".to_owned()));
+}
+
+/// Backspace that removes an item's number rewraps the item's text within
+/// the paragraph's right edge, not past it.
+#[test]
+fn a_removed_marker_rewraps_the_text_within_the_right_edge() {
+    let (mut state, block) = fixture_list_editor("lo-mixed.pdf", |list| list.marker.is_number());
+    let at = state.text().find("Test the circuit").unwrap();
+    state.move_to(state.text()[..at].chars().count(), false);
+    assert!(state.backspace());
+    assert!(state.text().contains("\nTest the circuit"));
+    let text = state.text().chars().collect::<Vec<_>>();
+    let mut checked = 0;
+    for line in state.wrapped() {
+        let Some(last) = line
+            .layout
+            .chars
+            .iter()
+            .rfind(|character| !character.character.is_whitespace())
+        else {
+            continue;
+        };
+        let end = line.line.matrix[0] * (last.x + last.advance) + line.line.matrix[4];
+        assert!(
+            end <= block.right + 0.5,
+            "{:?} ends at {end}, past {}",
+            text[line.range.clone()].iter().collect::<String>(),
+            block.right
+        );
+        checked += 1;
+    }
+    assert!(checked >= 5);
+}

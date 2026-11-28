@@ -8,9 +8,11 @@ All notable Butter Paper changes are recorded here.
 
 - Lists edit as in a word processor. Enter in a list item starts the next
   item with the same bullet or the next number, and Enter in an empty
-  item ends the list. Backspace at the start of an item removes its
-  bullet or number. Tab and Shift+Tab move an item to another level that
-  the page shows. Numbers count on when you add, remove or move items.
+  item ends the list. Home goes to the start of an item's text, after
+  its bullet or number, and Backspace there removes the bullet or number.
+  Tab and Shift+Tab move an item one indent deeper or shallower and give
+  it the bullet or number of the items at that indent, in their font and
+  size. Numbers count on when you add, remove or move items.
 - The formatting bar has Bulleted List and Numbered List buttons. They
   make a paragraph a list item, remove an item's marker, or turn bullets
   into numbers and numbers into bullets.

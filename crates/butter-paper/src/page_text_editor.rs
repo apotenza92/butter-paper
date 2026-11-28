@@ -541,10 +541,30 @@ impl PageTextEditState {
         self.index_on_line(line, text_x)
     }
 
+    /// The caret position nearest `x` on wrapped line `line`; never in a
+    /// list item's marker ([`Self::outside_marker`]).
     fn index_on_line(&self, line: usize, x: f64) -> usize {
         let wrapped = &self.wrapped[line];
         let offset = wrapped.layout.index_at(x).min(wrapped.range.len());
-        wrapped.range.start + offset
+        self.outside_marker(wrapped.range.start + offset)
+    }
+
+    /// Where the text of the item starting at `start` starts: after its
+    /// list marker and the spaces after it, or at `start` when it has none.
+    fn item_text_start(&self, start: usize) -> usize {
+        self.paragraph
+            .list()
+            .and_then(|list| self.item_at(start, &list))
+            .map_or(start, |(_, _, length)| start + length)
+    }
+
+    /// `index`, or the item's text start when `index` is before or in a
+    /// list item's marker: as in a word processor, the marker is not text
+    /// the caret goes into.
+    fn outside_marker(&self, index: usize) -> usize {
+        let start = self.item_start(index);
+        let text = self.item_text_start(start);
+        if index < text { text } else { index }
     }
 
     /// Whether page point (`x`, `y`) is on the paragraph, within `tolerance`
@@ -650,42 +670,127 @@ impl PageTextEditState {
     }
 
     /// Numbers a list's numbered items in order, as list numbering is
-    /// automatic: each level counts on from its first item's number, and a
-    /// level nested under an item starts again after a shallower item.
+    /// automatic: each level (an indent) counts on from its first item's
+    /// number, and a level nested under an item starts again after a
+    /// shallower item. A level that changes marker starts again.
     fn renumber(&mut self) {
         let Some(list) = self.paragraph.list() else {
             return;
         };
-        let levels = list.levels();
-        let mut counters: Vec<Option<u32>> = vec![None; levels.len()];
+        let mut counters: Vec<Option<(ListMarker, u32)>> = vec![None; list.depths().len()];
         let mut start = 0;
         while start <= self.chars.len() {
             if let Some((marker, value, length)) = self.item_at(start, &list)
-                && let Some(level) = levels.iter().position(|level| level.marker == marker)
+                && let Some(depth) = list.depth_of(marker)
             {
-                for deeper in &mut counters[level + 1..] {
+                for deeper in &mut counters[depth + 1..] {
                     *deeper = None;
                 }
+                let wanted = match counters[depth] {
+                    Some((counted, number)) if counted == marker => number + 1,
+                    _ => value,
+                };
+                counters[depth] = Some((marker, wanted));
                 if marker.is_number() {
-                    let wanted = counters[level].map_or(value, |number| number + 1);
-                    counters[level] = Some(wanted);
                     let written = length - self.gap_after(start, length);
                     let replacement = marker.text(wanted).chars().collect::<Vec<_>>();
                     if replacement[..] != self.chars[start..start + written] {
                         self.splice_keeping_style(start, written, &replacement);
                     }
-                } else {
-                    counters[level] = Some(0);
                 }
             }
-            match self.chars[start..]
-                .iter()
-                .position(|character| *character == '\n')
-            {
-                Some(offset) => start += offset + 1,
+            match self.next_item(start) {
+                Some(next) => start = next,
                 None => break,
             }
         }
+    }
+
+    /// Where the item after the one starting at `start` starts.
+    fn next_item(&self, start: usize) -> Option<usize> {
+        self.chars[start..]
+            .iter()
+            .position(|character| *character == '\n')
+            .map(|offset| start + offset + 1)
+    }
+
+    /// The depth of the item starting at `start` and its marker; `None`
+    /// for a line without a marker.
+    fn item_depth(&self, start: usize, list: &TextList) -> Option<(ListMarker, usize)> {
+        let (marker, _, _) = self.item_at(start, list)?;
+        Some((marker, list.depth_of(marker)?))
+    }
+
+    /// The marker the item starting at `start` takes at depth `target`, as
+    /// a word processor continues a level: that of the item above at that
+    /// depth, else of the item below (neither past a shallower item, which
+    /// ends the level), else the first the list shows there.
+    fn marker_at_depth(&self, start: usize, target: usize, list: &TextList) -> Option<ListMarker> {
+        let mut above = start;
+        while above > 0 {
+            above = self.item_start(above - 1);
+            match self.item_depth(above, list) {
+                Some((marker, depth)) if depth == target => return Some(marker),
+                Some((_, depth)) if depth < target => break,
+                _ => {}
+            }
+        }
+        let mut below = start;
+        while let Some(next) = self.next_item(below) {
+            below = next;
+            match self.item_depth(below, list) {
+                Some((marker, depth)) if depth == target => return Some(marker),
+                Some((_, depth)) if depth < target => break,
+                _ => {}
+            }
+        }
+        Some(list.depths().get(target)?.first()?.marker)
+    }
+
+    /// The style a new `marker` near `near` is drawn in: that of the
+    /// nearest item in the paragraph with this marker, else of a line on
+    /// the page that starts with it at the paragraph's scale; `None` when
+    /// neither shows it.
+    fn marker_style(&mut self, near: usize, marker: ListMarker, list: &TextList) -> Option<usize> {
+        let mut nearest: Option<usize> = None;
+        let mut start = 0;
+        loop {
+            if start != near
+                && self
+                    .item_at(start, list)
+                    .is_some_and(|(found, _, _)| found == marker)
+                && nearest.is_none_or(|known| start.abs_diff(near) < known.abs_diff(near))
+            {
+                nearest = Some(start);
+            }
+            match self.next_item(start) {
+                Some(next) => start = next,
+                None => break,
+            }
+        }
+        if let Some(item) = nearest {
+            return self.styles.get(item).copied();
+        }
+        let scale =
+            |line: &crate::pdf_text_edit::PageTextLine| line.matrix[0].hypot(line.matrix[1]);
+        let own = scale(self.paragraph.lines().first()?);
+        let style = self.paragraph.layer().lines.iter().find_map(|line| {
+            if (scale(line) - own).abs() > 0.01 * own {
+                return None;
+            }
+            let first = line
+                .chars
+                .iter()
+                .position(|character| !character.character.is_whitespace())?;
+            let text = line.chars[first..]
+                .iter()
+                .take(16)
+                .map(|character| character.character)
+                .collect::<Vec<_>>();
+            let (found, _, _) = list_item(&text, Some(list))?;
+            (found == marker).then(|| line.styles[line.chars[first].style].clone())
+        })?;
+        Some(self.intern(style))
     }
 
     /// The list marker the item starting at `start` begins with, its value
@@ -759,37 +864,44 @@ impl PageTextEditState {
     }
 
     /// Moves the items the caret or selection is in a level deeper or (with
-    /// `deeper` false) shallower, to the next level the list knows: its
-    /// marker and indent. Changes nothing, and returns false, when no item
-    /// has such a level. One undo step.
+    /// `deeper` false) shallower: to the next indent the list knows, with
+    /// the marker of that level's neighbouring item
+    /// ([`Self::marker_at_depth`]) drawn as that marker is. Changes nothing,
+    /// and returns false, when no item has such a level. One undo step.
     pub fn change_level(&mut self, deeper: bool) -> bool {
         let Some(list) = self.paragraph.list() else {
             return false;
         };
-        let levels = list.levels();
+        let depths = list.depths().len();
         let before = self.snapshot();
         let mut changed = false;
         for start in self.touched_items() {
-            let Some((marker, _, length)) = self.item_at(start, &list) else {
+            let Some((_, _, length)) = self.item_at(start, &list) else {
                 continue;
             };
-            let Some(level) = levels.iter().position(|level| level.marker == marker) else {
+            let Some((_, depth)) = self.item_depth(start, &list) else {
                 continue;
             };
             let target = if deeper {
-                level + 1
+                depth + 1
             } else {
-                match level.checked_sub(1) {
+                match depth.checked_sub(1) {
                     Some(target) => target,
                     None => continue,
                 }
             };
-            let Some(target) = levels.get(target) else {
+            if target >= depths {
+                continue;
+            }
+            let Some(marker) = self.marker_at_depth(start, target, &list) else {
                 continue;
             };
             let written = length - self.gap_after(start, length);
-            let replacement = target.marker.text(1).chars().collect::<Vec<_>>();
-            self.splice_keeping_style(start, written, &replacement);
+            let replacement = marker.text(1).chars().collect::<Vec<_>>();
+            let style = self
+                .marker_style(start, marker, &list)
+                .unwrap_or_else(|| self.styles.get(start).copied().unwrap_or(0));
+            self.splice_styled(start, written, &replacement, style);
             changed = true;
         }
         if !changed {
@@ -873,6 +985,7 @@ impl PageTextEditState {
                     let (_, size) = self.paragraph.first_line_edge();
                     (size, template.as_ref().map(|(_, style, _)| style.clone()))
                 };
+                let had_list = list.is_some();
                 let list = match list {
                     Some(list) => {
                         // A level of this kind, or the list's own turned
@@ -936,11 +1049,19 @@ impl PageTextEditState {
                     if self.item_at(start, &list).is_some() {
                         continue;
                     }
-                    // The marker in the page's bullet font when it has one,
-                    // at the text's size; the space after it in the text's.
+                    // The marker drawn as the list's own markers of its
+                    // level are; else in the page's bullet font when it has
+                    // one, at the text's size. The space after it in the
+                    // text's style.
                     let text_style = self.style_for(&(start..start));
-                    let style = match &marker_style {
-                        Some(style) if !marker.is_number() => {
+                    let own = if had_list {
+                        self.marker_style(start, marker, &list)
+                    } else {
+                        None
+                    };
+                    let style = match (own, &marker_style) {
+                        (Some(own), _) => own,
+                        (None, Some(style)) if !marker.is_number() => {
                             let mut style = style.clone();
                             style.font_size = self.style_table[text_style].font_size;
                             style.face = None;
@@ -956,6 +1077,11 @@ impl PageTextEditState {
         }
         self.marked = None;
         self.renumber();
+        // A caret the new marker went in front of goes to the item's text.
+        if self.caret == self.anchor {
+            self.caret = self.outside_marker(self.caret);
+            self.anchor = self.caret;
+        }
         if self.snapshot() == before {
             return false;
         }
@@ -1152,26 +1278,25 @@ impl PageTextEditState {
         self.commit_change(before, Some('\n'))
     }
 
-    /// Deletes the selection or the character before the caret. At the
-    /// start of a list item's text it removes the item's marker instead: the
-    /// item becomes a plain line at the list's edge, which a second
-    /// Backspace joins to the line before.
+    /// Deletes the selection or the character before the caret. At or
+    /// before the start of a list item's text it removes the item's marker
+    /// instead: the item becomes a plain line at the list's edge, which a
+    /// second Backspace joins to the line before.
     pub fn backspace(&mut self) -> bool {
         let selection = self.selection();
         if !selection.is_empty() {
             return self.replace(selection, "");
         }
-        if self.caret == 0 {
-            return false;
-        }
         if let Some(list) = self.paragraph.list() {
             let start = self.item_start(self.caret);
             if let Some((_, _, length)) = self.item_at(start, &list)
-                && self.caret > start
                 && self.caret <= start + length
             {
                 return self.replace(start..start + length, "");
             }
+        }
+        if self.caret == 0 {
+            return false;
         }
         self.replace(self.caret - 1..self.caret, "")
     }
@@ -1223,22 +1348,30 @@ impl PageTextEditState {
         self.marked = None;
     }
 
+    /// Left: the character before; from a list item's text start, the
+    /// end of the line before, past the marker.
     pub fn move_left(&mut self, extend: bool) {
         let selection = self.selection();
         let target = if !extend && !selection.is_empty() {
             selection.start
         } else {
-            self.caret.saturating_sub(1)
+            let start = self.item_start(self.caret);
+            if self.caret > start && self.caret == self.item_text_start(start) {
+                start.checked_sub(1).unwrap_or(self.caret)
+            } else {
+                self.caret.saturating_sub(1)
+            }
         };
         self.move_to(target, extend);
     }
 
+    /// Right: the character after; into a list item, its text start.
     pub fn move_right(&mut self, extend: bool) {
         let selection = self.selection();
         let target = if !extend && !selection.is_empty() {
             selection.end
         } else {
-            self.caret + 1
+            self.outside_marker((self.caret + 1).min(self.len()))
         };
         self.move_to(target, extend);
     }
@@ -1263,9 +1396,11 @@ impl PageTextEditState {
             .map_or(self.len(), |line| line.range.end)
     }
 
-    /// Home: the start of the caret's wrapped line.
+    /// Home: the start of the caret's wrapped line; on a list item's
+    /// first line, the start of its text after the marker, as in a word
+    /// processor.
     pub fn move_line_start(&mut self, extend: bool) {
-        self.move_to(self.line_start(self.caret), extend);
+        self.move_to(self.outside_marker(self.line_start(self.caret)), extend);
     }
 
     /// End: the end of the caret's wrapped line.
@@ -2468,6 +2603,61 @@ mod tests {
         assert!(state.undo());
         assert!(state.undo());
         assert_eq!(state.text(), "1. First item\n2. Second\n3. Third");
+    }
+
+    #[test]
+    fn the_caret_stays_out_of_list_markers() {
+        let lines = vec![
+            line_at("1. First item", 72., 700.),
+            line_at("2. Second", 72., 686.),
+            line_at("3. Third", 72., 672.),
+        ];
+        let mut state = block_editor(lines.clone(), 0);
+        let second = state.text().find("Second").unwrap();
+        let item = second - 3;
+        // Home: the item's text start, after its number.
+        state.move_to(second + 3, false);
+        state.move_line_start(false);
+        assert_eq!(state.selection(), second..second);
+        // Shift+Home selects to it.
+        state.move_to(second + 6, false);
+        state.move_line_start(true);
+        assert_eq!(state.selected_text(), "Second");
+        // A click on the number, or left of it, puts the caret there too.
+        state.move_to(item, false);
+        let [bottom, top] = state.caret_segment().unwrap();
+        let middle = ((bottom.0 + top.0) / 2., (bottom.1 + top.1) / 2.);
+        assert_eq!(state.index_at_point(middle.0 + 1., middle.1), second);
+        assert_eq!(state.index_at_point(middle.0 - 20., middle.1), second);
+        // Left from the text start goes to the end of the item before; Right
+        // from there comes back past the number.
+        state.move_to(second, false);
+        state.move_left(false);
+        assert_eq!(state.selection(), item - 1..item - 1);
+        state.move_right(false);
+        assert_eq!(state.selection(), second..second);
+        // The first item's text start has nothing before it to go to.
+        state.move_to(3, false);
+        state.move_left(false);
+        assert_eq!(state.selection(), 3..3);
+
+        // Backspace before the marker removes it, as at the text start.
+        let mut state = block_editor(lines, 0);
+        state.move_to(item, false);
+        assert!(state.backspace());
+        assert_eq!(state.text(), "1. First item\nSecond\n2. Third");
+        // A list button that makes it an item again puts the caret after
+        // the new marker.
+        assert!(state.toggle_list(ListKind::Numbered, None));
+        assert_eq!(state.text(), "1. First item\n2. Second\n3. Third");
+        assert_eq!(state.selection(), second..second);
+        assert!(state.undo());
+        assert_eq!(state.text(), "1. First item\nSecond\n2. Third");
+        // At the paragraph's start too. The level's first number stays, as
+        // a list continued from another page keeps its numbers.
+        state.move_to(0, false);
+        assert!(state.backspace());
+        assert_eq!(state.text(), "First item\nSecond\n2. Third");
     }
 
     #[test]

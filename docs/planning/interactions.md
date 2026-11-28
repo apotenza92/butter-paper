@@ -934,7 +934,8 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
 - Input methods (Chinese, Japanese, dead keys) compose in place with an
   underline, and the committed text replaces it.
 - Typing, Backspace/Delete (with Option/Ctrl for words), arrows, Up/Down
-  between lines, Home/End (the line), Cut/Copy/Paste (line breaks kept) and
+  between lines, Home/End (the line; Shift+Home/End select to there),
+  Cut/Copy/Paste (line breaks kept) and
   Select All work in the paragraph. While editing, a return mark (↵) follows
   each line that ends at a hard break, and a fainter wrap mark (⤵) each line
   whose text continues on the next.
@@ -942,22 +943,36 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   item takes the same bullet or the next number at the item's level, with
   its marker and text at the level's edges. Enter in an empty item removes
   its marker, ending the list there: the line is plain text at the list's
-  left edge. Backspace at the start of an item's text (or in its marker)
-  removes the marker, so the item becomes plain text without the hanging
-  indent; a second Backspace joins it to the line before. Tab and
-  Shift+Tab move the items the caret or selection is in a level deeper or
-  shallower, to the levels the paragraph or the page shows (their marker
-  and indent); with no such level they do nothing. Outside a list item
-  they go to the next or previous table cell. Numbers follow every change:
-  each level counts on from its first item, and a nested level starts
-  again after each item above it. Each action is one undo step; Undo and
-  Redo step through the editing session while it is open.
+  left edge. As in Word, a list item's marker is not editable text: Home
+  on an item's first line, and a click on or left of its marker, put the
+  caret at the start of the item's text, and Shift+Home selects to there.
+  Left from the start of an item's text goes to the end of the line
+  before, and Right into an item goes past its marker. Backspace at or
+  before the start of an item's text removes the marker, so the item
+  becomes plain text without the hanging indent; a second Backspace joins
+  it to the line before. A level is an indent: markers that start at one
+  place (letters and bullets nested at the same depth) are one level. Tab
+  and Shift+Tab move the items the caret or selection is in to the next
+  deeper or shallower indent that the paragraph or the page shows; with no
+  such indent they do nothing. The item takes the marker of the item above
+  at that indent, else of the item below (neither search goes past a
+  shallower item), else the first marker the page shows there. The marker
+  is drawn in that level's own marker font and size, and at its place. A
+  list button that makes a line an item draws the marker the same way.
+  Outside a list item, Tab and Shift+Tab go to the next or previous table
+  cell. Numbers follow every change: each level counts on from its first
+  item, and a nested level starts again after each item above it. Each
+  action is one undo step; Undo and Redo step through the editing session
+  while it is open.
 - The page shows the edited text as it will be saved: PDFium re-renders the
   page after each change while the previous tiles stay on screen. Text
   rewraps at the paragraph's width (left-aligned text out to the text
   column's edge, short of other text on the same baseline) from the changed
   line on, keeping its
-  alignment (justified lines stay justified); lines before the change, and
+  alignment (justified lines stay justified). A rewrapped line can pass
+  the edge only by as much as the paragraph's own lines measure wider than
+  they are drawn (kerning), so text drawn at its fonts' widths wraps
+  within its edge; lines before the change, and
   lines the text wraps back onto, keep their bytes. A single line (a
   heading, a label) grows instead of wrapping, as in Revu, until it would
   pass the page's edge (keeping the margin it has on its other side, up to

@@ -26,7 +26,9 @@ use crate::pdf_text_edit::{
 const WIDTH_TOLERANCE: f64 = 0.5;
 /// For ragged text, whose right edge is only its longest line, as a share of
 /// the line's width: rewrapped text is measured by its fonts' widths, not
-/// the kerning it was drawn with.
+/// the kerning it was drawn with. At most as far as the paragraph's own
+/// lines measure wider than they are drawn ([`Paragraph::measure_slack`]),
+/// so text drawn at its fonts' widths wraps within its edge.
 const RAGGED_TOLERANCE: f64 = 0.02;
 /// Lines a paragraph may grow by.
 const MAX_EXTRA_LINES: usize = 200;
@@ -74,6 +76,8 @@ pub struct Paragraph {
     /// Every line is laid out afresh, though the text is unchanged: its
     /// cell's width changed.
     reflow: bool,
+    /// [`Self::measure_slack`], once measured.
+    slack: std::sync::OnceLock<f64>,
 }
 
 /// A line of the wrapped paragraph: its characters, and where it is drawn.
@@ -414,6 +418,7 @@ impl Paragraph {
             cell: block.cell,
             ruled: block.ruled,
             reflow: false,
+            slack: std::sync::OnceLock::new(),
         })
     }
 
@@ -714,6 +719,31 @@ impl Paragraph {
     /// must open up for it.
     fn flowed(&self, text: &[StyledChar], base: &[StyledChar]) -> bool {
         self.format.line_spacing.is_some() || largest_size(text, 0.) > largest_size(base, 0.) * 1.01
+    }
+
+    /// How much wider than drawn the paragraph's own lines measure, at
+    /// most, in text space: their text after any list marker, laid out by
+    /// its fonts' widths, against where the page draws it.
+    fn measure_slack(&self) -> f64 {
+        *self.slack.get_or_init(|| {
+            let (base, ranges) = self.base();
+            self.lines
+                .iter()
+                .zip(&ranges)
+                .filter_map(|(line, range)| {
+                    let skip = self
+                        .item_level(&base, range.start)
+                        .filter(|_| starts_item(&base, range.start))
+                        .map_or(0, |(_, length)| length);
+                    let chars = base.get(range.start + skip..range.end)?;
+                    let drawn = line.chars.get(skip..)?;
+                    let first = drawn.iter().find(|c| !c.character.is_whitespace())?;
+                    let last = drawn.iter().rfind(|c| !c.character.is_whitespace())?;
+                    let (start, end) = visible(&self.measure(line, chars).ok()?)?;
+                    Some((end - start) - (last.x + last.advance - first.x))
+                })
+                .fold(0., f64::max)
+        })
     }
 
     /// Lays out `chars` on `line` without a fit.
@@ -1270,7 +1300,10 @@ impl Paragraph {
         let tolerance = if self.alignment() == TextBlockAlignment::Justified {
             WIDTH_TOLERANCE
         } else {
-            WIDTH_TOLERANCE.max(RAGGED_TOLERANCE * (right - left.unwrap_or(0.)))
+            WIDTH_TOLERANCE.max(
+                (RAGGED_TOLERANCE * (right - left.unwrap_or(0.)))
+                    .min(WIDTH_TOLERANCE + self.measure_slack()),
+            )
         };
         let marker = self.item_level(text, start).filter(|_| item);
         // Where the text ends once placed, from its layout.
