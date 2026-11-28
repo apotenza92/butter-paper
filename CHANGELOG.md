@@ -4,6 +4,30 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Edit PDF
+
+- Lists edit as in a word processor. Enter in a list item starts the next
+  item with the same bullet or the next number, and Enter in an empty
+  item ends the list. Backspace at the start of an item removes its
+  bullet or number. Tab and Shift+Tab move an item to another level that
+  the page shows. Numbers count on when you add, remove or move items.
+- The formatting bar has Bulleted List and Numbered List buttons. They
+  make a paragraph a list item, remove an item's marker, or turn bullets
+  into numbers and numbers into bullets.
+- Edit PDF finds more lists: lettered and roman numbering (`a.`, `(a)`,
+  `i.`, `A.`, `I.`), `(1)` numbering, Word's Symbol and Wingdings
+  bullets, and nested lists. It finds a list only when the layout is
+  certain. A sentence or heading that starts with "1.", a date, a dash in
+  prose, a table of contents and a footnote stay plain text.
+- The toolbar's Undo and Redo buttons work while you type in a paragraph,
+  as Ctrl+Z does. Before, they did nothing until you left the paragraph.
+
+### Views
+
+- Two Pages view centres a page that is alone in its row: the cover with
+  Cover page alone, an odd last page, and a document of one page. A
+  document of one page fits that page.
+
 ## [0.6.6]
 
 ### Edit PDF

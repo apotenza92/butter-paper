@@ -97,6 +97,8 @@ pub struct EditPdfContentPropertySnapshot {
     pub substitutes: Vec<String>,
     /// Changes apply to selected text rather than the whole paragraph.
     pub selection: bool,
+    /// The kind of list the item at the caret is in; `None` with no marker.
+    pub list: Option<crate::page_text_editor::ListKind>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -109,6 +111,9 @@ pub enum EditPdfContentPropertyPatch {
     Italic(bool),
     Alignment(TextBlockAlignment),
     LineSpacing(f64),
+    /// The Bulleted list or Numbered list button: adds, removes or turns
+    /// the list markers of the lines the caret or selection is in.
+    List(crate::page_text_editor::ListKind),
 }
 
 pub struct EditPdfContentPropertyInspector {
@@ -419,6 +424,8 @@ impl EditPdfContentPropertyInspector {
             EditPdfContentPropertyPatch::LineSpacing(spacing) => {
                 (spacing - snapshot.line_spacing).abs() < 1e-6
             }
+            // A toggle: every press changes the text.
+            EditPdfContentPropertyPatch::List(_) => false,
         };
         if self.syncing || unchanged {
             return;

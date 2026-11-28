@@ -935,9 +935,12 @@ mod paragraphs {
                 "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi \
                  omicron pi rho sigma tau upsilon phi chi psi omega.",
                 "Strategy\nGovernance and reporting\nTesting",
+                // The list and the list nested in it are one paragraph, the
+                // nested one a level of its own.
                 "• First item that is long enough to wrap onto the second line.\n\
-                 • Second item, spaced below the first.",
-                "o Sub item drawn with a letter bullet that also wraps.\no Another sub item.",
+                 • Second item, spaced below the first.\n\
+                 o Sub item drawn with a letter bullet that also wraps.\n\
+                 o Another sub item.",
             ]
         );
     }

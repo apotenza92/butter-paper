@@ -54,6 +54,11 @@ mod tagging;
 /// One page drawn by `content`, with Helvetica as `/F1` and `page` entries
 /// added to the page dictionary; its marked content tagged as paragraphs.
 fn text_page(content: &[u8], page: lopdf::Dictionary) -> PageTextLayer {
+    extract_page_text(&text_document(content, page), 0, &TextEditLimits::default()).unwrap()
+}
+
+/// The document [`text_page`] reads.
+fn text_document(content: &[u8], page: lopdf::Dictionary) -> Document {
     let mut document = Document::with_version("1.7");
     let pages_id = document.new_object_id();
     let font_id = document.add_object(dictionary! {
@@ -88,7 +93,7 @@ fn text_page(content: &[u8], page: lopdf::Dictionary) -> PageTextLayer {
     });
     document.trailer.set("Root", catalog_id);
     tagging::tag_paragraphs(&mut document, page_id);
-    extract_page_text(&document, 0, &TextEditLimits::default()).unwrap()
+    document
 }
 
 struct PageTextResource {
@@ -2536,7 +2541,7 @@ fn fit_page_to_window(
 }
 
 /// Every control of the Edit PDF format bar, by debug selector.
-const FORMAT_BAR_CONTROLS: [&str; 10] = {
+const FORMAT_BAR_CONTROLS: [&str; 12] = {
     use butter_paper::edit_pdf_format_bar::*;
     [
         EDIT_PDF_FORMAT_FONT_ID,
@@ -2548,6 +2553,8 @@ const FORMAT_BAR_CONTROLS: [&str; 10] = {
         EDIT_PDF_FORMAT_ALIGN_CENTER_ID,
         EDIT_PDF_FORMAT_ALIGN_RIGHT_ID,
         EDIT_PDF_FORMAT_ALIGN_JUSTIFY_ID,
+        EDIT_PDF_FORMAT_BULLETED_LIST_ID,
+        EDIT_PDF_FORMAT_NUMBERED_LIST_ID,
         EDIT_PDF_FORMAT_BAR_CONTENT_ID,
     ]
 };
@@ -2899,8 +2906,9 @@ fn escape_in_the_format_bar_returns_to_the_edited_text(cx: &mut TestAppContext) 
 fn the_format_bar_stays_inside_a_narrow_window(cx: &mut TestAppContext) {
     use butter_paper::edit_pdf_format_bar::{
         EDIT_PDF_FORMAT_ALIGN_LEFT_ID, EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID, EDIT_PDF_FORMAT_BAR_ID,
-        EDIT_PDF_FORMAT_BOLD_ID, EDIT_PDF_FORMAT_COLOR_ID, EDIT_PDF_FORMAT_FONT_ID,
-        EDIT_PDF_FORMAT_ITALIC_ID, EDIT_PDF_FORMAT_SIZE_ID,
+        EDIT_PDF_FORMAT_BOLD_ID, EDIT_PDF_FORMAT_BULLETED_LIST_ID, EDIT_PDF_FORMAT_COLOR_ID,
+        EDIT_PDF_FORMAT_FONT_ID, EDIT_PDF_FORMAT_ITALIC_ID, EDIT_PDF_FORMAT_NUMBERED_LIST_ID,
+        EDIT_PDF_FORMAT_SIZE_ID,
     };
     let (layer, space) = three_line_paragraph();
     let (_workspace, _, _, cx) =
@@ -2923,6 +2931,12 @@ fn the_format_bar_stays_inside_a_narrow_window(cx: &mut TestAppContext) {
             menu.is_some() != buttons.is_some(),
             "{width}: one alignment form"
         );
+        // The list buttons show, or (narrowest) join the alignment menu.
+        let lists = cx.debug_bounds(EDIT_PDF_FORMAT_BULLETED_LIST_ID);
+        assert!(
+            lists.is_some() || menu.is_some(),
+            "{width}: no list control"
+        );
         for id in [
             EDIT_PDF_FORMAT_FONT_ID,
             EDIT_PDF_FORMAT_SIZE_ID,
@@ -2933,6 +2947,8 @@ fn the_format_bar_stays_inside_a_narrow_window(cx: &mut TestAppContext) {
         .into_iter()
         .chain(menu.map(|_| EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID))
         .chain(buttons.map(|_| EDIT_PDF_FORMAT_ALIGN_LEFT_ID))
+        .chain(lists.map(|_| EDIT_PDF_FORMAT_BULLETED_LIST_ID))
+        .chain(lists.map(|_| EDIT_PDF_FORMAT_NUMBERED_LIST_ID))
         {
             let control = cx
                 .debug_bounds(id)
@@ -3182,4 +3198,487 @@ fn the_format_bar_text_colour_applies_the_properties_fill(cx: &mut TestAppContex
     // One undo step.
     press_keys(cx, undo_key);
     assert_eq!(snapshot(cx), original);
+}
+
+/// A numbered list with a lettered item nested under its first item, in
+/// 12 pt Helvetica: numbers at 72, letters at 90, each text a tab on.
+const NESTED_LIST: &[u8] = b"BT /F1 12 Tf 72 700 Td (1.) Tj 18 0 Td (First item) Tj ET \
+    BT /F1 12 Tf 90 684 Td (a.) Tj 18 0 Td (Sub item) Tj ET \
+    BT /F1 12 Tf 72 668 Td (2.) Tj 18 0 Td (Second item) Tj ET \
+    BT /F1 12 Tf 72 652 Td (3.) Tj 18 0 Td (Third item) Tj ET \
+    BT /F1 12 Tf 72 600 Td (1. The other samples passed.) Tj ET";
+
+fn list_page() -> (PageTextLayer, PageCoordinateSpace) {
+    let (_, space) = three_line_paragraph();
+    (text_page(NESTED_LIST, lopdf::Dictionary::new()), space)
+}
+
+/// In a list item Enter starts the next item and an empty item's Enter
+/// ends the list; Tab and Shift+Tab move an item between the levels the
+/// list shows; Backspace at an item's text removes its marker, then joins;
+/// the bar's list buttons show the caret's list and turn or remove its
+/// markers. Numbers follow each change, and each is one undo step.
+#[gpui::test]
+fn list_items_edit_as_in_a_word_processor(cx: &mut TestAppContext) {
+    use butter_paper::edit_pdf_format_bar::{
+        EDIT_PDF_FORMAT_BULLETED_LIST_ID, EDIT_PDF_FORMAT_NUMBERED_LIST_ID,
+    };
+    use butter_paper::page_text_editor::ListKind;
+    let undo_key = if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    };
+    let (layer, space) = list_page();
+    let (workspace, document_id, shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let text = |cx: &mut gpui::VisualTestContext| {
+        workspace
+            .read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx))
+            .expect("text is being edited")
+    };
+    let list = |cx: &mut gpui::VisualTestContext| {
+        format_bar_snapshot(cx, &workspace)
+            .expect("the bar shows the edited text")
+            .list
+    };
+    click_page_point(cx, document_id, space, Rotation::Degrees0, (100., 672.));
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n3. Third item"
+    );
+    assert_eq!(list(cx), Some(ListKind::Numbered));
+
+    // Enter at the end of an item: the next number, later ones count on.
+    press_keys(cx, "end enter");
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n3. \n4. Third item"
+    );
+    let live = shown.lock().unwrap().last().cloned().unwrap();
+    assert!(
+        live.iter().any(|edit| edit.layout.hard_break),
+        "the items stay apart when saved"
+    );
+    // Enter in the empty item ends the list there.
+    press_keys(cx, "enter");
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n\n3. Third item"
+    );
+    assert_eq!(list(cx), None);
+    press_keys(cx, undo_key);
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n3. \n4. Third item"
+    );
+
+    // Tab: the empty item joins the letters, as its own sub-list under 2.
+    press_keys(cx, "tab");
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\na. \n3. Third item"
+    );
+    // No deeper level: Tab does nothing.
+    press_keys(cx, "tab");
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\na. \n3. Third item"
+    );
+    press_keys(cx, "shift-tab");
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n3. \n4. Third item"
+    );
+
+    // The bar: Bulleted list turns the level's numbers into bullets.
+    click_selector(cx, EDIT_PDF_FORMAT_BULLETED_LIST_ID);
+    assert_eq!(
+        text(cx),
+        "\u{2022} First item\na. Sub item\n\u{2022} Second item\n\u{2022} \n\u{2022} Third item"
+    );
+    assert_eq!(list(cx), Some(ListKind::Bulleted));
+    // Pressed again, it removes the caret's bullet.
+    click_selector(cx, EDIT_PDF_FORMAT_BULLETED_LIST_ID);
+    assert_eq!(list(cx), None);
+    // Numbered list makes the line an item again, numbered in turn.
+    click_selector(cx, EDIT_PDF_FORMAT_NUMBERED_LIST_ID);
+    assert_eq!(list(cx), Some(ListKind::Numbered));
+    // One undo step each.
+    press_keys(cx, undo_key);
+    assert_eq!(list(cx), None);
+    press_keys(cx, undo_key);
+    press_keys(cx, undo_key);
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n3. \n4. Third item"
+    );
+
+    // Backspace after the empty item's marker removes it; numbers follow.
+    press_keys(cx, "backspace");
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n\n3. Third item"
+    );
+    // A second Backspace joins the line to the item before.
+    press_keys(cx, "backspace");
+    assert_eq!(
+        text(cx),
+        "1. First item\na. Sub item\n2. Second item\n3. Third item"
+    );
+    press_keys(cx, "escape");
+}
+
+/// A "1." that starts a sentence is not a list: Enter in it starts a plain
+/// line, and the list buttons show nothing pressed.
+#[gpui::test]
+fn a_sentence_starting_with_a_number_is_not_a_list(cx: &mut TestAppContext) {
+    let (layer, space) = list_page();
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    click_page_point(cx, document_id, space, Rotation::Degrees0, (150., 604.));
+    let snapshot = format_bar_snapshot(cx, &workspace).expect("the bar shows the edited text");
+    assert_eq!(snapshot.list, None);
+    press_keys(cx, "end enter");
+    let text = workspace
+        .read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx))
+        .unwrap();
+    assert_eq!(text, "1. The other samples passed.\n");
+    press_keys(cx, "escape");
+}
+
+/// The text of each line of `block` in `layer`.
+fn block_texts(
+    layer: &PageTextLayer,
+    block: &butter_paper::pdf_text_blocks::PageTextBlock,
+) -> Vec<String> {
+    block
+        .lines
+        .iter()
+        .map(|anchor| layer.line(anchor).unwrap().text.trim().to_owned())
+        .collect()
+}
+
+/// `document` with `edits` saved, read again.
+fn saved(document: &Document, edits: &[PageTextEdit]) -> PageTextLayer {
+    let mut edited = document.clone();
+    butter_paper::pdf_text_edit::apply_text_edits(&mut edited, edits, &TextEditLimits::default())
+        .unwrap();
+    let mut bytes = Vec::new();
+    edited.save_to(&mut bytes).unwrap();
+    let reopened = Document::load_mem(&bytes).unwrap();
+    extract_page_text(&reopened, 0, &TextEditLimits::default()).unwrap()
+}
+
+/// Lists edited and made with the bar are found again as the same lists
+/// once saved: their markers are text, their indents where it starts.
+#[test]
+fn edited_and_new_lists_are_lists_again_when_saved_and_reopened() {
+    use butter_paper::page_text_editor::{ListKind, PageTextEditState};
+    use butter_paper::pdf_text_blocks::{ListMarker, paragraph_blocks};
+    use butter_paper::pdf_text_reflow::Paragraph;
+    let document = text_document(NESTED_LIST, lopdf::Dictionary::new());
+    let layer = Arc::new(extract_page_text(&document, 0, &TextEditLimits::default()).unwrap());
+    let blocks = paragraph_blocks(&layer);
+    let list = blocks.iter().find(|block| block.list.is_some()).unwrap();
+    // The sentence below stays plain.
+    assert_eq!(
+        blocks.iter().filter(|block| block.list.is_some()).count(),
+        1
+    );
+
+    // A new item after item 2, and the sub-item moved to the top level.
+    let paragraph = Paragraph::new(layer.clone(), list).unwrap();
+    let mut state = PageTextEditState::new(paragraph, &[], &[], &[], 0).unwrap();
+    let end = state.text().find("\n3.").unwrap();
+    state.move_to(end, false);
+    assert!(state.insert_newline());
+    assert!(state.insert("New item"));
+    let sub = state.text().find("Sub").unwrap();
+    state.move_to(sub, false);
+    assert!(state.change_level(false));
+    assert_eq!(
+        state.text(),
+        "1. First item\n2. Sub item\n3. Second item\n4. New item\n5. Third item"
+    );
+    let reopened = saved(&document, &state.edits());
+    let blocks = paragraph_blocks(&reopened);
+    let found = blocks
+        .iter()
+        .find(|block| block.list.is_some())
+        .expect("still a list");
+    assert_eq!(found.list.unwrap().marker, ListMarker::decimal('.'));
+    assert_eq!(
+        block_texts(&reopened, found),
+        [
+            "1. First item",
+            "2. Sub item",
+            "3. Second item",
+            "4. New item",
+            "5. Third item"
+        ]
+    );
+
+    // A plain paragraph made a bulleted list with the bar: one bullet set
+    // off by a tab, found again.
+    let plain = blocks_of_text(&layer, "1. The other");
+    let paragraph = Paragraph::new(layer.clone(), &plain).unwrap();
+    let mut state = PageTextEditState::new(paragraph, &[], &[], &[], 0).unwrap();
+    assert!(state.toggle_list(ListKind::Bulleted, None));
+    assert_eq!(state.text(), "\u{2022} 1. The other samples passed.");
+    let reopened = saved(&document, &state.edits());
+    let bullet = blocks_of_text(&reopened, "\u{2022}");
+    assert_eq!(
+        bullet.list.map(|list| list.marker),
+        Some(ListMarker::Bullet('\u{2022}'))
+    );
+}
+
+/// A numbered list in 12 pt Helvetica with items 18 pt apart and item 3
+/// wrapped 14 pt below its first line: numbers at 72, text at 90.
+const SPACED_LIST: &[u8] = b"BT /F1 12 Tf 72 700 Td (1.) Tj 18 0 Td (First item) Tj ET \
+    BT /F1 12 Tf 72 682 Td (2.) Tj 18 0 Td (Second item) Tj ET \
+    BT /F1 12 Tf 72 664 Td (3.) Tj 18 0 Td (Test the circuit with an approved voltage indicator) Tj ET \
+    BT /F1 12 Tf 90 650 Td (then prove it on a live source.) Tj ET \
+    BT /F1 12 Tf 72 632 Td (4.) Tj 18 0 Td (Fourth item) Tj ET \
+    BT /F1 12 Tf 72 614 Td (5.) Tj 18 0 Td (Fifth item) Tj ET";
+
+/// Each wrapped line's text and its baseline's height on the page.
+fn list_lines(state: &butter_paper::page_text_editor::PageTextEditState) -> Vec<(String, f64)> {
+    let text = state.text().chars().collect::<Vec<_>>();
+    state
+        .wrapped()
+        .iter()
+        .map(|line| {
+            (
+                text[line.range.clone()].iter().collect::<String>(),
+                line.line.origin().1,
+            )
+        })
+        .collect()
+}
+
+/// The gaps between `lines`' baselines, each with whether the lower line
+/// starts an item (its text starts with a number).
+fn list_gaps(lines: &[(String, f64)]) -> Vec<(bool, f64)> {
+    lines
+        .windows(2)
+        .map(|pair| {
+            (
+                pair[1].0.starts_with(|c: char| c.is_ascii_digit()),
+                pair[0].1 - pair[1].1,
+            )
+        })
+        .collect()
+}
+
+/// `state`'s paragraph opened again from its edits, as the workspace
+/// opens a paragraph that was edited before.
+fn reopened_state(
+    layer: &Arc<PageTextLayer>,
+    block: &butter_paper::pdf_text_blocks::PageTextBlock,
+    state: &butter_paper::page_text_editor::PageTextEditState,
+) -> butter_paper::page_text_editor::PageTextEditState {
+    use butter_paper::page_text_editor::PageTextEditState;
+    use butter_paper::pdf_text_reflow::Paragraph;
+    let edits = state.edits();
+    let paragraph = Paragraph::new(layer.clone(), block).unwrap();
+    let edit_of = |anchor| edits.iter().find(|edit| edit.anchor == anchor);
+    let current = paragraph
+        .lines()
+        .iter()
+        .map(|line| {
+            edit_of(line.anchor).map_or_else(|| line.original_runs(), |edit| edit.runs.clone())
+        })
+        .collect::<Vec<_>>();
+    let breaks = paragraph
+        .lines()
+        .iter()
+        .map(|line| edit_of(line.anchor).map(|edit| edit.layout.hard_break))
+        .collect::<Vec<_>>();
+    let added = edit_of(paragraph.lines().last().unwrap().anchor)
+        .map(|edit| edit.layout.extra_lines.clone())
+        .unwrap_or_default();
+    PageTextEditState::new(paragraph, &current, &breaks, &added, 0).unwrap()
+}
+
+/// Enter and Backspace in a list lay out every line below the edit at the
+/// list's own pitches, as a word processor does: the same gap between
+/// items, and the original gap between an item's wrapped lines. Opened
+/// again, the edited list reads in the same order.
+#[test]
+fn list_edits_keep_the_lists_item_and_wrap_spacing() {
+    use butter_paper::page_text_editor::PageTextEditState;
+    use butter_paper::pdf_text_reflow::Paragraph;
+    let layer = Arc::new(text_page(SPACED_LIST, lopdf::Dictionary::new()));
+    let block = blocks_of_text(&layer, "1.");
+    assert!(block.list.is_some(), "the lines are a list");
+    assert_eq!(block.lines.len(), 6, "{:?}", block_texts(&layer, &block));
+    let open = || {
+        PageTextEditState::new(
+            Paragraph::new(layer.clone(), &block).unwrap(),
+            &[],
+            &[],
+            &[],
+            0,
+        )
+        .unwrap()
+    };
+    let even = |lines: &[(String, f64)]| {
+        for (item, gap) in list_gaps(lines) {
+            let expected = if item { 18. } else { 14. };
+            assert!(
+                (gap - expected).abs() < 0.01,
+                "a gap of {gap} where {expected} was expected: {lines:#?}"
+            );
+        }
+    };
+    even(&list_lines(&open()));
+
+    // Enter after item 2: a new item 3; item 4 keeps its wrapped line.
+    let mut state = open();
+    let end = state.text().find("\n3.").unwrap();
+    state.move_to(end, false);
+    assert!(state.insert_newline());
+    assert!(state.insert("Check the earth bond"));
+    let lines = list_lines(&state);
+    assert_eq!(
+        lines
+            .iter()
+            .map(|(text, _)| text.trim())
+            .collect::<Vec<_>>(),
+        [
+            "1. First item",
+            "2. Second item",
+            "3. Check the earth bond",
+            "4. Test the circuit with an approved voltage indicator",
+            "then prove it on a live source.",
+            "5. Fourth item",
+            "6. Fifth item"
+        ]
+    );
+    even(&lines);
+    assert!((lines[0].1 - 700.).abs() < 0.01, "{lines:#?}");
+    let reopened = reopened_state(&layer, &block, &state);
+    assert_eq!(reopened.text(), state.text());
+    even(&list_lines(&reopened));
+
+    // An empty item's caret waits at the items' text edge.
+    let mut state = open();
+    let end = state.text().find("\n3.").unwrap();
+    state.move_to(end, false);
+    assert!(state.insert_newline());
+    let caret = state.caret_segment().unwrap();
+    assert!((caret[0].0 - 90.).abs() < 0.5, "{caret:?}");
+
+    // Backspace at item 2's text removes its number, then joins it to
+    // item 1; the items below move up at the list's pitches.
+    let mut state = open();
+    let start = state.text().find("Second").unwrap();
+    state.move_to(start, false);
+    assert!(state.backspace());
+    assert!(state.backspace());
+    let lines = list_lines(&state);
+    assert_eq!(
+        lines
+            .iter()
+            .map(|(text, _)| text.trim())
+            .collect::<Vec<_>>(),
+        [
+            "1. First itemSecond item",
+            "2. Test the circuit with an approved voltage indicator",
+            "then prove it on a live source.",
+            "3. Fourth item",
+            "4. Fifth item"
+        ]
+    );
+    even(&lines);
+    let reopened = reopened_state(&layer, &block, &state);
+    assert_eq!(reopened.text(), state.text());
+    even(&list_lines(&reopened));
+}
+
+/// The block whose first line starts with `start`.
+fn blocks_of_text(
+    layer: &PageTextLayer,
+    start: &str,
+) -> butter_paper::pdf_text_blocks::PageTextBlock {
+    butter_paper::pdf_text_blocks::paragraph_blocks(layer)
+        .into_iter()
+        .find(|block| {
+            layer
+                .line(&block.lines[0])
+                .is_some_and(|line| line.text.trim_start().starts_with(start))
+        })
+        .unwrap_or_else(|| panic!("no block starts with {start}"))
+}
+
+/// The toolbar's Undo and Redo act on the open paragraph's typing, as
+/// Ctrl+Z does there: the edit stays open, and no document step is needed
+/// first.
+#[gpui::test]
+fn toolbar_undo_and_redo_act_on_typing_in_the_open_paragraph(cx: &mut TestAppContext) {
+    use butter_paper::viewer_toolbar_strip::{VIEWER_REDO_ID, VIEWER_UNDO_ID};
+    let layer = text_page(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (The quick brown fox) Tj ET EMC",
+        lopdf::Dictionary::new(),
+    );
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let (workspace, document_id, _shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let history = |cx: &mut gpui::VisualTestContext| {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.viewer_toolbar().read(cx).history()
+        })
+    };
+    let text = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx))
+    };
+    // Just after "The".
+    click_page_point(
+        cx,
+        document_id,
+        space,
+        Rotation::Degrees0,
+        (72. + 12. * 1.723 + 0.3, 704.),
+    );
+    assert!(!history(cx).can_undo, "nothing typed yet");
+    cx.simulate_keystrokes("space v e r y");
+    let typed = text(cx).expect("the paragraph is open");
+    assert!(typed.starts_with("The very"), "{typed}");
+    assert!(history(cx).can_undo, "the typing enables Undo");
+
+    let undo = cx.debug_bounds(VIEWER_UNDO_ID).unwrap();
+    while history(cx).can_undo {
+        cx.simulate_click(undo.center(), Modifiers::default());
+    }
+    assert_eq!(
+        text(cx).as_deref(),
+        Some("The quick brown fox"),
+        "Undo reverts the typing and the paragraph stays open"
+    );
+    assert!(history(cx).can_redo);
+
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let redo = cx.debug_bounds(VIEWER_REDO_ID).unwrap();
+    while history(cx).can_redo {
+        cx.simulate_click(redo.center(), Modifiers::default());
+    }
+    assert_eq!(text(cx), Some(typed), "Redo puts the typing back");
+    // Nothing was committed: the document has no edit yet.
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .annotation_snapshot(document_id, cx)
+            .unwrap()
+            .page_text_edits
+            .is_empty()
+    }));
 }

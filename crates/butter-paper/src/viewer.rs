@@ -557,8 +557,9 @@ impl RenderPlanner {
 
 /// The row and column of page `page` in Two Pages view. Without the cover
 /// alone, row r holds pages 2r and 2r + 1; with it, page 0 is alone in row
-/// 0, in the right column as a book's cover, and row r holds pages 2r - 1
-/// and 2r. A last page with no partner stays in the left column.
+/// 0, and row r holds pages 2r - 1 and 2r. The cover counts as the right
+/// column and an odd last page as the left; the layout centres a page that
+/// is alone in its row.
 pub const fn two_page_slot(page: usize, cover_alone: bool) -> (usize, usize) {
     if cover_alone {
         if page == 0 {
@@ -616,9 +617,10 @@ pub fn two_page_spread_step(
 }
 
 /// The size of the row holding `page` in Two Pages view, at 100%: two
-/// column slots with `gap` between them, as tall as the taller page. A page
-/// alone in its row keeps an empty slot as wide as itself. A fit in Two
-/// Pages fits this.
+/// column slots with `gap` between them, as tall as the taller page. A fit
+/// in Two Pages fits this. A page alone in its row fits as two slots, so a
+/// fit keeps one zoom from row to row; a document of one page fits that
+/// page alone.
 pub fn two_page_row_size(
     page_sizes: &[(f32, f32)],
     page: usize,
@@ -630,6 +632,7 @@ pub fn two_page_row_size(
     let first = *page_sizes.get(first)?;
     Some(match second.and_then(|second| page_sizes.get(second)) {
         Some(second) => (first.0 + gap + second.0, first.1.max(second.1)),
+        None if page_sizes.len() == 1 => first,
         None => (first.0 * 2. + gap, first.1),
     })
 }
@@ -674,10 +677,9 @@ fn build_page_layouts(
             (layouts, total_width, total_height)
         }
         RenderLayout::TwoPages { cover_alone } => {
-            // Each row's pages meet at their tops and the row is centred
-            // as two column slots: a page alone in its row (the cover, an
-            // odd last page) keeps its column beside an empty slot as wide
-            // as itself, as a book shows it.
+            // Each row's pages meet at their tops and the row is centred.
+            // A page alone in its row (the cover, an odd last page, a
+            // document of one page) is centred on its own.
             let scaled = pages
                 .iter()
                 .enumerate()
@@ -691,7 +693,6 @@ fn build_page_layouts(
             let row_count = scaled.iter().map(|(.., row)| row + 1).max().unwrap_or(0);
             let mut row_widths = vec![0_f32; row_count];
             let mut row_heights = vec![0_f32; row_count];
-            let mut row_pages = vec![0_usize; row_count];
             for (_, width, height, _, row) in &scaled {
                 row_widths[*row] += if row_widths[*row] > 0. {
                     gap + width
@@ -699,13 +700,6 @@ fn build_page_layouts(
                     *width
                 };
                 row_heights[*row] = row_heights[*row].max(*height);
-                row_pages[*row] += 1;
-            }
-            // A lone page's empty slot.
-            for (width, pages) in row_widths.iter_mut().zip(&row_pages) {
-                if *pages == 1 {
-                    *width = *width * 2. + gap;
-                }
             }
             let total_width = row_widths.iter().copied().fold(viewport_width, f32::max);
             let mut row_tops = Vec::with_capacity(row_count);
@@ -721,11 +715,6 @@ fn build_page_layouts(
             let layouts = scaled
                 .into_iter()
                 .map(|(page, width, height, column_index, row_index)| {
-                    // A lone page in the right column sits past its empty
-                    // left slot.
-                    if row_pages[row_index] == 1 && column_index == 1 {
-                        row_lefts[row_index] += width + gap;
-                    }
                     let left = row_lefts[row_index];
                     row_lefts[row_index] += width + gap;
                     PageLayout {
@@ -968,8 +957,7 @@ mod tests {
         assert_eq!(two_page_row(2, true, 4), (3, None));
 
         // Five letter pages in a 1,400 pt view: pairs side by side, the
-        // last alone in the left column, every row centred as two slots,
-        // rows 24 pt apart.
+        // last alone and centred, every row centred, rows 24 pt apart.
         let letter = (612., 792.);
         let (layouts, width, height) = two_pages(&[letter; 5], false, 1_400.);
         assert_eq!(width, 1_400.);
@@ -982,7 +970,7 @@ mod tests {
                 (1, left + 636., 0., 612., 792.),
                 (2, left, 816., 612., 792.),
                 (3, left + 636., 816., 612., 792.),
-                (4, left, 1_632., 612., 792.),
+                (4, (1_400. - 612.) / 2., 1_632., 612., 792.),
             ]
         );
         assert_eq!(
@@ -993,17 +981,17 @@ mod tests {
             [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0)]
         );
 
-        // With the cover alone: page 1 alone in the right column, then
-        // 2–3, then 4 alone in the left column.
+        // With the cover alone: page 1 alone and centred, then 2–3, then
+        // 4 alone and centred.
         let (layouts, _, height) = two_pages(&[letter; 4], true, 1_400.);
         assert_eq!(height, 792. * 3. + 48.);
         assert_eq!(
             rects(&layouts),
             [
-                (0, left + 636., 0., 612., 792.),
+                (0, (1_400. - 612.) / 2., 0., 612., 792.),
                 (1, left, 816., 612., 792.),
                 (2, left + 636., 816., 612., 792.),
-                (3, left, 1_632., 612., 792.),
+                (3, (1_400. - 612.) / 2., 1_632., 612., 792.),
             ]
         );
     }
@@ -1035,8 +1023,13 @@ mod tests {
         );
         assert_eq!(
             two_page_row_size(&[(612., 792.)], 0, false, 24.),
-            Some((1_248., 792.)),
-            "a lone page fits as a two-column row"
+            Some((612., 792.)),
+            "a document of one page fits that page"
+        );
+        assert_eq!(
+            two_page_row_size(&[(612., 792.), (500., 700.), (600., 800.)], 2, false, 24.),
+            Some((1_224., 800.)),
+            "a lone last page fits as a two-column row"
         );
         assert_eq!(
             two_page_row_size(&[(612., 792.), (500., 700.), (600., 800.)], 0, true, 24.),

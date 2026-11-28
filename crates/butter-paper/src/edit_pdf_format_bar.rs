@@ -32,11 +32,13 @@ use gpui_component::{
 use crate::accessible_button::accessible_icon_button;
 use crate::application_assets::{
     FORMAT_ALIGN_CENTRE_ICON, FORMAT_ALIGN_JUSTIFY_ICON, FORMAT_ALIGN_LEFT_ICON,
-    FORMAT_ALIGN_RIGHT_ICON, FORMAT_BOLD_ICON, FORMAT_ITALIC_ICON,
+    FORMAT_ALIGN_RIGHT_ICON, FORMAT_BOLD_ICON, FORMAT_BULLETED_LIST_ICON, FORMAT_ITALIC_ICON,
+    FORMAT_NUMBERED_LIST_ICON,
 };
 use crate::edit_pdf_content_property_inspector::{
     EditPdfContentPropertyInspector, EditPdfContentPropertyPatch, EditPdfContentPropertySnapshot,
 };
+use crate::page_text_editor::ListKind;
 use crate::pdf_text_blocks::TextBlockAlignment;
 use crate::property_controls::{PropertyColor, PropertyStepInput, property_color_picker};
 
@@ -56,6 +58,9 @@ pub const EDIT_PDF_FORMAT_ALIGN_RIGHT_ID: &str = "edit-pdf-format-align-right";
 pub const EDIT_PDF_FORMAT_ALIGN_JUSTIFY_ID: &str = "edit-pdf-format-align-justify";
 /// The narrow forms' one Alignment menu button, in place of the four.
 pub const EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID: &str = "edit-pdf-format-alignment-menu";
+pub const EDIT_PDF_FORMAT_LIST_GROUP_ID: &str = "edit-pdf-format-lists";
+pub const EDIT_PDF_FORMAT_BULLETED_LIST_ID: &str = "edit-pdf-format-bulleted-list";
+pub const EDIT_PDF_FORMAT_NUMBERED_LIST_ID: &str = "edit-pdf-format-numbered-list";
 /// The dividers between the bar's groups.
 const DIVIDER_GROUP: &str = "edit-pdf-format-groups";
 const KEY_CONTEXT: &str = "EditPdfFormatBar";
@@ -105,12 +110,32 @@ const ALIGNMENTS: [(TextBlockAlignment, &str, &str, &str, &str); 4] = [
     ),
 ];
 
+/// Each list button: its kind, its tooltip, its menu item, its id and its
+/// icon.
+const LISTS: [(ListKind, &str, &str, &str, &str); 2] = [
+    (
+        ListKind::Bulleted,
+        "Bulleted List",
+        "Bulleted list",
+        EDIT_PDF_FORMAT_BULLETED_LIST_ID,
+        FORMAT_BULLETED_LIST_ICON,
+    ),
+    (
+        ListKind::Numbered,
+        "Numbered List",
+        "Numbered list",
+        EDIT_PDF_FORMAT_NUMBERED_LIST_ID,
+        FORMAT_NUMBERED_LIST_ICON,
+    ),
+];
+
 /// What a bar of a given width has room for. The whole bar changes form at
 /// once, as the viewer toolbar does, and every control stays reachable:
 /// - Full: every control, the colour with its hex value.
 /// - AlignmentMenu: the four alignment buttons merge into one menu button.
 /// - Narrow: the colour shows its swatch alone, the typeface and size are
-///   narrower and the gaps are halved.
+///   narrower, the gaps are halved, and the two list buttons join the
+///   alignment menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum FormatBarFit {
     Full,
@@ -159,6 +184,8 @@ const STYLE_REMS: f32 = 4.;
 const COLOR_REMS: f32 = 6.5;
 const SWATCH_REMS: f32 = 1.75;
 const ALIGNMENT_REMS: f32 = 8.;
+/// The two list buttons, as the two style buttons.
+const LIST_REMS: f32 = 4.;
 /// The compact menu button: its icon, its caret and its padding.
 const ALIGNMENT_MENU_REMS: f32 = 3.375;
 
@@ -167,17 +194,24 @@ impl FormatBarFit {
     pub const ALL: [Self; 3] = [Self::Full, Self::AlignmentMenu, Self::Narrow];
 
     /// The width the form needs, in rems: its controls, the dividers and
-    /// gaps between its five groups, and its edge insets.
+    /// gaps between its groups, and its edge insets.
     pub const fn rems(self) -> f32 {
-        // Five groups: four gaps with a divider in each, and two insets.
-        let (gap, typeface, size, color, alignment) = match self {
-            Self::Full => (0.5, TYPEFACE_REMS, SIZE_REMS, COLOR_REMS, ALIGNMENT_REMS),
+        let (gap, typeface, size, color, alignment, lists) = match self {
+            Self::Full => (
+                0.5,
+                TYPEFACE_REMS,
+                SIZE_REMS,
+                COLOR_REMS,
+                ALIGNMENT_REMS,
+                LIST_REMS,
+            ),
             Self::AlignmentMenu => (
                 0.5,
                 TYPEFACE_REMS,
                 SIZE_REMS,
                 COLOR_REMS,
                 ALIGNMENT_MENU_REMS,
+                LIST_REMS,
             ),
             Self::Narrow => (
                 0.25,
@@ -185,10 +219,26 @@ impl FormatBarFit {
                 NARROW_SIZE_REMS,
                 SWATCH_REMS,
                 ALIGNMENT_MENU_REMS,
+                0.,
             ),
         };
-        // A divider is 1px; a sixteenth of a rem at the default size.
-        typeface + size + STYLE_REMS + color + alignment + 8. * gap + 4. * 0.0625 + 2. * gap
+        // Six groups (five when the lists join the menu): a gap each side of
+        // the divider between two groups, and two insets. A divider is 1px;
+        // a sixteenth of a rem at the default size.
+        let dividers = if lists > 0. { 5. } else { 4. };
+        typeface
+            + size
+            + STYLE_REMS
+            + color
+            + alignment
+            + lists
+            + 2. * dividers * gap
+            + dividers * 0.0625
+            + 2. * gap
+    }
+
+    fn lists_in_menu(self) -> bool {
+        self == Self::Narrow
     }
 
     fn narrow(self) -> bool {
@@ -350,10 +400,42 @@ impl EditPdfFormatBar {
         accessible_icon_button(button, name)
     }
 
+    /// The list buttons, each pressed while the caret's item is that kind.
+    fn render_lists(
+        &self,
+        current: Option<ListKind>,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        ButtonGroup::new(EDIT_PDF_FORMAT_LIST_GROUP_ID)
+            .outline()
+            .disabled(disabled)
+            .children(LISTS.iter().map(|(kind, name, _, id, icon)| {
+                let kind = *kind;
+                let id = *id;
+                accessible_icon_button(
+                    Button::new(id)
+                        .debug_selector(move || id.into())
+                        .accessibility_id(id)
+                        .icon(Icon::default().path(*icon))
+                        .tooltip(*name)
+                        .disabled(disabled)
+                        .selected(current == Some(kind))
+                        .toggled(current == Some(kind))
+                        .on_click(cx.listener(move |bar, _: &ClickEvent, window, cx| {
+                            bar.apply(EditPdfContentPropertyPatch::List(kind), window, cx);
+                        })),
+                    *name,
+                )
+            }))
+            .into_any_element()
+    }
+
     fn render_alignment(
         &self,
         fit: FormatBarFit,
         current: Option<TextBlockAlignment>,
+        list: Option<ListKind>,
         disabled: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -363,9 +445,12 @@ impl EditPdfFormatBar {
                 .find(|(value, ..)| Some(*value) == current)
                 .copied()
                 .unwrap_or(ALIGNMENTS[0]);
-            let label: SharedString = match current {
-                Some(_) => format!("Alignment: {name}").into(),
-                None => "Alignment".into(),
+            let lists = fit.lists_in_menu();
+            let label: SharedString = match (current, lists) {
+                (Some(_), false) => format!("Alignment: {name}").into(),
+                (None, false) => "Alignment".into(),
+                (Some(_), true) => format!("Alignment and lists: {name}").into(),
+                (None, true) => "Alignment and lists".into(),
             };
             let bar = cx.entity().downgrade();
             let button = accessible_icon_button(
@@ -401,6 +486,25 @@ impl EditPdfFormatBar {
                                 });
                             }),
                     );
+                }
+                if lists {
+                    menu = menu.separator();
+                    for (kind, _, name, _, _) in LISTS {
+                        let bar = bar.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(name)
+                                .checked(list == Some(kind))
+                                .on_click(move |_, window, cx| {
+                                    let _ = bar.update(cx, |bar, cx| {
+                                        bar.apply(
+                                            EditPdfContentPropertyPatch::List(kind),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }),
+                        );
+                    }
                 }
                 menu
             });
@@ -557,12 +661,15 @@ impl Render for EditPdfFormatBar {
                 )
                 .into_any_element()
         };
+        let list = snapshot.as_ref().and_then(|snapshot| snapshot.list);
         let alignment = self.render_alignment(
             fit,
             snapshot.as_ref().map(|snapshot| snapshot.alignment),
+            list,
             disabled,
             cx,
         );
+        let lists = (!fit.lists_in_menu()).then(|| self.render_lists(list, disabled, cx));
 
         let width = self.width.clone();
         let bar = cx.entity().downgrade();
@@ -613,13 +720,16 @@ impl Render for EditPdfFormatBar {
                     })
                     .children(crate::toolbar_group::divided(
                         DIVIDER_GROUP,
-                        vec![
+                        [
                             typeface.into_any_element(),
                             font_size.into_any_element(),
                             style.into_any_element(),
                             text_colour,
                             alignment,
-                        ],
+                        ]
+                        .into_iter()
+                        .chain(lists)
+                        .collect(),
                         cx,
                     )),
             )

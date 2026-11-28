@@ -14,7 +14,7 @@ use gpui::{
     KeyBinding, Pixels, UTF16Selection, Window, actions, point, px, size,
 };
 
-use crate::pdf_text_blocks::{ListMarker, item_marker, list_item_marker};
+use crate::pdf_text_blocks::{ListMarker, NumberStyle, TextList, list_item};
 use crate::pdf_text_edit::{
     ExtraLine, PageTextEdit, ParagraphFormat, TextEditError, TextEditRun, TextRunStyle,
 };
@@ -158,7 +158,29 @@ struct Snapshot {
     caret: usize,
     anchor: usize,
     format: ParagraphFormat,
+    list: Option<TextList>,
 }
+
+/// The kinds of list the format bar makes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ListKind {
+    Bulleted,
+    Numbered,
+}
+
+impl ListKind {
+    fn of(marker: ListMarker) -> Self {
+        if marker.is_number() {
+            Self::Numbered
+        } else {
+            Self::Bulleted
+        }
+    }
+}
+
+/// How far a new list's text starts from its marker, in ems of its text.
+const NEW_BULLET_INDENT_EM: f64 = 1.5;
+const NEW_NUMBER_INDENT_EM: f64 = 1.8;
 
 /// Four corners in page user space.
 pub type PageQuad = [(f64, f64); 4];
@@ -346,10 +368,20 @@ impl PageTextEditState {
         let offset = index.clamp(wrapped.range.start, wrapped.range.end) - wrapped.range.start;
         match wrapped.layout.chars.get(offset) {
             Some(character) => character.x,
-            None => wrapped.layout.chars.last().map_or_else(
-                || wrapped.fit.shift,
-                |character| character.x + character.advance,
-            ),
+            None => {
+                let end = wrapped.layout.chars.last().map_or_else(
+                    || wrapped.fit.shift,
+                    |character| character.x + character.advance,
+                );
+                // An empty list item: the caret waits at the item's text
+                // edge, where its first character will start.
+                match wrapped.fit.tab {
+                    Some((index, target)) if index == wrapped.layout.chars.len() => {
+                        end.max(target + wrapped.fit.shift)
+                    }
+                    _ => end,
+                }
+            }
         }
     }
 
@@ -551,6 +583,7 @@ impl PageTextEditState {
             caret: self.caret,
             anchor: self.anchor,
             format: self.paragraph.format(),
+            list: self.paragraph.list(),
         }
     }
 
@@ -558,6 +591,7 @@ impl PageTextEditState {
         self.chars = snapshot.chars;
         self.styles = snapshot.styles;
         self.paragraph.set_format(snapshot.format);
+        self.paragraph.set_list(snapshot.list);
         self.caret = snapshot.caret.min(self.chars.len());
         self.anchor = snapshot.anchor.min(self.chars.len());
         self.marked = None;
@@ -615,45 +649,33 @@ impl PageTextEditState {
         self.commit_change(before, inserted.first().copied())
     }
 
-    /// Numbers a numbered list's items in order from the first item's
-    /// number, as list numbering is automatic.
+    /// Numbers a list's numbered items in order, as list numbering is
+    /// automatic: each level counts on from its first item's number, and a
+    /// level nested under an item starts again after a shallower item.
     fn renumber(&mut self) {
-        if !matches!(
-            self.paragraph.list().map(|list| list.marker),
-            Some(ListMarker::Number { .. })
-        ) {
+        let Some(list) = self.paragraph.list() else {
             return;
-        }
-        let mut next = None;
+        };
+        let levels = list.levels();
+        let mut counters: Vec<Option<u32>> = vec![None; levels.len()];
         let mut start = 0;
         while start <= self.chars.len() {
-            let digits = self.chars[start..]
-                .iter()
-                .take_while(|character| character.is_ascii_digit())
-                .count();
-            if let Some((ListMarker::Number { .. }, _)) = item_marker(&self.chars[start..]) {
-                let number = self.chars[start..start + digits]
-                    .iter()
-                    .collect::<String>()
-                    .parse::<u32>()
-                    .unwrap_or(1);
-                let wanted = *next.get_or_insert(number);
-                next = Some(wanted + 1);
-                let replacement = wanted.to_string().chars().collect::<Vec<_>>();
-                if replacement[..] != self.chars[start..start + digits] {
-                    let style = self.styles[start];
-                    self.chars
-                        .splice(start..start + digits, replacement.iter().copied());
-                    self.styles.splice(
-                        start..start + digits,
-                        std::iter::repeat_n(style, replacement.len()),
-                    );
-                    let grown = replacement.len() as isize - digits as isize;
-                    for position in [&mut self.caret, &mut self.anchor] {
-                        if *position > start {
-                            *position = (*position as isize + grown).max(start as isize) as usize;
-                        }
+            if let Some((marker, value, length)) = self.item_at(start, &list)
+                && let Some(level) = levels.iter().position(|level| level.marker == marker)
+            {
+                for deeper in &mut counters[level + 1..] {
+                    *deeper = None;
+                }
+                if marker.is_number() {
+                    let wanted = counters[level].map_or(value, |number| number + 1);
+                    counters[level] = Some(wanted);
+                    let written = length - self.gap_after(start, length);
+                    let replacement = marker.text(wanted).chars().collect::<Vec<_>>();
+                    if replacement[..] != self.chars[start..start + written] {
+                        self.splice_keeping_style(start, written, &replacement);
                     }
+                } else {
+                    counters[level] = Some(0);
                 }
             }
             match self.chars[start..]
@@ -662,6 +684,291 @@ impl PageTextEditState {
             {
                 Some(offset) => start += offset + 1,
                 None => break,
+            }
+        }
+    }
+
+    /// The list marker the item starting at `start` begins with, its value
+    /// and its length with the spaces after it.
+    fn item_at(&self, start: usize, list: &TextList) -> Option<(ListMarker, u32, usize)> {
+        let end = (start + 16).min(self.chars.len());
+        list_item(&self.chars[start..end], Some(list))
+    }
+
+    /// The spaces ending the `length` characters of a marker at `start`.
+    fn gap_after(&self, start: usize, length: usize) -> usize {
+        self.chars[start..start + length]
+            .iter()
+            .rev()
+            .take_while(|character| **character == ' ' || **character == '\u{a0}')
+            .count()
+    }
+
+    /// Replaces `length` characters at `start` with `replacement`, in the
+    /// style of the first, moving the caret and anchor after them.
+    fn splice_keeping_style(&mut self, start: usize, length: usize, replacement: &[char]) {
+        let style = self.styles.get(start).copied().unwrap_or(0);
+        self.splice_styled(start, length, replacement, style);
+    }
+
+    fn splice_styled(&mut self, start: usize, length: usize, replacement: &[char], style: usize) {
+        self.chars
+            .splice(start..start + length, replacement.iter().copied());
+        self.styles.splice(
+            start..start + length,
+            std::iter::repeat_n(style, replacement.len()),
+        );
+        let grown = replacement.len() as isize - length as isize;
+        for position in [&mut self.caret, &mut self.anchor] {
+            if *position > start {
+                *position = (*position as isize + grown).max(start as isize) as usize;
+            }
+        }
+    }
+
+    /// Where the item (the text after a hard break) holding `index` starts.
+    fn item_start(&self, index: usize) -> usize {
+        self.chars[..index.min(self.chars.len())]
+            .iter()
+            .rposition(|character| *character == '\n')
+            .map_or(0, |at| at + 1)
+    }
+
+    /// The starts of the items the caret or selection is in, last first.
+    fn touched_items(&self) -> Vec<usize> {
+        let selection = self.selection();
+        let mut starts = vec![self.item_start(selection.start)];
+        for (index, character) in self.chars[selection.start..selection.end]
+            .iter()
+            .enumerate()
+        {
+            if *character == '\n' && selection.start + index + 1 < selection.end {
+                starts.push(selection.start + index + 1);
+            }
+        }
+        starts.reverse();
+        starts
+    }
+
+    /// The kind of list the item at the caret is in: `None` when it has no
+    /// marker.
+    pub fn list_kind(&self) -> Option<ListKind> {
+        let list = self.paragraph.list()?;
+        let (marker, _, _) = self.item_at(self.item_start(self.caret), &list)?;
+        Some(ListKind::of(marker))
+    }
+
+    /// Moves the items the caret or selection is in a level deeper or (with
+    /// `deeper` false) shallower, to the next level the list knows: its
+    /// marker and indent. Changes nothing, and returns false, when no item
+    /// has such a level. One undo step.
+    pub fn change_level(&mut self, deeper: bool) -> bool {
+        let Some(list) = self.paragraph.list() else {
+            return false;
+        };
+        let levels = list.levels();
+        let before = self.snapshot();
+        let mut changed = false;
+        for start in self.touched_items() {
+            let Some((marker, _, length)) = self.item_at(start, &list) else {
+                continue;
+            };
+            let Some(level) = levels.iter().position(|level| level.marker == marker) else {
+                continue;
+            };
+            let target = if deeper {
+                level + 1
+            } else {
+                match level.checked_sub(1) {
+                    Some(target) => target,
+                    None => continue,
+                }
+            };
+            let Some(target) = levels.get(target) else {
+                continue;
+            };
+            let written = length - self.gap_after(start, length);
+            let replacement = target.marker.text(1).chars().collect::<Vec<_>>();
+            self.splice_keeping_style(start, written, &replacement);
+            changed = true;
+        }
+        if !changed {
+            return false;
+        }
+        self.marked = None;
+        self.renumber();
+        self.commit_change(before, None)
+    }
+
+    /// The format bar's Bulleted List or Numbered List button: on an item
+    /// of that kind it removes the marker; on an item of the other kind it
+    /// turns its level's items into this kind; on text with no marker it
+    /// makes each touched line an item, the paragraph a list when it is not
+    /// one (`template`: the page's own marker of this kind, its style and
+    /// its indent, in ems). One undo step.
+    pub fn toggle_list(
+        &mut self,
+        kind: ListKind,
+        template: Option<(ListMarker, TextRunStyle, f64)>,
+    ) -> bool {
+        let before = self.snapshot();
+        let current = self.list_kind();
+        let starts = self.touched_items();
+        match (current, self.paragraph.list()) {
+            (Some(current), Some(list)) if current == kind => {
+                for start in starts {
+                    if let Some((_, _, length)) = self.item_at(start, &list) {
+                        self.splice_keeping_style(start, length, &[]);
+                    }
+                }
+            }
+            (Some(_), Some(list)) => {
+                // The caret's level turns into the other kind, every item
+                // of it.
+                let (marker, _, _) = self
+                    .item_at(self.item_start(self.caret), &list)
+                    .expect("the caret's item has a marker");
+                let level = list.level_of(marker).expect("the item's level");
+                let other =
+                    other_marker(kind, template.as_ref().map(|(marker, ..)| *marker), &list);
+                let levels = list
+                    .levels()
+                    .into_iter()
+                    .map(|known| {
+                        if known.marker == marker {
+                            crate::pdf_text_blocks::ListLevel {
+                                marker: other,
+                                ..known
+                            }
+                        } else {
+                            known
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let mut changed_list = list.with_levels(&levels);
+                if level.offset.abs() < 1e-9 || list.marker == marker {
+                    changed_list.marker = other;
+                }
+                let mut start = 0;
+                let mut items = Vec::new();
+                loop {
+                    if let Some((found, _, length)) = self.item_at(start, &list)
+                        && found == marker
+                    {
+                        items.push((start, length - self.gap_after(start, length)));
+                    }
+                    match self.chars[start..].iter().position(|c| *c == '\n') {
+                        Some(offset) => start += offset + 1,
+                        None => break,
+                    }
+                }
+                let text = other.text(1).chars().collect::<Vec<_>>();
+                for (start, written) in items.into_iter().rev() {
+                    self.splice_keeping_style(start, written, &text);
+                }
+                self.paragraph.set_list(Some(changed_list));
+            }
+            (_, list) => {
+                let (edge_size, marker_style) = {
+                    let (_, size) = self.paragraph.first_line_edge();
+                    (size, template.as_ref().map(|(_, style, _)| style.clone()))
+                };
+                let list = match list {
+                    Some(list) => {
+                        // A level of this kind, or the list's own turned
+                        // into it.
+                        match list
+                            .levels()
+                            .into_iter()
+                            .filter(|level| ListKind::of(level.marker) == kind)
+                            .min_by(|a, b| a.offset.abs().total_cmp(&b.offset.abs()))
+                        {
+                            Some(_) => list,
+                            None => {
+                                let other = other_marker(
+                                    kind,
+                                    template.as_ref().map(|(marker, ..)| *marker),
+                                    &list,
+                                );
+                                let mut list = list;
+                                list.marker = other;
+                                list.with_levels(
+                                    &list
+                                        .levels()
+                                        .into_iter()
+                                        .map(|level| {
+                                            if level.offset.abs() < 1e-9 {
+                                                crate::pdf_text_blocks::ListLevel {
+                                                    marker: other,
+                                                    ..level
+                                                }
+                                            } else {
+                                                level
+                                            }
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )
+                            }
+                        }
+                    }
+                    None => {
+                        let marker = template
+                            .as_ref()
+                            .map_or_else(|| default_marker(kind), |(marker, ..)| *marker);
+                        let indent_em = template.as_ref().map_or(
+                            match kind {
+                                ListKind::Bulleted => NEW_BULLET_INDENT_EM,
+                                ListKind::Numbered => NEW_NUMBER_INDENT_EM,
+                            },
+                            |(_, _, indent)| *indent,
+                        );
+                        TextList::new(marker, indent_em * edge_size)
+                    }
+                };
+                let marker = list
+                    .levels()
+                    .into_iter()
+                    .filter(|level| ListKind::of(level.marker) == kind)
+                    .min_by(|a, b| a.offset.abs().total_cmp(&b.offset.abs()))
+                    .map_or(list.marker, |level| level.marker);
+                self.paragraph.set_list(Some(list));
+                for start in starts {
+                    if self.item_at(start, &list).is_some() {
+                        continue;
+                    }
+                    // The marker in the page's bullet font when it has one,
+                    // at the text's size; the space after it in the text's.
+                    let text_style = self.style_for(&(start..start));
+                    let style = match &marker_style {
+                        Some(style) if !marker.is_number() => {
+                            let mut style = style.clone();
+                            style.font_size = self.style_table[text_style].font_size;
+                            style.face = None;
+                            self.intern(style)
+                        }
+                        _ => text_style,
+                    };
+                    let text = marker.text(1).chars().collect::<Vec<_>>();
+                    self.splice_styled(start, 0, &[' '], text_style);
+                    self.splice_styled(start, 0, &text, style);
+                }
+            }
+        }
+        self.marked = None;
+        self.renumber();
+        if self.snapshot() == before {
+            return false;
+        }
+        self.commit_change(before, None)
+    }
+
+    /// `style`'s index in the style table, adding it when new.
+    fn intern(&mut self, style: TextRunStyle) -> usize {
+        match self.style_table.iter().position(|known| known == &style) {
+            Some(index) => index,
+            None => {
+                self.style_table.push(style);
+                self.style_table.len() - 1
             }
         }
     }
@@ -784,20 +1091,15 @@ impl PageTextEditState {
     }
 
     /// Starts a new line (Enter). In a list it starts the next item, with
-    /// the item's bullet or the next number; in an empty item it ends the
-    /// list there, removing the item's marker.
+    /// the item's bullet or the next number at the item's level; in an empty
+    /// item it ends the list there, removing the item's marker.
     pub fn insert_newline(&mut self) -> bool {
         let range = self.marked.clone().unwrap_or_else(|| self.selection());
-        if self.paragraph.list().is_none() {
+        let Some(list) = self.paragraph.list() else {
             return self.replace(range, "\n");
-        }
-        let item_start = self.chars[..range.start]
-            .iter()
-            .rposition(|character| *character == '\n')
-            .map_or(0, |index| index + 1);
-        let list = self.paragraph().list();
-        let Some((marker, length)) = list_item_marker(&self.chars[item_start..], list.as_ref())
-        else {
+        };
+        let item_start = self.item_start(range.start);
+        let Some((marker, value, length)) = self.item_at(item_start, &list) else {
             return self.replace(range, "\n");
         };
         let item_end = self.chars[item_start..]
@@ -807,29 +1109,19 @@ impl PageTextEditState {
         if range.is_empty() && range.start == item_end && item_start + length == item_end {
             return self.replace(item_start..item_end, "");
         }
+        let written = length - self.gap_after(item_start, length);
         let marker_text = match marker {
             ListMarker::Bullet(_) => self.chars[item_start..item_start + length].to_vec(),
-            ListMarker::Number { .. } => {
-                // The next number; renumbering sets every later one.
-                let digits = self.chars[item_start..]
-                    .iter()
-                    .take_while(|character| character.is_ascii_digit())
-                    .count();
-                let number = self.chars[item_start..item_start + digits]
-                    .iter()
-                    .collect::<String>()
-                    .parse::<u32>()
-                    .unwrap_or(0);
-                (number + 1)
-                    .to_string()
-                    .chars()
-                    .chain(
-                        self.chars[item_start + digits..item_start + length]
-                            .iter()
-                            .copied(),
-                    )
-                    .collect()
-            }
+            // The next number; renumbering sets every later one.
+            ListMarker::Number { .. } => marker
+                .text(value + 1)
+                .chars()
+                .chain(
+                    self.chars[item_start + written..item_start + length]
+                        .iter()
+                        .copied(),
+                )
+                .collect(),
         };
         let before = self.snapshot();
         let break_style = self.style_for(&range);
@@ -860,6 +1152,10 @@ impl PageTextEditState {
         self.commit_change(before, Some('\n'))
     }
 
+    /// Deletes the selection or the character before the caret. At the
+    /// start of a list item's text it removes the item's marker instead: the
+    /// item becomes a plain line at the list's edge, which a second
+    /// Backspace joins to the line before.
     pub fn backspace(&mut self) -> bool {
         let selection = self.selection();
         if !selection.is_empty() {
@@ -867,6 +1163,15 @@ impl PageTextEditState {
         }
         if self.caret == 0 {
             return false;
+        }
+        if let Some(list) = self.paragraph.list() {
+            let start = self.item_start(self.caret);
+            if let Some((_, _, length)) = self.item_at(start, &list)
+                && self.caret > start
+                && self.caret <= start + length
+            {
+                return self.replace(start..start + length, "");
+            }
         }
         self.replace(self.caret - 1..self.caret, "")
     }
@@ -1055,6 +1360,16 @@ impl PageTextEditState {
         self.chars[self.selection()].iter().collect()
     }
 
+    /// The edit has typing to undo.
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    /// The edit has undone typing to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     pub fn undo(&mut self) -> bool {
         let Some(snapshot) = self.undo.pop() else {
             return false;
@@ -1108,6 +1423,41 @@ pub struct PageTextScreenMap {
     pub matrix: [f64; 6],
 }
 
+/// A new list's marker of `kind`: a bullet, or decimal numbers.
+fn default_marker(kind: ListKind) -> ListMarker {
+    match kind {
+        ListKind::Bulleted => ListMarker::Bullet('\u{2022}'),
+        ListKind::Numbered => ListMarker::decimal('.'),
+    }
+}
+
+/// The marker a level of `list` takes when it turns into `kind`: the
+/// page's own (`template`), or a kind no other level of the list has.
+fn other_marker(kind: ListKind, template: Option<ListMarker>, list: &TextList) -> ListMarker {
+    let taken = list.kinds();
+    let choices: Vec<ListMarker> = match kind {
+        ListKind::Bulleted => ['\u{2022}', '\u{25e6}', '\u{25aa}', '\u{2013}']
+            .map(ListMarker::Bullet)
+            .to_vec(),
+        ListKind::Numbered => [
+            NumberStyle::Decimal,
+            NumberStyle::LowerAlpha,
+            NumberStyle::LowerRoman,
+        ]
+        .map(|style| ListMarker::Number {
+            style,
+            open: false,
+            suffix: '.',
+        })
+        .to_vec(),
+    };
+    template
+        .into_iter()
+        .chain(choices)
+        .find(|marker| ListKind::of(*marker) == kind && !taken.contains(marker))
+        .unwrap_or_else(|| default_marker(kind))
+}
+
 impl PageTextScreenMap {
     fn point(&self, x: f64, y: f64) -> (f64, f64) {
         let m = self.matrix;
@@ -1122,7 +1472,8 @@ pub enum PageTextInputEvent {
     Finish,
     /// The line's fonts cannot draw a typed character.
     Rejected(char),
-    /// Tab (`back`: Shift-Tab): the next or previous table cell.
+    /// Tab (`back`: Shift-Tab): a list item's next or previous level, or
+    /// the next or previous table cell.
     Tab { back: bool },
     /// Backspace in an empty paragraph: remove it and continue the
     /// paragraph before.
@@ -1191,6 +1542,22 @@ impl PageTextInput {
     /// Sets the paragraph's alignment and line spacing.
     pub fn set_format(&mut self, format: ParagraphFormat, cx: &mut Context<Self>) {
         self.edit_with(cx, |state| state.set_format(format));
+    }
+
+    /// Moves the list items the caret or selection is in a level deeper or
+    /// shallower; nothing happens when the list has no such level.
+    pub fn change_level(&mut self, deeper: bool, cx: &mut Context<Self>) {
+        self.edit_with(cx, |state| state.change_level(deeper));
+    }
+
+    /// The format bar's list buttons ([`PageTextEditState::toggle_list`]).
+    pub fn toggle_list(
+        &mut self,
+        kind: ListKind,
+        template: Option<(ListMarker, TextRunStyle, f64)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_with(cx, |state| state.toggle_list(kind, template));
     }
 
     fn move_with(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut PageTextEditState)) {
@@ -1986,6 +2353,178 @@ mod tests {
         assert!((drawn_from(&state, 2) - 10.).abs() < 1e-9);
     }
 
+    /// The editor for the untagged paragraph the page's first line is in.
+    fn untagged_editor(lines: Vec<PageTextLine>, caret: usize) -> PageTextEditState {
+        let layer = layer(lines);
+        let block = crate::pdf_text_blocks::paragraph_blocks(&layer)
+            .into_iter()
+            .find(|block| block.lines[0] == layer.lines[0].anchor)
+            .unwrap();
+        let paragraph = Paragraph::new(layer, &block).unwrap();
+        PageTextEditState::new(paragraph, &[], &[], &[], caret).unwrap()
+    }
+
+    fn nested() -> Vec<PageTextLine> {
+        vec![
+            line_at("1. One", 72., 700.),
+            line_at("a. Sub one", 92., 686.),
+            line_at("b. Sub two", 92., 672.),
+            line_at("2. Two", 72., 658.),
+            line_at("3. Three", 72., 644.),
+        ]
+    }
+
+    #[test]
+    fn tab_moves_an_item_to_the_level_the_page_shows_and_numbers_follow() {
+        let mut state = untagged_editor(nested(), 0);
+        assert_eq!(
+            state.text(),
+            "1. One\na. Sub one\nb. Sub two\n2. Two\n3. Three"
+        );
+        assert_eq!(state.list_kind(), Some(ListKind::Numbered));
+        // Shift+Tab on the first level: no level to go to.
+        assert!(!state.change_level(false));
+        // Tab on "2. Two": it joins the letters under item 1.
+        let two = state.text().find("2. Two").unwrap();
+        state.move_to(two + 4, false);
+        assert!(state.change_level(true));
+        assert_eq!(
+            state.text(),
+            "1. One\na. Sub one\nb. Sub two\nc. Two\n2. Three"
+        );
+        // It is drawn at the letters' edge, 20 points in.
+        let line = state
+            .wrapped()
+            .iter()
+            .position(|line| state.text()[line.range.clone()].starts_with("c. Two"))
+            .unwrap();
+        assert!((drawn_from(&state, line) - 20.).abs() < 1e-6);
+        // No deeper level: Tab again does nothing.
+        assert!(!state.change_level(true));
+        // Shift+Tab returns it, and one undo step takes back each change.
+        assert!(state.change_level(false));
+        assert_eq!(
+            state.text(),
+            "1. One\na. Sub one\nb. Sub two\n2. Two\n3. Three"
+        );
+        assert!(state.undo());
+        assert_eq!(
+            state.text(),
+            "1. One\na. Sub one\nb. Sub two\nc. Two\n2. Three"
+        );
+        assert!(state.undo());
+        assert_eq!(
+            state.text(),
+            "1. One\na. Sub one\nb. Sub two\n2. Two\n3. Three"
+        );
+
+        // Enter in a nested item starts the next letter; later letters
+        // count on, the numbers below do not change.
+        let mut state = untagged_editor(nested(), 0);
+        let end = state.text().find("\nb.").unwrap();
+        state.move_to(end, false);
+        assert!(state.insert_newline());
+        assert!(state.insert("New"));
+        assert_eq!(
+            state.text(),
+            "1. One\na. Sub one\nb. New\nc. Sub two\n2. Two\n3. Three"
+        );
+
+        // A list of one level has none to go to.
+        let mut flat = block_editor(
+            vec![
+                line_at("- First", 72., 700.),
+                line_at("- Second", 72., 686.),
+            ],
+            9,
+        );
+        assert!(!flat.change_level(true));
+        assert!(!flat.change_level(false));
+    }
+
+    #[test]
+    fn backspace_at_an_items_text_removes_its_marker_then_joins() {
+        let lines = vec![
+            line_at("1. First item", 72., 700.),
+            line_at("2. Second", 72., 686.),
+            line_at("3. Third", 72., 672.),
+        ];
+        let mut state = block_editor(lines, 0);
+        let second = state.text().find("Second").unwrap();
+        state.move_to(second, false);
+        assert!(state.backspace());
+        // The item is plain text at the list's edge; numbers count on.
+        assert_eq!(state.text(), "1. First item\nSecond\n2. Third");
+        assert_eq!(state.list_kind(), None);
+        let line = state
+            .wrapped()
+            .iter()
+            .position(|line| state.text()[line.range.clone()] == *"Second")
+            .unwrap();
+        assert!(drawn_from(&state, line).abs() < 1e-6);
+        // A second Backspace joins it to the item before.
+        assert!(state.backspace());
+        assert_eq!(state.text(), "1. First itemSecond\n2. Third");
+        assert!(state.undo());
+        assert!(state.undo());
+        assert_eq!(state.text(), "1. First item\n2. Second\n3. Third");
+    }
+
+    #[test]
+    fn the_list_buttons_make_remove_and_turn_list_markers() {
+        let mut state = editor(vec![line("Alpha beta gamma", 700., usize::MAX)], 400., 3);
+        assert_eq!(state.list_kind(), None);
+        // The page's own dash, its font and an indent of 1.5 em.
+        let dash = Some((ListMarker::Bullet('-'), style(b"F1"), 1.5));
+        assert!(state.toggle_list(ListKind::Bulleted, dash.clone()));
+        assert_eq!(state.text(), "- Alpha beta gamma");
+        assert_eq!(state.list_kind(), Some(ListKind::Bulleted));
+        // The text starts at the indent: 15 points from the dash.
+        let text = state.wrapped()[0]
+            .layout
+            .chars
+            .iter()
+            .find(|character| character.character == 'A')
+            .unwrap()
+            .x;
+        assert!((text - 15.).abs() < 1e-6, "{text}");
+        // Numbered list turns the bullet into a number.
+        assert!(state.toggle_list(ListKind::Numbered, None));
+        assert_eq!(state.text(), "1. Alpha beta gamma");
+        assert_eq!(state.list_kind(), Some(ListKind::Numbered));
+        // Pressed again, it removes the number.
+        assert!(state.toggle_list(ListKind::Numbered, None));
+        assert_eq!(state.text(), "Alpha beta gamma");
+        assert_eq!(state.list_kind(), None);
+        // Each press is one undo step.
+        assert!(state.undo());
+        assert_eq!(state.text(), "1. Alpha beta gamma");
+        assert!(state.undo());
+        assert_eq!(state.text(), "- Alpha beta gamma");
+        assert!(state.undo());
+        assert_eq!(state.text(), "Alpha beta gamma");
+        assert_eq!(state.paragraph().list(), None);
+
+        // With no list on the page, a bullet in a font that has one.
+        assert!(state.toggle_list(ListKind::Bulleted, None));
+        assert_eq!(state.text(), "\u{2022} Alpha beta gamma");
+
+        // Over a selection of items, each item turns.
+        let mut list = block_editor(
+            vec![
+                line_at("- First", 72., 700.),
+                line_at("- Second", 72., 686.),
+                line_at("- Third", 72., 672.),
+            ],
+            0,
+        );
+        list.select_all();
+        assert!(list.toggle_list(ListKind::Bulleted, None));
+        assert_eq!(list.text(), "First\nSecond\nThird");
+        assert!(list.toggle_list(ListKind::Numbered, None));
+        assert_eq!(list.text(), "1. First\n2. Second\n3. Third");
+    }
+
     #[test]
     fn numbered_items_count_on_when_an_item_is_added_or_removed() {
         let lines = vec![
@@ -1996,7 +2535,7 @@ mod tests {
         let mut state = block_editor(lines, 6);
         assert_eq!(
             state.paragraph().list().map(|list| list.marker),
-            Some(ListMarker::Number { suffix: '.' })
+            Some(ListMarker::decimal('.'))
         );
         assert!(state.insert_newline());
         assert_eq!(state.text(), "1. One\n2. \n3. Two\n4. Three");

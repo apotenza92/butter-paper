@@ -130,17 +130,25 @@ with `cargo test --workspace`, `cargo xtask check`, the real-PDFium
 `--ignored` worker tests and, for visible changes, a native review with
 inspected captures. Steps are in priority order.
 
-0. **Lists like a word editor (0.6.7, owner request 2026-11-28).** Edit
-   PDF already groups a list's markers into items (interactions.md). Add:
-   Enter in an item starts the next item with the next bullet or number;
-   Enter in an empty item ends the list; Backspace at an item's start
-   removes its marker; numbers follow when items are added or removed;
-   Tab and Shift+Tab change the level where the indents allow; Bullet list
-   and Numbered list buttons on the formatting bar. Detect a list only
-   when confident; otherwise treat the text as plain paragraphs, as now.
-   Tune and check the detection on many real PDFs (Word, LibreOffice,
-   Chrome, Quartz, InDesign and LaTeX output; nested, multi-column and
-   multi-page lists; "1." that is not a list).
+0. **List follow-ups.** Lists edit as in a word processor (see
+   [interactions.md](interactions.md#editing-page-text) and the confidence
+   rule in [decisions.md](decisions.md#interface)). Still open, each left
+   as plain paragraphs or unchanged today:
+   - Renumber a list that continues in the next column or on the next
+     page (each part renumbers on its own now).
+   - Lists the detector misses: reversed numbering (4, 3, 2, 1), bullets
+     drawn as shapes rather than text (Google Docs, some browsers), items
+     whose wrapped lines return to the marker's edge, and tagged lists
+     whose structure elements also hold other lines (footnote references
+     and notes in GOV.UK Word exports).
+   - One numbered line made with Numbered list is not found again after
+     a save: a single ordinal needs a wrapped line to show its hanging
+     indent.
+   - Enter in an empty nested item ends the list; Word moves it up a
+     level first.
+   - A list that runs through two columns keeps its lines' places after
+     Enter or a join, so its item spacing can become uneven there. In one
+     column, the lines below an edit take the list's own pitches.
 
 1. **Linux review workflow.** Edit PDF, lists, columns and edge resize
     pass the native review on Windows and on Linux under WSLg. The manual

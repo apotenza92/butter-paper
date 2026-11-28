@@ -383,11 +383,10 @@ fn two_pages_shows_pairs_side_by_side_and_the_cover_alone(cx: &mut TestAppContex
             .all(|(page, bounds)| *page == 0 || !near(bounds.top(), cover.top())),
         "the cover shares its row: {pages:?}"
     );
-    // The cover sits in the right column, as in a book: its left edge
-    // half the gap right of the centre of the two-column row.
+    // The cover is alone in its row, so it is centred.
     assert!(
-        cover.left() > viewport.center().x && f32::from(cover.left() - viewport.center().x) < 24.,
-        "the cover is in the right column: {cover:?} in {viewport:?}"
+        f32::from((cover.center().x - viewport.center().x).abs()) < 2.,
+        "the cover is centred: {cover:?} in {viewport:?}"
     );
     if let (Some((_, two)), Some((_, three))) = (
         pages.iter().find(|(page, _)| *page == 1),

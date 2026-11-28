@@ -92,6 +92,7 @@ pub mod pdf_structure;
 pub mod pdf_tables;
 pub mod pdf_text_blocks;
 pub mod pdf_text_edit;
+pub mod pdf_text_lists;
 pub mod pdf_text_reflow;
 pub mod pdf_text_selection;
 pub mod pdf_worker;

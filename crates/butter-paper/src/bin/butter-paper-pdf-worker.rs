@@ -4154,6 +4154,123 @@ mod tests {
         assert!(read.contains(&items.join(" ")), "{read}");
     }
 
+    /// Every list PDFium's text finds in the committed list fixtures takes
+    /// a new item with Enter: PDFium draws it with its marker, and once
+    /// saved and read again the list is found with one item more.
+    #[test]
+    #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
+    fn list_fixtures_take_a_new_item_in_pdfium_and_stay_lists_when_saved() {
+        use butter_paper::page_text_editor::PageTextEditState;
+        use butter_paper::pdf_text_blocks::{list_item_marker, paragraph_blocks};
+        use butter_paper::pdf_text_reflow::Paragraph;
+        let library = env::var_os("BP_PDFIUM_LIBRARY").expect("BP_PDFIUM_LIBRARY");
+        let (_guard, mut backend) = test_backend(Path::new(&library));
+        let items = |layer: &butter_paper::pdf_text_edit::PageTextLayer,
+                     block: &butter_paper::pdf_text_blocks::PageTextBlock| {
+            block
+                .lines
+                .iter()
+                .filter_map(|anchor| layer.line(anchor))
+                .filter(|line| {
+                    let text = line
+                        .text
+                        .trim()
+                        .chars()
+                        .map(|c| if c.is_whitespace() { ' ' } else { c })
+                        .collect::<Vec<_>>();
+                    list_item_marker(&text, block.list.as_ref()).is_some()
+                })
+                .count()
+        };
+        let normalise = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut checked = 0;
+        for name in [
+            "lo-mixed.pdf",
+            "lo-nested.pdf",
+            "lo-docx-wordstyle.pdf",
+            "firefox-numbering-styles.pdf",
+        ] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/text-edit/lists")
+                .join(name);
+            let bytes = std::fs::read(&path).unwrap();
+            let source = File::open(&path).unwrap();
+            let (mut document, _) = backend.open(source_handle(&source), None).unwrap();
+            let layer = std::sync::Arc::new(backend.page_text(&mut document, 0).unwrap());
+            let lists = paragraph_blocks(&layer)
+                .into_iter()
+                .filter(|block| block.list.is_some())
+                .collect::<Vec<_>>();
+            assert!(!lists.is_empty(), "{name}: no list");
+            for block in lists {
+                let paragraph = Paragraph::new(layer.clone(), &block).unwrap();
+                let mut state = PageTextEditState::new(paragraph, &[], &[], &[], 0).unwrap();
+                let end = state.text().chars().position(|c| c == '\n').unwrap();
+                state.move_to(end, false);
+                assert!(state.insert_newline(), "{name}");
+                assert!(state.insert("Added item"), "{name}");
+                let added = state
+                    .text()
+                    .lines()
+                    .nth(1)
+                    .map(|line| line.trim_end().to_owned())
+                    .unwrap();
+                backend
+                    .set_document_edits(&mut document, &DocumentEdits::from_text(&state.edits()))
+                    .unwrap();
+                let read = normalise(
+                    &document
+                        .document
+                        .pages()
+                        .get(0)
+                        .unwrap()
+                        .text()
+                        .unwrap()
+                        .all(),
+                );
+                // PDFium reads the new item; a symbol font's private-use
+                // bullet reads as whatever its font maps it to.
+                assert!(read.contains("Added item"), "{name}: {read}");
+                backend
+                    .set_document_edits(&mut document, &DocumentEdits::default())
+                    .unwrap();
+
+                // Saved and read again: still a list, one item longer.
+                let mut edited = lopdf::Document::load_mem(&bytes).unwrap();
+                apply_text_edits(&mut edited, &state.edits(), &TextEditLimits::default()).unwrap();
+                let mut saved = Vec::new();
+                edited.save_to(&mut saved).unwrap();
+                let reopened = lopdf::Document::load_mem(&saved).unwrap();
+                let after = extract_page_text(&reopened, 0, &TextEditLimits::default()).unwrap();
+                let first = layer.line(&block.lines[0]).unwrap().text.trim().to_owned();
+                let found = paragraph_blocks(&after)
+                    .into_iter()
+                    .find(|other| other.lines[0] == block.lines[0])
+                    .unwrap_or_else(|| panic!("{name}: {first} is gone"));
+                assert!(found.list.is_some(), "{name}: {first} is no longer a list");
+                // A list with other text a line below it grows over that
+                // text (Edit PDF warns, and never moves it): its last line
+                // may then read as part of that text.
+                let last = layer.line(block.lines.last().unwrap()).unwrap();
+                let pitch = block.pitch.unwrap_or(14.);
+                let below = last.origin().1 - pitch;
+                let crowded = layer.lines.iter().any(|line| {
+                    !block.lines.contains(&line.anchor)
+                        && !line.text.trim().is_empty()
+                        && (line.origin().1 - below).abs() < 0.6 * pitch
+                });
+                let (before, now) = (items(&layer, &block), items(&after, &found));
+                if crowded {
+                    assert!(now >= before, "{name}: {first}, added {added}: {now}");
+                } else {
+                    assert_eq!(now, before + 1, "{name}: {first}, added {added}");
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked >= 10, "{checked} lists");
+    }
+
     #[test]
     #[ignore = "requires the pinned real PDFium library through BP_PDFIUM_LIBRARY"]
     fn text_properties_render_and_read_back_in_pdfium() {

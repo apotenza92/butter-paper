@@ -6818,7 +6818,20 @@ impl DocumentWorkspace {
             return (false, false);
         }
         let (undo_depth, redo_depth) = session.annotations.history_depths(session.id.value());
-        (undo_depth > 0, redo_depth > 0)
+        let (edit_undo, edit_redo) = self.page_text_edit_history(cx);
+        (undo_depth > 0 || edit_undo, redo_depth > 0 || edit_redo)
+    }
+
+    /// The open paragraph edit's own typing history: Undo and Redo while
+    /// typing, before the edit commits to the document's history.
+    fn page_text_edit_history(&self, cx: &App) -> (bool, bool) {
+        if self.page_text_editing.is_none() {
+            return (false, false);
+        }
+        self.page_text_input
+            .as_ref()
+            .and_then(|(input, _)| input.read(cx).state.as_ref())
+            .map_or((false, false), |state| (state.can_undo(), state.can_redo()))
     }
 
     /// The toolbar's Undo and Redo, enabled from the document's history
@@ -20343,9 +20356,22 @@ impl DocumentWorkspace {
     fn undo_document_from_toolbar(
         &mut self,
         _: &crate::viewer_toolbar_strip::UndoDocument,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Typing in the open paragraph undoes first, as Ctrl+Z does there.
+        if self.page_text_edit_history(cx).0
+            && let Some(input) = self
+                .page_text_input
+                .as_ref()
+                .map(|(input, _)| input.clone())
+        {
+            input.update(cx, |input, cx| {
+                input.undo(&crate::page_text_editor::UndoText, window, cx)
+            });
+            cx.notify();
+            return;
+        }
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.undo_annotations(document_id, cx)
         {
@@ -20358,9 +20384,21 @@ impl DocumentWorkspace {
     fn redo_document_from_toolbar(
         &mut self,
         _: &crate::viewer_toolbar_strip::RedoDocument,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.page_text_edit_history(cx).1
+            && let Some(input) = self
+                .page_text_input
+                .as_ref()
+                .map(|(input, _)| input.clone())
+        {
+            input.update(cx, |input, cx| {
+                input.redo(&crate::page_text_editor::RedoText, window, cx)
+            });
+            cx.notify();
+            return;
+        }
         if let Some(document_id) = self.active_document_id
             && let Err(error) = self.redo_annotations(document_id, cx)
         {

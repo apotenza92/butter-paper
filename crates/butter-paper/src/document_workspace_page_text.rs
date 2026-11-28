@@ -1561,7 +1561,23 @@ impl DocumentWorkspace {
                     cx.notify();
                 }
                 PageTextInputEvent::Tab { back } => {
-                    workspace.move_to_next_table_cell(*back, window, cx);
+                    // In a list item Tab and Shift+Tab change its level,
+                    // when the list knows another; elsewhere they go to the
+                    // next or previous table cell.
+                    let in_item = workspace
+                        .page_text_input
+                        .as_ref()
+                        .and_then(|(input, _)| input.read(cx).state.as_ref())
+                        .is_some_and(|state| state.list_kind().is_some());
+                    if in_item {
+                        if let Some(input) =
+                            workspace.page_text_input.as_ref().map(|(input, _)| input.clone())
+                        {
+                            input.update(cx, |input, cx| input.change_level(!*back, cx));
+                        }
+                    } else {
+                        workspace.move_to_next_table_cell(*back, window, cx);
+                    }
                     cx.notify();
                 }
                 PageTextInputEvent::JoinPrevious => {
@@ -2082,6 +2098,7 @@ impl DocumentWorkspace {
                 line_spacing: (paragraph.line_spacing() * 100.).round() / 100.,
                 substitutes: state.substitutes(),
                 selection: !state.selection().is_empty(),
+                list: state.list_kind(),
             },
         )
     }
@@ -2225,6 +2242,15 @@ impl DocumentWorkspace {
                 };
                 format.alignment = Some(alignment);
                 input.set_format(format, cx);
+            }),
+            EditPdfContentPropertyPatch::List(kind) => input.update(cx, |input, cx| {
+                // The page's own marker of this kind, in its font, and its
+                // indent.
+                let template = crate::pdf_text_blocks::page_list_template(
+                    &layer,
+                    kind == crate::page_text_editor::ListKind::Numbered,
+                );
+                input.toggle_list(kind, template, cx);
             }),
             EditPdfContentPropertyPatch::LineSpacing(spacing) => input.update(cx, |input, cx| {
                 let Some(mut format) = input.state.as_ref().map(|state| state.paragraph().format())

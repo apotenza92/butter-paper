@@ -241,10 +241,16 @@ and always applies to the unedited file.
   they continue at the top of the next column. The settings are kept in the
   first line's edit (`paragraph`) so the paragraph reopens with them; they
   do not change how it is drawn.
-- A list line that changes between an item and an item's wrapped line is
-  drawn as an added line in its place (the base line is emptied), so it
-  does not take the base line's marker spacing. A line's fit `tab` starts an
-  item's text after its marker at the list's indent. A line or added line
+- List markers and their indents are ordinary text: a marker is a
+  character of the line (a bullet, or an ordinal and its punctuation) and
+  its indent is where the line's fit draws the text after it. Nothing
+  records that lines are a list; a saved list is found again from its
+  layout, as any list is. A list line that changes between an item and an
+  item's wrapped line, or between levels, is drawn as an added line in its
+  place (the base line is emptied), so it does not take the base line's
+  marker spacing. A line's fit `tab` starts an item's text after its
+  marker at its level's indent, and the line starts at its level's marker
+  edge. A line or added line
   ending in a hard break (an item's end) records `hard_break`, so the
   paragraph reopens with its items apart.
 - Spacing follows the original: each kept glyph keeps the gap before it,

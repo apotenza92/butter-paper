@@ -13,7 +13,9 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::pdf_text_blocks::{PageTextBlock, TextBlockAlignment, TextList, list_item_marker};
+use crate::pdf_text_blocks::{
+    ListLevel, PageTextBlock, TextBlockAlignment, TextList, list_item, list_item_marker,
+};
 use crate::pdf_text_edit::{
     ExtraLine, LineFit, PageTextEdit, PageTextLayer, PageTextLine, ParagraphFormat, TextEditError,
     TextEditLayout, TextEditRun, TextLineAnchor, TextLineLayout, TextRunStyle, extra_line_base,
@@ -451,6 +453,22 @@ impl Paragraph {
         self.list
     }
 
+    /// Makes the paragraph's lines items of `list` (a list made or changed
+    /// with the format bar), or plain lines with `None`.
+    pub fn set_list(&mut self, list: Option<TextList>) {
+        self.list = list;
+    }
+
+    /// The paragraph's left edge on its first line, along the lines, and
+    /// its first line's font size there, in page units.
+    pub fn first_line_edge(&self) -> (f64, f64) {
+        let line = &self.lines[0];
+        let size = line.chars.first().map_or(12., |character| {
+            line.styles[character.style].font_size.abs()
+        }) * line.matrix[3].hypot(line.matrix[2]);
+        (self.page_edges[0].0, size)
+    }
+
     /// The alignment lines are placed with.
     pub fn alignment(&self) -> TextBlockAlignment {
         self.format.alignment.unwrap_or(self.alignment)
@@ -489,13 +507,23 @@ impl Paragraph {
         (along - (x * self.direction.0 + y * self.direction.1)) / m[0].hypot(m[1])
     }
 
-    /// Where text may run on `line` in a column with `page_edges`: from the
-    /// left edge, or for a list item's wrapped line from the list's indent,
-    /// to the right edge; in `line`'s text space.
-    fn edges_on(&self, line: &PageTextLine, page_edges: (f64, f64), item: bool) -> (f64, f64) {
-        let indent = match self.list {
-            Some(list) if !item => list.indent,
-            _ => 0.,
+    /// Where text may run on `line` in a column with `page_edges`, for the
+    /// line of `text` starting at `position`: from the left edge, or its
+    /// item's level's marker edge, or for an item's wrapped line from the
+    /// level's indent, to the right edge; in `line`'s text space. An item
+    /// without a marker (the list ended there) runs from the left edge.
+    fn edges_on(
+        &self,
+        line: &PageTextLine,
+        page_edges: (f64, f64),
+        text: &[StyledChar],
+        position: usize,
+    ) -> (f64, f64) {
+        let item = starts_item(text, position);
+        let indent = match self.item_level(text, position) {
+            Some((level, _)) if item => level.offset,
+            Some((level, _)) => level.offset + level.indent,
+            None => 0.,
         };
         (
             self.to_text(line, page_edges.0 + indent),
@@ -503,9 +531,34 @@ impl Paragraph {
         )
     }
 
+    /// The level of the list item that the text at `position` is in, and
+    /// its marker's length with the spaces after it; `None` outside a list
+    /// or in an item without a marker.
+    pub fn item_level(&self, text: &[StyledChar], position: usize) -> Option<(ListLevel, usize)> {
+        let list = self.list?;
+        let start = text[..position.min(text.len())]
+            .iter()
+            .rposition(|(character, _)| *character == '\n')
+            .map_or(0, |index| index + 1);
+        let chars = text[start..]
+            .iter()
+            .take(16)
+            .map(|(character, _)| *character)
+            .collect::<Vec<_>>();
+        let (marker, _, length) = list_item(&chars, Some(&list))?;
+        Some((list.level_of(marker)?, length))
+    }
+
     /// Whether base line `slot`'s text starts a list item.
     fn base_item(&self, slot: usize) -> bool {
         self.list.is_some() && (slot == 0 || self.breaks[slot - 1])
+    }
+
+    /// The level offset of base line `slot`'s item, as the base text has
+    /// it.
+    fn base_level(&self, base: &[StyledChar], ranges: &[Range<usize>], slot: usize) -> Option<f64> {
+        let start = ranges.get(slot)?.start;
+        self.item_level(base, start).map(|(level, _)| level.offset)
     }
 
     /// The paragraph's text with each line's current runs (an earlier edit,
@@ -532,7 +585,49 @@ impl Paragraph {
         // it, empty, before a hard break. An emptied line (its text moved
         // below at a chosen spacing) joins nothing, unless every line is
         // empty.
+        // An added line drawn on an emptied base line's baseline (a list
+        // line that changed between an item and a wrapped line) stands in
+        // that line's place in the text. In one column, an added line
+        // between base lines (a list's lines placed afresh at its pitches)
+        // follows the last base line above it. Others follow the base lines.
+        let in_place = extra
+            .iter()
+            .map(|line| {
+                (0..self.lines.len())
+                    .find(|slot| {
+                        (line.below + self.height_in_last(*slot)).abs() < 0.01
+                            && current
+                                .get(*slot)
+                                .is_some_and(|runs| runs.iter().all(|run| run.text.is_empty()))
+                    })
+                    .or_else(|| {
+                        (self.columns.len() == 1)
+                            .then(|| {
+                                (0..self.lines.len())
+                                    .rev()
+                                    .find(|slot| self.height_in_last(*slot) > -line.below + 0.01)
+                            })
+                            .flatten()
+                    })
+            })
+            .collect::<Vec<_>>();
         let mut pieces = Vec::new();
+        let extra_piece = |line: &ExtraLine| {
+            let chars = styled_runs(&line.runs);
+            let ends_with_space = chars
+                .last()
+                .is_some_and(|(character, _)| character.is_whitespace());
+            let style = chars
+                .last()
+                .map(|(_, style)| style.clone())
+                .or_else(|| self.lines.last()?.styles.first().cloned());
+            let join = match style {
+                Some(style) if line.hard_break => Join::Break(style),
+                Some(style) if !ends_with_space && !chars.is_empty() => Join::Space(style),
+                _ => Join::None,
+            };
+            (chars, join, line.hard_break)
+        };
         for (index, line) in self.lines.iter().enumerate() {
             let runs = current
                 .get(index)
@@ -557,22 +652,20 @@ impl Paragraph {
                 _ => Join::None,
             };
             pieces.push((chars, join, edited_break == Some(true)));
+            for (line, _) in extra
+                .iter()
+                .zip(&in_place)
+                .filter(|(_, slot)| **slot == Some(index))
+            {
+                pieces.push(extra_piece(line));
+            }
         }
-        for line in extra {
-            let chars = styled_runs(&line.runs);
-            let ends_with_space = chars
-                .last()
-                .is_some_and(|(character, _)| character.is_whitespace());
-            let style = chars
-                .last()
-                .map(|(_, style)| style.clone())
-                .or_else(|| self.lines.last()?.styles.first().cloned());
-            let join = match style {
-                Some(style) if line.hard_break => Join::Break(style),
-                Some(style) if !ends_with_space && !chars.is_empty() => Join::Space(style),
-                _ => Join::None,
-            };
-            pieces.push((chars, join, line.hard_break));
+        for (line, _) in extra
+            .iter()
+            .zip(&in_place)
+            .filter(|(_, slot)| slot.is_none())
+        {
+            pieces.push(extra_piece(line));
         }
         if pieces.iter().any(|(chars, _, _)| !chars.is_empty()) {
             pieces.retain(|(chars, _, kept)| !chars.is_empty() || *kept);
@@ -673,20 +766,23 @@ impl Paragraph {
         };
         if let Some(list) = self.list
             && item
-            && let Some((_, marker)) = list_item_marker(
+            && let Some((marker_kind, marker)) = list_item_marker(
                 &chars
                     .iter()
                     .map(|(character, _)| *character)
                     .collect::<Vec<_>>(),
                 Some(&list),
             )
-            && marker < chars.len()
+            && marker <= chars.len()
+            && let Some(level) = list.level_of(marker_kind)
         {
-            let indent = list.indent / line.matrix[0].hypot(line.matrix[1]);
-            // The marker starts at the left edge, or where the line's text
-            // starts when it keeps its origin.
-            let marker_at = if keeps_origin { start } else { left };
-            fit.tab = Some((marker, marker_at + indent - fit.shift));
+            let indent = level.indent / line.matrix[0].hypot(line.matrix[1]);
+            // The marker starts at the level's edge, or where the line's
+            // text starts when it keeps its origin (a right-aligned number);
+            // the text after it always starts at the level's text edge, so
+            // every item's text lines up. An empty item's tab moves no
+            // glyph, but holds the caret at that edge.
+            fit.tab = Some((marker, left + indent - fit.shift));
         }
         fit
     }
@@ -716,6 +812,37 @@ impl Paragraph {
                 below,
             )
         }
+    }
+
+    /// Whether base line `slot` starts an item: it is the first line, or a
+    /// hard break comes before it.
+    fn base_starts_item(&self, slot: usize) -> bool {
+        slot == 0 || self.breaks[slot - 1]
+    }
+
+    /// The list's pitches in the base text, in the last line's text space:
+    /// from an item's last line to the next item's first, and between an
+    /// item's wrapped lines. Each is the median of the base lines' gaps, or
+    /// the paragraph's pitch when the base has no such gap.
+    fn list_pitches(&self) -> (f64, f64) {
+        let mut items = Vec::new();
+        let mut wraps = Vec::new();
+        for slot in 1..self.lines.len() {
+            let gap = self.height_in_last(slot - 1) - self.height_in_last(slot);
+            if gap <= 0. {
+                continue;
+            }
+            if self.base_starts_item(slot) {
+                items.push(gap);
+            } else {
+                wraps.push(gap);
+            }
+        }
+        let median = |mut gaps: Vec<f64>| {
+            gaps.sort_by(f64::total_cmp);
+            gaps.get(gaps.len() / 2).copied().unwrap_or(self.pitch)
+        };
+        (median(items), median(wraps))
     }
 
     /// Line `index`'s baseline across the last line's text space.
@@ -790,6 +917,34 @@ impl Paragraph {
             let mapped = start as isize + delta;
             (mapped >= (text.len() - suffix) as isize && start >= prefix).then_some(mapped as usize)
         };
+        // The base line whose text starts at `position` in the unchanged
+        // tail.
+        let base_origin = |position: usize| -> Option<usize> {
+            (position < text.len() && position >= text.len() - suffix)
+                .then(|| {
+                    ranges.iter().position(|range| {
+                        range.start >= prefix && range.start as isize + delta == position as isize
+                    })
+                })
+                .flatten()
+        };
+        // In a list, once a line leaves its base line's place (Enter adds
+        // an item, Backspace joins two, a line changes between an item and
+        // a wrapped line), it and every line after it are placed afresh at
+        // the list's own pitches, as a word processor spaces its items. A
+        // list through columns keeps its lines' places.
+        let pitched = self.list.is_some() && self.columns.len() == 1;
+        let (item_pitch, wrap_pitch) = self.list_pitches();
+        let mut diverged = false;
+        // The baseline of the line placed before, in the last line's text
+        // space.
+        let mut previous = first_changed
+            .checked_sub(1)
+            .map(|slot| self.height_in_last(slot));
+        let pitched_at = |previous: Option<f64>, item: bool| match previous {
+            Some(previous) => previous - if item { item_pitch } else { wrap_pitch },
+            None => self.height_in_last(0),
+        };
         let mut position = ranges[first_changed].start;
         let mut slot = first_changed;
         while position < text.len() || slot < count {
@@ -801,6 +956,7 @@ impl Paragraph {
             // The rest of the paragraph is unchanged from here: keep its lines.
             if slot > first_changed
                 && !restyled
+                && !diverged
                 && let Some(start) = base_start_in_text(slot)
                 && start == position
             {
@@ -816,10 +972,34 @@ impl Paragraph {
             // A list line that changes between an item and an item's wrapped
             // line is drawn afresh in its place: matching the base line's
             // glyphs would carry its marker's spacing into the text.
-            if !added
+            let level = self
+                .item_level(text, position)
+                .map(|(level, _)| level.offset);
+            if pitched {
+                let starts = starts_item(text, position);
+                let role_changed = !added
+                    && (self.base_starts_item(slot) != starts
+                        || position < text.len() && self.base_level(base, ranges, slot) != level);
+                let at = pitched_at(previous, starts);
+                diverged |= added
+                    || base_origin(position).is_some_and(|origin| origin != slot)
+                    || role_changed && (at - self.height_in_last(slot)).abs() > 0.01;
+                if diverged || role_changed && position < text.len() {
+                    // Drawn afresh: matching the base line's glyphs would
+                    // carry its marker's spacing into the text.
+                    below = if diverged {
+                        -at
+                    } else {
+                        -self.height_in_last(slot)
+                    };
+                    line = extra_line_base(&self.lines[count - 1], below);
+                    added = true;
+                }
+            } else if !added
                 && position < text.len()
                 && self.list.is_some()
-                && self.base_item(slot) != starts_item(text, position)
+                && (self.base_item(slot) != starts_item(text, position)
+                    || self.base_level(base, ranges, slot) != level)
             {
                 below = -self.height_in_last(slot);
                 line = extra_line_base(&self.lines[count - 1], below);
@@ -843,15 +1023,24 @@ impl Paragraph {
                     added,
                     below,
                 });
+                previous = Some(if added {
+                    -below
+                } else {
+                    self.height_in_last(slot)
+                });
                 slot += 1;
                 continue;
             }
             let item = starts_item(text, position);
-            let edges = self.edges_on(&line, page_edges, item);
-            let keeps_origin = !added && (self.list.is_none() || self.base_item(slot) == item);
+            let edges = self.edges_on(&line, page_edges, text, position);
+            // In a list, only an item's first line keeps its origin (a
+            // right-aligned number keeps its place); wrapped lines start at
+            // their level's text edge.
+            let keeps_origin = !added && (self.list.is_none() || item && self.base_item(slot));
             let (end, next, hard) = self.break_line(
                 &line,
                 (!keeps_origin).then_some(edges.0),
+                edges.0,
                 edges.1,
                 item,
                 text,
@@ -861,6 +1050,7 @@ impl Paragraph {
             // A line that comes out as it was, ending as it did, keeps its
             // bytes.
             let same_as_base = !restyled
+                && !added
                 && slot < count
                 && text[position..end] == base[ranges[slot].clone()]
                 && hard == (slot + 1 < count && self.breaks[slot]);
@@ -890,12 +1080,23 @@ impl Paragraph {
                 added,
                 below,
             });
+            previous = Some(if added {
+                -below
+            } else {
+                self.height_in_last(slot)
+            });
             position = next;
             slot += 1;
         }
         // A hard break at the end starts an empty line, for the caret.
         if ends_in_break(text, &wrapped) {
-            let (line, _, below) = self.place(slot);
+            let (line, below) = if pitched {
+                let below = -pitched_at(previous, true);
+                (extra_line_base(&self.lines[count - 1], below), below)
+            } else {
+                let (line, _, below) = self.place(slot);
+                (line, below)
+            };
             let layout = self.measure(&line, &[])?;
             wrapped.push(WrappedLine {
                 range: text.len()..text.len(),
@@ -904,7 +1105,7 @@ impl Paragraph {
                 layout,
                 fit: LineFit::default(),
                 unchanged: false,
-                added: slot >= count,
+                added: pitched || slot >= count,
                 below,
             });
         }
@@ -949,11 +1150,12 @@ impl Paragraph {
             let item = starts_item(text, position);
             if slot == 0 {
                 // The first line keeps its baseline.
-                let edges = self.edges_on(first, self.page_edges[0], item);
+                let edges = self.edges_on(first, self.page_edges[0], text, position);
                 let keeps_origin = self.list.is_none() || item;
                 let (end, next, hard) = self.break_line(
                     first,
                     (!keeps_origin).then_some(edges.0),
+                    edges.0,
                     edges.1,
                     item,
                     text,
@@ -991,9 +1193,16 @@ impl Paragraph {
             // when it would fall below this one's foot.
             let placed = |column: usize, top: Option<f64>| {
                 let measuring = extra_line_base(last, 0.);
-                let edges = self.edges_on(&measuring, columns[column].2, item);
-                let (end, next, hard) =
-                    self.break_line(&measuring, Some(edges.0), edges.1, item, text, position)?;
+                let edges = self.edges_on(&measuring, columns[column].2, text, position);
+                let (end, next, hard) = self.break_line(
+                    &measuring,
+                    Some(edges.0),
+                    edges.0,
+                    edges.1,
+                    item,
+                    text,
+                    position,
+                )?;
                 let at = top.unwrap_or_else(|| {
                     baseline - spacing * largest_size(&text[position..end], self.em)
                 });
@@ -1047,6 +1256,7 @@ impl Paragraph {
         &self,
         line: &PageTextLine,
         left: Option<f64>,
+        edge: f64,
         right: f64,
         item: bool,
         text: &[StyledChar],
@@ -1062,21 +1272,15 @@ impl Paragraph {
         } else {
             WIDTH_TOLERANCE.max(RAGGED_TOLERANCE * (right - left.unwrap_or(0.)))
         };
-        let marker = self.list.filter(|_| item).and_then(|list| {
-            let chars = text[start..]
-                .iter()
-                .map(|(character, _)| *character)
-                .collect::<Vec<_>>();
-            list_item_marker(&chars, Some(&list)).map(|(_, length)| (list, length))
-        });
+        let marker = self.item_level(text, start).filter(|_| item);
         // Where the text ends once placed, from its layout.
         let placed_end = |layout: &TextLineLayout| {
             visible(layout).map(|(first, end)| {
                 let at = left.unwrap_or(first);
                 let tab = marker
-                    .and_then(|(list, length)| {
+                    .and_then(|(level, length)| {
                         let after = layout.chars.get(length)?.x - first + at;
-                        let target = at + list.indent / line.matrix[0].hypot(line.matrix[1]);
+                        let target = edge + level.indent / line.matrix[0].hypot(line.matrix[1]);
                         Some((target - after).max(0.))
                     })
                     .unwrap_or(0.);

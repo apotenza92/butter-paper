@@ -899,12 +899,23 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   least two lines starting at that edge end, within an em. Otherwise a line
   is a paragraph of its own (it grows as typed rather than wrapping onto
   the next line, unless ruled round, when it wraps within its box), as are
-  list items and centred or right-aligned lines.
+  centred or right-aligned lines. A list is a paragraph of its own (see
+  Lists below).
 - Within a paragraph, its layout reads it: its alignment (a shared left,
   right or centre edge, or both edges, justified), its line spacing, a
-  list's markers (the same bullet, or `1.` / `1)`, with wrapped lines at
-  the items' text), and where it runs from the foot of one column to the
+  list's markers, and where it runs from the foot of one column to the
   top of the next.
+- Lists. A line begins a list item with a bullet (`•`, `◦`, `▪`, `–`, `-`,
+  `*`, a symbol font's private-use bullet, or a letter drawn as a bullet
+  in a font of its own, as Word's `o`) or an ordinal (`1.`, `1)`, `(1)`,
+  `a.`, `a)`, `i.`, `A.`, `I.`) and a gap. Lines are a list only when the
+  layout is certain ([decisions.md](decisions.md#interface)): items in
+  sequence with shared marker and text edges, or one bullet glyph set off
+  by a tab. Otherwise they are plain paragraphs. An untagged list is one
+  paragraph: its items, their wrapped lines at the items' text, and the
+  lists nested in it when each nested level has a marker of its own (`1.`,
+  then `a.`, then `i.`). A tagged list is one paragraph when the list
+  covers every line of the structure elements it is in.
 - In Edit PDF, every editable paragraph on the visible pages is outlined
   in hover blue (not text outside the page's visible area), so what a click
   edits shows without hovering; the hovered and edited ones turn selection blue. A page's text is read once the view
@@ -927,11 +938,20 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   Select All work in the paragraph. While editing, a return mark (↵) follows
   each line that ends at a hard break, and a fainter wrap mark (⤵) each line
   whose text continues on the next.
-  Enter starts a new line; in a list it
-  starts the next item with the same bullet or the next number, and in an
-  empty item it removes the item's marker, ending the list there. Numbers
-  count on from the first item whenever items are added or removed. Undo and Redo
-  step through the editing session while it is open.
+  Enter starts a new line. In a list item it splits the item: the new
+  item takes the same bullet or the next number at the item's level, with
+  its marker and text at the level's edges. Enter in an empty item removes
+  its marker, ending the list there: the line is plain text at the list's
+  left edge. Backspace at the start of an item's text (or in its marker)
+  removes the marker, so the item becomes plain text without the hanging
+  indent; a second Backspace joins it to the line before. Tab and
+  Shift+Tab move the items the caret or selection is in a level deeper or
+  shallower, to the levels the paragraph or the page shows (their marker
+  and indent); with no such level they do nothing. Outside a list item
+  they go to the next or previous table cell. Numbers follow every change:
+  each level counts on from its first item, and a nested level starts
+  again after each item above it. Each action is one undo step; Undo and
+  Redo step through the editing session while it is open.
 - The page shows the edited text as it will be saved: PDFium re-renders the
   page after each change while the previous tiles stay on screen. Text
   rewraps at the paragraph's width (left-aligned text out to the text
@@ -945,8 +965,14 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   wraps. Text kept more than an em from text beside it still reads as its
   own line once saved. A list item's
   wrapped lines start at the items' text, and its text after the marker
-  starts there too. A paragraph over two columns wraps through the first
-  column's lines into the next column's.
+  starts there too. When an edit adds or removes a list's lines, or
+  changes a line between an item and a wrapped line, that line and every
+  line below it are placed at the list's own pitches, as in a word
+  processor: the median gap from an item's last line to the next item, and
+  the median gap between an item's wrapped lines, both from the original
+  list. A list over two columns keeps its lines' places. An empty item's
+  caret waits at the items' text edge. A paragraph over two columns wraps
+  through the first column's lines into the next column's.
 - Other text never moves. A paragraph that grows adds lines below its last
   at its line spacing; when any of its lines, moved by a chosen line
   spacing or larger text too, covers other text it did not already cover,
@@ -982,8 +1008,9 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
 - While Edit PDF is on, a format bar shows across the page column directly
   below the viewer toolbar, as a word processor's formatting bar: Typeface
   (searchable), Font size with − and +, Bold and Italic (their tooltips give
-  the shortcuts), Text colour, and Align Left, Align Centre, Align Right and
-  Justify. Each control makes the same change as its Properties control:
+  the shortcuts), Text colour, Align Left, Align Centre, Align Right and
+  Justify, and Bulleted List and Numbered List. Each control makes the
+  same change as its Properties control:
   to the selection or, with none, the whole paragraph, one undo step each,
   and the two always agree. A click on the bar keeps the edit and its
   selection and returns typing to the text. While no text is edited
@@ -992,10 +1019,20 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   Escape in it returns to the text (dropping a typed, uncommitted size).
   A narrower bar merges the four alignments into one Alignment menu, then
   shows the colour as its swatch alone, with a narrower Typeface and Font
-  size; it never wraps or overflows. In Split View it acts on the edit in
-  the active pane. The bar showing or going leaves the page content where
-  it is on screen, in both panes (Fit Page frames the page again, as after
-  a resize).
+  size, and moves the two list buttons into that menu; it never wraps or
+  overflows. In Split View it acts on the edit in the active pane. The bar
+  showing or going leaves the page content where it is on screen, in both
+  panes (Fit Page frames the page again, as after a resize).
+- The list buttons act on the lines the caret or selection is in. In an
+  item of the button's kind they remove its marker. In an item of the
+  other kind they turn every item of that level into this kind (bullets
+  into `1.`, numbers into `•`). On a line with no marker they make it an
+  item: a plain paragraph becomes a list, its text after the marker at a
+  hanging indent. The marker is the page's own list marker of that kind,
+  in its font, at its indent, when the page has one; else `•` or `1.` in a
+  font that has the glyph, at 1.5 em (1.8 em for numbers). A button shows
+  pressed while the caret's item is of its kind. The list buttons have no
+  Properties control.
 - Escape finishes editing and leaves the paragraph selected; a click
   elsewhere, turning Edit PDF off, changing tool or document, saving and
   closing all finish editing too. One finished paragraph edit is one undo
@@ -1554,11 +1591,9 @@ with it.
 - Two Pages view (the third page-view button, View ▸ Two Pages View) shows
   the pages side by side in pairs, pages 1–2, 3–4 and so on, and scrolls
   through the rows as Continuous does. Its ▾ menu (and View ▸ Cover Page
-  Alone) has "Cover page alone": page 1 alone, then 2–3, 4–5. Every row has
-  two column slots and is centred as a two-column row, as a book is laid
-  out: the cover sits in the right column and an odd last page in the left,
-  beside an empty slot as wide as itself, so pages never leave their
-  column. The pages of a row meet at their tops; each page keeps its own
+  Alone) has "Cover page alone": page 1 alone, then 2–3, 4–5. Every row is
+  centred. A page alone in its row (the cover, an odd last page, a
+  document of one page) is centred on its own. The pages of a row meet at their tops; each page keeps its own
   size and rotation, so a turned page turns alone. Fit Width fits the full
   two-column row's width and Fit Page the whole row, and a fit frames the
   row; Fit Page leaves 2 px round the row, so the paper edges, a dark

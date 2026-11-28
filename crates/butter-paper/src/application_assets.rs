@@ -29,7 +29,10 @@ pub const FORMAT_ALIGN_LEFT_ICON: &str = "icons/format/text-align-start.svg";
 pub const FORMAT_ALIGN_CENTRE_ICON: &str = "icons/format/text-align-center.svg";
 pub const FORMAT_ALIGN_RIGHT_ICON: &str = "icons/format/text-align-end.svg";
 pub const FORMAT_ALIGN_JUSTIFY_ICON: &str = "icons/format/text-align-justify.svg";
-const FORMAT_ICONS: [(&str, &[u8]); 6] = [
+/// The format bar's Bulleted list and Numbered list buttons.
+pub const FORMAT_BULLETED_LIST_ICON: &str = "icons/format/list.svg";
+pub const FORMAT_NUMBERED_LIST_ICON: &str = "icons/format/list-ordered.svg";
+const FORMAT_ICONS: [(&str, &[u8]); 8] = [
     (
         FORMAT_BOLD_ICON,
         include_bytes!("../assets/icons/format/bold.svg"),
@@ -53,6 +56,14 @@ const FORMAT_ICONS: [(&str, &[u8]); 6] = [
     (
         FORMAT_ALIGN_JUSTIFY_ICON,
         include_bytes!("../assets/icons/format/text-align-justify.svg"),
+    ),
+    (
+        FORMAT_BULLETED_LIST_ICON,
+        include_bytes!("../assets/icons/format/list.svg"),
+    ),
+    (
+        FORMAT_NUMBERED_LIST_ICON,
+        include_bytes!("../assets/icons/format/list-ordered.svg"),
     ),
 ];
 

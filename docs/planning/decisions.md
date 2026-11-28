@@ -131,10 +131,12 @@ changes it; history is in git.
   navigator, thumbnails, search, every markup tool on either page and dark
   pages. Print and export do not change. The mode and the cover setting
   are kept per document in the session, as other view state; Single Page's
-  per-page memory does not apply to it. Rows keep two column slots and
-  are centred as two-column rows, as a book: the cover (with Cover page
-  alone) sits in the right column and an odd last page in the left, and
-  Fit Width and Fit Page fit the full two-column row. Next and Previous
+  per-page memory does not apply to it. Each row is centred. A page
+  alone in its row (the cover with Cover page alone, an odd last page, a
+  document of one page) is centred on its own; Alex chose this over a
+  book's column layout. Fit Width and Fit Page fit the full two-column row,
+  so the zoom stays the same from row to row; a document of one page fits
+  that page. Next and Previous
   page (buttons, menu and keys) turn a spread, to the first page of the
   next or previous row, which becomes current; First and Last go to the
   first and last rows; the page field still goes to any page and shows its
@@ -552,6 +554,22 @@ changes it; history is in git.
     2026-11-28 by the owner). It shows every control in every state,
     disabled while no text is edited, and merges lower-priority groups into
     a menu when narrow.
+  - Lists edit as in a word processor (decided 2026-11-28 by the owner):
+    Enter, Backspace, Tab and the bar's Bulleted List and Numbered List
+    buttons work on items, and numbers follow. Lines are a list only when
+    the layout is certain (`list_confidence` in `pdf_text_lists.rs`): two
+    or more items in sequence (one bullet, or ordinals that count on by
+    one) whose markers and texts start at shared edges, each within 3.5 em
+    of the last; or one bullet glyph (not a dash) set off by a tab-like
+    gap, or one ordinal with a tab-like gap and a wrapped line at its text.
+    Never a marker drawn smaller than its text (a footnote), a line with a
+    dot leader or a page number along its baseline (a table of contents),
+    a line crossed by a table's rule, or an item whose wrapped lines start
+    under its marker. Anything less certain stays plain paragraphs, as
+    before: a wrong list is worse than a missed one. Numbers renumber only
+    within the edited paragraph (one list on one page and in one column);
+    a list that continues in another column or on another page keeps its
+    numbers.
   - Signed PDFs: warn that saving invalidates the signatures, then allow
     editing (Revu refuses).
   - PDFs whose permissions forbid changing content (owner restrictions,

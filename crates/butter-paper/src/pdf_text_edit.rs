@@ -6403,12 +6403,11 @@ impl std::hash::Hasher for ClipHasher {
     }
 }
 
-/// Whether `text` is only a list marker.
+/// Whether `text` is only a list marker: a bullet or an ordinal (`1.`,
+/// `(a)`, `iv.`).
 fn is_list_marker(text: &str) -> bool {
-    let marker = text.trim();
-    let chars = format!("{marker} ").chars().collect::<Vec<_>>();
-    !marker.is_empty()
-        && crate::pdf_text_blocks::item_marker(&chars).is_some_and(|(_, end)| end == chars.len())
+    let marker = text.trim().chars().collect::<Vec<_>>();
+    crate::pdf_text_lists::read_marker(&marker).is_some_and(|reading| reading.len == marker.len())
 }
 
 fn group_lines(
