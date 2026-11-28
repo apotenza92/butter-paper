@@ -14,7 +14,7 @@ use gpui::{
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
 };
 use gpui_component::{
-    ActiveTheme as _, IndexPath, Selectable as _,
+    ActiveTheme as _, Selectable as _,
     button::{Button, ButtonGroup},
     checkbox::Checkbox,
     color_picker::ColorPickerState,
@@ -122,6 +122,20 @@ pub struct EditPdfContentPropertyInspector {
     _subscriptions: Vec<Subscription>,
 }
 
+/// A style checkbox's tooltip: its name and the editing shortcut, such as
+/// "Bold (Ctrl+B)" or "Bold (⌘B)".
+fn style_tooltip(name: &str, key: char) -> String {
+    let modifier = if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    };
+    format!(
+        "{name} ({})",
+        crate::shortcut_label::shortcut_label(&format!("{modifier}+{key}"))
+    )
+}
+
 fn rgb_color(fill: [f64; 3]) -> gpui::Hsla {
     gpui::Rgba {
         r: fill[0] as f32,
@@ -143,7 +157,8 @@ impl EditPdfContentPropertyInspector {
         let font = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(families.clone()),
-                Some(IndexPath::default()),
+                // Neutral until text is edited: `sync` sets each value.
+                None,
                 window,
                 cx,
             )
@@ -151,19 +166,16 @@ impl EditPdfContentPropertyInspector {
         });
         let size = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value("12")
                 .min(MIN_FONT_SIZE)
                 .max(MAX_FONT_SIZE)
         });
         let line_spacing = cx.new(|cx| {
             InputState::new(window, cx)
-                .default_value("1.2")
                 .min(MIN_LINE_SPACING)
                 .max(MAX_LINE_SPACING)
                 .step(0.1)
         });
-        let color =
-            cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb_color([0.; 3])));
+        let color = cx.new(|cx| ColorPickerState::new(window, cx));
         let mut subscriptions = vec![
             cx.subscribe_in(
                 &font,
@@ -260,10 +272,15 @@ impl EditPdfContentPropertyInspector {
     }
 
     fn sync_font(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let label: SharedString = self
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.family.clone())
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            // No edited text: the select shows its placeholder.
+            self.font
+                .update(cx, |select, cx| select.set_selected_index(None, window, cx));
+            return;
+        };
+        let label: SharedString = snapshot
+            .family
+            .clone()
             .unwrap_or_else(|| DOCUMENT_FONT_LABEL.to_owned())
             .into();
         if !self.families.contains(&label) {
@@ -282,10 +299,22 @@ impl EditPdfContentPropertyInspector {
         self.snapshot.as_ref()
     }
 
-    pub fn clear(&mut self, cx: &mut Context<Self>) {
-        if self.snapshot.take().is_some() {
-            cx.notify();
+    /// No text is edited: the controls show neutral values (no typeface,
+    /// no size and no colour), not the last edited text's.
+    pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.snapshot.take().is_none() {
+            return;
         }
+        self.syncing = true;
+        self.sync_font(window, cx);
+        self.size
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.line_spacing
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.color
+            .update(cx, |picker, cx| picker.clear_value(window, cx));
+        self.syncing = false;
+        cx.notify();
     }
 
     pub fn sync(
@@ -339,6 +368,25 @@ impl EditPdfContentPropertyInspector {
 
     pub fn color_picker(&self) -> gpui::Entity<ColorPickerState> {
         self.color.clone()
+    }
+
+    /// Asks for `patch` as a click on the matching control does; the format
+    /// bar's buttons use it. An unchanged value asks for nothing.
+    pub fn request_patch(&mut self, patch: EditPdfContentPropertyPatch, cx: &mut Context<Self>) {
+        self.emit_patch(patch, true, cx);
+    }
+
+    /// Puts the shown values back in the number fields, so a value typed but
+    /// not committed is dropped and leaving the field commits nothing.
+    pub fn restore_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        self.syncing = true;
+        self.size.update(cx, |input, cx| {
+            input.set_value(format_property_number(snapshot.size), window, cx)
+        });
+        self.syncing = false;
     }
 
     fn apply_preview_color(&mut self, cx: &mut Context<Self>) {
@@ -428,6 +476,7 @@ impl EditPdfContentPropertyInspector {
                         Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID)
                             .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID.into())
                             .label("Bold")
+                            .tooltip(style_tooltip("Bold", 'B'))
                             .checked(snapshot.bold)
                             .on_click(move |value, _, cx| {
                                 let _ = bold.update(cx, |this, cx| {
@@ -443,6 +492,7 @@ impl EditPdfContentPropertyInspector {
                         Checkbox::new(EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID)
                             .debug_selector(|| EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID.into())
                             .label("Italic")
+                            .tooltip(style_tooltip("Italic", 'I'))
                             .checked(snapshot.italic)
                             .on_click(move |value, _, cx| {
                                 let _ = italic.update(cx, |this, cx| {

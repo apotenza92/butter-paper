@@ -109,6 +109,7 @@ mod view_motion;
 pub use page_turn::PageTurnPaint;
 #[path = "document_workspace_viewport.rs"]
 mod viewport;
+pub use viewport::document_edit_pdf_overlay_id;
 #[path = "document_workspace_word.rs"]
 mod word;
 pub use forms::{
@@ -637,6 +638,7 @@ pub fn init_document_workspace_actions(cx: &mut App) {
         ),
     ]);
     crate::page_text_editor::init_page_text_editor_actions(cx);
+    crate::edit_pdf_format_bar::init_edit_pdf_format_bar_actions(cx);
     forms::init_form_field_actions(cx);
     pages::init_page_actions(cx);
     search_panel::init_search_panel_actions(cx);
@@ -3355,6 +3357,15 @@ pub struct DocumentWorkspace {
         Entity<crate::edit_pdf_content_property_inspector::EditPdfContentPropertyInspector>,
         Subscription,
     )>,
+    /// The format bar below the viewer toolbar while Edit PDF is on, and its
+    /// controls' subscription.
+    edit_pdf_format_bar: Option<(
+        Entity<crate::edit_pdf_format_bar::EditPdfFormatBar>,
+        Subscription,
+    )>,
+    /// The format bar's height at the window's rem size, by which the pages
+    /// scroll when it shows or goes, so their content stays put on screen.
+    edit_pdf_format_bar_height: f32,
     text_box_commit_error: Option<String>,
     annotation_statuses: HashMap<DocumentId, String>,
     /// The severity of each document's status message in `annotation_statuses`.
@@ -5236,6 +5247,8 @@ impl DocumentWorkspace {
             form_page_transforms: HashMap::new(),
             form_focus: cx.focus_handle(),
             edit_pdf_content_property_inspector: None,
+            edit_pdf_format_bar: None,
+            edit_pdf_format_bar_height: crate::layout_metrics::BAR,
             text_box_commit_error: None,
             annotation_statuses: HashMap::new(),
             annotation_status_severities: HashMap::new(),
@@ -16382,6 +16395,18 @@ impl DocumentWorkspace {
                 format!(
                     "The PDF was saved, but crash recovery still needs repair before editing can continue: {warning}"
                 ), StatusSeverity::Error);
+        }
+        // The saved file holds the Edit PDF changes in its content, so the
+        // page text is read again and selected content (found by where it
+        // was before the save) is somewhere else now: end the selection, as
+        // undo and redo do.
+        if self
+            .content_selection
+            .as_ref()
+            .is_some_and(|selection| selection.document_id == request.document_id)
+        {
+            self.content_selection = None;
+            self.content_drag = None;
         }
         self.page_interactions
             .retain(|(document_id, _), _| *document_id != request.document_id);
@@ -30622,6 +30647,14 @@ impl Render for DocumentWorkspace {
                     ),
             ),
         );
+        // While Edit PDF is on, the format bar sits below the toolbar.
+        self.edit_pdf_format_bar_height = f32::from(crate::layout_metrics::scaled_px(
+            crate::layout_metrics::BAR,
+            window.rem_size(),
+        ));
+        let format_bar = self
+            .content_edit_mode(document_id)
+            .then(|| self.sync_edit_pdf_format_bar(window, cx));
         let viewer_column = v_flex()
             .flex_1()
             .min_w_0()
@@ -30632,7 +30665,8 @@ impl Render for DocumentWorkspace {
                     .when(dim_inactive_window_chrome(window), |toolbar| {
                         toolbar.opacity(0.5)
                     })
-                    .child(self.viewer_toolbar.clone()),
+                    .child(self.viewer_toolbar.clone())
+                    .children(format_bar),
             )
             .map(|column| {
                 self.render_document_alerts(

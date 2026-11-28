@@ -350,7 +350,7 @@ impl Default for NativeDocumentViewState {
             zoom_percent: 100.,
             continuous_wheel: WheelBehavior::Scroll,
             single_page_wheel: WheelBehavior::Zoom,
-            two_pages_wheel: WheelBehavior::Scroll,
+            two_pages_wheel: WheelBehavior::Zoom,
             cover_alone: false,
             viewport_size: None,
             scroll: (0., 0.),
@@ -531,6 +531,39 @@ impl NativeDocumentViewState {
 
     pub const fn cad_view_active(&self) -> bool {
         self.cad_view_active
+    }
+
+    /// The discrete mouse wheel zooms without a modifier in the current view:
+    /// CAD View, or a view whose wheel is set to Zoom.
+    pub const fn wheel_zooms(&self) -> bool {
+        self.cad_view_active || matches!(self.wheel_behavior(self.mode), WheelBehavior::Zoom)
+    }
+
+    /// The status bar's navigation hint. Control (Ctrl) with the wheel does the
+    /// opposite of the view's wheel setting, so the hint names that opposite.
+    pub const fn navigation_hint(&self, wide: bool, macos: bool) -> &'static str {
+        if !wide {
+            return "Space + drag: pan · Pinch: zoom";
+        }
+        match (self.wheel_zooms(), macos) {
+            (false, true) => {
+                "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Control while scrolling to zoom"
+            }
+            (false, false) => {
+                "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Ctrl while scrolling to zoom"
+            }
+            // CAD View zooms with Control too: the scroll hint then names
+            // the trackpad alone.
+            (true, _) if self.cad_view_active => {
+                "Hold Space + drag: pan · Two fingers: scroll · Pinch or wheel to zoom"
+            }
+            (true, true) => {
+                "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Control while using the wheel to scroll"
+            }
+            (true, false) => {
+                "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Ctrl while using the wheel to scroll"
+            }
+        }
     }
 
     pub const fn cad_organisation(&self) -> CadViewOrganisation {
@@ -920,6 +953,44 @@ mod tests {
         assert_eq!(
             view.wheel_behavior(PageViewMode::SinglePage),
             WheelBehavior::Zoom
+        );
+        // Two Pages view zooms with the wheel by default, as Single Page does.
+        assert_eq!(
+            view.wheel_behavior(PageViewMode::TwoPages),
+            WheelBehavior::Zoom
+        );
+    }
+
+    #[test]
+    fn navigation_hint_names_the_opposite_of_the_view_wheel_setting() {
+        let mut view = NativeDocumentViewState::default();
+        view.set_mode(PageViewMode::Continuous);
+        assert!(!view.wheel_zooms());
+        assert!(
+            view.navigation_hint(true, false)
+                .ends_with("Hold Ctrl while scrolling to zoom")
+        );
+        assert!(
+            view.navigation_hint(true, true)
+                .ends_with("Hold Control while scrolling to zoom")
+        );
+        for mode in [PageViewMode::SinglePage, PageViewMode::TwoPages] {
+            view.set_mode(mode);
+            assert!(view.wheel_zooms());
+            assert!(
+                view.navigation_hint(true, false)
+                    .ends_with("Hold Ctrl while using the wheel to scroll")
+            );
+            assert!(
+                view.navigation_hint(true, true)
+                    .ends_with("Hold Control while using the wheel to scroll")
+            );
+            view.set_wheel_behavior(mode, WheelBehavior::Scroll);
+            assert!(view.navigation_hint(true, false).ends_with("to zoom"));
+        }
+        assert_eq!(
+            view.navigation_hint(false, false),
+            "Space + drag: pan · Pinch: zoom"
         );
     }
 

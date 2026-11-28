@@ -16,7 +16,7 @@ use crate::page_text_editor::{
     PAGE_TEXT_EDITOR_CONTEXT, PageTextEditState, PageTextInput, PageTextInputEvent,
     PageTextScreenMap, PasteText, PreviousCell, RedoText, SelectAllText, SelectDown, SelectLeft,
     SelectLineEnd, SelectLineStart, SelectRight, SelectUp, SelectWordLeft, SelectWordRight,
-    UndoText,
+    TextStyleToggle, ToggleBold, ToggleItalic, UndoText,
 };
 use crate::pdf_text_blocks::PageTextBlock;
 use crate::pdf_text_edit::{
@@ -349,13 +349,28 @@ impl DocumentWorkspace {
         let Some(session) = self.session(document_id, cx).cloned() else {
             return;
         };
+        // Both panes of Split View show Edit PDF: the pages in either.
         let pages = {
             let session = session.read(cx);
-            session
+            let mut pages = session
                 .viewer
                 .plan_snapshot()
                 .map(|plan| plan.visible_pages.to_vec())
-                .unwrap_or_default()
+                .unwrap_or_default();
+            if let Some(plan) = session
+                .split
+                .as_ref()
+                .and_then(|split| split.other.viewer.plan_snapshot())
+            {
+                pages.extend(
+                    plan.visible_pages
+                        .iter()
+                        .filter(|page| !pages.contains(page))
+                        .copied()
+                        .collect::<Vec<_>>(),
+                );
+            }
+            pages
         };
         // Text far from the view is read again if it comes back, so a long
         // document keeps only the pages around the view.
@@ -1553,6 +1568,9 @@ impl DocumentWorkspace {
                     workspace.join_previous_paragraph(window, cx);
                     cx.notify();
                 }
+                PageTextInputEvent::ToggleStyle(toggle) => {
+                    workspace.toggle_edit_pdf_content_style(*toggle, cx);
+                }
                 PageTextInputEvent::Rejected(character) => {
                     if let Some(editing) = workspace.page_text_editing {
                         workspace.set_status(
@@ -1937,18 +1955,76 @@ impl DocumentWorkspace {
             &inspector,
             window,
             |workspace, _, event: &EditPdfContentPropertyEvent, window, cx| {
-                workspace.apply_edit_pdf_content_property_patch(event.patch.clone(), cx);
-                // Typing continues in the text, as after a toolbar command.
-                if event.return_focus
-                    && let Some((input, _)) = &workspace.page_text_input
-                {
-                    let focus = input.read(cx).focus_handle(cx);
-                    window.focus(&focus, cx);
-                }
+                workspace.on_edit_pdf_content_property_event(event, window, cx);
             },
         );
         self.edit_pdf_content_property_inspector = Some((inspector.clone(), subscription));
         inspector
+    }
+
+    /// A change from the Edit PDF properties or the format bar: both apply
+    /// it the same way.
+    fn on_edit_pdf_content_property_event(
+        &mut self,
+        event: &crate::edit_pdf_content_property_inspector::EditPdfContentPropertyEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_edit_pdf_content_property_patch(event.patch.clone(), cx);
+        // Typing continues in the text, as after a toolbar command. Deferred:
+        // a font list focuses its own field again after it reports the pick.
+        if event.return_focus
+            && let Some((input, _)) = &self.page_text_input
+        {
+            let focus = input.read(cx).focus_handle(cx);
+            window.defer(cx, move |window, cx| window.focus(&focus, cx));
+        }
+    }
+
+    pub fn edit_pdf_format_bar(
+        &self,
+    ) -> Option<Entity<crate::edit_pdf_format_bar::EditPdfFormatBar>> {
+        self.edit_pdf_format_bar
+            .as_ref()
+            .map(|(bar, _)| bar.clone())
+    }
+
+    /// The format bar shown below the viewer toolbar while the active
+    /// document is in Edit PDF mode, synced to the edited text: its controls
+    /// are disabled while no text is being edited. Its controls send the
+    /// properties' own events.
+    pub(super) fn sync_edit_pdf_format_bar(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::edit_pdf_format_bar::EditPdfFormatBar> {
+        use crate::edit_pdf_content_property_inspector::EditPdfContentPropertyEvent;
+        use crate::edit_pdf_format_bar::EditPdfFormatBar;
+        let bar = match &self.edit_pdf_format_bar {
+            Some((bar, _)) => bar.clone(),
+            None => {
+                let bar = cx.new(|cx| EditPdfFormatBar::new(window, cx));
+                let controls = bar.read(cx).controls();
+                let subscription = cx.subscribe_in(
+                    &controls,
+                    window,
+                    |workspace, _, event: &EditPdfContentPropertyEvent, window, cx| {
+                        workspace.on_edit_pdf_content_property_event(event, window, cx);
+                    },
+                );
+                self.edit_pdf_format_bar = Some((bar.clone(), subscription));
+                bar
+            }
+        };
+        // Selected content (a paragraph's frame, a drawing, an image) is
+        // not being edited: the controls are disabled.
+        let snapshot = self.edit_pdf_content_property_snapshot(cx);
+        let edit_focus = snapshot
+            .as_ref()
+            .and(self.page_text_input.as_ref())
+            .map(|(input, _)| input.read(cx).focus_handle(cx));
+        bar.update(cx, |bar, cx| bar.sync(snapshot, edit_focus, window, cx));
+        bar
     }
 
     /// Whether the Edit PDF Content properties show: when the tool's properties
@@ -1972,7 +2048,7 @@ impl DocumentWorkspace {
                     inspector.update(cx, |inspector, cx| inspector.sync(snapshot, window, cx));
                 }
             }
-            None => inspector.update(cx, |inspector, cx| inspector.clear(cx)),
+            None => inspector.update(cx, |inspector, cx| inspector.clear(window, cx)),
         }
     }
 
@@ -2008,6 +2084,21 @@ impl DocumentWorkspace {
                 selection: !state.selection().is_empty(),
             },
         )
+    }
+
+    /// Ctrl+B or Ctrl+I (Cmd on macOS) while editing text: flips Bold or
+    /// Italic exactly as a click on the Properties checkbox does, from the
+    /// state that checkbox shows.
+    fn toggle_edit_pdf_content_style(&mut self, toggle: TextStyleToggle, cx: &mut Context<Self>) {
+        use crate::edit_pdf_content_property_inspector::EditPdfContentPropertyPatch;
+        let Some(snapshot) = self.edit_pdf_content_property_snapshot(cx) else {
+            return;
+        };
+        let patch = match toggle {
+            TextStyleToggle::Bold => EditPdfContentPropertyPatch::Bold(!snapshot.bold),
+            TextStyleToggle::Italic => EditPdfContentPropertyPatch::Italic(!snapshot.italic),
+        };
+        self.apply_edit_pdf_content_property_patch(patch, cx);
     }
 
     /// Applies a text property to the selection, or the whole paragraph.
@@ -2346,6 +2437,17 @@ impl DocumentWorkspace {
         document_id: DocumentId,
         cx: &mut Context<Self>,
     ) -> Vec<PageTextOverlay> {
+        self.page_text_overlays_on(document_id, None, cx)
+    }
+
+    /// The Edit PDF overlays over `pages`, or over the pages in the active
+    /// pane's view when `None`.
+    pub(super) fn page_text_overlays_on(
+        &mut self,
+        document_id: DocumentId,
+        pages: Option<Vec<usize>>,
+        cx: &mut Context<Self>,
+    ) -> Vec<PageTextOverlay> {
         let mut overlays: Vec<PageTextOverlay> = Vec::new();
         let editing = self
             .page_text_editing
@@ -2470,16 +2572,17 @@ impl DocumentWorkspace {
         // While Edit PDF is on, every paragraph in view that a click
         // edits is framed, the edited one by its own frame.
         if self.content_edit_mode(document_id) {
-            let pages = self
-                .session(document_id, cx)
-                .and_then(|session| {
-                    session
-                        .read(cx)
-                        .viewer
-                        .plan_snapshot()
-                        .map(|plan| plan.visible_pages.clone())
-                })
-                .unwrap_or_default();
+            let pages = pages.unwrap_or_else(|| {
+                self.session(document_id, cx)
+                    .and_then(|session| {
+                        session
+                            .read(cx)
+                            .viewer
+                            .plan_snapshot()
+                            .map(|plan| plan.visible_pages.clone())
+                    })
+                    .unwrap_or_default()
+            });
             for page in pages {
                 let page_index = page as u32;
                 let Some((layer, blocks)) = self.page_text_blocks(document_id, page_index, cx)
@@ -3210,6 +3313,8 @@ pub(super) fn page_text_input_element(
             (FinishEditing, finish),
             (NextCell, next_cell),
             (PreviousCell, previous_cell),
+            (ToggleBold, toggle_bold),
+            (ToggleItalic, toggle_italic),
         ]
     )
     .into_any_element()

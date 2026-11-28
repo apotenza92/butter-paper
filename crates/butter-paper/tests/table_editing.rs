@@ -12,8 +12,8 @@ use butter_paper::document_resource::{
     NativeDocumentResource, OpenedNativeDocument, RasterSurface, ThumbnailSurface,
 };
 use butter_paper::document_workspace::{
-    DeleteTableRow, DocumentId, DocumentWorkspace, InsertTableRowBelow, ViewerFitPreset,
-    document_annotation_layer_id, init_document_workspace_actions,
+    DOCUMENT_VIEWPORT_ID, DeleteTableRow, DocumentId, DocumentWorkspace, InsertTableRowBelow,
+    ViewerFitPreset, document_annotation_layer_id, init_document_workspace_actions,
 };
 use butter_paper::page_view_control::PageViewMode;
 use butter_paper::pdf_tables::{BandSource, page_tables};
@@ -177,6 +177,30 @@ fn pages_workspace(
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.run_until_parked();
     (workspace, document_id, shown, cx)
+}
+
+/// Lays the pages out again at the viewport's painted size. A made-up size
+/// is wrong here: Edit PDF's format bar resized the viewport, so a fit
+/// frames the page again, and it frames it for the size given.
+fn lay_out_pages(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+    document_id: DocumentId,
+) {
+    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .refresh_viewport_async(
+                document_id,
+                f32::from(viewport.size.width),
+                f32::from(viewport.size.height),
+                1.,
+                cx,
+            )
+            .unwrap();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
 }
 
 /// The window position of page point (`x`, `y`) of an upright 612 x 792
@@ -539,13 +563,7 @@ fn a_table_grown_into_the_text_below_is_labelled(cx: &mut TestAppContext) {
     );
     let (workspace, document_id, shown, cx) = table_workspace(cx, layer.clone());
     // Laid out as pages, which the labels are drawn over.
-    workspace.update(cx, |workspace, cx| {
-        workspace
-            .refresh_viewport_async(document_id, 900., 1000., 1., cx)
-            .unwrap();
-    });
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.run_until_parked();
+    lay_out_pages(cx, &workspace, document_id);
     // Whether the label shows, under the text the table covers, at its
     // left edge.
     let delivery_line = layer
@@ -625,13 +643,7 @@ fn text_drawn_inside_a_table_is_not_overlapped_by_its_edits(cx: &mut TestAppCont
     quantity.paragraph = None;
     let washers = line_end(&layer, "Washers");
     let (workspace, document_id, shown, cx) = table_workspace(cx, layer);
-    workspace.update(cx, |workspace, cx| {
-        workspace
-            .refresh_viewport_async(document_id, 900., 1000., 1., cx)
-            .unwrap();
-    });
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.run_until_parked();
+    lay_out_pages(cx, &workspace, document_id);
     click_page_point(cx, document_id, washers);
     type_text(
         cx,
@@ -673,13 +685,7 @@ fn an_untagged_ruled_table_grows_its_row_as_its_cell_text_grows(cx: &mut TestApp
         .unwrap()
         .origin();
     let (workspace, document_id, shown, cx) = table_workspace(cx, layer);
-    workspace.update(cx, |workspace, cx| {
-        workspace
-            .refresh_viewport_async(document_id, 900., 1000., 1., cx)
-            .unwrap();
-    });
-    cx.update(|window, cx| window.draw(cx).clear(cx));
-    cx.run_until_parked();
+    lay_out_pages(cx, &workspace, document_id);
     let label = |cx: &mut gpui::VisualTestContext| {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.debug_bounds("content-warning-Overlaps")

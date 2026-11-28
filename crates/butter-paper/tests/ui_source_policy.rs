@@ -475,6 +475,11 @@ fn every_dialog_has_a_dismissal_contract_test() {
             1,
             &["the_about_dialog_keeps_the_dialog_dismissal_contract"],
         ),
+        (
+            "default_pdf_app_guide.rs",
+            1,
+            &["the_default_pdf_app_guide_keeps_the_dialog_dismissal_contract"],
+        ),
     ];
     let call = Regex::new(r"window\s*\.\s*open_dialog\s*\(").unwrap();
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");

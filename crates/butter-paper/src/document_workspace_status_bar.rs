@@ -230,13 +230,18 @@ impl DocumentWorkspace {
             None => context,
         };
         let wide = window.viewport_size().width >= window.rem_size() * 65.;
-        let navigation = if !wide {
-            "Space + drag: pan · Pinch: zoom"
-        } else if cfg!(target_os = "macos") {
-            "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Control while scrolling to zoom"
-        } else {
-            "Hold Space + drag: pan · Two fingers: scroll · Pinch to zoom · Hold Ctrl while scrolling to zoom"
-        };
+        let navigation = self
+            .active_document_id
+            .and_then(|id| self.session(id, cx))
+            .map(|session| {
+                session
+                    .read(cx)
+                    .view_state
+                    .navigation_hint(wide, cfg!(target_os = "macos"))
+            })
+            .unwrap_or_else(|| {
+                NativeDocumentViewState::default().navigation_hint(wide, cfg!(target_os = "macos"))
+            });
         let details = if self.pan_tool_active || self.pending_text_box_editor.is_some() {
             None
         } else {

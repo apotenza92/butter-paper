@@ -32,6 +32,15 @@ alone do not establish these behaviours.
 
 ## Interface
 
+- Split View draws these only in the active pane: markup selection,
+  hover and handles, the lasso, tool previews and snap guides, a Text Box
+  or form field while it is typed, page text selection, Find highlights
+  and the current-page outline.
+- The stock dialog X closes on a click and Escape, but not on Enter or
+  Space when it has the keyboard.
+- The stock colour control: a black swatch has almost no edge on the
+  dark theme, and a disabled control does not dim its hex text (the
+  Edit PDF formatting bar and Properties).
 - Stock motion and controls (see decisions.md), still open:
   - Confirm reduce motion, the view and panel motion and the 8pt spacing on
     Windows and on a Linux desktop (GNOME and KDE).
@@ -120,6 +129,18 @@ and [pdf-format.md](pdf-format.md#edited-page-text)); the target is in
 with `cargo test --workspace`, `cargo xtask check`, the real-PDFium
 `--ignored` worker tests and, for visible changes, a native review with
 inspected captures. Steps are in priority order.
+
+0. **Lists like a word editor (0.6.7, owner request 2026-11-28).** Edit
+   PDF already groups a list's markers into items (interactions.md). Add:
+   Enter in an item starts the next item with the next bullet or number;
+   Enter in an empty item ends the list; Backspace at an item's start
+   removes its marker; numbers follow when items are added or removed;
+   Tab and Shift+Tab change the level where the indents allow; Bullet list
+   and Numbered list buttons on the formatting bar. Detect a list only
+   when confident; otherwise treat the text as plain paragraphs, as now.
+   Tune and check the detection on many real PDFs (Word, LibreOffice,
+   Chrome, Quartz, InDesign and LaTeX output; nested, multi-column and
+   multi-page lists; "1." that is not a list).
 
 1. **Linux review workflow.** Edit PDF, lists, columns and edge resize
     pass the native review on Windows and on Linux under WSLg. The manual

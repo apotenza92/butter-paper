@@ -150,6 +150,9 @@ impl DocumentWorkspace {
         self.hot_annotation_handle = None;
         self.select_hover_hit = None;
         self.pending_image_hover = None;
+        // Edit PDF's hover shows in both panes: the pointer finds it again.
+        self.page_text_hover = None;
+        self.content_hover = None;
         session.update(cx, |session, cx| {
             session.swap_panes();
             cx.notify();
@@ -568,13 +571,45 @@ impl DocumentWorkspace {
             .collect()
     }
 
+    /// What the other pane draws of Edit PDF, which is the document's mode
+    /// and so shows in both panes: the frames round its pages' paragraphs,
+    /// the hovered and selected content, the paragraph being edited (its
+    /// frame, selection and caret, but not its input, which only the active
+    /// pane holds) and the picture of content being dragged.
+    pub(super) fn other_pane_edit_overlays(
+        &mut self,
+        document_id: DocumentId,
+        cx: &mut Context<Self>,
+    ) -> (
+        Vec<page_text::PageTextOverlay>,
+        Option<super::content::SpritePaint>,
+    ) {
+        let pages = self.other_pane_visible_pages(document_id, cx);
+        let Some(pages) = pages else {
+            return (Vec::new(), None);
+        };
+        let editing_text = self
+            .page_text_editing
+            .is_some_and(|editing| editing.document_id == document_id);
+        let mut overlays = if self.editing_content(document_id, cx) || editing_text {
+            self.page_text_overlays_on(document_id, Some(pages), cx)
+        } else {
+            Vec::new()
+        };
+        for overlay in &mut overlays {
+            overlay.input = None;
+        }
+        (overlays, self.content_sprite_paint(document_id, cx))
+    }
+
     /// The other pane: its viewport, drawn from its own viewer, and its
     /// scroll bars.
     fn render_other_pane(
-        &self,
+        &mut self,
         document_id: DocumentId,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let (page_text_overlays, content_sprite) = self.other_pane_edit_overlays(document_id, cx);
         let session = self.session(document_id, cx)?.read(cx);
         let other = &session.split.as_ref()?.other;
         let viewer_plan = other.viewer.plan_snapshot().cloned();
@@ -634,8 +669,8 @@ impl DocumentWorkspace {
                 object_snap_tracking_result: None,
                 pending_image_preview: None,
                 pending_text_box_presentation: None,
-                page_text_overlays: Vec::new(),
-                content_sprite: None,
+                page_text_overlays,
+                content_sprite,
                 form_overlays: Vec::new(),
                 relationship_snap_guides: Vec::new(),
                 angle_snap_guide: None,
@@ -675,7 +710,7 @@ impl DocumentWorkspace {
     /// The canvas body: `active` alone, or in Split View the two panes and
     /// the divider between them, the active pane ringed.
     pub(super) fn render_split_canvas(
-        &self,
+        &mut self,
         document_id: DocumentId,
         active: AnyElement,
         window: &Window,

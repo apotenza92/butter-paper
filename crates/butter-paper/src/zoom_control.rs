@@ -435,8 +435,9 @@ impl Render for ZoomControl {
             .track_focus(&focus_handle)
             .tab_group()
             .flex_shrink_0()
-            // Keep the exact Electron source order: Out, In, percentage menu,
-            // a divider between each. Narrow, Out and In are in the menu.
+            // Out, the percentage menu, then In, a divider between each, so
+            // the minus and plus frame the value. Narrow, Out and In are in
+            // the menu.
             .children(crate::toolbar_group::divided(
                 ZOOM_GROUP_ID,
                 if steps_in_menu {
@@ -444,8 +445,8 @@ impl Render for ZoomControl {
                 } else {
                     vec![
                         zoom_out.into_any_element(),
-                        zoom_in.into_any_element(),
                         percentage,
+                        zoom_in.into_any_element(),
                     ]
                 },
                 cx,

@@ -17,12 +17,13 @@ use butter_paper::document_workspace::{
     NativeDocumentOpener, NativeDocumentResource, NavigateEnd, NavigateNextPage,
     NavigatePreviousPage, OpenDocumentRequest, OpenedNativeDocument, RasterSurface,
     RotatePageRight, SPLIT_ACTIVE_RING_ID, SPLIT_DIVIDER_ID, SPLIT_OTHER_VIEWPORT_ID,
-    SPLIT_PANE_LEFT_ID, SPLIT_PANE_RIGHT_ID, ThumbnailSurface, ToggleCoverPageAlone,
-    ToggleSplitView, TwoPagesView, ZoomIn, document_viewer_page_id,
+    SPLIT_PANE_LEFT_ID, SPLIT_PANE_RIGHT_ID, ThumbnailSurface, ToggleCoverPageAlone, ToggleEditPdf,
+    ToggleSplitView, TwoPagesView, ZoomIn, document_edit_pdf_overlay_id, document_viewer_page_id,
     init_document_workspace_actions,
 };
 use butter_paper::native_document_view_state::ViewerZoomPreset;
 use butter_paper::page_view_control::PageViewMode;
+use butter_paper::pdf_text_edit::{PageTextLayer, TextEditLimits, extract_page_text};
 use gpui::{
     AppContext as _, Bounds, Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent,
     TestAppContext, VisualTestContext, point, px, size,
@@ -44,8 +45,49 @@ fn raster(width: u32, height: u32) -> RasterSurface {
     .unwrap()
 }
 
-/// A document's release, and whether it is digitally signed.
-struct Resource(Arc<AtomicBool>, bool);
+/// A document's release, whether it is digitally signed, and whether each
+/// page has one paragraph of text for Edit PDF.
+struct Resource(Arc<AtomicBool>, bool, bool);
+
+/// A letter page with "Hello world" in 40pt Helvetica, baseline at y = 400.
+fn hello_page_text(page_index: u32) -> PageTextLayer {
+    use lopdf::{Document, Object, Stream, dictionary};
+    let mut document = Document::with_version("1.7");
+    let pages_id = document.new_object_id();
+    let font_id = document.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let content_id = document.add_object(Stream::new(
+        dictionary! {},
+        b"BT /F1 40 Tf 50 400 Td (Hello world) Tj ET".to_vec(),
+    ));
+    let page_id = document.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! { "Font" => dictionary! { "F1" => font_id } },
+    });
+    document.objects.insert(
+        pages_id,
+        Object::Dictionary(dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![page_id.into()],
+            "Count" => 1,
+        }),
+    );
+    let catalog_id = document.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    document.trailer.set("Root", catalog_id);
+    let mut layer = extract_page_text(&document, 0, &TextEditLimits::default()).unwrap();
+    layer.page_index = page_index;
+    layer
+}
 
 impl NativeDocumentResource for Resource {
     fn worker_pid(&self) -> Option<u32> {
@@ -70,6 +112,14 @@ impl NativeDocumentResource for Resource {
         ))
     }
 
+    fn page_text(&self, page_index: u32) -> Result<PageTextLayer, String> {
+        if self.2 {
+            Ok(hello_page_text(page_index))
+        } else {
+            Err("page text editing is unavailable for this document".into())
+        }
+    }
+
     fn close(&self) -> Result<(), String> {
         self.0.store(true, Ordering::Release);
         Ok(())
@@ -80,7 +130,8 @@ impl NativeDocumentResource for Resource {
     }
 }
 
-struct Opener(&'static [(f32, f32)]);
+/// Opens documents of these page sizes; with page text when `.1` is set.
+struct Opener(&'static [(f32, f32)], bool);
 
 impl NativeDocumentOpener for Opener {
     fn open(&self, request: &OpenDocumentRequest) -> Result<OpenedNativeDocument, String> {
@@ -98,6 +149,7 @@ impl NativeDocumentOpener for Opener {
                     .path
                     .file_name()
                     .is_some_and(|name| name.as_encoded_bytes().starts_with(b"signed")),
+                self.1,
             )),
         )
     }
@@ -110,6 +162,14 @@ struct Harness<'a> {
 }
 
 fn setup<'a>(cx: &'a mut TestAppContext, pages: &'static [(f32, f32)]) -> Harness<'a> {
+    setup_with_text(cx, pages, false)
+}
+
+fn setup_with_text<'a>(
+    cx: &'a mut TestAppContext,
+    pages: &'static [(f32, f32)],
+    text: bool,
+) -> Harness<'a> {
     cx.update(|cx| {
         gpui_component::init(cx);
         cx.set_reduce_motion(true);
@@ -120,7 +180,7 @@ fn setup<'a>(cx: &'a mut TestAppContext, pages: &'static [(f32, f32)]) -> Harnes
         let slot = slot.clone();
         move |window, cx| {
             let workspace =
-                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(Opener(pages)), cx));
+                cx.new(|cx| DocumentWorkspace::with_opener(Arc::new(Opener(pages, text)), cx));
             slot.replace(Some(workspace.clone()));
             Root::new(workspace, window, cx)
         }
@@ -898,4 +958,101 @@ fn split_view_keeps_the_current_page_in_both_panes(cx: &mut TestAppContext) {
             page + 1
         );
     }
+}
+
+/// Edit PDF is the document's mode: on or off from either pane, both
+/// panes draw it (the frames round the paragraphs that a click edits).
+#[gpui::test]
+fn edit_pdf_shows_in_both_split_view_panes_and_turns_off_in_both(cx: &mut TestAppContext) {
+    let mut h = setup_with_text(cx, &UNIFORM_PAGES, true);
+    h.action(ToggleSplitView);
+    let document = h.document;
+    let overlay = |h: &mut Harness<'_>, other: bool| {
+        let id = document_edit_pdf_overlay_id(document, 0);
+        let id: &'static str =
+            Box::leak(if other { format!("other-{id}") } else { id }.into_boxed_str());
+        h.cx.debug_bounds(id)
+    };
+    let edit_mode = |h: &mut Harness<'_>| {
+        h.workspace
+            .read_with(h.cx, |workspace, _| workspace.content_edit_mode(document))
+    };
+    assert!(overlay(&mut h, false).is_none());
+    assert!(overlay(&mut h, true).is_none());
+
+    // On in the left pane: both panes frame page 1's paragraph, each in
+    // its own pane.
+    h.action(ToggleEditPdf);
+    assert!(edit_mode(&mut h));
+    let active = overlay(&mut h, false).expect("the active pane draws Edit PDF");
+    let other = overlay(&mut h, true).expect("the other pane draws Edit PDF");
+    let left = h.cx.debug_bounds(SPLIT_PANE_LEFT_ID).unwrap();
+    let right = h.cx.debug_bounds(SPLIT_PANE_RIGHT_ID).unwrap();
+    assert!(
+        active.right() <= left.right() + px(TOLERANCE),
+        "{active:?} {left:?}"
+    );
+    assert!(
+        other.left() >= right.left() - px(TOLERANCE),
+        "{other:?} {right:?}"
+    );
+
+    // The first press in the right pane only makes it active; Edit PDF
+    // stays on in both.
+    h.drag(right.center(), right.center());
+    assert_eq!(h.split().map(|(side, _)| side), Some(PaneSide::Right));
+    assert!(edit_mode(&mut h));
+    assert!(overlay(&mut h, false).is_some());
+    assert!(overlay(&mut h, true).is_some());
+
+    // Off from the right pane: off in both.
+    h.action(ToggleEditPdf);
+    assert!(!edit_mode(&mut h));
+    assert!(overlay(&mut h, false).is_none(), "the active pane clears");
+    assert!(overlay(&mut h, true).is_none(), "the other pane clears");
+
+    // On from the right pane: both again.
+    h.action(ToggleEditPdf);
+    assert!(overlay(&mut h, false).is_some());
+    assert!(overlay(&mut h, true).is_some());
+
+    // A paragraph edited in the active pane shows its frame in the other
+    // pane too, which holds no second text input.
+    let page = h.page(0);
+    let scale = f32::from(page.size.width) / 612.;
+    let at = point(
+        page.left() + px(70. * scale),
+        page.top() + px((792. - 410.) * scale),
+    );
+    for click_count in [1, 2] {
+        h.cx.simulate_event(gpui::MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        h.cx.simulate_event(gpui::MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+    }
+    h.settle();
+    let editing = |h: &mut Harness<'_>| {
+        h.workspace
+            .read_with(h.cx, |workspace, cx| workspace.page_text_editing_text(cx))
+    };
+    assert_eq!(editing(&mut h).as_deref(), Some("Hello world"));
+    assert!(
+        overlay(&mut h, true).is_some(),
+        "the other pane frames the edit"
+    );
+    // Typing goes to the one input, in the active pane: it replaces the
+    // word the double click selected.
+    h.cx.simulate_keystrokes("x");
+    h.settle();
+    assert_eq!(editing(&mut h).as_deref(), Some("x world"));
+    assert!(overlay(&mut h, true).is_some());
 }

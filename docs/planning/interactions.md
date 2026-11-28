@@ -778,7 +778,7 @@ Every page converts to one page of the same size.
   The arrow keys nudge the selection a point, Shift+arrow ten; a held key
   moves its picture as a drag does, and the move ends (one change) when
   the key is let go. Each change
-  is one undo step; undo and redo end the selection, and Escape ends it.
+  is one undo step; undo, redo and a save end the selection, and Escape ends it.
 - A single selected drawing or image shows eight resize handles, drawn as
   markups' handles are (white squares in the selection blue, filled under
   the pointer): dragging
@@ -972,6 +972,30 @@ Edit PDF edits text a paragraph at a time, as Acrobat does.
   the chosen one lacks. Each change is a step of the session's undo; buttons,
   the font list and Enter in a field return typing to the text. The X closes
   them.
+- Ctrl+B and Ctrl+I (Cmd+B and Cmd+I on macOS) in the text being edited flip
+  Bold and Italic. Each press is the same change as a click on the Bold or
+  Italic checkbox, which shows its shortcut in a tooltip: it applies to the
+  selection or, with none, the whole paragraph, is one undo step, and
+  updates the checkbox. The properties need not be open. The keys have no
+  meaning outside text editing, and the properties of markup text have no
+  Bold or Italic.
+- While Edit PDF is on, a format bar shows across the page column directly
+  below the viewer toolbar, as a word processor's formatting bar: Typeface
+  (searchable), Font size with − and +, Bold and Italic (their tooltips give
+  the shortcuts), Text colour, and Align Left, Align Centre, Align Right and
+  Justify. Each control makes the same change as its Properties control:
+  to the selection or, with none, the whole paragraph, one undo step each,
+  and the two always agree. A click on the bar keeps the edit and its
+  selection and returns typing to the text. While no text is edited
+  (nothing, or selected content) every control shows, disabled, so the bar
+  never changes its controls or height. Tab reaches the bar as a group;
+  Escape in it returns to the text (dropping a typed, uncommitted size).
+  A narrower bar merges the four alignments into one Alignment menu, then
+  shows the colour as its swatch alone, with a narrower Typeface and Font
+  size; it never wraps or overflows. In Split View it acts on the edit in
+  the active pane. The bar showing or going leaves the page content where
+  it is on screen, in both panes (Fit Page frames the page again, as after
+  a resize).
 - Escape finishes editing and leaves the paragraph selected; a click
   elsewhere, turning Edit PDF off, changing tool or document, saving and
   closing all finish editing too. One finished paragraph edit is one undo
@@ -1552,7 +1576,7 @@ with it.
   zoom and scroll for the document, as Continuous does; the session
   restores the view and the cover setting, and so does the file's memory
   when the file opens again after its tab closed. Its mouse-wheel setting is its
-  own, Scroll by default.
+  own, Zoom by default (decided 2026-11-28 by the owner).
 - Split View (the icon toggle after the page views, View ▸ Split View)
   shows the document in two panes side by side, each with its own scroll,
   zoom, fit, page and page view. Markups, edits, Undo and Redo, the
@@ -1560,7 +1584,11 @@ with it.
   pane is active: it has a ring in the focus colour, the tool cursor and
   the selection, and the toolbar, menus, keys, page navigator, thumbnails,
   find and search act on it. The other pane draws its pages and their
-  markups only, with the arrow cursor: a press or wheel there makes it
+  markups, with the arrow cursor. Edit PDF is the document's mode: on or
+  off from either pane, both panes show it, with the frames round the
+  paragraphs, the hovered and selected content and the edited paragraph
+  (its text as typed, its frame and caret; the input stays in the active
+  pane). A press or wheel in the other pane makes it
   active and does nothing else (a text or form field being edited is
   committed first). The divider between the panes drags; with the focus
   (it is a tab stop between the panes, ringed in the focus colour while it

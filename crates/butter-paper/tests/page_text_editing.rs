@@ -17,8 +17,8 @@ use butter_paper::document_resource::{
 use butter_paper::document_workspace::{
     DOCUMENT_RESTRICTED_EDIT_CONFIRM_ID, DOCUMENT_SIGNED_TEXT_EDIT_CANCEL_ID,
     DOCUMENT_SIGNED_TEXT_EDIT_CONFIRM_ID, DeferredStartupOpen, DocumentWorkspace,
-    NativeDocumentOpener, OpenDocumentRequest, StartupRecoveryAvailability, StartupRecoveryItem,
-    document_annotation_layer_id, init_document_workspace_actions,
+    NativeDocumentOpener, OpenDocumentRequest, SavedNativeDocument, StartupRecoveryAvailability,
+    StartupRecoveryItem, document_annotation_layer_id, init_document_workspace_actions,
 };
 use butter_paper::page_geometry::{PageCoordinateSpace, PdfRect, Rotation};
 use butter_paper::page_view_control::PageViewMode;
@@ -510,6 +510,71 @@ fn plain_page_point(
 /// press on the band round a paragraph selects it and a drag from there
 /// moves it (shown by the worker while dragging, then one undoable change);
 /// a double click edits it.
+#[gpui::test]
+fn a_save_ends_the_edit_pdf_content_selection(cx: &mut TestAppContext) {
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, page_text_layer(), space, PageRotation::Degrees0, false);
+    let selected = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, _| {
+            workspace.selected_content_count(document_id)
+        })
+    };
+    // A press just left of "Hello" selects its paragraph.
+    let (_, scale) = plain_page_point(cx, document_id, (70., 410.));
+    let (at, _) = plain_page_point(cx, document_id, (50. - 6.5 / f64::from(scale), 410.));
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.simulate_click(at, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(selected(cx), 1, "the paragraph is selected");
+    // The save writes the page again and its text is read again: the
+    // selection, found by where the content was, ends with it.
+    let directory =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch/edit-pdf-save");
+    std::fs::create_dir_all(&directory).unwrap();
+    let request = workspace
+        .update(cx, |workspace, cx| {
+            workspace.begin_save_as(document_id, directory.join("saved.pdf"), cx)
+        })
+        .unwrap();
+    let resource = Arc::new(PageTextResource {
+        layer: page_text_layer(),
+        shown: Arc::new(Mutex::new(Vec::new())),
+        thumbnail_renders: Arc::new(AtomicUsize::new(0)),
+        signed: false,
+        released: AtomicBool::new(false),
+    });
+    let opened = OpenedNativeDocument::new(
+        "saved.pdf",
+        vec![(612., 792.)],
+        raster(32, 40),
+        vec![ThumbnailSurface::new(0, raster(8, 10))],
+        resource,
+    )
+    .unwrap()
+    .with_page_rotations(vec![PageRotation::Degrees0])
+    .with_page_coordinate_spaces(vec![space]);
+    workspace.update(cx, |workspace, cx| {
+        workspace.apply_save_result(
+            &request,
+            Ok(SavedNativeDocument::new(
+                opened,
+                request.annotation_revision,
+            )),
+            cx,
+        )
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(selected(cx), 0, "the save ended the selection");
+}
+
 #[gpui::test]
 fn edit_pdf_mode_selects_drags_and_double_click_edits_a_paragraph(cx: &mut TestAppContext) {
     let space = PageCoordinateSpace::new(
@@ -1839,6 +1904,164 @@ fn text_properties_restyle_the_selection_and_align_the_paragraph(cx: &mut TestAp
     }));
 }
 
+/// Types `keys` and lets the page and the inspector redraw.
+fn press_keys(cx: &mut gpui::VisualTestContext, keys: &str) {
+    cx.simulate_keystrokes(keys);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+}
+
+/// How many of the live edits' text runs are drawn bold (`bold`) or italic,
+/// and how many runs hold text.
+fn live_runs_style(edits: &[PageTextEdit], bold: bool) -> (usize, usize) {
+    let runs = edits
+        .iter()
+        .flat_map(|edit| &edit.runs)
+        .filter(|run| !run.text.trim().is_empty());
+    let (mut styled, mut total) = (0, 0);
+    for run in runs {
+        total += 1;
+        let face = run.style.face.as_ref();
+        let on = face.is_some_and(|face| {
+            if bold {
+                face.fallback.bold
+            } else {
+                face.fallback.italic
+            }
+        });
+        styled += usize::from(on);
+    }
+    (styled, total)
+}
+
+/// Ctrl+B and Ctrl+I (Cmd on macOS) in an active text edit flip Bold and
+/// Italic as a click on the Properties checkbox does: the selection, or with
+/// none the whole paragraph, in one undo step for each press. The checkbox
+/// state follows. Outside text editing the keys do nothing here.
+#[gpui::test]
+fn bold_and_italic_shortcuts_flip_the_text_style_as_the_checkboxes_do(cx: &mut TestAppContext) {
+    use butter_paper::edit_pdf_content_property_inspector::EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID;
+    let (bold_key, italic_key, undo_key) = if cfg!(target_os = "macos") {
+        ("cmd-b", "cmd-i", "cmd-z")
+    } else {
+        ("ctrl-b", "ctrl-i", "ctrl-z")
+    };
+    let layer = text_page(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (The quick brown fox) Tj 0 -14 Td (jumps over the lazy) Tj 0 -14 Td (dog today.) Tj ET EMC",
+        lopdf::Dictionary::new(),
+    );
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    let (workspace, document_id, shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let snapshot = |cx: &mut gpui::VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .edit_pdf_content_property_inspector()
+                .and_then(|inspector| inspector.read(cx).snapshot().cloned())
+                .expect("the inspector shows the edited text")
+        })
+    };
+    let live =
+        |shown: &Arc<Mutex<Vec<Vec<PageTextEdit>>>>| shown.lock().unwrap().last().cloned().unwrap();
+
+    // No text is being edited: the shortcuts change nothing.
+    press_keys(cx, bold_key);
+    assert!(shown.lock().unwrap().iter().all(Vec::is_empty));
+
+    click_selector(cx, "document-workspace-rail-actions");
+    click_page_point(
+        cx,
+        document_id,
+        space,
+        Rotation::Degrees0,
+        (72. + 12. * 2.001 + 0.3, 704.),
+    );
+    press_keys(cx, "left");
+    assert!(
+        cx.debug_bounds(EDIT_PDF_CONTENT_INSPECTOR_BOLD_ID)
+            .is_some()
+    );
+    assert!(!snapshot(cx).bold);
+
+    // With no selection a press bolds the whole paragraph, and the checkbox
+    // state follows.
+    press_keys(cx, bold_key);
+    let (styled, total) = live_runs_style(&live(&shown), true);
+    assert!(total > 0 && styled == total, "{:#?}", live(&shown));
+    assert!(snapshot(cx).bold && !snapshot(cx).italic);
+
+    // A second press removes it.
+    press_keys(cx, bold_key);
+    assert_eq!(live_runs_style(&live(&shown), true).0, 0);
+    assert!(!snapshot(cx).bold);
+
+    // One Undo reverts one press: bold, plain, bold again, then Undo.
+    press_keys(cx, bold_key);
+    assert!(snapshot(cx).bold);
+    press_keys(cx, undo_key);
+    assert!(!snapshot(cx).bold);
+    assert_eq!(live_runs_style(&live(&shown), true).0, 0);
+    press_keys(cx, undo_key);
+    assert!(snapshot(cx).bold, "the second Undo reverts the first press");
+    press_keys(cx, undo_key);
+    assert!(!snapshot(cx).bold);
+
+    // Italic works the same way, apart from Bold.
+    press_keys(cx, italic_key);
+    let (styled, total) = live_runs_style(&live(&shown), false);
+    assert!(total > 0 && styled == total);
+    assert!(snapshot(cx).italic && !snapshot(cx).bold);
+    press_keys(cx, italic_key);
+    assert_eq!(live_runs_style(&live(&shown), false).0, 0);
+    assert!(!snapshot(cx).italic);
+    press_keys(cx, italic_key);
+    press_keys(cx, undo_key);
+    assert!(!snapshot(cx).italic);
+    press_keys(cx, undo_key);
+    assert!(snapshot(cx).italic);
+    press_keys(cx, undo_key);
+    assert!(!snapshot(cx).italic);
+
+    // Both styles together, then Bold off keeps Italic.
+    press_keys(cx, bold_key);
+    press_keys(cx, italic_key);
+    assert!(snapshot(cx).bold && snapshot(cx).italic);
+    press_keys(cx, bold_key);
+    assert!(!snapshot(cx).bold && snapshot(cx).italic);
+
+    // With a selection a press applies to the selected text only.
+    press_keys(cx, italic_key);
+    press_keys(cx, "home shift-right shift-right shift-right");
+    assert!(snapshot(cx).selection);
+    press_keys(cx, bold_key);
+    let edits = live(&shown);
+    let first = edits
+        .iter()
+        .find(|edit| edit.text().starts_with("The"))
+        .unwrap();
+    let (styled, total) = live_runs_style(std::slice::from_ref(first), true);
+    assert!(styled > 0 && styled < total, "{:#?}", first.runs);
+    let bold_text: String = first
+        .runs
+        .iter()
+        .filter(|run| {
+            run.style
+                .face
+                .as_ref()
+                .is_some_and(|face| face.fallback.bold)
+        })
+        .map(|run| run.text.as_str())
+        .collect();
+    assert_eq!(bold_text, "The");
+    press_keys(cx, "escape");
+}
+
 /// A click-out only dismisses (interactions.md, "Click-out"): a press that
 /// clears highlighted page text or selected markups does nothing else. It
 /// starts no selection box, lasso or text selection, its drag moves nothing,
@@ -2310,4 +2533,653 @@ fn fit_page_to_window(
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
     }
+}
+
+/// Every control of the Edit PDF format bar, by debug selector.
+const FORMAT_BAR_CONTROLS: [&str; 10] = {
+    use butter_paper::edit_pdf_format_bar::*;
+    [
+        EDIT_PDF_FORMAT_FONT_ID,
+        EDIT_PDF_FORMAT_SIZE_ID,
+        EDIT_PDF_FORMAT_BOLD_ID,
+        EDIT_PDF_FORMAT_ITALIC_ID,
+        EDIT_PDF_FORMAT_COLOR_ID,
+        EDIT_PDF_FORMAT_ALIGN_LEFT_ID,
+        EDIT_PDF_FORMAT_ALIGN_CENTER_ID,
+        EDIT_PDF_FORMAT_ALIGN_RIGHT_ID,
+        EDIT_PDF_FORMAT_ALIGN_JUSTIFY_ID,
+        EDIT_PDF_FORMAT_BAR_CONTENT_ID,
+    ]
+};
+
+/// The bounds of each format-bar control drawn now, or `None` for one that
+/// is not drawn.
+fn format_bar_layout(cx: &mut gpui::VisualTestContext) -> Vec<Option<gpui::Bounds<gpui::Pixels>>> {
+    FORMAT_BAR_CONTROLS
+        .iter()
+        .map(|id| {
+            let bounds = cx.debug_bounds(id)?;
+            // The colour's hex value ("None" with no edited text) sets the
+            // width of its swatch and value; its slot, and so every control
+            // after it, keeps its place.
+            Some(
+                if *id == butter_paper::edit_pdf_format_bar::EDIT_PDF_FORMAT_COLOR_ID {
+                    gpui::Bounds::new(bounds.origin, gpui::size(px(0.), bounds.size.height))
+                } else {
+                    bounds
+                },
+            )
+        })
+        .collect()
+}
+
+/// What the format bar shows: the edited text's properties, or `None`.
+fn format_bar_snapshot(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+) -> Option<butter_paper::edit_pdf_content_property_inspector::EditPdfContentPropertySnapshot> {
+    workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .edit_pdf_format_bar()
+            .and_then(|bar| bar.read(cx).snapshot(cx))
+    })
+}
+
+/// The format bar's typeface, size and colour values.
+fn format_bar_values(
+    cx: &mut gpui::VisualTestContext,
+    workspace: &gpui::Entity<DocumentWorkspace>,
+) -> (Option<gpui::SharedString>, String, Option<gpui::Hsla>) {
+    workspace.read_with(cx, |workspace, cx| {
+        let controls = workspace.edit_pdf_format_bar().unwrap().read(cx).controls();
+        let controls = controls.read(cx);
+        (
+            controls.font_select().read(cx).selected_value().cloned(),
+            controls.size_input().read(cx).value().to_string(),
+            controls.color_picker().read(cx).value(),
+        )
+    })
+}
+
+fn three_line_paragraph() -> (PageTextLayer, PageCoordinateSpace) {
+    let layer = text_page(
+        b"/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (The quick brown fox) Tj 0 -14 Td (jumps over the lazy) Tj 0 -14 Td (dog today.) Tj ET EMC",
+        lopdf::Dictionary::new(),
+    );
+    let space = PageCoordinateSpace::new(
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        PdfRect::new(0., 0., 612., 792.).unwrap(),
+        Rotation::Degrees0,
+        1.,
+    )
+    .unwrap();
+    (layer, space)
+}
+
+/// The format bar shows below the viewer toolbar, across its full width,
+/// while Edit PDF is on, and goes when it turns off. With no text being
+/// edited every control shows, disabled; editing text enables them with no
+/// control added, removed or moved, and the bar keeps its height.
+#[gpui::test]
+fn the_format_bar_shows_with_edit_pdf_and_keeps_its_controls_in_every_state(
+    cx: &mut TestAppContext,
+) {
+    use butter_paper::edit_pdf_format_bar::{
+        EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID, EDIT_PDF_FORMAT_BAR_ID, EDIT_PDF_FORMAT_BOLD_ID,
+    };
+    use butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_ID;
+    let (layer, space) = three_line_paragraph();
+    let (workspace, document_id, shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let toolbar = cx.debug_bounds(VIEWER_TOOLBAR_ID).unwrap();
+    let bar = cx
+        .debug_bounds(EDIT_PDF_FORMAT_BAR_ID)
+        .expect("Edit PDF shows the format bar");
+    assert_eq!(bar.top(), toolbar.bottom(), "directly below the toolbar");
+    assert_eq!(
+        (bar.left(), bar.size.width),
+        (toolbar.left(), toolbar.size.width)
+    );
+    assert_eq!(bar.size.height, toolbar.size.height);
+
+    // Nothing is being edited: every control shows, and none acts. It
+    // shows neutral values: no typeface (its placeholder), no size, no
+    // colour.
+    let idle = format_bar_layout(cx);
+    assert_eq!(
+        format_bar_values(cx, &workspace),
+        (None, String::new(), None)
+    );
+    assert!(
+        idle.iter().all(Option::is_some),
+        "{FORMAT_BAR_CONTROLS:?} {idle:?}"
+    );
+    assert!(cx.debug_bounds(EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID).is_none());
+    assert!(format_bar_snapshot(cx, &workspace).is_none());
+    click_selector(cx, EDIT_PDF_FORMAT_BOLD_ID);
+    assert!(shown.lock().unwrap().iter().all(Vec::is_empty));
+
+    // A selected paragraph is not being edited either.
+    click_page_point(
+        cx,
+        document_id,
+        space,
+        Rotation::Degrees0,
+        (72. + 12. * 2.001 + 0.3, 704.),
+    );
+    press_keys(cx, "left");
+    let editing = format_bar_snapshot(cx, &workspace).expect("the bar shows the edited text");
+    assert_eq!(editing.size, 12.);
+    assert_eq!(format_bar_layout(cx), idle, "no control moves or changes");
+    assert_eq!(
+        cx.debug_bounds(EDIT_PDF_FORMAT_BAR_ID).unwrap(),
+        bar,
+        "the bar keeps its place and height"
+    );
+
+    // Edit PDF off: the bar goes, with the edit ended.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_content_edit_mode(document_id, false, cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds(EDIT_PDF_FORMAT_BAR_ID).is_none());
+    assert!(format_bar_layout(cx).iter().all(Option::is_none));
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_content_edit_mode(document_id, true, cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    assert_eq!(format_bar_layout(cx), idle);
+    assert!(format_bar_snapshot(cx, &workspace).is_none());
+    // The last edited text's values go with the edit.
+    assert_eq!(
+        format_bar_values(cx, &workspace),
+        (None, String::new(), None)
+    );
+}
+
+/// A bar control acts as its Properties control does: Bold, Italic, the
+/// size step, an alignment and a typeface each apply the same patch to the
+/// paragraph (or the selection) as one undo step. The text stays edited,
+/// typing continues after a click, and the bar and the panel agree.
+#[gpui::test]
+fn format_bar_controls_apply_the_properties_patches_one_undo_step_each(cx: &mut TestAppContext) {
+    use butter_paper::edit_pdf_content_property_inspector::{
+        EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID, EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID,
+    };
+    use butter_paper::edit_pdf_format_bar::{
+        EDIT_PDF_FORMAT_ALIGN_RIGHT_ID, EDIT_PDF_FORMAT_BOLD_ID, EDIT_PDF_FORMAT_FONT_ID,
+        EDIT_PDF_FORMAT_ITALIC_ID, EDIT_PDF_FORMAT_SIZE_ID,
+    };
+    use butter_paper::pdf_text_blocks::TextBlockAlignment;
+    let undo_key = if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    };
+    let (layer, space) = three_line_paragraph();
+    let (workspace, document_id, shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let live =
+        |shown: &Arc<Mutex<Vec<Vec<PageTextEdit>>>>| shown.lock().unwrap().last().cloned().unwrap();
+    let snapshot = |cx: &mut gpui::VisualTestContext| {
+        format_bar_snapshot(cx, &workspace).expect("the bar shows the edited text")
+    };
+    click_page_point(
+        cx,
+        document_id,
+        space,
+        Rotation::Degrees0,
+        (72. + 12. * 2.001 + 0.3, 704.),
+    );
+    press_keys(cx, "left");
+    let original = snapshot(cx);
+    assert!(!original.bold && !original.italic && !original.selection);
+
+    // Bold: the whole paragraph, as the shortcut and the checkbox do.
+    click_selector(cx, EDIT_PDF_FORMAT_BOLD_ID);
+    let (styled, total) = live_runs_style(&live(&shown), true);
+    assert!(total > 0 && styled == total, "{:#?}", live(&shown));
+    assert!(snapshot(cx).bold);
+    // Typing goes on in the edit after the click.
+    let before = workspace.read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx));
+    press_keys(cx, "x");
+    let after = workspace.read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx));
+    assert_eq!(
+        after.as_deref().map(|text| text.matches('x').count()),
+        before.as_deref().map(|text| text.matches('x').count() + 1),
+        "the click must leave the keyboard in the edit"
+    );
+    press_keys(cx, "backspace");
+
+    // The panel and the bar agree, both ways.
+    click_selector(cx, "document-workspace-rail-actions");
+    assert!(
+        cx.debug_bounds(EDIT_PDF_CONTENT_PROPERTY_INSPECTOR_ID)
+            .is_some()
+    );
+    let panel = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .edit_pdf_content_property_inspector()
+            .and_then(|inspector| inspector.read(cx).snapshot().cloned())
+    });
+    assert_eq!(panel, Some(snapshot(cx)));
+    click_selector(cx, EDIT_PDF_CONTENT_INSPECTOR_ITALIC_ID);
+    assert!(snapshot(cx).italic && snapshot(cx).bold);
+    click_selector(cx, EDIT_PDF_FORMAT_ITALIC_ID);
+    assert!(!snapshot(cx).italic);
+    let panel = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .edit_pdf_content_property_inspector()
+            .and_then(|inspector| inspector.read(cx).snapshot().cloned())
+    });
+    assert_eq!(panel, Some(snapshot(cx)));
+
+    // The size steps by 1 pt: Up in the field, as its + button does.
+    click_selector(cx, EDIT_PDF_FORMAT_SIZE_ID);
+    press_keys(cx, "up");
+    assert_eq!(snapshot(cx).size, 13.);
+    let sizes = live(&shown)
+        .iter()
+        .flat_map(|edit| &edit.runs)
+        .filter(|run| !run.text.trim().is_empty())
+        .map(|run| run.style.font_size)
+        .collect::<Vec<_>>();
+    assert!(sizes.iter().all(|size| *size == 13.), "{sizes:?}");
+
+    // An alignment applies to the paragraph.
+    click_selector(cx, EDIT_PDF_FORMAT_ALIGN_RIGHT_ID);
+    assert_eq!(snapshot(cx).alignment, TextBlockAlignment::Right);
+
+    // A typeface picked from the searchable list. Bold text is already set
+    // in Arimo, the bundled match for Helvetica.
+    let bold_family = snapshot(cx).family;
+    assert_eq!(bold_family.as_deref(), Some("Arimo"));
+    click_selector(cx, EDIT_PDF_FORMAT_FONT_ID);
+    cx.simulate_input("Tinos");
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    press_keys(cx, "enter");
+    assert_eq!(snapshot(cx).family.as_deref(), Some("Tinos"));
+    let focused = workspace.read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx));
+    press_keys(cx, "x");
+    let typed = workspace.read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx));
+    assert_ne!(
+        focused, typed,
+        "typing goes on in the edit after a typeface pick"
+    );
+    press_keys(cx, "backspace");
+
+    // One Undo reverts one change, in turn: the typed and deleted letter,
+    // typeface, alignment, size, Italic off, Italic on, Bold.
+    press_keys(cx, undo_key);
+    press_keys(cx, undo_key);
+    assert_eq!(snapshot(cx).family.as_deref(), Some("Tinos"));
+    press_keys(cx, undo_key);
+    assert_eq!(snapshot(cx).family, bold_family);
+    assert_eq!(snapshot(cx).alignment, TextBlockAlignment::Right);
+    press_keys(cx, undo_key);
+    assert_eq!(snapshot(cx).alignment, TextBlockAlignment::Left);
+    assert_eq!(snapshot(cx).size, 13.);
+    press_keys(cx, undo_key);
+    assert_eq!(snapshot(cx).size, 12.);
+    assert!(!snapshot(cx).italic);
+    press_keys(cx, undo_key);
+    assert!(snapshot(cx).italic);
+    press_keys(cx, undo_key);
+    assert!(!snapshot(cx).italic && snapshot(cx).bold);
+    // The typed and deleted letter, then Bold.
+    press_keys(cx, undo_key);
+    press_keys(cx, undo_key);
+    press_keys(cx, undo_key);
+    assert_eq!(snapshot(cx), original);
+
+    // With a selection a bar click applies to it alone and keeps it.
+    press_keys(cx, "home shift-right shift-right shift-right");
+    assert!(snapshot(cx).selection);
+    click_selector(cx, EDIT_PDF_FORMAT_BOLD_ID);
+    assert!(
+        snapshot(cx).selection,
+        "the selection stays after the click"
+    );
+    let edits = live(&shown);
+    let first = edits
+        .iter()
+        .find(|edit| edit.text().starts_with("The"))
+        .unwrap();
+    let bold_text: String = first
+        .runs
+        .iter()
+        .filter(|run| {
+            run.style
+                .face
+                .as_ref()
+                .is_some_and(|face| face.fallback.bold)
+        })
+        .map(|run| run.text.as_str())
+        .collect();
+    assert_eq!(bold_text, "The");
+    press_keys(cx, "escape");
+}
+
+/// Escape in the bar returns the keyboard to the edited text; a number
+/// typed but not committed is dropped.
+#[gpui::test]
+fn escape_in_the_format_bar_returns_to_the_edited_text(cx: &mut TestAppContext) {
+    use butter_paper::edit_pdf_format_bar::EDIT_PDF_FORMAT_SIZE_ID;
+    let (layer, space) = three_line_paragraph();
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    click_page_point(
+        cx,
+        document_id,
+        space,
+        Rotation::Degrees0,
+        (72. + 12. * 2.001 + 0.3, 704.),
+    );
+    press_keys(cx, "left");
+    click_selector(cx, EDIT_PDF_FORMAT_SIZE_ID);
+    press_keys(cx, "secondary-a 3 0");
+    press_keys(cx, "escape");
+    let snapshot = format_bar_snapshot(cx, &workspace).expect("still editing");
+    assert_eq!(snapshot.size, 12., "Escape drops the typed size");
+    let before = workspace.read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx));
+    press_keys(cx, "x");
+    let after = workspace.read_with(cx, |workspace, cx| workspace.page_text_editing_text(cx));
+    assert_ne!(before, after, "typing goes to the edited text");
+    assert!(after.unwrap().contains('x'));
+}
+
+/// A narrow window: the bar merges the alignment buttons into one menu
+/// button and every control stays inside the window, down to the narrowest
+/// viewer column (side panels give way before the toolbar gets narrower).
+#[gpui::test]
+fn the_format_bar_stays_inside_a_narrow_window(cx: &mut TestAppContext) {
+    use butter_paper::edit_pdf_format_bar::{
+        EDIT_PDF_FORMAT_ALIGN_LEFT_ID, EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID, EDIT_PDF_FORMAT_BAR_ID,
+        EDIT_PDF_FORMAT_BOLD_ID, EDIT_PDF_FORMAT_COLOR_ID, EDIT_PDF_FORMAT_FONT_ID,
+        EDIT_PDF_FORMAT_ITALIC_ID, EDIT_PDF_FORMAT_SIZE_ID,
+    };
+    let (layer, space) = three_line_paragraph();
+    let (_workspace, _, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    // The left rail and the two-column tool rail beside the toolbar.
+    let narrowest =
+        (48. + 88. + butter_paper::viewer_toolbar_strip::VIEWER_TOOLBAR_NARROWEST_REMS * 16.)
+            .ceil();
+    for width in [1400., 900., 640., narrowest] {
+        cx.simulate_resize(gpui::size(px(width), px(700.)));
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+        let bar = cx.debug_bounds(EDIT_PDF_FORMAT_BAR_ID).unwrap();
+        assert!(bar.right() <= px(width), "{width}: {bar:?}");
+        let menu = cx.debug_bounds(EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID);
+        let buttons = cx.debug_bounds(EDIT_PDF_FORMAT_ALIGN_LEFT_ID);
+        assert!(
+            menu.is_some() != buttons.is_some(),
+            "{width}: one alignment form"
+        );
+        for id in [
+            EDIT_PDF_FORMAT_FONT_ID,
+            EDIT_PDF_FORMAT_SIZE_ID,
+            EDIT_PDF_FORMAT_BOLD_ID,
+            EDIT_PDF_FORMAT_ITALIC_ID,
+            EDIT_PDF_FORMAT_COLOR_ID,
+        ]
+        .into_iter()
+        .chain(menu.map(|_| EDIT_PDF_FORMAT_ALIGNMENT_MENU_ID))
+        .chain(buttons.map(|_| EDIT_PDF_FORMAT_ALIGN_LEFT_ID))
+        {
+            let control = cx
+                .debug_bounds(id)
+                .unwrap_or_else(|| panic!("{width}: {id} is not drawn"));
+            assert!(
+                control.left() >= bar.left() && control.right() <= bar.right(),
+                "{width}: {id} {control:?} outside {bar:?}"
+            );
+        }
+        if width >= 1400. {
+            assert!(buttons.is_some(), "a wide bar shows the four alignments");
+        }
+    }
+}
+
+/// The format bar showing or going moves the viewport's top edge, but not
+/// the page content on screen: the page point under the pointer stays
+/// under it, at a manual zoom and at Fit Width.
+#[gpui::test]
+fn the_format_bar_does_not_move_the_page_content(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::ViewerFitPreset;
+    use butter_paper::edit_pdf_format_bar::EDIT_PDF_FORMAT_BAR_ID;
+    let (layer, space) = three_line_paragraph();
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    let layer_id = Box::leak(document_annotation_layer_id(document_id, 0).into_boxed_str());
+    let settle = |cx: &mut gpui::VisualTestContext| {
+        for _ in 0..3 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        }
+    };
+    let set_edit_pdf = |cx: &mut gpui::VisualTestContext, on: bool| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_content_edit_mode(document_id, on, cx);
+        });
+    };
+    for fit_width in [false, true] {
+        if fit_width {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_fit_preset(document_id, ViewerFitPreset::Width, cx);
+            });
+        } else {
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_view_configuration(document_id, PageViewMode::Continuous, 200., cx);
+            });
+        }
+        settle(cx);
+        // Scrolled into the page, so there is content above the view.
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_viewport_scroll(document_id, 0., 300., cx);
+        });
+        settle(cx);
+        assert!(cx.debug_bounds(EDIT_PDF_FORMAT_BAR_ID).is_some());
+        let shown = cx.debug_bounds(layer_id).unwrap();
+        set_edit_pdf(cx, false);
+        settle(cx);
+        assert!(cx.debug_bounds(EDIT_PDF_FORMAT_BAR_ID).is_none());
+        let hidden = cx.debug_bounds(layer_id).unwrap();
+        assert!(
+            (hidden.top() - shown.top()).abs() < px(0.5)
+                && (hidden.left() - shown.left()).abs() < px(0.5),
+            "fit width {fit_width}: the bar going moved the page from {shown:?} to {hidden:?}"
+        );
+        set_edit_pdf(cx, true);
+        settle(cx);
+        let again = cx.debug_bounds(layer_id).unwrap();
+        assert!(
+            (again.top() - shown.top()).abs() < px(0.5),
+            "fit width {fit_width}: the bar showing moved the page from {shown:?} to {again:?}"
+        );
+    }
+}
+
+/// In Split View one format bar spans both panes, and its showing or going
+/// leaves the page content of each pane where it is on screen.
+#[gpui::test]
+fn the_format_bar_spans_split_view_and_moves_neither_pane(cx: &mut TestAppContext) {
+    use butter_paper::document_workspace::{
+        DOCUMENT_VIEWPORT_ID, SPLIT_OTHER_VIEWPORT_ID, SPLIT_PANE_LEFT_ID, SPLIT_PANE_RIGHT_ID,
+        document_viewer_page_id,
+    };
+    use butter_paper::edit_pdf_format_bar::EDIT_PDF_FORMAT_BAR_ID;
+    let (layer, space) = three_line_paragraph();
+    let (workspace, document_id, _, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    // Each pane lays out at its painted size, as the app's frames do.
+    let settle = |cx: &mut gpui::VisualTestContext| {
+        for _ in 0..4 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            for (id, other) in [
+                (DOCUMENT_VIEWPORT_ID, false),
+                (SPLIT_OTHER_VIEWPORT_ID, true),
+            ] {
+                let Some(viewport) = cx.debug_bounds(id) else {
+                    continue;
+                };
+                let (width, height) = (
+                    f32::from(viewport.size.width),
+                    f32::from(viewport.size.height),
+                );
+                workspace.update(cx, |workspace, cx| {
+                    let _ = if other {
+                        workspace.refresh_other_pane(document_id, width, height, 1., cx)
+                    } else {
+                        workspace.refresh_viewport_async(document_id, width, height, 1., cx)
+                    };
+                });
+            }
+            cx.run_until_parked();
+        }
+    };
+    let set_edit_pdf = |cx: &mut gpui::VisualTestContext, on: bool| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_content_edit_mode(document_id, on, cx);
+        });
+        settle(cx);
+    };
+    // Zoomed in, so each pane has page content above and below its view.
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_view_configuration(document_id, PageViewMode::Continuous, 200., cx);
+    });
+    settle(cx);
+    workspace.update(cx, |workspace, cx| {
+        workspace.set_viewport_scroll(document_id, 0., 300., cx);
+        assert!(workspace.toggle_split_view(document_id, cx));
+    });
+    settle(cx);
+    let left = cx
+        .debug_bounds(SPLIT_PANE_LEFT_ID)
+        .expect("Split View is on");
+    let right = cx.debug_bounds(SPLIT_PANE_RIGHT_ID).unwrap();
+    let bar = cx.debug_bounds(EDIT_PDF_FORMAT_BAR_ID).unwrap();
+    assert!(
+        bar.left() <= left.left() && bar.right() >= right.right() && bar.bottom() <= left.top(),
+        "one bar above both panes: {bar:?} {left:?} {right:?}"
+    );
+    let active_id: &'static str =
+        Box::leak(document_viewer_page_id(document_id, 0).into_boxed_str());
+    let other_id: &'static str =
+        Box::leak(format!("other-{}", document_viewer_page_id(document_id, 0)).into_boxed_str());
+    let pages = |cx: &mut gpui::VisualTestContext| {
+        (
+            cx.debug_bounds(active_id).expect("the active pane paints"),
+            cx.debug_bounds(other_id).expect("the other pane paints"),
+        )
+    };
+    let shown = pages(cx);
+    set_edit_pdf(cx, false);
+    assert!(cx.debug_bounds(EDIT_PDF_FORMAT_BAR_ID).is_none());
+    let hidden = pages(cx);
+    set_edit_pdf(cx, true);
+    let again = pages(cx);
+    for (name, shown, hidden, again) in [
+        ("active", shown.0, hidden.0, again.0),
+        ("other", shown.1, hidden.1, again.1),
+    ] {
+        assert!(
+            (hidden.top() - shown.top()).abs() < px(0.5)
+                && (hidden.left() - shown.left()).abs() < px(0.5),
+            "{name} pane: the bar going moved the page from {shown:?} to {hidden:?}"
+        );
+        assert!(
+            (again.top() - shown.top()).abs() < px(0.5),
+            "{name} pane: the bar showing moved the page from {shown:?} to {again:?}"
+        );
+    }
+}
+
+/// The bar's Text colour commits as the Properties colour does: the same
+/// fill patch to the paragraph, one undo step, and the panel agrees.
+#[gpui::test]
+fn the_format_bar_text_colour_applies_the_properties_fill(cx: &mut TestAppContext) {
+    let undo_key = if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    };
+    let (layer, space) = three_line_paragraph();
+    let (workspace, document_id, shown, cx) =
+        edit_pdf_content_workspace(cx, layer, space, PageRotation::Degrees0, false);
+    click_page_point(
+        cx,
+        document_id,
+        space,
+        Rotation::Degrees0,
+        (72. + 12. * 2.001 + 0.3, 704.),
+    );
+    press_keys(cx, "left");
+    let snapshot = |cx: &mut gpui::VisualTestContext| {
+        format_bar_snapshot(cx, &workspace).expect("the bar shows the edited text")
+    };
+    let original = snapshot(cx);
+    // A colour committed in the bar's picker, as a pick in its palette does.
+    let picker = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .edit_pdf_format_bar()
+            .unwrap()
+            .read(cx)
+            .controls()
+            .read(cx)
+            .color_picker()
+    });
+    let red = gpui::Hsla::from(gpui::Rgba {
+        r: 1.,
+        g: 0.,
+        b: 0.,
+        a: 1.,
+    });
+    cx.update(|window, cx| {
+        picker.update(cx, |picker, cx| {
+            picker.set_value(red, window, cx);
+            cx.emit(gpui_component::color_picker::ColorPickerEvent::Change(
+                Some(red),
+            ));
+        });
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    let fill = snapshot(cx).fill;
+    assert!(
+        (fill[0] - 1.).abs() < 1e-3 && fill[1].abs() < 1e-3 && fill[2].abs() < 1e-3,
+        "{fill:?}"
+    );
+    let edits = shown.lock().unwrap().last().cloned().unwrap();
+    let runs = edits
+        .iter()
+        .flat_map(|edit| &edit.runs)
+        .filter(|run| !run.text.trim().is_empty())
+        .collect::<Vec<_>>();
+    assert!(!runs.is_empty());
+    assert!(
+        runs.iter().all(|run| run
+            .style
+            .fill
+            .is_some_and(|fill| (fill[0] - 1.).abs() < 1e-3 && fill[1].abs() < 1e-3)),
+        "the whole paragraph turns red: {runs:#?}"
+    );
+    // The panel shows the same colour.
+    click_selector(cx, "document-workspace-rail-actions");
+    let panel = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .edit_pdf_content_property_inspector()
+            .and_then(|inspector| inspector.read(cx).snapshot().cloned())
+    });
+    assert_eq!(panel, Some(snapshot(cx)));
+    // One undo step.
+    press_keys(cx, undo_key);
+    assert_eq!(snapshot(cx), original);
 }

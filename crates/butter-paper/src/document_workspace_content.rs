@@ -246,6 +246,35 @@ impl DocumentWorkspace {
         if on == self.content_edit_mode(document_id) {
             return;
         }
+        // The format bar shows (or goes) above the active document's pages,
+        // moving their top edge: they scroll by as much in the same frame,
+        // so their content stays where it is on screen. In Split View the
+        // bar spans both panes.
+        if self.active_document_id == Some(document_id)
+            && let Some(session) = self.session(document_id, cx).cloned()
+        {
+            let shift = if on {
+                self.edit_pdf_format_bar_height
+            } else {
+                -self.edit_pdf_format_bar_height
+            };
+            // The view state keeps the scroll the viewer places.
+            let scroll_by = |viewer: &crate::document_viewer::DocumentViewerState,
+                             view_state: &mut crate::native_document_view_state::NativeDocumentViewState| {
+                if viewer.plan_snapshot().is_some() {
+                    let (x, y) = viewer.logical_scroll();
+                    viewer.set_scroll(x, y + shift);
+                    let (x, y) = viewer.logical_scroll();
+                    view_state.set_scroll(x, y);
+                }
+            };
+            session.update(cx, |session, _| {
+                scroll_by(&session.viewer, &mut session.view_state);
+                if let Some(other) = session.split.as_mut().map(|split| &mut split.other) {
+                    scroll_by(&other.viewer, &mut other.view_state);
+                }
+            });
+        }
         if on {
             self.content_edit_mode.insert(document_id);
             if self.annotation_tool(document_id, cx) != Some(AnnotationTool::Select)

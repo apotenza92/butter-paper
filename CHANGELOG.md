@@ -4,6 +4,49 @@ All notable Butter Paper changes are recorded here.
 
 ## [Unreleased]
 
+### Changes
+
+- Two Pages view zooms with the mouse wheel by default, as Single Page
+  view does. Its View menu still sets Scroll.
+
+### Fixes
+
+- In Split View, Edit PDF shows in both panes. Before, only the active
+  pane showed the paragraph frames, the selection and the edited text.
+  Edit PDF turned off in either pane is off in both.
+- In a view where the mouse wheel zooms, the status bar says to hold
+  Ctrl (Control on macOS) to scroll with the wheel. Before, it always
+  said to hold Ctrl to zoom.
+- A disabled colour control in the Properties panel shows its swatch
+  dimmed, so it reads as disabled.
+- A save in Edit PDF ends the selection of content. Before, the
+  outline of a selected paragraph stayed where it was before the save
+  until you pressed Escape.
+
+### Edit PDF
+
+- Ctrl+B and Ctrl+I (Cmd+B and Cmd+I on macOS) make the text that you
+  edit bold or italic. Before, only the Properties checkboxes did.
+- A format bar shows below the toolbar while Edit PDF is on, as in a
+  word processor: typeface, font size, bold, italic, text colour and
+  alignment for the text that you edit. Each control makes the same
+  change as the Properties panel, as one undo step.
+- A paragraph that you edit again before you save keeps the space
+  between the words at each line end. Before, the last word of a line
+  and the first word of the next line could join, as in "thecontractor".
+
+### Windows
+
+- Set as Default PDF App… opens a short guide with a picture of the
+  steps in Windows Settings. Its Open Settings button opens Default Apps
+  at Butter Paper, and the guide stays open beside it. Before, a message
+  named the steps without a picture.
+
+### Toolbar
+
+- Zoom In is now to the right of the zoom percentage, so minus and plus
+  sit on each side of the value.
+
 ## [0.6.5]
 
 ### Fixes

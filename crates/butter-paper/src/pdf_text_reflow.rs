@@ -544,9 +544,16 @@ impl Paragraph {
                 .or_else(|| line.styles.first().cloned());
             let edited_break = breaks.get(index).copied().flatten();
             let hard = edited_break.unwrap_or(self.breaks[index]);
+            // A space joins a line whose text now ends without one: an
+            // edit wraps at a space and can leave it off the line's end,
+            // even where the base line ended with it.
+            let by_space = match chars.last() {
+                Some((character, _)) => !character.is_whitespace(),
+                None => self.joined_by_space[index],
+            };
             let join = match style {
                 Some(style) if hard => Join::Break(style),
-                Some(style) if self.joined_by_space[index] => Join::Space(style),
+                Some(style) if by_space => Join::Space(style),
                 _ => Join::None,
             };
             pieces.push((chars, join, edited_break == Some(true)));

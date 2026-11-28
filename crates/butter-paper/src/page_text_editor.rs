@@ -57,6 +57,8 @@ actions!(
         FinishEditing,
         NextCell,
         PreviousCell,
+        ToggleBold,
+        ToggleItalic,
     ]
 );
 
@@ -81,6 +83,8 @@ pub fn init_page_text_editor_actions(cx: &mut App) {
         KeyBinding::new("cmd-v", PasteText, context),
         KeyBinding::new("cmd-z", UndoText, context),
         KeyBinding::new("cmd-shift-z", RedoText, context),
+        KeyBinding::new("cmd-b", ToggleBold, context),
+        KeyBinding::new("cmd-i", ToggleItalic, context),
     ];
     #[cfg(not(target_os = "macos"))]
     let platform = [
@@ -98,6 +102,8 @@ pub fn init_page_text_editor_actions(cx: &mut App) {
         KeyBinding::new("ctrl-z", UndoText, context),
         KeyBinding::new("ctrl-y", RedoText, context),
         KeyBinding::new("ctrl-shift-z", RedoText, context),
+        KeyBinding::new("ctrl-b", ToggleBold, context),
+        KeyBinding::new("ctrl-i", ToggleItalic, context),
     ];
     cx.bind_keys(platform);
     cx.bind_keys([
@@ -1121,6 +1127,16 @@ pub enum PageTextInputEvent {
     /// Backspace in an empty paragraph: remove it and continue the
     /// paragraph before.
     JoinPrevious,
+    /// Ctrl or Cmd with B or I: the workspace flips the Bold or Italic
+    /// property, as a click on its Properties checkbox does.
+    ToggleStyle(TextStyleToggle),
+}
+
+/// A text style that a keyboard shortcut flips.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextStyleToggle {
+    Bold,
+    Italic,
 }
 
 /// Receives keyboard and IME input for the line being edited.
@@ -1351,6 +1367,14 @@ impl PageTextInput {
 
     pub fn previous_cell(&mut self, _: &PreviousCell, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(PageTextInputEvent::Tab { back: true });
+    }
+
+    pub fn toggle_bold(&mut self, _: &ToggleBold, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(PageTextInputEvent::ToggleStyle(TextStyleToggle::Bold));
+    }
+
+    pub fn toggle_italic(&mut self, _: &ToggleItalic, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(PageTextInputEvent::ToggleStyle(TextStyleToggle::Italic));
     }
 
     /// Types `text` at the caret, as one undoable step.

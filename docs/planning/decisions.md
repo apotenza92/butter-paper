@@ -122,7 +122,8 @@ changes it; history is in git.
   (AGENTS.md). Dark pages have a one-pixel grey ring outside the page edge.
 - Two Pages view (decided 2026-11-27 by the owner): a third page view, a
   split button after Continuous and Single Page with its own ▾ menu:
-  "Cover page alone" (a check item) and its mouse-wheel setting. Pages
+  "Cover page alone" (a check item) and its mouse-wheel setting (Zoom by
+  default, as Single Page; decided 2026-11-28 by the owner). Pages
   show side by side in pairs (1–2, 3–4; with the cover alone, 1, then 2–3,
   4–5) and scroll continuously as rows. It works with Fit Width and Fit
   Page (each fits the row), zoom, each page's own rotation, mixed page
@@ -146,7 +147,9 @@ changes it; history is in git.
   thumbnails, find and search act on it. A draggable divider, also moved
   by the keyboard, separates the panes; each pane keeps at least 240 px.
   A press or wheel in the other pane makes it active and does nothing else
-  (decided 2026-11-27 by the owner). Off, the active
+  (decided 2026-11-27 by the owner). Edit PDF is the document's mode and shows
+  in both panes; turning it on or off in either pane does so in both
+  (decided 2026-11-28 by the owner). Off, the active
   pane's view stays. Split View is kept per document in the session; it
   reopens with both panes on the active pane's view.
 - A file's memory after its tab closes (decided 2026-11-27 by the owner)
@@ -542,7 +545,13 @@ changes it; history is in git.
   - Formatting from Acrobat and OnlyOffice: font (any installed or bundled
     face, embedded as a subset), size, colour, bold, italic, alignment and
     line spacing; lists that continue their bullets and numbering, and
-    paragraphs that flow between columns (OnlyOffice).
+    paragraphs that flow between columns (OnlyOffice). While Edit PDF is
+    on, a format bar below the viewer toolbar holds the text controls as a
+    word processor's formatting bar does, as well as the Properties panel:
+    each control is the panel's own change, with its undo step (decided
+    2026-11-28 by the owner). It shows every control in every state,
+    disabled while no text is edited, and merges lower-priority groups into
+    a menu when narrow.
   - Signed PDFs: warn that saving invalidates the signatures, then allow
     editing (Revu refuses).
   - PDFs whose permissions forbid changing content (owner restrictions,

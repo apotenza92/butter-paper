@@ -68,6 +68,13 @@ pub(super) struct ViewportInputs {
     pub other_pane: bool,
 }
 
+/// The test id of what Edit PDF draws over a page (paragraph frames,
+/// hover, selection, the edited paragraph). In Split View's other pane it
+/// starts with "other-".
+pub fn document_edit_pdf_overlay_id(document_id: DocumentId, page_index: u32) -> String {
+    format!("{document_id}-edit-pdf-overlay-{page_index}")
+}
+
 /// An element id in the other pane of Split View, apart from the active
 /// pane's.
 fn pane_id(id: String, other_pane: bool) -> String {
@@ -516,13 +523,24 @@ impl DocumentWorkspace {
                                                                 .find(|overlay| overlay.page_index == page_index)
                                                                 .cloned()
                                                                 .map(|overlay| {
-                                                                    page_text::page_text_overlay_element(
-                                                                        overlay,
-                                                                        page_size,
-                                                                        coordinate_space,
-                                                                        selection_color,
-                                                                        warning_colors,
-                                                                    )
+                                                                    let overlay_id = pane_id(
+                                                                        document_edit_pdf_overlay_id(
+                                                                            document_id,
+                                                                            page_index,
+                                                                        ),
+                                                                        other_pane,
+                                                                    );
+                                                                    gpui::div()
+                                                                        .absolute()
+                                                                        .inset_0()
+                                                                        .debug_selector(move || overlay_id)
+                                                                        .child(page_text::page_text_overlay_element(
+                                                                            overlay,
+                                                                            page_size,
+                                                                            coordinate_space,
+                                                                            selection_color,
+                                                                            warning_colors,
+                                                                        ))
                                                                 }),
                                                         )
                                                         .children(

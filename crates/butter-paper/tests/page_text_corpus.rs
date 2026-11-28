@@ -954,6 +954,62 @@ mod paragraphs {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
+    /// An edited paragraph opened again (before a save) reads its lines
+    /// from the edit, as the editor does: where the edit wrapped a line,
+    /// the words on each side keep the space between them. A two-line
+    /// paragraph whose first line ends in a space ("time and the ",
+    /// "contractor") reopened as "time and thecontractor".
+    #[test]
+    fn a_reopened_edit_keeps_the_space_at_each_wrap() {
+        for name in PRODUCERS {
+            let document = producer(name);
+            let layer = Arc::new(layer(&document));
+            for block in paragraph_blocks(&layer)
+                .into_iter()
+                .filter(|block| block.lines.len() > 1)
+            {
+                let Some(paragraph) = Paragraph::new(layer.clone(), &block) else {
+                    continue;
+                };
+                // Restyle the first word, as the format bar's Bold does.
+                let mut text = paragraph.text(&[], &[]);
+                let first = text
+                    .iter()
+                    .position(|(character, _)| character.is_whitespace())
+                    .unwrap_or(text.len());
+                for (_, style) in &mut text[..first] {
+                    style.font_size *= 1.2;
+                }
+                let wrapped = paragraph.wrap(&text).unwrap();
+                let edits = paragraph.edits(&text, &wrapped);
+                let edit = |anchor| edits.iter().find(|edit| edit.anchor == anchor);
+                let current = paragraph
+                    .lines()
+                    .iter()
+                    .map(|line| {
+                        edit(line.anchor)
+                            .map_or_else(|| line.original_runs(), |edit| edit.runs.clone())
+                    })
+                    .collect::<Vec<_>>();
+                let breaks = paragraph
+                    .lines()
+                    .iter()
+                    .map(|line| edit(line.anchor).map(|edit| edit.layout.hard_break))
+                    .collect::<Vec<_>>();
+                let added = edit(paragraph.lines().last().unwrap().anchor)
+                    .map(|edit| edit.layout.extra_lines.clone())
+                    .unwrap_or_default();
+                let reopened = paragraph.text_with_breaks(&current, &breaks, &added);
+                assert_eq!(
+                    normalise_lines(&joined(&reopened)),
+                    normalise_lines(&joined(&text)),
+                    "{name}: {}",
+                    joined(&text)
+                );
+            }
+        }
+    }
+
     #[test]
     fn inserted_words_flow_through_the_paragraph_and_justify() {
         for name in ["chrome", "libreoffice"] {

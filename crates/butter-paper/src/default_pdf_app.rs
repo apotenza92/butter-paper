@@ -2,19 +2,13 @@
 //!
 //! macOS and Linux change the default directly and verify it. Windows does not
 //! let apps choose their own defaults, so Butter Paper registers itself as a
-//! PDF-capable app for the current user and opens Default Apps to confirm.
+//! PDF-capable app for the current user and opens Default Apps, beside a guide
+//! that shows the steps (`default_pdf_app_guide`).
 
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DefaultPdfAppOutcome {
-    Changed,
-    RequiresConfirmation,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultPdfAppResult {
-    pub outcome: DefaultPdfAppOutcome,
     pub message: String,
 }
 
@@ -22,45 +16,47 @@ pub const PRODUCT_NAME: &str = "Butter Paper";
 pub const WINDOWS_PROG_ID: &str = "ButterPaper.PDF";
 pub const LINUX_DESKTOP_FILE: &str = "butter-paper.desktop";
 
-/// Change (or, on Windows, begin changing) the default PDF application.
+/// Changes the default PDF application directly (macOS and Linux).
 pub fn set_as_default_pdf_app() -> Result<DefaultPdfAppResult, String> {
     #[cfg(target_os = "macos")]
     {
         macos::set_default()?;
         Ok(changed())
     }
-    #[cfg(target_os = "windows")]
-    {
-        // A Store package declares its PDF association in its manifest.
-        if let Some(family) = crate::store_package::family_name() {
-            windows::open_settings(&crate::store_package::default_apps_url(&family))?;
-        } else {
-            let executable = std::env::current_exe()
-                .map_err(|error| format!("Butter Paper could not find its own program: {error}"))?;
-            windows::register_and_open_settings(&executable)?;
-        }
-        Ok(DefaultPdfAppResult {
-            outcome: DefaultPdfAppOutcome::RequiresConfirmation,
-            message: format!(
-                "Choose {PRODUCT_NAME} for .pdf files in Windows Default Apps, which is now open."
-            ),
-        })
-    }
     #[cfg(target_os = "linux")]
     {
         linux::set_default()?;
         Ok(changed())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        Err("Setting the default PDF app is not supported on this platform.".into())
+        Err("Setting the default PDF app directly is not supported on this platform.".into())
+    }
+}
+
+/// Registers Butter Paper for PDFs (a copy outside the Store) and opens
+/// Windows Settings at Butter Paper's Default Apps page.
+pub fn open_windows_default_apps() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // A Store package declares its PDF association in its manifest.
+        if let Some(family) = crate::store_package::family_name() {
+            windows::open_settings(&crate::store_package::default_apps_url(&family))
+        } else {
+            let executable = std::env::current_exe()
+                .map_err(|error| format!("Butter Paper could not find its own program: {error}"))?;
+            windows::register_and_open_settings(&executable)
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Windows Settings is only available on Windows.".into())
     }
 }
 
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 fn changed() -> DefaultPdfAppResult {
     DefaultPdfAppResult {
-        outcome: DefaultPdfAppOutcome::Changed,
         message: format!("{PRODUCT_NAME} is now the default app for PDF files."),
     }
 }

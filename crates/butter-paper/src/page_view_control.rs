@@ -110,7 +110,7 @@ impl PageViewControl {
             mode: PageViewMode::TwoPages,
             primary_activations: 0,
             fit_activations: 0,
-            wheel_behavior: WheelBehavior::Scroll,
+            wheel_behavior: WheelBehavior::Zoom,
             selected: false,
             disabled: false,
             cover_alone: false,

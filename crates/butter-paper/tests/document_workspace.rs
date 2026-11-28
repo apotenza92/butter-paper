@@ -51003,9 +51003,11 @@ fn the_canvas_context_menu_switches_edit_pdf(cx: &mut TestAppContext) {
         workspace.read_with(cx, |workspace, _| workspace.content_edit_mode(document_id))
     };
     assert!(!editing(cx));
-    let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
-    let menu_at = point(viewport.origin.x + px(40.), viewport.origin.y + px(40.));
     for expected in [true, false] {
+        // Edit PDF's format bar takes the top of the viewport: its bounds
+        // change with the mode.
+        let viewport = cx.debug_bounds(DOCUMENT_VIEWPORT_ID).unwrap();
+        let menu_at = point(viewport.origin.x + px(40.), viewport.origin.y + px(40.));
         cx.simulate_mouse_down(menu_at, MouseButton::Right, Modifiers::default());
         cx.simulate_mouse_up(menu_at, MouseButton::Right, Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));

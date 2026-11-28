@@ -616,6 +616,8 @@ impl RenderOnce for PropertyColor {
                 .border_1()
                 .border_color(cx.theme().input)
                 .when_some(value, |swatch, value| swatch.bg(value))
+                // Dimmed as a disabled slider is, so it reads as disabled.
+                .opacity(0.5)
                 .into_any_element()
         } else {
             div()

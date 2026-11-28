@@ -307,6 +307,17 @@ dispatch 0 continuous
 wait 600
 expect-view 0 continuous
 
+# Edit PDF shows the format bar below the toolbar, with its controls
+# disabled until text is edited, and turning Edit PDF off removes it.
+os-click-id 0 viewer-edit-pdf
+wait 600
+expect-shown 0 edit-pdf-format-bar
+expect-shown 0 edit-pdf-format-bold
+shot format-bar
+os-click-id 0 viewer-edit-pdf
+wait 600
+expect-hidden 0 edit-pdf-format-bar
+
 # A PDF dropped on the page opens as a new tab in the window it is dropped
 # on, not elsewhere. The page is under window point 600, 450. The PDF is a
 # copy: the open file itself only brings its tab forward.

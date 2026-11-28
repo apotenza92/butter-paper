@@ -82,7 +82,7 @@ use butter_paper::window_title_bar::{uses_window_title_bar, window_title_bar};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyWindowHandle, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, PromptLevel, Render,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, WindowBounds,
     WindowOptions, div, px, size,
 };
@@ -1460,28 +1460,10 @@ fn register_application_shell_actions(cx: &mut App) {
     });
 
     cx.on_action(|_: &SetAsDefaultPdfApp, cx| {
-        let Some(entry) = active_document_window(cx) else {
-            return;
-        };
-        let task = cx
-            .background_executor()
-            .spawn(async { butter_paper::default_pdf_app::set_as_default_pdf_app() });
-        cx.spawn(async move |cx| {
-            let result = task.await;
-            let _ = entry.handle.update(cx, |_, window, cx| {
-                let (level, message, detail) = match result {
-                    Ok(result) => (PromptLevel::Info, result.message, None),
-                    Err(error) => (
-                        PromptLevel::Warning,
-                        "Butter Paper could not be set as the default PDF app".to_owned(),
-                        Some(error),
-                    ),
-                };
-                // The only button is OK, so the answer is not needed.
-                drop(window.prompt(level, &message, detail.as_deref(), &["OK"], cx));
-            });
-        })
-        .detach();
+        defer_to_active_story(cx, |_, window, cx| {
+            use butter_paper::default_pdf_app_guide::{DefaultPdfAppFlow, set_as_default_pdf_app};
+            set_as_default_pdf_app(DefaultPdfAppFlow::current(), window, cx)
+        });
     });
 
     // From Settings, with or without a document window: every window's new
@@ -5481,6 +5463,7 @@ mod review_driver {
                             "two-pages" => Box::new(TwoPagesView),
                             "cover-alone" => Box::new(ToggleCoverPageAlone),
                             "split-view" => Box::new(ToggleSplitView),
+                            "default-pdf-app" => Box::new(SetAsDefaultPdfApp),
                             other => {
                                 writeln!(log, "unknown action {other}").unwrap();
                                 continue;

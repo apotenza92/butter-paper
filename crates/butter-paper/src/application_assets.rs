@@ -22,6 +22,39 @@ pub const LIST_COLLAPSE_ICON: &str = "icons/list-collapse.svg";
 pub const MORE_CONTEXT_ICON: &str = "icons/unfold-vertical.svg";
 /// A markup in the search panel's results.
 pub const MARKUP_RESULT_ICON: &str = "icons/message-square.svg";
+/// The Edit PDF format bar's Bold, Italic and alignment buttons.
+pub const FORMAT_BOLD_ICON: &str = "icons/format/bold.svg";
+pub const FORMAT_ITALIC_ICON: &str = "icons/format/italic.svg";
+pub const FORMAT_ALIGN_LEFT_ICON: &str = "icons/format/text-align-start.svg";
+pub const FORMAT_ALIGN_CENTRE_ICON: &str = "icons/format/text-align-center.svg";
+pub const FORMAT_ALIGN_RIGHT_ICON: &str = "icons/format/text-align-end.svg";
+pub const FORMAT_ALIGN_JUSTIFY_ICON: &str = "icons/format/text-align-justify.svg";
+const FORMAT_ICONS: [(&str, &[u8]); 6] = [
+    (
+        FORMAT_BOLD_ICON,
+        include_bytes!("../assets/icons/format/bold.svg"),
+    ),
+    (
+        FORMAT_ITALIC_ICON,
+        include_bytes!("../assets/icons/format/italic.svg"),
+    ),
+    (
+        FORMAT_ALIGN_LEFT_ICON,
+        include_bytes!("../assets/icons/format/text-align-start.svg"),
+    ),
+    (
+        FORMAT_ALIGN_CENTRE_ICON,
+        include_bytes!("../assets/icons/format/text-align-center.svg"),
+    ),
+    (
+        FORMAT_ALIGN_RIGHT_ICON,
+        include_bytes!("../assets/icons/format/text-align-end.svg"),
+    ),
+    (
+        FORMAT_ALIGN_JUSTIFY_ICON,
+        include_bytes!("../assets/icons/format/text-align-justify.svg"),
+    ),
+];
 
 /// Product icons supplement, rather than modify, the stock component assets.
 pub struct ApplicationAssets;
@@ -109,6 +142,9 @@ impl AssetSource for ApplicationAssets {
         if let Some(bytes) = thumbnail {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
+        if let Some((_, bytes)) = FORMAT_ICONS.iter().find(|(icon, _)| *icon == path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
         if path == PAGE_THUMBNAILS_ICON {
             return Ok(Some(Cow::Borrowed(include_bytes!(
                 "../assets/icons/page-thumbnails.svg"
@@ -119,6 +155,11 @@ impl AssetSource for ApplicationAssets {
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut entries = gpui_component_assets::Assets.list(path)?;
+        for (icon, _) in FORMAT_ICONS {
+            if icon.starts_with(path) {
+                entries.push(icon.into());
+            }
+        }
         for icon in [
             EDIT_PDF_ICON,
             MOUSE_WHEEL_ICON,
