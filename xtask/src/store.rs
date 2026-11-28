@@ -116,12 +116,21 @@ pub fn run(args: &mut Args) -> Result {
     let started = Instant::now();
     loop {
         std::thread::sleep(Duration::from_secs(30));
-        let status = api(
+        // The submission is already committed: a failed poll is retried
+        // until the limit, not reported as a failed submission.
+        let status = match api(
             &token,
             "GET",
             &format!("{base}/submissions/{id}/status"),
             None,
-        )?;
+        ) {
+            Ok(status) => status,
+            Err(error) if started.elapsed() < COMMIT_LIMIT => {
+                eprintln!("Status of submission {id} not read, trying again: {error}");
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         match status["status"].as_str().unwrap_or_default() {
             "CommitStarted" if started.elapsed() < COMMIT_LIMIT => continue,
             "CommitStarted" => {
@@ -274,10 +283,18 @@ fn api(token: &str, method: &str, url: &str, body: Option<&Value>) -> Result<Val
         config.push_str("data = \"\"\n");
     }
     let response = curl(&config).map_err(|error| format!("{method} {url}: {error}"))?;
-    if response.trim().is_empty() {
-        return Ok(Value::Null);
+    last_json(&response).map_err(|error| format!("{method} {url}: {error}"))
+}
+
+/// The last JSON value of a response. When curl retries a failed request,
+/// the failed attempt's body is already on standard output, so the output
+/// holds one body per attempt and the last one is the answer.
+fn last_json(response: &str) -> std::result::Result<Value, serde_json::Error> {
+    let mut last = Value::Null;
+    for value in serde_json::Deserializer::from_str(response).into_iter::<Value>() {
+        last = value?;
     }
-    serde_json::from_str(&response).map_err(|error| format!("{method} {url}: {error}"))
+    Ok(last)
 }
 
 fn curl(config: &str) -> Result<String> {
@@ -424,6 +441,14 @@ mod tests {
             updated["listings"]["en-au"]["baseListing"]["releaseNotes"],
             "New"
         );
+    }
+
+    #[test]
+    fn a_retried_response_reads_as_its_last_body() {
+        let retried = "{\"code\":\"InternalServerError\"}\n{\"status\":\"PreProcessing\"}";
+        assert_eq!(last_json(retried).unwrap()["status"], "PreProcessing");
+        assert_eq!(last_json("  \n").unwrap(), Value::Null);
+        assert!(last_json("{\"status\":").is_err());
     }
 
     #[test]
